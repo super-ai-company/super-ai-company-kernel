@@ -444,6 +444,9 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertIn("<td>cursor</td><td>candidate</td><td>candidate</td><td>no</td>", html)
         self.assertIn("active_employees", html)
         self.assertIn("candidate_employees", html)
+        self.assertIn("employee-manager", html)
+        self.assertIn("/v1/employees/onboard", html)
+        self.assertIn("offboardEmployee", html)
 
     def test_dashboard_renders_task_evidence_blocker_and_approval_counts(self) -> None:
         code, submitted = run_cli("task", "submit", "--from", "ops", "--to", "maker", "--task-id", "task-dashboard-blocked", "--title", "blocked task")
@@ -1286,6 +1289,13 @@ class CompanyKernelCoreTest(unittest.TestCase):
         }
         self.assertIn("strict_launchd", doctor_query_names)
         self.assertIn("strict_openclaw", doctor_query_names)
+
+        handler = object.__new__(api_gateway.ApiHandler)
+        sent_headers = []
+        handler.send_header = lambda key, value: sent_headers.append((key, value))  # type: ignore[method-assign]
+        handler.send_cors_headers()
+        self.assertIn(("Access-Control-Allow-Origin", "*"), sent_headers)
+        self.assertIn(("Access-Control-Allow-Methods", "GET, POST, OPTIONS"), sent_headers)
 
         for agent in ["video-ops", "video-creator", "video-publisher", "codex", "openclaw-main", "hermes", "nestcar"]:
             status, heartbeat = api_gateway.route_post("/v1/heartbeats", {"agent": agent})
