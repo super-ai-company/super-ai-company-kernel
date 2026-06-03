@@ -222,6 +222,23 @@ def render_table(headers: list[str], items: list[dict], fields: list[str]) -> st
     return f"<table><thead><tr>{head}</tr></thead><tbody>{''.join(body)}</tbody></table>"
 
 
+def render_employee_table(items: list[dict]) -> str:
+    headers = ["id", "status", "kernel_state", "schedulable", "role", "runtime", "heartbeat", "age_min", "backlog", "skills", "tools", "task_types", "last_seen", "actions"]
+    fields = ["id", "employee_status", "kernel_state", "schedulable", "role", "runtime", "heartbeat_status", "heartbeat_age_minutes", "backlog", "skills", "tools", "task_types", "last_seen_at"]
+    head = "".join(f"<th>{e(header)}</th>" for header in headers)
+    body = []
+    for item in items:
+        employee_id = e(item.get("id", ""))
+        cells = "".join(f"<td>{e(item.get(field, ''))}</td>" for field in fields)
+        actions = (
+            "<td>"
+            f"<button class='danger-button' type='button' onclick=\"offboardEmployee('{employee_id}', false)\">Archive</button>"
+            "</td>"
+        )
+        body.append(f"<tr>{cells}{actions}</tr>")
+    return f"<table><thead><tr>{head}</tr></thead><tbody>{''.join(body)}</tbody></table>"
+
+
 def approval_task_id(approval: dict) -> str:
     raw = approval.get("reason", "")
     try:
@@ -406,6 +423,13 @@ def render(summary: dict) -> str:
     th {{ background: #efede7; color: #4d4a43; font-weight: 600; }}
     tr:last-child td {{ border-bottom: 0; }}
     td {{ max-width: 360px; overflow-wrap: anywhere; }}
+    .toolbar {{ display: flex; align-items: flex-end; gap: 10px; flex-wrap: wrap; margin: 10px 0 14px; padding: 12px; background: #fff; border: 1px solid #dedbd2; border-radius: 8px; }}
+    .toolbar label {{ display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: #68665f; }}
+    .toolbar input, .toolbar select {{ min-width: 130px; padding: 7px 8px; border: 1px solid #cfcabe; border-radius: 6px; background: #fff; color: #202124; }}
+    .toolbar button, .danger-button {{ padding: 8px 10px; border: 1px solid #bdb7aa; border-radius: 6px; background: #202124; color: #fff; cursor: pointer; }}
+    .danger-button {{ background: #9f1d1d; border-color: #9f1d1d; }}
+    .api-note {{ margin: 8px 0 0; color: #68665f; font-size: 12px; }}
+    .api-status {{ margin-top: 8px; font-size: 13px; color: #3f6f32; }}
   </style>
 </head>
 <body>
@@ -431,7 +455,41 @@ def render(summary: dict) -> str:
     <h2>Evidence Health</h2>
     {render_table(["task", "agent", "reason", "path"], evidence_health, ["task_id", "agent", "reason", "path"])}
     <h2>Employees</h2>
-    {render_table(["id", "status", "kernel_state", "schedulable", "role", "runtime", "heartbeat", "age_min", "backlog", "skills", "tools", "task_types", "last_seen"], employees, ["id", "employee_status", "kernel_state", "schedulable", "role", "runtime", "heartbeat_status", "heartbeat_age_minutes", "backlog", "skills", "tools", "task_types", "last_seen_at"])}
+    <div class="toolbar" id="employee-manager">
+      <label>API Gateway
+        <input id="api-base" value="http://127.0.0.1:8765">
+      </label>
+      <label>ID
+        <input id="employee-id" placeholder="e.g. nestcar-helper">
+      </label>
+      <label>Name
+        <input id="employee-name" placeholder="Display name">
+      </label>
+      <label>Role
+        <input id="employee-role" value="business-agent">
+      </label>
+      <label>Runtime
+        <select id="employee-runtime">
+          <option value="openclaw">openclaw</option>
+          <option value="hermes">hermes</option>
+          <option value="codex">codex</option>
+          <option value="claude">claude</option>
+          <option value="trae">trae</option>
+          <option value="antigravity">antigravity</option>
+          <option value="local">local</option>
+        </select>
+      </label>
+      <label>Workspace
+        <input id="employee-workspace" placeholder="/Users/shift/openclaw/...">
+      </label>
+      <label>Skills
+        <input id="employee-skills" placeholder="ops,review">
+      </label>
+      <button type="button" onclick="onboardEmployee()">Onboard</button>
+    </div>
+    <div class="api-note">Employee actions call Company Kernel REST API and then reload this static dashboard. Start with: <code>bin/company-api-gateway --quiet</code></div>
+    <div class="api-status" id="employee-api-status"></div>
+    {render_employee_table(employees)}
     <h2>Projects</h2>
     {render_table(["id", "owner", "status", "review", "plan", "open_plan", "accepted", "goal", "acceptance", "retro", "title", "updated"], projects, ["id", "owner_agent", "status", "review_state", "plan", "open_plan_items", "acceptance_count", "goal", "acceptance", "latest_acceptance_summary", "title", "updated_at"])}
     <h2>Recent Tasks</h2>
@@ -454,6 +512,65 @@ def render(summary: dict) -> str:
     <h2>Locks</h2>
     {render_table(["resource", "owner", "lease_until", "updated"], summary["locks"], ["resource_key", "owner_agent", "lease_until", "updated_at"])}
   </main>
+  <script>
+    function apiBase() {{
+      return (document.getElementById('api-base').value || 'http://127.0.0.1:8765').replace(/\\/$/, '');
+    }}
+    function setEmployeeApiStatus(text, isError) {{
+      const el = document.getElementById('employee-api-status');
+      el.textContent = text;
+      el.style.color = isError ? '#9f1d1d' : '#3f6f32';
+    }}
+    async function callCompanyApi(path, payload) {{
+      const res = await fetch(apiBase() + path, {{
+        method: 'POST',
+        headers: {{'Content-Type': 'application/json'}},
+        body: JSON.stringify(payload || {{}})
+      }});
+      const data = await res.json();
+      if (!res.ok || data.ok === false) {{
+        throw new Error(data.error || data.message || JSON.stringify(data));
+      }}
+      return data;
+    }}
+    async function onboardEmployee() {{
+      const id = document.getElementById('employee-id').value.trim();
+      const name = document.getElementById('employee-name').value.trim() || id;
+      const role = document.getElementById('employee-role').value.trim() || 'business-agent';
+      const runtime = document.getElementById('employee-runtime').value;
+      const workspace = document.getElementById('employee-workspace').value.trim() || `/Users/shift/openclaw/company-kernel/employees/${{id}}`;
+      const skills = document.getElementById('employee-skills').value.trim();
+      if (!id) {{
+        setEmployeeApiStatus('employee id is required', true);
+        return;
+      }}
+      setEmployeeApiStatus(`Onboarding ${{id}}...`, false);
+      try {{
+        await callCompanyApi('/v1/employees/onboard', {{
+          id, name, role, runtime, workspace, skills,
+          open_communication: true,
+          create_test_task: false
+        }});
+        setEmployeeApiStatus(`Onboarded ${{id}}. Reloading dashboard...`, false);
+        setTimeout(() => location.reload(), 800);
+      }} catch (err) {{
+        setEmployeeApiStatus(`Onboard failed: ${{err.message}}`, true);
+      }}
+    }}
+    async function offboardEmployee(id, hardDelete) {{
+      if (!id) return;
+      const action = hardDelete ? 'hard delete' : 'archive';
+      if (!confirm(`${{action}} employee "${{id}}"?`)) return;
+      setEmployeeApiStatus(`Offboarding ${{id}}...`, false);
+      try {{
+        await callCompanyApi(`/v1/employees/${{encodeURIComponent(id)}}/offboard`, {{hard_delete: !!hardDelete}});
+        setEmployeeApiStatus(`Offboarded ${{id}}. Reloading dashboard...`, false);
+        setTimeout(() => location.reload(), 800);
+      }} catch (err) {{
+        setEmployeeApiStatus(`Offboard failed: ${{err.message}}`, true);
+      }}
+    }}
+  </script>
 </body>
 </html>
 """
