@@ -1377,6 +1377,34 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertIn("engineering", shown_updated["capabilities"]["skills"])
         self.assertFalse(shown_updated["permissions"]["can_submit_tasks"])
 
+        managed_workspace = self.root / "employees" / "api-reviewer"
+        status, onboarded = api_gateway.route_post(
+            "/v1/employees/onboard",
+            {
+                "id": "api-reviewer",
+                "name": "API Reviewer",
+                "role": "reviewer",
+                "runtime": "hermes",
+                "workspace": str(managed_workspace),
+                "alias": "api-review",
+                "skills": "review,qa",
+                "can_talk_to": "codex",
+                "create_test_task": "true",
+            },
+        )
+        self.assertEqual(201, status, onboarded)
+        self.assertEqual("api-reviewer", onboarded["employee"]["id"])
+        self.assertTrue((managed_workspace / "SOUL.md").exists())
+        self.assertIn(str((managed_workspace / "SOUL.md").resolve()), onboarded["scaffolded_files"])
+        self.assertEqual("task-onboard-api-reviewer", onboarded["test_task"]["id"])
+
+        status, offboard_dry = api_gateway.route_post("/v1/employees/api-review/offboard", {"dry_run": "true"})
+        self.assertEqual(200, status, offboard_dry)
+        self.assertTrue(offboard_dry["dry_run"])
+        status, offboarded = api_gateway.route_post("/v1/employees/api-review/offboard", {})
+        self.assertEqual(200, status, offboarded)
+        self.assertEqual("soft-delete", offboarded["action"])
+
     def test_api_rpc_routes_rest_contract_without_direct_sqlite_access(self) -> None:
         described = api_rpc.handle_rpc({"jsonrpc": "2.0", "id": "describe", "method": "company.describe", "params": {}})
         self.assertEqual("describe", described["id"])

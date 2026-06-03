@@ -31,7 +31,9 @@ API_ENDPOINTS = [
     {"method": "GET", "path": "/v1/doctor", "summary": "Doctor summary", "query": {"strict_launchd": "bool optional"}},
     {"method": "GET", "path": "/v1/employees", "summary": "List employees"},
     {"method": "POST", "path": "/v1/employees", "summary": "Create employee", "body": {"id": "employee id", "name": "display name", "role": "role", "runtime": "runtime id", "workspace": "path"}},
+    {"method": "POST", "path": "/v1/employees/onboard", "summary": "Onboard employee with capabilities, permissions, communication, optional scaffold, and optional test task", "body": {"id": "employee id", "name": "display name", "role": "role", "runtime": "runtime id", "workspace": "path", "alias": "alias optional", "skills": "comma-separated optional", "tools": "comma-separated optional", "task_types": "comma-separated optional", "can_talk_to": "comma-separated optional", "can_assign_to": "comma-separated optional", "open_communication": "bool optional", "channel": "channel optional", "create_test_task": "bool optional"}},
     {"method": "GET", "path": "/v1/employees/{employee_id}", "summary": "Show employee profile, capabilities, permissions, heartbeat, and files"},
+    {"method": "POST", "path": "/v1/employees/{employee_id}/offboard", "summary": "Offboard employee with dry-run, soft archive, or guarded hard delete", "body": {"hard_delete": "bool optional", "dry_run": "bool optional"}},
     {"method": "POST", "path": "/v1/employees/{employee_id}/capabilities", "summary": "Update employee capabilities", "body": {"set_skills": "comma-separated skills optional", "add_skill": "string/list optional", "set_tools": "comma-separated tools optional", "add_tool": "string/list optional", "set_task_types": "comma-separated task types optional"}},
     {"method": "POST", "path": "/v1/employees/{employee_id}/permissions", "summary": "Update employee permissions", "body": {"can_submit_tasks": "true/false/keep optional", "can_claim_tasks": "true/false/keep optional", "can_modify_kernel": "true/false/keep optional", "requires_approval_for": "comma-separated actions optional"}},
     {"method": "GET", "path": "/v1/runtimes", "summary": "List runtimes"},
@@ -165,6 +167,10 @@ def body_values(body: dict, name: str) -> list[str]:
     return [str(value)]
 
 
+def truthy(value: object) -> bool:
+    return value is True or str(value).lower() in {"1", "true", "yes", "on"}
+
+
 def route_get(path: str, query: dict[str, list[str]]) -> tuple[int, dict]:
     if path in {"/v1", "/v1/"}:
         return HTTPStatus.OK, service_descriptor()
@@ -287,6 +293,48 @@ def route_get(path: str, query: dict[str, list[str]]) -> tuple[int, dict]:
 
 
 def route_post(path: str, body: dict) -> tuple[int, dict]:
+    if path == "/v1/employees/onboard":
+        argv = [
+            "employee",
+            "onboard",
+            "--id",
+            str(body.get("id", "")),
+            "--name",
+            str(body.get("name", "")),
+            "--role",
+            str(body.get("role", "")),
+            "--runtime",
+            str(body.get("runtime", "")),
+            "--workspace",
+            str(body.get("workspace", "")),
+        ]
+        for key, flag in [
+            ("alias", "--alias"),
+            ("skills", "--skills"),
+            ("tools", "--tools"),
+            ("task_types", "--task-types"),
+            ("can_talk_to", "--can-talk-to"),
+            ("can_assign_to", "--can-assign-to"),
+            ("channel", "--channel"),
+            ("handoff_mode", "--handoff-mode"),
+            ("requires_approval_for", "--requires-approval-for"),
+            ("test_source", "--test-source"),
+            ("test_task_id", "--test-task-id"),
+        ]:
+            if body.get(key):
+                argv.extend([flag, str(body[key])])
+        for key, flag in [
+            ("open_communication", "--open-communication"),
+            ("no_submit_tasks", "--no-submit-tasks"),
+            ("no_claim_tasks", "--no-claim-tasks"),
+            ("can_modify_kernel", "--can-modify-kernel"),
+            ("create_test_task", "--create-test-task"),
+            ("dry_run", "--dry-run"),
+        ]:
+            if truthy(body.get(key)):
+                argv.append(flag)
+        code, payload = run_companyctl(argv)
+        return (HTTPStatus.CREATED if code == 0 else HTTPStatus.BAD_REQUEST), {"exit_code": code, **payload}
     if path == "/v1/employees":
         code, payload = run_companyctl(
             [
@@ -305,6 +353,15 @@ def route_post(path: str, body: dict) -> tuple[int, dict]:
             ]
         )
         return (HTTPStatus.CREATED if code == 0 else HTTPStatus.BAD_REQUEST), {"exit_code": code, **payload}
+    if path.startswith("/v1/employees/") and path.endswith("/offboard"):
+        employee_id = path.removeprefix("/v1/employees/").removesuffix("/offboard").strip("/")
+        argv = ["employee", "offboard", "--id", employee_id]
+        if truthy(body.get("hard_delete")):
+            argv.append("--hard-delete")
+        if truthy(body.get("dry_run")):
+            argv.append("--dry-run")
+        code, payload = run_companyctl(argv)
+        return (HTTPStatus.OK if code == 0 else HTTPStatus.BAD_REQUEST), {"exit_code": code, **payload}
     if path == "/v1/runtimes":
         argv = ["runtime", "register", "--runtime", str(body.get("runtime", ""))]
         for key, flag in [("command", "--command"), ("status", "--status"), ("notes", "--notes")]:

@@ -29,6 +29,7 @@ Implemented and verified:
 - API Gateway lock endpoints now expose acquire/list/release/unlock-stale for distributed worker coordination.
 - API Gateway employee and runtime endpoints now expose employee creation, employee inspection, runtime registration, and runtime listing.
 - API Gateway employee governance endpoints now expose capability and permission updates.
+- API Gateway employee lifecycle endpoints now expose onboard/offboard without direct SQLite access.
 - RPC Gateway now exposes the same governed service layer through JSON-RPC plus an optional grpcio generic gRPC server contract.
 - Service smoke now starts REST/RPC on random local ports and validates remote health/describe/get without direct SQLite access.
 - Sandbox isolation foundation: Codex/Hermes adapters can wrap execution commands with Docker or Firejail profiles without changing task protocol.
