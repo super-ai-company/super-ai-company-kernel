@@ -836,9 +836,14 @@ def rows(conn: sqlite3.Connection, sql: str, params: tuple = ()) -> list[dict]:
     return [dict(r) for r in conn.execute(sql, params).fetchall()]
 
 
+def is_human_owner_employee(employee: dict) -> bool:
+    return employee.get("id") == "owner" or employee.get("role") == "human-owner" or employee.get("runtime") == "human"
+
+
 def cmd_employee_list(_args: argparse.Namespace) -> int:
     conn = connect()
-    emit({"ok": True, "employees": rows(conn, "SELECT * FROM employees ORDER BY id")})
+    employees = [employee for employee in rows(conn, "SELECT * FROM employees ORDER BY id") if not is_human_owner_employee(employee)]
+    emit({"ok": True, "employees": employees})
     return 0
 
 
@@ -1018,6 +1023,8 @@ def match_employee_score(bundle: dict, required_skills: list[str], preferred_too
     employee = bundle["employee"]
     capabilities = bundle["capabilities"]
     permissions = bundle["permissions"]
+    if is_human_owner_employee(employee):
+        return {"score": -1, "reasons": ["human owner not schedulable"]}
     if employee.get("status") != "active":
         return {"score": -1, "reasons": ["employee inactive"]}
     if not permissions.get("can_claim_tasks", True):
@@ -1072,6 +1079,8 @@ def employee_matches(conn: sqlite3.Connection, args: argparse.Namespace) -> list
     candidates = []
     for row in conn.execute("SELECT id FROM employees ORDER BY id").fetchall():
         bundle = employee_file_bundle(conn, row["id"])
+        if is_human_owner_employee(bundle["employee"]):
+            continue
         decision = match_employee_score(bundle, required_skills, preferred_tools, task_type, runtime, role)
         if decision["score"] < 0 and not getattr(args, "include_unavailable", False):
             continue
@@ -2181,8 +2190,32 @@ def conversation_start_internal(
     return {"conversation": {"id": cid, "title": title, "participants": participants, "status": "open"}, "message": message, "files": files, "event_id": event["id"]}
 
 
+def ensure_human_owner(conn: sqlite3.Connection, owner_id: str = "owner") -> dict:
+    row = conn.execute("SELECT * FROM employees WHERE id = ?", (owner_id,)).fetchone()
+    ts = now()
+    workspace = str((ROOT / "employees" / owner_id).resolve())
+    if row:
+        conn.execute(
+            "UPDATE employees SET name = ?, role = ?, runtime = ?, workspace = ?, status = 'active', updated_at = ? WHERE id = ?",
+            ("Owner", "human-owner", "human", workspace, ts, owner_id),
+        )
+    else:
+        conn.execute(
+            "INSERT INTO employees(id, name, role, runtime, workspace, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 'active', ?, ?)",
+            (owner_id, "Owner", "human-owner", "human", workspace, ts, ts),
+        )
+    conn.commit()
+    paths = employee_paths(owner_id)
+    paths["base"].mkdir(parents=True, exist_ok=True)
+    for key in ("inbox", "outbox", "reports"):
+        paths[key].mkdir(parents=True, exist_ok=True)
+    return dict(conn.execute("SELECT * FROM employees WHERE id = ?", (owner_id,)).fetchone())
+
+
 def cmd_conversation_start(args: argparse.Namespace) -> int:
     conn = connect()
+    if resolve_employee_alias(args.source) == "owner":
+        ensure_human_owner(conn)
     participants = parse_participants(args.participants)
     result = conversation_start_internal(conn, source=args.source, participants=participants, title=args.title, body=args.body, evidence=args.evidence, conversation_id=args.conversation_id)
     emit({"ok": True, **result})
@@ -2205,7 +2238,14 @@ def conversation_reply_internal(
         raise SystemExit(f"conversation not found: {conversation_id}")
     participants = json.loads(conv["participants_json"])
     if source not in participants:
-        raise SystemExit(f"source is not a participant: {source}")
+        if source == "owner":
+            participants.insert(0, source)
+            conn.execute(
+                "UPDATE conversations SET participants_json = ? WHERE id = ?",
+                (json.dumps(participants, ensure_ascii=False), conversation_id),
+            )
+        else:
+            raise SystemExit(f"source is not a participant: {source}")
     mid = message_id or f"cmsg-{datetime.now().strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:6]}"
     ts = now()
     conn.execute(
@@ -2231,6 +2271,8 @@ def conversation_reply_internal(
 
 def cmd_conversation_reply(args: argparse.Namespace) -> int:
     conn = connect()
+    if resolve_employee_alias(args.source) == "owner":
+        ensure_human_owner(conn)
     result = conversation_reply_internal(conn, source=args.source, conversation_id=args.conversation_id, body=args.body, evidence=args.evidence, message_id=args.message_id)
     emit({"ok": True, **result})
     return 0
@@ -2238,6 +2280,8 @@ def cmd_conversation_reply(args: argparse.Namespace) -> int:
 
 def cmd_conversation_list(args: argparse.Namespace) -> int:
     conn = connect()
+    if resolve_employee_alias(args.agent) == "owner":
+        ensure_human_owner(conn)
     require_employee(conn, args.agent)
     all_rows = rows(conn, "SELECT * FROM conversations ORDER BY updated_at DESC")
     conversations = []

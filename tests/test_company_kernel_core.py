@@ -513,6 +513,43 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertTrue(resumed["communication_enabled"])
         self.assertTrue(companyctl.communication_policy_decision("main", "nestcar", "message.send")["allowed"])
 
+    def test_human_owner_can_use_real_conversation_api_without_being_schedulable(self) -> None:
+        code, codex = run_cli("employee", "create", "--id", "codex", "--name", "Codex", "--role", "developer", "--runtime", "codex", "--workspace", str(self.root / "workspace" / "codex"))
+        self.assertEqual(0, code, codex)
+        code, trae = run_cli("employee", "create", "--id", "trae", "--name", "Trae", "--role", "developer", "--runtime", "trae", "--workspace", str(self.root / "workspace" / "trae"))
+        self.assertEqual(0, code, trae)
+
+        status, started = api_gateway.route_post(
+            "/v1/conversations",
+            {
+                "from": "owner",
+                "participants": "owner,codex,trae",
+                "conversation_id": "conv-owner-group",
+                "title": "后台群聊测试",
+                "body": "请 Codex 和 Trae 一起确认方案",
+            },
+        )
+        self.assertEqual(201, status, started)
+        self.assertEqual(["owner", "codex", "trae"], started["conversation"]["participants"])
+
+        status, replied = api_gateway.route_post(
+            "/v1/conversations/conv-owner-group/reply",
+            {"from": "owner", "body": "补充一条真实回复", "message_id": "msg-owner-reply"},
+        )
+        self.assertEqual(201, status, replied)
+
+        status, shown = api_gateway.route_get("/v1/conversations/conv-owner-group", {})
+        self.assertEqual(200, status)
+        self.assertEqual(["请 Codex 和 Trae 一起确认方案", "补充一条真实回复"], [message["body"] for message in shown["messages"]])
+
+        status, employees = api_gateway.route_get("/v1/employees", {})
+        self.assertEqual(200, status)
+        self.assertNotIn("owner", [employee["id"] for employee in employees["employees"]])
+
+        status, matches = api_gateway.route_post("/v1/employees/match", {"include_unavailable": "true"})
+        self.assertEqual(200, status)
+        self.assertNotIn("owner", [match["agent"] for match in matches["matches"]])
+
     def test_followup_request_and_reply_resume_direct_delivery(self) -> None:
         code, created = run_cli("employee", "create", "--id", "main", "--name", "main", "--role", "operator", "--runtime", "openclaw", "--workspace", str(self.root / "workspace" / "main"))
         self.assertEqual(0, code, created)

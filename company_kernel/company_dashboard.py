@@ -71,6 +71,32 @@ def minutes_since(value: str, generated_at: str) -> int | None:
 
 
 def load_summary(conn: sqlite3.Connection) -> dict:
+    conversation_rows = rows(
+        conn,
+        """
+        SELECT c.id, c.title, c.created_by, c.status, c.updated_at,
+               c.participants_json,
+               COUNT(cm.id) AS message_count,
+               COALESCE(MAX(cm.created_at), c.created_at) AS last_message_at
+        FROM conversations c
+        LEFT JOIN conversation_messages cm ON cm.conversation_id = c.id
+        GROUP BY c.id
+        ORDER BY c.updated_at DESC
+        LIMIT 20
+        """,
+    )
+    for conversation in conversation_rows:
+        conversation["messages"] = rows(
+            conn,
+            """
+            SELECT id, source_agent, body, evidence_path, created_at
+            FROM conversation_messages
+            WHERE conversation_id = ?
+            ORDER BY created_at ASC
+            LIMIT 80
+            """,
+            (conversation["id"],),
+        )
     return {
         "generated_at": now(),
         "runtime_health": {
@@ -194,20 +220,7 @@ def load_summary(conn: sqlite3.Connection) -> dict:
             LIMIT 20
             """,
         ),
-        "conversations": rows(
-            conn,
-            """
-            SELECT c.id, c.title, c.created_by, c.status, c.updated_at,
-                   c.participants_json,
-                   COUNT(cm.id) AS message_count,
-                   COALESCE(MAX(cm.created_at), c.created_at) AS last_message_at
-            FROM conversations c
-            LEFT JOIN conversation_messages cm ON cm.conversation_id = c.id
-            GROUP BY c.id
-            ORDER BY c.updated_at DESC
-            LIMIT 20
-            """,
-        ),
+        "conversations": conversation_rows,
         "approvals": rows(conn, "SELECT * FROM approvals ORDER BY updated_at DESC LIMIT 20"),
         "rfcs": rows(conn, "SELECT * FROM rfcs ORDER BY updated_at DESC LIMIT 20"),
         "followups": companyctl.list_followups("all")[:20],
@@ -254,6 +267,8 @@ def employee_view_models(summary: dict) -> list[dict]:
     communication_config = companyctl.load_communication_config()
     communication_profiles = communication_config.get("employees", {})
     for employee in summary["employees"]:
+        if employee.get("id") == "owner" or employee.get("role") == "human-owner" or employee.get("runtime") == "human":
+            continue
         capabilities = companyctl.load_json_or_default(companyctl.employee_paths(employee["id"])["capabilities"], {})
         skills = capabilities.get("skills", [])
         tools = capabilities.get("tools", [])
@@ -686,6 +701,13 @@ def inject_advanced_dashboard(template: str, summary: dict, *, db_path: Path, ap
     payload = json.dumps(advanced_summary(summary), ensure_ascii=False)
     payload_b64 = base64.b64encode(payload.encode("utf-8")).decode("ascii")
     html_text = template.replace("/Users/owner/Documents/anti", str(ROOT))
+
+    def append_before_body(text: str, insertion: str) -> str:
+        idx = text.lower().rfind("</body>")
+        if idx == -1:
+            return text + insertion
+        return text[:idx] + insertion + text[idx:]
+
     html_text = re.sub(
         r"window\.kernelSummary\s*=\s*.*?;\n\s*window\.dbPath\s*=\s*.*?;",
         f"window.kernelSummary = JSON.parse(decodeURIComponent(escape(atob({json.dumps(payload_b64)}))));\n  window.dbPath = {json.dumps(str(db_path), ensure_ascii=False)};\n  window.companyApiBase = {json.dumps(api_base, ensure_ascii=False)};",
@@ -694,7 +716,7 @@ def inject_advanced_dashboard(template: str, summary: dict, *, db_path: Path, ap
         flags=re.DOTALL,
     )
     if "window.companyApiBase" not in html_text:
-        html_text = html_text.replace("</body>", f"<script>window.kernelSummary = JSON.parse(decodeURIComponent(escape(atob({json.dumps(payload_b64)})))); window.dbPath = {json.dumps(str(db_path), ensure_ascii=False)}; window.companyApiBase = {json.dumps(api_base, ensure_ascii=False)};</script></body>")
+        html_text = append_before_body(html_text, f"<script>window.kernelSummary = JSON.parse(decodeURIComponent(escape(atob({json.dumps(payload_b64)})))); window.dbPath = {json.dumps(str(db_path), ensure_ascii=False)}; window.companyApiBase = {json.dumps(api_base, ensure_ascii=False)};</script>")
     if "kernel-summary-debug" not in html_text:
         html_text = html_text.replace("</script>", f'  <!-- kernel-summary-debug {payload} -->\n</script>', 1)
     html_text = html_text.replace(
@@ -709,6 +731,38 @@ def inject_advanced_dashboard(template: str, summary: dict, *, db_path: Path, ap
     if "function isVerifiedEmployee(emp)" not in html_text:
         html_text = html_text.replace("  let isSimulationMode = false;", "  " + verified_employee_script + "let isSimulationMode = false;", 1)
     html_text = html_text.replace(
+        "let summaryData = window.kernelSummary;",
+        "let summaryData = window.kernelSummary;\n  window.summaryData = summaryData;",
+        1,
+    )
+    html_text = html_text.replace(
+        "summaryData = window.kernelSummary;",
+        "summaryData = window.kernelSummary;\n      window.summaryData = summaryData;",
+    )
+    html_text = html_text.replace(
+        "summaryData = JSON.parse(JSON.stringify(MOCK_SUMMARY));",
+        "summaryData = JSON.parse(JSON.stringify(MOCK_SUMMARY));\n        window.summaryData = summaryData;",
+    )
+    html_text = html_text.replace(
+        "let activeThreadId = '';",
+        "let activeThreadId = '';\n  window.activeThreadId = activeThreadId;",
+        1,
+    )
+    html_text = html_text.replace(
+        "activeThreadId = threadId;",
+        "activeThreadId = threadId;\n    window.activeThreadId = activeThreadId;",
+    )
+    html_text = html_text.replace(
+        "  function renderChatMessages() {",
+        "  window.populateChatHub = populateChatHub;\n  window.selectChatThread = selectChatThread;\n\n  function renderChatMessages() {",
+        1,
+    )
+    html_text = html_text.replace(
+        "  // Auto scroll chat to bottom\n    msgContainer.scrollTop = msgContainer.scrollHeight;\n  }",
+        "  // Auto scroll chat to bottom\n    msgContainer.scrollTop = msgContainer.scrollHeight;\n  }\n  window.renderChatMessages = renderChatMessages;",
+        1,
+    )
+    html_text = html_text.replace(
         "summary.employees.filter(emp => emp.status !== 'archived').map(emp => {",
         "summary.employees.filter(isVerifiedEmployee).map(emp => {",
     )
@@ -719,6 +773,10 @@ def inject_advanced_dashboard(template: str, summary: dict, *, db_path: Path, ap
     html_text = html_text.replace(
         "const empIds = new Set(summary.employees.map(e => e.id));",
         "const empIds = new Set(summary.employees.filter(isVerifiedEmployee).map(e => e.id));",
+    )
+    html_text = html_text.replace(
+        "function isVerifiedEmployee(emp) {\n    return (emp.employee_status || emp.status) === 'active';\n  }",
+        "function isVerifiedEmployee(emp) {\n    return (emp.employee_status || emp.status) === 'active' && emp.id !== 'owner' && emp.role !== 'human-owner' && emp.runtime !== 'human';\n  }",
     )
     if 'id="candidate-employees-container"' not in html_text:
         html_text = html_text.replace(
@@ -820,6 +878,7 @@ def inject_advanced_dashboard(template: str, summary: dict, *, db_path: Path, ap
     )
     api_script = f"""
 <script>
+  const HUMAN_OWNER_ID = 'owner';
   function getCompanyApiBase() {{
     return String(window.companyApiBase || {json.dumps(api_base)}).replace(/\\/$/, '');
   }}
@@ -887,6 +946,102 @@ def inject_advanced_dashboard(template: str, summary: dict, *, db_path: Path, ap
   async function companyApiPost(path, payload) {{
     return companyApiRequest(path, payload, 'POST');
   }}
+  function parseMentionedEmployees(text) {{
+    const activeIds = new Set(((window.summaryData || window.kernelSummary || {{}}).employees || []).filter(isVerifiedEmployee).map(emp => emp.id));
+    document.querySelectorAll("button[onclick*='openDirectEmployeeMessage']").forEach(button => {{
+      const match = String(button.getAttribute('onclick') || '').match(/openDirectEmployeeMessage\\('([^']+)'\\)/);
+      if (match) activeIds.add(match[1]);
+    }});
+    const found = [];
+    for (const match of String(text || '').matchAll(/@([a-zA-Z0-9_-]+)/g)) {{
+      const id = match[1];
+      if (activeIds.has(id) && !found.includes(id)) found.push(id);
+    }}
+    return found;
+  }}
+  function getActiveConversationId() {{
+    if (window.activeThreadId) return window.activeThreadId;
+    const active = document.querySelector('.chat-thread-item.active');
+    const onclick = active ? String(active.getAttribute('onclick') || '') : '';
+    const match = onclick.match(/selectChatThread\\('([^']+)'\\)/);
+    return match ? match[1] : '';
+  }}
+  function stripMentions(text) {{
+    return String(text || '').replace(/@([a-zA-Z0-9_-]+)/g, '').trim();
+  }}
+  function upsertConversationFromApi(result) {{
+    const conversation = result.conversation || {{}};
+    const message = result.message;
+    if (!conversation.id) return null;
+    window.summaryData = window.summaryData || {{conversations: [], employees: []}};
+    window.summaryData.conversations = window.summaryData.conversations || [];
+    let existing = window.summaryData.conversations.find(item => item.id === conversation.id);
+    if (!existing) {{
+      const participants = conversation.participants || [];
+      existing = {{
+        id: conversation.id,
+        title: conversation.title || conversation.id,
+        created_by: HUMAN_OWNER_ID,
+        status: conversation.status || 'open',
+        participants_json: JSON.stringify(participants),
+        message_count: 0,
+        messages: []
+      }};
+      window.summaryData.conversations.unshift(existing);
+    }}
+    if (message && !(existing.messages || []).some(item => item.id === message.id)) {{
+      existing.messages = existing.messages || [];
+      existing.messages.push(message);
+      existing.message_count = existing.messages.length;
+      existing.last_message_at = message.created_at || new Date().toISOString();
+    }}
+    return existing;
+  }}
+  async function realSendChatMessage() {{
+    const input = document.getElementById('chat-input-field');
+    const msg = input ? input.value.trim() : '';
+    if (!msg) return;
+    const mentions = parseMentionedEmployees(msg);
+    companyApiLog('SYSTEM', mentions.length ? `Creating group conversation for @${{mentions.join(' @')}}...` : `Sending conversation reply as ${{HUMAN_OWNER_ID}}...`, 'normal');
+    try {{
+      let conversation = null;
+      if (mentions.length > 0) {{
+        const body = stripMentions(msg) || msg;
+        const title = body.slice(0, 48) || `Conversation with ${{mentions.join(', ')}}`;
+        const result = await companyApiPost('/v1/conversations', {{
+          from: HUMAN_OWNER_ID,
+          participants: [HUMAN_OWNER_ID, ...mentions].join(','),
+          title,
+          body
+        }});
+        conversation = upsertConversationFromApi(result);
+      }} else {{
+      const currentThreadId = getActiveConversationId();
+      const current = ((window.summaryData || window.kernelSummary || {{}}).conversations || []).find(item => item.id === currentThreadId) || {{id: currentThreadId, messages: []}};
+        if (!current) {{
+          companyApiLog('ERROR', 'Please select a conversation thread first, or @ one or more active employees.', 'error');
+          return;
+        }}
+        const result = await companyApiPost(`/v1/conversations/${{encodeURIComponent(current.id)}}/reply`, {{
+          from: HUMAN_OWNER_ID,
+          body: msg
+        }});
+        current.messages = current.messages || [];
+        current.messages.push(result.message);
+        current.message_count = current.messages.length;
+        current.last_message_at = result.message.created_at || new Date().toISOString();
+        conversation = current;
+      }}
+      input.value = '';
+      if (conversation) window.activeThreadId = conversation.id;
+      if (typeof window.populateChatHub === 'function') window.populateChatHub();
+      if (typeof window.renderChatMessages === 'function') window.renderChatMessages();
+      companyApiLog('SYSTEM', `Conversation message recorded: ${{conversation ? conversation.id : 'unknown'}}`, 'success');
+    }} catch (err) {{
+      companyApiLog('ERROR', `Conversation send failed: ${{err.message}}`, 'error');
+    }}
+  }}
+  window.sendChatMessage = realSendChatMessage;
   async function realOnboardGeneratedEmployee() {{
     if (!generatedRecruitData) return;
     printTerminalLine({{tag: 'SYSTEM', text: `Calling Company Kernel API to onboard '${{generatedRecruitData.id}}'...`, type: 'normal'}});
@@ -978,7 +1133,7 @@ def inject_advanced_dashboard(template: str, summary: dict, *, db_path: Path, ap
     }}
   }}
   function populateFollowups() {{
-    const summary = summaryData;
+    const summary = window.summaryData || window.kernelSummary || {{followups: []}};
     const tbody = document.getElementById('followups-tbody');
     if (!tbody) return;
     const followups = summary.followups || [];
@@ -994,11 +1149,17 @@ def inject_advanced_dashboard(template: str, summary: dict, *, db_path: Path, ap
       </tr>
     `).join('');
   }}
+  document.addEventListener('DOMContentLoaded', () => {{
+    window.sendChatMessage = realSendChatMessage;
+    if (typeof simulateAgentResponse === 'function') {{
+      window.simulateAgentResponse = function() {{}};
+    }}
+  }});
   document.addEventListener('DOMContentLoaded', () => setTimeout(populateFollowups, 200));
   window.addEventListener('DOMContentLoaded', checkCompanyApi);
 </script>
 """
-    return html_text.replace("</body>", api_script + "\n</body>")
+    return append_before_body(html_text, api_script + "\n")
 
 
 def run(args: argparse.Namespace) -> int:

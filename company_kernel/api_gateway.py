@@ -850,7 +850,12 @@ class ApiHandler(BaseHTTPRequestHandler):
             self.send_json(HTTPStatus.BAD_REQUEST, {"ok": False, "error": str(exc)})
             return
         parsed = urlparse(self.path)
-        status, payload = route_post(parsed.path, body)
+        try:
+            status, payload = route_post(parsed.path, body)
+        except SystemExit as exc:
+            status, payload = HTTPStatus.BAD_REQUEST, {"ok": False, "error": str(exc)}
+        except ValueError as exc:
+            status, payload = HTTPStatus.BAD_REQUEST, {"ok": False, "error": str(exc)}
         self.send_json(status, payload)
 
     def do_PATCH(self) -> None:
@@ -860,7 +865,12 @@ class ApiHandler(BaseHTTPRequestHandler):
             self.send_json(HTTPStatus.BAD_REQUEST, {"ok": False, "error": str(exc)})
             return
         parsed = urlparse(self.path)
-        status, payload = route_patch(parsed.path, body)
+        try:
+            status, payload = route_patch(parsed.path, body)
+        except SystemExit as exc:
+            status, payload = HTTPStatus.BAD_REQUEST, {"ok": False, "error": str(exc)}
+        except ValueError as exc:
+            status, payload = HTTPStatus.BAD_REQUEST, {"ok": False, "error": str(exc)}
         self.send_json(status, payload)
 
     def do_DELETE(self) -> None:
@@ -870,7 +880,12 @@ class ApiHandler(BaseHTTPRequestHandler):
             self.send_json(HTTPStatus.BAD_REQUEST, {"ok": False, "error": str(exc)})
             return
         parsed = urlparse(self.path)
-        status, payload = route_delete(parsed.path, body)
+        try:
+            status, payload = route_delete(parsed.path, body)
+        except SystemExit as exc:
+            status, payload = HTTPStatus.BAD_REQUEST, {"ok": False, "error": str(exc)}
+        except ValueError as exc:
+            status, payload = HTTPStatus.BAD_REQUEST, {"ok": False, "error": str(exc)}
         self.send_json(status, payload)
 
     def log_message(self, format: str, *args: object) -> None:
