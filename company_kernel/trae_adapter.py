@@ -8,6 +8,8 @@ import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 
+from .adapter_result import execution_detail
+
 
 ROOT = Path(__file__).resolve().parents[1]
 DB_PATH = ROOT / "company.sqlite"
@@ -152,11 +154,11 @@ def process(args: argparse.Namespace) -> int:
         return done_code
     code, cmd = run_trae(artifact["prompt"], artifact["output"], workspace, args.mode, args.new_window)
     if code == 0:
-        detail = f"trae chat launched/completed. command={cmd}"
+        detail = execution_detail(cmd, artifact["output"], success=True)
         write_report(artifact["report"], task, executed=True, status="completed", detail=detail, prompt=artifact["prompt"], output=artifact["output"])
         done_code, done_out, done_err = run_companyctl(["task", "done", "--agent", args.agent, "--task-id", task["id"], "--summary", detail, "--evidence", str(artifact["report"])])
     else:
-        detail = f"trae chat failed exit_code={code}. command={cmd}"
+        detail = execution_detail(cmd, artifact["output"], exit_code=code, success=False)
         write_report(artifact["report"], task, executed=True, status="blocked", detail=detail, prompt=artifact["prompt"], output=artifact["output"])
         done_code, done_out, done_err = run_companyctl(["task", "block", "--agent", args.agent, "--task-id", task["id"], "--blocker", detail])
     run_companyctl(["heartbeat", "--agent", args.agent])

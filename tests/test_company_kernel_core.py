@@ -1750,7 +1750,9 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual(code, 0, task)
         self.assertEqual("completed", task["task"]["status"])
         self.assertEqual(result["report"], task["task"]["evidence_path"])
-        self.assertIn("codex exec completed", Path(result["report"]).read_text(encoding="utf-8"))
+        self.assertIn("runtime execution completed", task["task"]["summary"])
+        self.assertIn("codex completed", task["task"]["summary"])
+        self.assertIn("Runtime output summary", Path(result["report"]).read_text(encoding="utf-8"))
 
     def test_codex_adapter_execute_failure_blocks_task_with_report(self) -> None:
         task_id = "task-codex-execute-fail"
@@ -1786,8 +1788,9 @@ class CompanyKernelCoreTest(unittest.TestCase):
         code, task = run_cli("task", "show", "--task-id", task_id)
         self.assertEqual(code, 0, task)
         self.assertEqual("blocked", task["task"]["status"])
-        self.assertIn("codex exec failed exit_code=7", task["task"]["blocker"])
-        self.assertIn("codex exec failed exit_code=7", Path(result["report"]).read_text(encoding="utf-8"))
+        self.assertIn("runtime execution failed exit_code=7", task["task"]["blocker"])
+        self.assertIn("codex failed", task["task"]["blocker"])
+        self.assertIn("Runtime output summary", Path(result["report"]).read_text(encoding="utf-8"))
 
     def test_employee_onboard_writes_config_and_creates_test_task(self) -> None:
         code, onboard = run_cli(

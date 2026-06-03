@@ -263,7 +263,7 @@ bin/company-trace --task-id <task-id>
 ```
 
 `adapter_runs.task_id` 会记录本次 adapter 处理的任务，旧记录会从 `result_json` 自动回填；`retry-adapter-run` 默认用该字段恢复任务，仍缺失时可补 `--task-id`。
-告警侧建议优先读取 `doctor --summary` 和 `adapter-run show --summary`，避免把完整 stdout/result_json 发给模型。
+Codex/Hermes/Claude/Trae 真实执行会把完整 stdout/stderr 写入员工 report 目录，并只把短输出摘要写进任务 summary/blocker。告警侧建议优先读取 `doctor --summary` 和 `adapter-run show --summary`，避免把完整 stdout/result_json 发给模型。
 
 最小自动执行闭环：
 

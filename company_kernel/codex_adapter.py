@@ -9,6 +9,7 @@ import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 
+from .adapter_result import execution_detail
 from .sandboxing import wrap_command
 
 
@@ -196,11 +197,11 @@ def process(args: argparse.Namespace) -> int:
         return done_code
     code, cmd = run_codex(artifact["task_card"], workspace, artifact["last_message"], artifact["events"], args.sandbox, args.model, args.isolation, args.sandbox_profile)
     if code == 0:
-        detail = f"codex exec completed. command={cmd}"
+        detail = execution_detail(cmd, artifact["last_message"], success=True)
         write_report(artifact["report"], task, executed=True, status="completed", detail=detail, task_card=artifact["task_card"], output=artifact["last_message"])
         done_code, done_out, done_err = run_companyctl(["task", "done", "--agent", args.agent, "--task-id", task["id"], "--summary", detail, "--evidence", str(artifact["report"])])
     else:
-        detail = f"codex exec failed exit_code={code}. command={cmd}"
+        detail = execution_detail(cmd, artifact["last_message"], exit_code=code, success=False)
         write_report(artifact["report"], task, executed=True, status="blocked", detail=detail, task_card=artifact["task_card"], output=artifact["last_message"])
         done_code, done_out, done_err = run_companyctl(["task", "block", "--agent", args.agent, "--task-id", task["id"], "--blocker", detail])
     run_companyctl(["heartbeat", "--agent", args.agent])

@@ -11,6 +11,7 @@ Implemented and verified:
 - Runtime adapters for OpenClaw, Hermes, Codex, Claude, Trae, and Antigravity.
 - OpenClaw adapter bridge tests cover dry-run payload/evidence generation and `--execute` approval gating before legacy bus submit.
 - Codex adapter tests cover task-card/evidence generation, mocked `codex exec` success completion, and failed execution blocking with report.
+- CLI-backed adapters compact runtime stdout/stderr into task summaries/blockers while keeping full output as evidence files for low-token monitoring.
 - Custom runtime registration via `companyctl runtime register`, so future tools such as Cursor or Devin can be added without code changes.
 - End-to-end daemon worker smoke for automatic task execution: daemon can enable a worker, claim a task, write evidence, complete it, heartbeat, and record `adapter_runs`.
 - Trace ID telemetry foundation: task metadata, company events, adapter runs, and dashboard now carry the same trace id.
