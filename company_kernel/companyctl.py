@@ -1364,6 +1364,21 @@ def sync_project_plan_for_task(conn: sqlite3.Connection, *, task_id: str, task_s
     return updated
 
 
+def sync_project_plan_owner_for_task(conn: sqlite3.Connection, *, task_id: str, owner: str, actor: str) -> list[dict]:
+    ts = now()
+    plan_items = rows(conn, "SELECT * FROM project_plan_items WHERE task_id = ? ORDER BY created_at ASC", (task_id,))
+    updated = []
+    for item in plan_items:
+        if item["owner_agent"] == owner:
+            continue
+        conn.execute("UPDATE project_plan_items SET owner_agent = ?, updated_at = ? WHERE id = ?", (owner, ts, item["id"]))
+        conn.execute("UPDATE projects SET updated_at = ? WHERE id = ?", (ts, item["project_id"]))
+        updated.append({**item, "owner_agent": owner, "updated_at": ts})
+    if updated:
+        audit(conn, actor, "project.plan_owner_sync", task_id, {"owner": owner, "plan_items": [item["id"] for item in updated]})
+    return updated
+
+
 def guard_task_claim(conn: sqlite3.Connection, task: sqlite3.Row, agent: str) -> dict:
     metadata = task_metadata(conn, task["id"])
     declared = metadata.get("declared_changes", [])
@@ -2809,11 +2824,12 @@ def cmd_task_reassign(args: argparse.Namespace) -> int:
         (target, now(), args.task_id),
     )
     conn.execute("DELETE FROM locks WHERE resource_key = ?", (f"task:{args.task_id}",))
+    synced_plan_items = sync_project_plan_owner_for_task(conn, task_id=args.task_id, owner=target, actor=actor)
     conn.commit()
     updated = dict(conn.execute("SELECT * FROM tasks WHERE id = ?", (args.task_id,)).fetchone())
     task_file = write_task_inbox_file({**updated, "metadata": task_metadata(conn, args.task_id), "communication_policy": policy})
     audit(conn, actor, "task.reassign", args.task_id, {"to": target, "reason": args.reason, "file": task_file})
-    emit({"ok": True, "task": updated, "file": task_file})
+    emit({"ok": True, "task": updated, "file": task_file, "synced_plan_items": synced_plan_items})
     return 0
 
 

@@ -1039,6 +1039,23 @@ class CompanyKernelCoreTest(unittest.TestCase):
 
         code, submitted2 = run_cli("task", "submit", "--from", "ops", "--to", "maker", "--task-id", "task-reassign-001", "--title", "改派任务")
         self.assertEqual(code, 0, submitted2)
+        code, project = run_cli("project", "create", "--project-id", "project-reassign-sync", "--title", "Reassign Sync", "--owner", "ops")
+        self.assertEqual(code, 0, project)
+        code, plan = run_cli(
+            "project",
+            "plan-add",
+            "--project-id",
+            "project-reassign-sync",
+            "--title",
+            "Reassign owner plan",
+            "--owner",
+            "maker",
+            "--task-id",
+            "task-reassign-001",
+            "--plan-id",
+            "plan-reassign-sync",
+        )
+        self.assertEqual(code, 0, plan)
         code, blocked2 = run_cli("task", "block", "--agent", "maker", "--task-id", "task-reassign-001", "--blocker", "needs engineering")
         self.assertEqual(code, 0, blocked2)
 
@@ -1048,7 +1065,13 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual("submitted", reassigned["task"]["status"])
         self.assertEqual("", reassigned["task"]["blocker"])
         self.assertEqual("", reassigned["task"]["claimed_by"])
+        self.assertEqual(["plan-reassign-sync"], [item["id"] for item in reassigned["synced_plan_items"]])
+        self.assertEqual(["codex"], [item["owner_agent"] for item in reassigned["synced_plan_items"]])
         self.assertTrue(Path(reassigned["file"]).exists())
+
+        code, plan_list = run_cli("project", "plan-list", "--project-id", "project-reassign-sync")
+        self.assertEqual(code, 0, plan_list)
+        self.assertEqual(["codex"], [item["owner_agent"] for item in plan_list["plan_items"]])
 
     def test_task_discussion_binds_conversation_to_task(self) -> None:
         code, submitted = run_cli("task", "submit", "--from", "ops", "--to", "maker", "--task-id", "task-discuss-001", "--title", "协作任务")
