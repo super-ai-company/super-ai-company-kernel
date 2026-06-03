@@ -388,6 +388,43 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual(code, 0, pending)
         self.assertEqual([], pending["events"])
 
+    def test_message_direct_uses_openclaw_session_key(self) -> None:
+        code, created = run_cli("employee", "create", "--id", "main", "--name", "main", "--role", "operator", "--runtime", "openclaw", "--workspace", str(self.root / "workspace" / "main"))
+        self.assertEqual(0, code, created)
+        code, created = run_cli("employee", "create", "--id", "nestcar", "--name", "NestCar", "--role", "business-agent", "--runtime", "openclaw", "--workspace", str(self.root / "workspace" / "nestcar"))
+        self.assertEqual(0, code, created)
+        calls = []
+
+        def fake_run(cmd, cwd=None, text=None, capture_output=None, timeout=None):
+            calls.append(cmd)
+
+            class Result:
+                returncode = 0
+                stdout = json.dumps({"result": {"payloads": [{"text": "NESTCAR_DIRECT_OK"}]}})
+                stderr = ""
+
+            return Result()
+
+        with mock.patch.object(companyctl.subprocess, "run", side_effect=fake_run):
+            code, sent = run_cli(
+                "message",
+                "direct",
+                "--from",
+                "main",
+                "--to",
+                "nestcar",
+                "--body",
+                "只回复 NESTCAR_DIRECT_OK",
+                "--message-id",
+                "msg-direct-nestcar",
+            )
+        self.assertEqual(0, code, sent)
+        self.assertEqual("NESTCAR_DIRECT_OK", sent["reply"])
+        self.assertEqual("agent:nestcar:main", sent["session_key"])
+        self.assertIn("--session-key", calls[0])
+        self.assertIn("agent:nestcar:main", calls[0])
+        self.assertEqual("nestcar", sent["message"]["target_agent"])
+
     def test_dashboard_renders_conversations_and_pending_events(self) -> None:
         code, started = run_cli(
             "conversation",
