@@ -448,6 +448,49 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertIn("/v1/employees/onboard", html)
         self.assertIn("offboardEmployee", html)
 
+    def test_dashboard_advanced_template_uses_live_summary_and_real_employee_api(self) -> None:
+        template = self.root / "gemini-dashboard-template.html"
+        template.write_text(
+            """
+<html><body>
+<div>API Gateway: <span id="db-path-label">https://gateway.company.internal</span></div>
+<select><option value="openclaw">OpenClaw Engine</option><option value="hermes">Hermes CLI Engine</option></select>
+<script>
+  window.kernelSummary = {"counts":{"employees":1},"employees":[{"id":"old"}]};
+  window.dbPath = "/Users/owner/Documents/anti/company.sqlite";
+  function confirmAgentOnboarding() {
+    summaryData.employees.push(generatedRecruitData);
+    summaryData.counts.employees = summaryData.employees.length;
+  }
+  function executeEmployeeOffboard() {
+    if (isSimulationMode) {
+      if (mode === 'hard') {}
+    }
+  }
+  document.getElementById('db-path-label').innerText = isSimulationMode ? 'simulation://gateway.company.internal' : 'https://gateway.company.internal';
+</script>
+</body></html>
+            """,
+            encoding="utf-8",
+        )
+        code, hermes = run_cli("employee", "create", "--id", "hermes", "--name", "Hermes", "--role", "supervisor", "--runtime", "hermes", "--workspace", str(self.root / "hermes"))
+        self.assertEqual(code, 0, hermes)
+        code, heartbeat = run_cli("heartbeat", "--agent", "hermes")
+        self.assertEqual(code, 0, heartbeat)
+
+        output = self.root / "state" / "dashboard-advanced.html"
+        with contextlib.redirect_stdout(io.StringIO()):
+            code = company_dashboard.main(["--variant", "advanced", "--template", str(template), "--output", str(output), "--api-base", "http://127.0.0.1:8765"])
+        self.assertEqual(0, code)
+        html = output.read_text(encoding="utf-8")
+        self.assertIn(str(self.root / "company.sqlite"), html)
+        self.assertNotIn("/Users/owner/Documents/anti/company.sqlite", html)
+        self.assertIn('"employees": 7', html)
+        self.assertIn('"id": "hermes"', html)
+        self.assertIn("window.companyApiBase", html)
+        self.assertIn("realOnboardGeneratedEmployee", html)
+        self.assertIn("realOffboardEmployee", html)
+
     def test_dashboard_renders_task_evidence_blocker_and_approval_counts(self) -> None:
         code, submitted = run_cli("task", "submit", "--from", "ops", "--to", "maker", "--task-id", "task-dashboard-blocked", "--title", "blocked task")
         self.assertEqual(code, 0, submitted)

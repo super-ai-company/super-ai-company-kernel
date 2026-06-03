@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import html
 import json
+import re
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
@@ -15,6 +16,11 @@ ROOT = Path(__file__).resolve().parents[1]
 DB_PATH = ROOT / "company.sqlite"
 SCHEMA = ROOT / "company_kernel" / "schema.sql"
 DEFAULT_OUTPUT = ROOT / "state" / "dashboard.html"
+ADVANCED_TEMPLATE_CANDIDATES = [
+    ROOT / "dashboard_templates" / "gemini_dashboard.html",
+    Path("/Users/owner/Documents/anti/state/dashboard.html"),
+]
+REAL_PROJECT_ROOT = Path("/Users/owner/openclaw/company-kernel")
 
 
 def now() -> str:
@@ -239,6 +245,45 @@ def render_employee_table(items: list[dict]) -> str:
     return f"<table><thead><tr>{head}</tr></thead><tbody>{''.join(body)}</tbody></table>"
 
 
+def employee_view_models(summary: dict) -> list[dict]:
+    employees = []
+    for employee in summary["employees"]:
+        capabilities = companyctl.load_json_or_default(companyctl.employee_paths(employee["id"])["capabilities"], {})
+        skills = capabilities.get("skills", [])
+        tools = capabilities.get("tools", [])
+        task_types = capabilities.get("preferred_task_types", [])
+        age = minutes_since(employee.get("last_seen_at", ""), summary["generated_at"])
+        employee_status = employee.get("employee_status") or employee.get("status", "")
+        heartbeat_status = employee.get("heartbeat_status", "missing")
+        if employee_status != "active":
+            kernel_state = employee_status
+            schedulable = "no"
+        elif heartbeat_status == "missing":
+            kernel_state = "missing_heartbeat"
+            schedulable = "no"
+        elif age is not None and age > 15:
+            kernel_state = "stale_heartbeat"
+            schedulable = "no"
+        else:
+            kernel_state = "online"
+            schedulable = "yes"
+        employees.append(
+            {
+                **employee,
+                "status": employee_status,
+                "employee_status": employee_status,
+                "kernel_state": kernel_state,
+                "schedulable": schedulable,
+                "heartbeat_age_minutes": "" if age is None else age,
+                "backlog": f"{employee.get('submitted_tasks', 0)} submitted, {employee.get('claimed_tasks', 0)} claimed",
+                "skills": ", ".join(str(item) for item in skills[:4]) if isinstance(skills, list) else "invalid",
+                "tools": ", ".join(str(item) for item in tools[:4]) if isinstance(tools, list) else "invalid",
+                "task_types": ", ".join(str(item) for item in task_types[:4]) if isinstance(task_types, list) else "invalid",
+            }
+        )
+    return employees
+
+
 def approval_task_id(approval: dict) -> str:
     raw = approval.get("reason", "")
     try:
@@ -367,39 +412,7 @@ def render(summary: dict) -> str:
                 "path": issue.get("evidence_path", ""),
             }
         )
-    employees = []
-    for employee in summary["employees"]:
-        capabilities = companyctl.load_json_or_default(companyctl.employee_paths(employee["id"])["capabilities"], {})
-        skills = capabilities.get("skills", [])
-        tools = capabilities.get("tools", [])
-        task_types = capabilities.get("preferred_task_types", [])
-        age = minutes_since(employee.get("last_seen_at", ""), summary["generated_at"])
-        employee_status = employee.get("employee_status", "")
-        heartbeat_status = employee.get("heartbeat_status", "missing")
-        if employee_status != "active":
-            kernel_state = employee_status
-            schedulable = "no"
-        elif heartbeat_status == "missing":
-            kernel_state = "missing_heartbeat"
-            schedulable = "no"
-        elif age is not None and age > 15:
-            kernel_state = "stale_heartbeat"
-            schedulable = "no"
-        else:
-            kernel_state = "online"
-            schedulable = "yes"
-        employees.append(
-            {
-                **employee,
-                "kernel_state": kernel_state,
-                "schedulable": schedulable,
-                "heartbeat_age_minutes": "" if age is None else age,
-                "backlog": f"{employee.get('submitted_tasks', 0)} submitted, {employee.get('claimed_tasks', 0)} claimed",
-                "skills": ", ".join(str(item) for item in skills[:4]) if isinstance(skills, list) else "invalid",
-                "tools": ", ".join(str(item) for item in tools[:4]) if isinstance(tools, list) else "invalid",
-                "task_types": ", ".join(str(item) for item in task_types[:4]) if isinstance(task_types, list) else "invalid",
-            }
-        )
+    employees = employee_view_models(summary)
     return f"""<!doctype html>
 <html lang="zh">
 <head>
@@ -576,6 +589,101 @@ def render(summary: dict) -> str:
 """
 
 
+def advanced_summary(summary: dict) -> dict:
+    prepared = dict(summary)
+    prepared["employees"] = employee_view_models(summary)
+    return prepared
+
+
+def load_advanced_template(path: str = "", *, include_external: bool = False) -> tuple[Path | None, str]:
+    if path:
+        candidates = [Path(path)]
+    else:
+        candidates = [ROOT / "dashboard_templates" / "gemini_dashboard.html"]
+        if include_external or ROOT == REAL_PROJECT_ROOT:
+            candidates.append(Path("/Users/owner/Documents/anti/state/dashboard.html"))
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate, candidate.read_text(encoding="utf-8")
+    return None, ""
+
+
+def inject_advanced_dashboard(template: str, summary: dict, *, db_path: Path, api_base: str) -> str:
+    payload = json.dumps(advanced_summary(summary), ensure_ascii=False)
+    html_text = template.replace("/Users/owner/Documents/anti", str(ROOT))
+    html_text = re.sub(
+        r"window\.kernelSummary\s*=\s*.*?;\n\s*window\.dbPath\s*=\s*.*?;",
+        f"window.kernelSummary = {payload};\n  window.dbPath = {json.dumps(str(db_path), ensure_ascii=False)};\n  window.companyApiBase = {json.dumps(api_base, ensure_ascii=False)};",
+        html_text,
+        count=1,
+        flags=re.DOTALL,
+    )
+    if "window.companyApiBase" not in html_text:
+        html_text = html_text.replace("</body>", f"<script>window.kernelSummary = {payload}; window.dbPath = {json.dumps(str(db_path), ensure_ascii=False)}; window.companyApiBase = {json.dumps(api_base, ensure_ascii=False)};</script></body>")
+    html_text = html_text.replace(
+        "document.getElementById('db-path-label').innerText = isSimulationMode ? 'simulation://gateway.company.internal' : 'https://gateway.company.internal';",
+        "document.getElementById('db-path-label').innerText = isSimulationMode ? 'simulation://gateway.company.internal' : (window.companyApiBase || 'http://127.0.0.1:8765');",
+    )
+    html_text = html_text.replace(
+        "summaryData.employees.push(generatedRecruitData);\n    summaryData.counts.employees = summaryData.employees.length;",
+        "return realOnboardGeneratedEmployee();",
+    )
+    html_text = html_text.replace(
+        "if (isSimulationMode) {\n      if (mode === 'hard') {",
+        "if (!isSimulationMode) {\n      return realOffboardEmployee(employeeToFire, mode === 'hard');\n    }\n\n    if (isSimulationMode) {\n      if (mode === 'hard') {",
+    )
+    api_script = f"""
+<script>
+  async function companyApiPost(path, payload) {{
+    const base = (window.companyApiBase || {json.dumps(api_base)}).replace(/\\/$/, '');
+    const res = await fetch(base + path, {{
+      method: 'POST',
+      headers: {{'Content-Type': 'application/json'}},
+      body: JSON.stringify(payload || {{}})
+    }});
+    const data = await res.json();
+    if (!res.ok || data.ok === false) {{
+      throw new Error(data.error || data.message || JSON.stringify(data));
+    }}
+    return data;
+  }}
+  async function realOnboardGeneratedEmployee() {{
+    if (!generatedRecruitData) return;
+    printTerminalLine({{tag: 'SYSTEM', text: `Calling Company Kernel API to onboard '${{generatedRecruitData.id}}'...`, type: 'normal'}});
+    try {{
+      await companyApiPost('/v1/employees/onboard', {{
+        id: generatedRecruitData.id,
+        name: generatedRecruitData.name,
+        role: generatedRecruitData.role,
+        runtime: generatedRecruitData.runtime,
+        workspace: generatedRecruitData.workspace,
+        skills: generatedRecruitData.skills,
+        tools: generatedRecruitData.tools,
+        task_types: generatedRecruitData.task_types,
+        open_communication: true,
+        create_test_task: false
+      }});
+      printTerminalLine({{tag: 'SYSTEM', text: `Onboarded '${{generatedRecruitData.id}}'. Reloading live dashboard...`, type: 'success'}});
+      setTimeout(() => location.reload(), 800);
+    }} catch (err) {{
+      printTerminalLine({{tag: 'ERROR', text: `Onboard failed: ${{err.message}}`, type: 'error'}});
+    }}
+  }}
+  async function realOffboardEmployee(id, hardDelete) {{
+    printTerminalLine({{tag: 'SYSTEM', text: `Calling Company Kernel API to offboard '${{id}}'...`, type: 'normal'}});
+    try {{
+      await companyApiPost(`/v1/employees/${{encodeURIComponent(id)}}/offboard`, {{hard_delete: !!hardDelete}});
+      printTerminalLine({{tag: 'SYSTEM', text: `Offboarded '${{id}}'. Reloading live dashboard...`, type: 'success'}});
+      setTimeout(() => location.reload(), 800);
+    }} catch (err) {{
+      printTerminalLine({{tag: 'ERROR', text: `Offboard failed: ${{err.message}}`, type: 'error'}});
+    }}
+  }}
+</script>
+"""
+    return html_text.replace("</body>", api_script + "\n</body>")
+
+
 def run(args: argparse.Namespace) -> int:
     conn = connect()
     try:
@@ -584,14 +692,30 @@ def run(args: argparse.Namespace) -> int:
         conn.close()
     output = Path(args.output)
     output.parent.mkdir(parents=True, exist_ok=True)
-    output.write_text(render(summary), encoding="utf-8")
-    print(json.dumps({"ok": True, "output": str(output), "counts": summary["counts"]}, ensure_ascii=False, indent=2))
+    template_path = None
+    variant = args.variant
+    if variant in {"advanced", "auto"}:
+        template_path, template = load_advanced_template(args.template, include_external=variant == "advanced")
+        if template:
+            output.write_text(inject_advanced_dashboard(template, summary, db_path=DB_PATH, api_base=args.api_base), encoding="utf-8")
+            variant = "advanced"
+        elif variant == "advanced":
+            raise SystemExit("advanced dashboard template not found")
+        else:
+            output.write_text(render(summary), encoding="utf-8")
+            variant = "basic"
+    else:
+        output.write_text(render(summary), encoding="utf-8")
+    print(json.dumps({"ok": True, "output": str(output), "variant": variant, "template": str(template_path or ""), "counts": summary["counts"]}, ensure_ascii=False, indent=2))
     return 0
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Generate Company Kernel static dashboard")
     parser.add_argument("--output", default=str(DEFAULT_OUTPUT))
+    parser.add_argument("--variant", choices=["auto", "basic", "advanced"], default="auto")
+    parser.add_argument("--template", default="")
+    parser.add_argument("--api-base", default="http://127.0.0.1:8765")
     return parser
 
 

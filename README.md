@@ -434,7 +434,16 @@ bin/company-dashboard
 open /Users/owner/openclaw/company-kernel/state/dashboard.html
 ```
 
-操作台包含员工、心跳、项目目标/验收/复盘、任务、审批、事件和锁状态。
+默认会优先生成 Gemini 版高级操作台；找不到高级模板时回退到轻量静态表格。操作台包含员工、心跳、项目目标/验收/复盘、任务、审批、事件和锁状态。
+
+员工管理按钮通过 REST API 写入 Company Kernel：
+
+```bash
+bin/company-api-gateway --quiet
+bin/company-dashboard --variant advanced
+```
+
+高级操作台的招募/归档入口会调用 `/v1/employees/onboard` 和 `/v1/employees/<id>/offboard`，支持 OpenClaw、Hermes、Codex、Claude、Trae、Antigravity 和 local runtime。
 
 ## Projects
 
