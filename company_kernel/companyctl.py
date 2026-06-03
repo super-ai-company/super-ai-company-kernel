@@ -191,9 +191,70 @@ def write_communication_config(config: dict) -> None:
     COMMUNICATIONS_PATH.write_text(json.dumps(config, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
 
-def resolve_employee_alias(employee_id: str) -> str:
+def normalize_employee_lookup(value: str) -> str:
+    return " ".join(str(value or "").strip().split()).casefold()
+
+
+def communication_name_aliases(employee_id: str, name: str) -> list[str]:
+    aliases = []
+    clean_name = " ".join(str(name or "").strip().split())
+    if clean_name and clean_name != employee_id:
+        aliases.append(clean_name)
+        compact = clean_name.replace(" ", "-").lower()
+        if compact and compact not in {employee_id, clean_name}:
+            aliases.append(compact)
+    return aliases
+
+
+def resolve_employee_alias(employee_id: str, *, strict: bool = False) -> str:
+    raw = str(employee_id or "").strip()
+    if not raw:
+        return raw
     config = load_communication_config()
-    return str(config.get("aliases", {}).get(employee_id, employee_id))
+    aliases = {str(key): str(value) for key, value in config.get("aliases", {}).items()}
+    if raw in aliases:
+        return aliases[raw]
+    db = DB_PATH
+    if db.exists():
+        conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+        conn.row_factory = sqlite3.Row
+        try:
+            rows_found = conn.execute("SELECT id, name FROM employees").fetchall()
+            ids = {str(row["id"]): str(row["id"]) for row in rows_found}
+            if raw in ids:
+                return raw
+            names = {normalize_employee_lookup(row["name"]): str(row["id"]) for row in rows_found if str(row["name"] or "").strip()}
+            lowered_ids = {normalize_employee_lookup(row["id"]): str(row["id"]) for row in rows_found}
+        finally:
+            conn.close()
+        normalized_aliases = {normalize_employee_lookup(key): value for key, value in aliases.items()}
+        normalized = normalize_employee_lookup(raw)
+        matches = []
+        for lookup in (normalized_aliases, names, lowered_ids):
+            if normalized in lookup:
+                matches.append(lookup[normalized])
+        matches = list(dict.fromkeys(matches))
+        if len(matches) == 1:
+            return matches[0]
+        if len(matches) > 1:
+            raise SystemExit(f"ambiguous employee name or alias: {raw} -> {', '.join(matches)}")
+    if strict:
+        raise SystemExit(f"unknown employee name or alias: {raw}")
+    return raw
+
+
+def sync_employee_name_alias(employee_id: str, name: str, *, dry_run: bool = False) -> dict:
+    config = load_communication_config()
+    config.setdefault("version", 1)
+    aliases = config.setdefault("aliases", {})
+    employees = config.setdefault("employees", {})
+    profile = employees.setdefault(employee_id, {})
+    profile["display_name"] = name
+    for alias in communication_name_aliases(employee_id, name):
+        aliases[alias] = employee_id
+    if not dry_run:
+        write_communication_config(config)
+    return {"aliases": {alias: employee_id for alias in communication_name_aliases(employee_id, name)}, "profile": profile}
 
 
 def communication_list(config: dict, employee_id: str, key: str) -> list[str]:
@@ -826,9 +887,10 @@ def cmd_employee_create(args: argparse.Namespace) -> int:
         """,
         (args.id, args.name, args.role, args.runtime, args.workspace, ts, ts),
     )
+    communication = sync_employee_name_alias(args.id, args.name, dry_run=False)
     conn.commit()
-    audit(conn, "companyctl", "employee.create", args.id, profile)
-    emit({"ok": True, "employee": profile, "files": files})
+    audit(conn, "companyctl", "employee.create", args.id, {**profile, "communication": communication})
+    emit({"ok": True, "employee": profile, "files": files, "communication": communication})
     return 0
 
 
@@ -849,7 +911,7 @@ def cmd_employee_list(_args: argparse.Namespace) -> int:
 
 def cmd_employee_update(args: argparse.Namespace) -> int:
     conn = connect()
-    employee_id = resolve_employee_alias(args.id)
+    employee_id = resolve_employee_alias(args.id, strict=True)
     row = conn.execute("SELECT * FROM employees WHERE id = ?", (employee_id,)).fetchone()
     if not row:
         conn.close()
@@ -913,10 +975,11 @@ def cmd_employee_update(args: argparse.Namespace) -> int:
     elif "default_user_reply_deliver" in current_profile:
         profile["default_user_reply_deliver"] = bool(current_profile["default_user_reply_deliver"])
     files = write_employee_files(employee_id, profile, dry_run=False)
+    communication = sync_employee_name_alias(employee_id, updated["name"], dry_run=False)
     conn.commit()
-    audit(conn, "companyctl", "employee.update", employee_id, {"before": current, "after": updated, "files": files})
+    audit(conn, "companyctl", "employee.update", employee_id, {"before": current, "after": updated, "files": files, "communication": communication})
     conn.close()
-    emit({"ok": True, "changed": updated != current, "employee": updated, "files": files})
+    emit({"ok": True, "changed": updated != current, "employee": updated, "files": files, "communication": communication})
     return 0
 
 
@@ -952,7 +1015,8 @@ def employee_file_bundle(conn: sqlite3.Connection, employee_id: str) -> dict:
 
 def cmd_employee_show(args: argparse.Namespace) -> int:
     conn = connect()
-    emit({"ok": True, **employee_file_bundle(conn, args.id)})
+    employee_id = args.id or args.employee
+    emit({"ok": True, **employee_file_bundle(conn, employee_id)})
     return 0
 
 
@@ -1137,9 +1201,10 @@ def upsert_employee(conn: sqlite3.Connection, employee_id: str, name: str, role:
         """,
         (employee_id, name, role, runtime, workspace, ts, ts),
     )
+    communication = sync_employee_name_alias(employee_id, name, dry_run=False)
     conn.commit()
-    audit(conn, "companyctl", "employee.upsert", employee_id, profile)
-    return {"employee": profile, "files": files}
+    audit(conn, "companyctl", "employee.upsert", employee_id, {**profile, "communication": communication})
+    return {"employee": profile, "files": files, "communication": communication}
 
 
 def cmd_employee_import_openclaw(args: argparse.Namespace) -> int:
@@ -1184,6 +1249,8 @@ def update_employee_communication_profile(
     aliases = config.setdefault("aliases", {})
     if alias:
         aliases[alias] = employee_id
+    for name_alias in communication_name_aliases(employee_id, name):
+        aliases[name_alias] = employee_id
     employees = config.setdefault("employees", {})
     profile = employees.setdefault(employee_id, {})
     profile.update(
@@ -4564,7 +4631,8 @@ def build_parser() -> argparse.ArgumentParser:
     emp_list = emp_sub.add_parser("list")
     emp_list.set_defaults(func=cmd_employee_list)
     emp_show = emp_sub.add_parser("show")
-    emp_show.add_argument("--id", required=True)
+    emp_show.add_argument("employee", nargs="?")
+    emp_show.add_argument("--id", default="")
     emp_show.set_defaults(func=cmd_employee_show)
     emp_update = emp_sub.add_parser("update")
     emp_update.add_argument("--id", required=True)

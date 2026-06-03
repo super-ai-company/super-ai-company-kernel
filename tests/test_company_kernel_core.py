@@ -483,6 +483,51 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertNotIn("agent:hermes:main", calls[0])
         self.assertEqual("hermes", sent["message"]["target_agent"])
 
+    def test_employee_name_is_high_priority_routing_identity(self) -> None:
+        code, created = run_cli("employee", "create", "--id", "main", "--name", "main", "--role", "operator", "--runtime", "openclaw", "--workspace", str(self.root / "workspace" / "main"))
+        self.assertEqual(0, code, created)
+        code, created = run_cli("employee", "create", "--id", "hermes", "--name", "Hermes", "--role", "supervisor", "--runtime", "hermes", "--workspace", str(self.root / "workspace" / "hermes"))
+        self.assertEqual(0, code, created)
+        code, renamed = run_cli("employee", "update", "--id", "Hermes", "--name", "Hermes Supervisor")
+        self.assertEqual(0, code, renamed)
+        self.assertEqual("hermes", renamed["employee"]["id"])
+        self.assertEqual({"Hermes Supervisor": "hermes", "hermes-supervisor": "hermes"}, renamed["communication"]["aliases"])
+
+        code, shown = run_cli("employee", "show", "Hermes Supervisor")
+        self.assertEqual(0, code, shown)
+        self.assertEqual("hermes", shown["employee"]["id"])
+
+        calls = []
+
+        def fake_run(cmd, cwd=None, text=None, capture_output=None, timeout=None):
+            calls.append(cmd)
+
+            class Result:
+                returncode = 0
+                stdout = json.dumps({"result": {"payloads": [{"text": "RENAMED_HERMES_OK"}]}})
+                stderr = ""
+
+            return Result()
+
+        with mock.patch.object(companyctl.subprocess, "run", side_effect=fake_run):
+            code, sent = run_cli(
+                "message",
+                "direct",
+                "--from",
+                "main",
+                "--to",
+                "Hermes Supervisor",
+                "--body",
+                "只回复 RENAMED_HERMES_OK",
+                "--message-id",
+                "msg-direct-renamed-hermes",
+            )
+        self.assertEqual(0, code, sent)
+        self.assertEqual("hermes", sent["target"])
+        self.assertEqual("hermes", sent["message"]["target_agent"])
+        self.assertEqual("default", sent["agent_runtime_id"])
+        self.assertIn("agent:default:main", calls[0])
+
     def test_message_direct_uses_default_telegram_reply_bridge(self) -> None:
         code, created = run_cli("employee", "create", "--id", "main", "--name", "main", "--role", "operator", "--runtime", "openclaw", "--workspace", str(self.root / "workspace" / "main"))
         self.assertEqual(0, code, created)
@@ -3566,6 +3611,9 @@ class CompanyKernelCoreTest(unittest.TestCase):
         hermes = next(item for item in report["employees"] if item["agent_id"] == "hermes")
         owner = next(item for item in report["employees"] if item["agent_id"] == "owner")
         self.assertTrue(report["coordination"]["closed_loop_required"])
+        self.assertTrue(report["employee_directory"]["rename_supported"])
+        self.assertIn("rename_command", report["employee_directory"]["all"][0])
+        self.assertEqual(["id", "alias", "name", "display_name"], hermes["identity"]["lookup_priority"])
         self.assertEqual("default", hermes["runtime"]["runtime_agent_id"])
         self.assertEqual("agent:default:<source>", hermes["communication"]["session_key"])
         self.assertTrue(hermes["communication"]["ack_required"])

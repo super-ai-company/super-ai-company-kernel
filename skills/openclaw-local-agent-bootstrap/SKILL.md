@@ -18,6 +18,16 @@ When triggered, do this without waiting for the user to name every employee:
 5. If the user asked to configure automatically, run the scanner with `--apply` so new discoveries become `candidate`, not `active`.
 6. Generate direct smoke commands for each candidate.
 7. Promote only after direct smoke and owner/routing evidence pass.
+8. After configuration, always output the full employee directory and each rename command.
+
+## Identity and Naming
+
+- Employee id, alias, name, and display_name are all high-priority routing identities.
+- Routing lookup priority is: exact id, exact alias, exact name/display_name, then case-insensitive id/name/alias.
+- If a user sends to `Codex`, `codex`, or a configured display name, it must resolve to the same canonical employee id.
+- If a name/alias is ambiguous, block and ask the user to choose a concrete employee id.
+- Users can rename employees with `bin/companyctl employee update --id <id-or-name> --name <new-name>`.
+- After every install/apply/repair, print `employee_directory.all` so the user can see all employees, names, statuses, runtimes, and rename commands.
 
 ## Fast Path
 
@@ -108,7 +118,14 @@ Return this compact structure per employee:
 ```json
 {
   "agent_id": "nestcar",
+  "name": "car-rental",
   "status": "active|candidate|blocked",
+  "identity": {
+    "id": "nestcar",
+    "name": "car-rental",
+    "lookup_priority": ["id", "alias", "name", "display_name"],
+    "rename_command": "bin/companyctl employee update --id nestcar --name <new-name>"
+  },
   "runtime": {"type": "openclaw", "workspace": "/path"},
   "communication": {
     "default_reply_channel": "telegram|line|dashboard|current-conversation",

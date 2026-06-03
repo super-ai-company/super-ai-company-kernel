@@ -233,7 +233,14 @@ def classify_employee(employee: dict, kernel_root: Path) -> dict:
     pending_inbox_messages = len(list(inbox.glob("*.message.json"))) if inbox.exists() else 0
     return {
         "agent_id": employee["id"],
+        "name": employee.get("name", employee["id"]),
         "status": status,
+        "identity": {
+            "id": employee["id"],
+            "name": employee.get("name", employee["id"]),
+            "lookup_priority": ["id", "alias", "name", "display_name"],
+            "rename_command": f"bin/companyctl employee update --id {employee['id']} --name <new-name>",
+        },
         "runtime": {"type": employee.get("runtime", ""), "workspace": employee.get("workspace", ""), "runtime_agent_id": runtime_agent_id},
         "communication": {
             "default_reply_channel": "current-conversation",
@@ -272,6 +279,12 @@ def main() -> int:
         "company_kernel_root": str(kernel_root) if kernel_root else "",
         "control_files": [],
         "employees": [],
+        "employee_directory": {
+            "all": [],
+            "rename_supported": True,
+            "lookup_priority": ["id", "alias", "name", "display_name"],
+            "rename_command": "bin/companyctl employee update --id <id-or-name> --name <new-name>",
+        },
         "discovered_candidates": [],
         "apply_results": [],
         "blocked": [],
@@ -294,7 +307,20 @@ def main() -> int:
                 report["control_files"].append(str(path))
     if kernel_root:
         existing_ids = set()
-        employees = [classify_employee(emp, kernel_root) for emp in read_employees(kernel_root)]
+        raw_employees = read_employees(kernel_root)
+        report["employee_directory"]["all"] = [
+            {
+                "id": employee.get("id", ""),
+                "name": employee.get("name", ""),
+                "status": employee.get("status", ""),
+                "role": employee.get("role", ""),
+                "runtime": employee.get("runtime", ""),
+                "workspace": employee.get("workspace", ""),
+                "rename_command": f"bin/companyctl employee update --id {employee.get('id', '')} --name <new-name>",
+            }
+            for employee in raw_employees
+        ]
+        employees = [classify_employee(emp, kernel_root) for emp in raw_employees]
         existing_ids = {employee["agent_id"] for employee in employees}
         discovered = [*discover_openclaw_workspace_candidates(openclaw_root), *discover_runtime_candidates()]
         deduped = []
@@ -318,7 +344,20 @@ def main() -> int:
             deduped.append(candidate)
         if args.apply:
             report["apply_results"] = [apply_candidate(kernel_root, candidate) for candidate in deduped]
-            employees = [classify_employee(emp, kernel_root) for emp in read_employees(kernel_root)]
+            raw_employees = read_employees(kernel_root)
+            report["employee_directory"]["all"] = [
+                {
+                    "id": employee.get("id", ""),
+                    "name": employee.get("name", ""),
+                    "status": employee.get("status", ""),
+                    "role": employee.get("role", ""),
+                    "runtime": employee.get("runtime", ""),
+                    "workspace": employee.get("workspace", ""),
+                    "rename_command": f"bin/companyctl employee update --id {employee.get('id', '')} --name <new-name>",
+                }
+                for employee in raw_employees
+            ]
+            employees = [classify_employee(emp, kernel_root) for emp in raw_employees]
         report["employees"] = employees
         report["discovered_candidates"] = deduped
         report["blocked"] = [emp for emp in employees if emp["status"] == "blocked"]
