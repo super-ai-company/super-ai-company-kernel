@@ -1377,6 +1377,50 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertIn("engineering", shown_updated["capabilities"]["skills"])
         self.assertFalse(shown_updated["permissions"]["can_submit_tasks"])
 
+        status, matched = api_gateway.route_post(
+            "/v1/employees/match",
+            {"skills": "engineering", "tools": "cursor", "task_type": "code", "runtime": "cursor", "limit": "3"},
+        )
+        self.assertEqual(200, status, matched)
+        self.assertEqual("cursor-dev", matched["matches"][0]["agent"])
+
+        status, routed = api_gateway.route_post(
+            "/v1/tasks/route",
+            {
+                "from": "openclaw-main",
+                "task_id": "task-api-route-cursor",
+                "title": "Route API engineering task",
+                "description": "select by capability through REST",
+                "skills": "engineering",
+                "tools": "cursor",
+                "task_type": "code",
+                "runtime": "cursor",
+            },
+        )
+        self.assertEqual(201, status, routed)
+        self.assertEqual("cursor-dev", routed["selected"]["agent"])
+        self.assertEqual("cursor-dev", routed["task"]["target_agent"])
+        self.assertEqual("task-api-route-cursor", routed["task"]["id"])
+        self.assertEqual("cursor-dev", routed["task"]["metadata"]["route"]["matches"][0]["agent"])
+
+        status, approval_route = api_gateway.route_post(
+            "/v1/tasks/route",
+            {
+                "from": "openclaw-main",
+                "task_id": "task-api-route-payment",
+                "title": "Route payment task",
+                "description": "payment requires approval before assignment",
+                "skills": "engineering",
+                "runtime": "cursor",
+                "requires_approval": "payment",
+            },
+        )
+        self.assertEqual(202, status, approval_route)
+        self.assertFalse(approval_route["ok"])
+        self.assertEqual("approval required", approval_route["error"])
+        self.assertEqual("payment", approval_route["approval_action"])
+        self.assertEqual("pending", approval_route["approval"]["status"])
+
         managed_workspace = self.root / "employees" / "api-reviewer"
         status, onboarded = api_gateway.route_post(
             "/v1/employees/onboard",

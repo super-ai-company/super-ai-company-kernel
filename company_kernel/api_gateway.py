@@ -36,10 +36,12 @@ API_ENDPOINTS = [
     {"method": "POST", "path": "/v1/employees/{employee_id}/offboard", "summary": "Offboard employee with dry-run, soft archive, or guarded hard delete", "body": {"hard_delete": "bool optional", "dry_run": "bool optional"}},
     {"method": "POST", "path": "/v1/employees/{employee_id}/capabilities", "summary": "Update employee capabilities", "body": {"set_skills": "comma-separated skills optional", "add_skill": "string/list optional", "set_tools": "comma-separated tools optional", "add_tool": "string/list optional", "set_task_types": "comma-separated task types optional"}},
     {"method": "POST", "path": "/v1/employees/{employee_id}/permissions", "summary": "Update employee permissions", "body": {"can_submit_tasks": "true/false/keep optional", "can_claim_tasks": "true/false/keep optional", "can_modify_kernel": "true/false/keep optional", "requires_approval_for": "comma-separated actions optional"}},
+    {"method": "POST", "path": "/v1/employees/match", "summary": "Rank employees by capabilities for routing", "body": {"skills": "comma-separated skills optional", "tools": "comma-separated tools optional", "task_type": "string optional", "runtime": "runtime optional", "role": "role optional", "limit": "integer optional", "include_unavailable": "bool optional"}},
     {"method": "GET", "path": "/v1/runtimes", "summary": "List runtimes"},
     {"method": "POST", "path": "/v1/runtimes", "summary": "Register runtime", "body": {"runtime": "runtime id", "command": "command optional", "status": "registered/disabled optional", "notes": "string optional"}},
     {"method": "GET", "path": "/v1/tasks", "summary": "List tasks", "query": {"agent": "employee id optional", "status": "task status optional"}},
     {"method": "POST", "path": "/v1/tasks", "summary": "Submit task", "body": {"from": "employee id", "to": "employee id", "title": "string", "description": "string optional", "task_id": "string optional", "priority": "P0/P1/P2/P3 optional", "requires_approval": "action optional", "approval_id": "string optional"}},
+    {"method": "POST", "path": "/v1/tasks/route", "summary": "Select employee by capabilities and submit routed task with approval guard", "body": {"from": "employee id", "title": "string", "description": "string optional", "priority": "P0/P1/P2/P3 optional", "task_id": "string optional", "skills": "comma-separated skills optional", "tools": "comma-separated tools optional", "task_type": "string optional", "runtime": "runtime optional", "role": "role optional", "limit": "integer optional", "include_unavailable": "bool optional", "requires_approval": "action optional", "approval_id": "string optional", "risk": "P0/P1/P2/P3 optional", "changed_files": "comma-separated paths optional", "rfc": "path optional"}},
     {"method": "GET", "path": "/v1/tasks/{task_id}", "summary": "Show task"},
     {"method": "POST", "path": "/v1/tasks/{task_id}/claim", "summary": "Claim task", "body": {"agent": "employee id", "lease_seconds": "integer optional"}},
     {"method": "POST", "path": "/v1/tasks/{task_id}/done", "summary": "Complete task", "body": {"agent": "employee id", "summary": "string", "evidence": "path"}},
@@ -195,6 +197,8 @@ def route_get(path: str, query: dict[str, list[str]]) -> tuple[int, dict]:
     if path == "/v1/runtimes":
         code, payload = run_companyctl(["runtime", "list"])
         return (HTTPStatus.OK if code == 0 else HTTPStatus.BAD_REQUEST), {"exit_code": code, **payload}
+    if path == "/v1/employees/match":
+        return HTTPStatus.METHOD_NOT_ALLOWED, {"ok": False, "error": "use POST", "path": path}
     if path == "/v1/tasks":
         argv = ["task", "list"]
         agent = query_value(query, "agent")
@@ -394,6 +398,58 @@ def route_post(path: str, body: dict) -> tuple[int, dict]:
                 argv.extend([flag, str(body[key]).lower()])
         code, payload = run_companyctl(argv)
         return (HTTPStatus.OK if code == 0 else HTTPStatus.BAD_REQUEST), {"exit_code": code, **payload}
+    if path == "/v1/employees/match":
+        argv = ["employee", "match"]
+        for key, flag in [
+            ("skills", "--skills"),
+            ("tools", "--tools"),
+            ("task_type", "--task-type"),
+            ("runtime", "--runtime"),
+            ("role", "--role"),
+            ("limit", "--limit"),
+        ]:
+            if body.get(key) not in {None, ""}:
+                argv.extend([flag, str(body[key])])
+        if truthy(body.get("include_unavailable")):
+            argv.append("--include-unavailable")
+        code, payload = run_companyctl(argv)
+        return (HTTPStatus.OK if code == 0 else HTTPStatus.BAD_REQUEST), {"exit_code": code, **payload}
+    if path == "/v1/tasks/route":
+        argv = [
+            "task",
+            "route",
+            "--from",
+            str(body.get("from", "")),
+            "--title",
+            str(body.get("title", "")),
+            "--description",
+            str(body.get("description", "")),
+        ]
+        for key, flag in [
+            ("priority", "--priority"),
+            ("task_id", "--task-id"),
+            ("skills", "--skills"),
+            ("tools", "--tools"),
+            ("task_type", "--task-type"),
+            ("runtime", "--runtime"),
+            ("role", "--role"),
+            ("limit", "--limit"),
+            ("requires_approval", "--requires-approval"),
+            ("approval_id", "--approval-id"),
+            ("risk", "--risk"),
+            ("changed_files", "--changed-files"),
+            ("rfc", "--rfc"),
+        ]:
+            if body.get(key) not in {None, ""}:
+                argv.extend([flag, str(body[key])])
+        if truthy(body.get("include_unavailable")):
+            argv.append("--include-unavailable")
+        code, payload = run_companyctl(argv)
+        if code == 0:
+            return HTTPStatus.CREATED, {"exit_code": code, **payload}
+        if code == 2 and payload.get("error") == "approval required":
+            return HTTPStatus.ACCEPTED, {"exit_code": code, **payload}
+        return HTTPStatus.BAD_REQUEST, {"exit_code": code, **payload}
     if path == "/v1/tasks":
         argv = [
             "task",
