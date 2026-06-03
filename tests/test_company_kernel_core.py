@@ -707,6 +707,20 @@ class CompanyKernelCoreTest(unittest.TestCase):
                 "本次还车里程是 10234 km",
             ])
         self.assertEqual(0, code)
+        conn = companyctl.connect()
+        try:
+            conn.execute(
+                """
+                INSERT INTO adapter_runs(id, trace_id, agent_id, task_id, command, ok, processed, attempt, next_retry_at, result_json, created_at)
+                VALUES ('adapter-run-dashboard-trace', 'trace-dashboard-live', 'codex', 'task-dashboard-trace', 'company-codex-adapter', 1, 1, 1, '', '{}', ?)
+                """,
+                (companyctl.now(),),
+            )
+            conn.commit()
+            summary = company_dashboard.load_summary(conn)
+        finally:
+            conn.close()
+        self.assertIn("trace-dashboard-live", [trace["trace_id"] for trace in summary["traces"]])
         with contextlib.redirect_stdout(io.StringIO()):
             code = company_dashboard.main(["--output", str(output)])
         self.assertEqual(0, code)
@@ -725,6 +739,8 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertIn("local-automation", html)
         self.assertIn("ops-support", html)
         self.assertIn("Needs Attention", html)
+        self.assertIn("trace-dashboard-live", html)
+        self.assertIn("company-codex-adapter", html)
 
     def test_dashboard_distinguishes_active_online_from_candidate_heartbeat(self) -> None:
         code, hermes = run_cli("employee", "create", "--id", "hermes", "--name", "Hermes", "--role", "supervisor", "--runtime", "hermes", "--workspace", str(self.root / "hermes"))

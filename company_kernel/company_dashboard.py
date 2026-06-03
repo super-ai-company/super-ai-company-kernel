@@ -70,6 +70,107 @@ def minutes_since(value: str, generated_at: str) -> int | None:
     return max(0, int((generated - timestamp).total_seconds() // 60))
 
 
+def milliseconds_between(start: str, end: str) -> int:
+    start_dt = parse_time(start)
+    end_dt = parse_time(end)
+    if not start_dt or not end_dt:
+        return 1
+    return max(1, int((end_dt - start_dt).total_seconds() * 1000))
+
+
+def build_traces(conn: sqlite3.Connection, *, limit: int = 20) -> list[dict]:
+    trace_ids = [
+        row["trace_id"]
+        for row in rows(
+            conn,
+            """
+            SELECT trace_id, MAX(created_at) AS last_seen
+            FROM (
+              SELECT trace_id, created_at FROM company_events WHERE trace_id != ''
+              UNION ALL
+              SELECT trace_id, created_at FROM adapter_runs WHERE trace_id != ''
+            )
+            GROUP BY trace_id
+            ORDER BY last_seen DESC
+            LIMIT ?
+            """,
+            (limit,),
+        )
+    ]
+    traces = []
+    for trace_id in trace_ids:
+        event_rows = rows(
+            conn,
+            """
+            SELECT id, event_type, source_agent, task_id, created_at, processed_at
+            FROM company_events
+            WHERE trace_id = ?
+            ORDER BY created_at ASC
+            """,
+            (trace_id,),
+        )
+        run_rows = rows(
+            conn,
+            """
+            SELECT id, agent_id, command, task_id, ok, processed, created_at
+            FROM adapter_runs
+            WHERE trace_id = ?
+            ORDER BY created_at ASC
+            """,
+            (trace_id,),
+        )
+        timestamps = [item["created_at"] for item in [*event_rows, *run_rows] if item.get("created_at")]
+        if not timestamps:
+            continue
+        start = min(timestamps)
+        end = max([*(item.get("processed_at") for item in event_rows if item.get("processed_at")), *timestamps])
+        duration = max(1, milliseconds_between(start, end))
+        spans = []
+        for event in event_rows:
+            span_start = milliseconds_between(start, event["created_at"])
+            span_duration = milliseconds_between(event["created_at"], event.get("processed_at") or event["created_at"])
+            spans.append(
+                {
+                    "name": event["event_type"],
+                    "service": event["source_agent"] or "event",
+                    "duration_ms": max(12, span_duration),
+                    "start_ms": span_start,
+                    "event_id": event["id"],
+                    "task_id": event["task_id"],
+                    "created_at": event["created_at"],
+                    "processed_at": event.get("processed_at", ""),
+                }
+            )
+        for run in run_rows:
+            span_start = milliseconds_between(start, run["created_at"])
+            spans.append(
+                {
+                    "name": run["command"] or "adapter.run",
+                    "service": run["agent_id"] or "adapter",
+                    "duration_ms": 80 if run.get("processed") else 24,
+                    "start_ms": span_start,
+                    "adapter_run_id": run["id"],
+                    "task_id": run["task_id"],
+                    "ok": bool(run["ok"]),
+                    "processed": bool(run["processed"]),
+                    "created_at": run["created_at"],
+                }
+            )
+        spans.sort(key=lambda item: (item.get("start_ms", 0), item.get("name", "")))
+        first = spans[0] if spans else {}
+        traces.append(
+            {
+                "trace_id": trace_id,
+                "title": first.get("task_id") or first.get("name") or trace_id,
+                "duration_ms": max(duration, max((span["start_ms"] + span["duration_ms"] for span in spans), default=1)),
+                "spans": spans,
+                "started_at": start,
+                "updated_at": end,
+            }
+        )
+    return traces
+
+
 def load_summary(conn: sqlite3.Connection) -> dict:
     conversation_rows = rows(
         conn,
@@ -228,6 +329,7 @@ def load_summary(conn: sqlite3.Connection) -> dict:
         "events": rows(conn, "SELECT * FROM company_events ORDER BY created_at DESC LIMIT 20"),
         "adapter_runs": rows(conn, "SELECT * FROM adapter_runs ORDER BY created_at DESC LIMIT 20"),
         "locks": rows(conn, "SELECT * FROM locks ORDER BY updated_at DESC"),
+        "traces": build_traces(conn),
     }
 
 
@@ -719,6 +821,13 @@ def inject_advanced_dashboard(template: str, summary: dict, *, db_path: Path, ap
         html_text = append_before_body(html_text, f"<script>window.kernelSummary = JSON.parse(decodeURIComponent(escape(atob({json.dumps(payload_b64)})))); window.dbPath = {json.dumps(str(db_path), ensure_ascii=False)}; window.companyApiBase = {json.dumps(api_base, ensure_ascii=False)};</script>")
     if "kernel-summary-debug" not in html_text:
         html_text = html_text.replace("</script>", f'  <!-- kernel-summary-debug {payload} -->\n</script>', 1)
+    html_text = re.sub(
+        r"<!-- MOCK SIMULATION DATA SEEDER -->\s*<script>\s*const MOCK_SUMMARY\s*=\s*.*?\n\s*</script>",
+        "<!-- LIVE SNAPSHOT FALLBACK DATA -->\n<script>\n  const MOCK_SUMMARY = window.kernelSummary;\n</script>",
+        html_text,
+        count=1,
+        flags=re.DOTALL,
+    )
     html_text = html_text.replace(
         "document.getElementById('db-path-label').innerText = isSimulationMode ? 'simulation://gateway.company.internal' : 'https://gateway.company.internal';",
         "document.getElementById('db-path-label').innerText = isSimulationMode ? 'simulation://gateway.company.internal' : (window.companyApiBase || 'http://127.0.0.1:8765');",
