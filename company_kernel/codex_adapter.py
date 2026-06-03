@@ -9,7 +9,7 @@ import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 
-from .adapter_result import execution_detail
+from .adapter_result import compact_output, execution_detail
 from .sandboxing import wrap_command
 
 
@@ -77,19 +77,33 @@ def direct_report_path(agent: str) -> Path:
     return base / f"progress_acknowledged_{datetime.now().strftime('%Y%m%d-%H%M%S')}.json"
 
 
-def write_direct_report(agent: str, source: str, session_key: str, message: str, reply: str) -> Path:
+def direct_paths(agent: str) -> dict[str, Path]:
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    base = ROOT / "employees" / agent / "reports" / "direct" / stamp
+    base.mkdir(parents=True, exist_ok=True)
+    return {
+        "base": base,
+        "task_card": base / "codex-direct-task-card.md",
+        "last_message": base / "codex-direct-last-message.md",
+        "events": base / "codex-direct-events.jsonl",
+        "report": base / "codex-direct-adapter-report.md",
+    }
+
+
+def write_direct_report(agent: str, source: str, session_key: str, message: str, reply: str, *, state: str = "acknowledged", workspace_report: Path | None = None) -> Path:
     report = direct_report_path(agent)
     report.write_text(
         json.dumps(
             {
                 "ok": True,
-                "state": "acknowledged",
+                "state": state,
                 "agent": agent,
                 "source": source,
                 "session_key": session_key,
                 "message": message,
                 "reply": reply,
                 "created_at": now(),
+                "workspace_report": str(workspace_report or ""),
                 "next_action": "reply delivered to Company Kernel sender inbox",
             },
             ensure_ascii=False,
@@ -99,6 +113,36 @@ def write_direct_report(agent: str, source: str, session_key: str, message: str,
         encoding="utf-8",
     )
     return report
+
+
+def workspace_progress_dir(workspace: Path) -> Path:
+    path = workspace / "reports"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def write_workspace_progress(workspace: Path, *, state: str, project: str, action: str, checking: str = "", risks: str = "", blocked_on: str = "", tried: str = "", needs_action_from: str = "") -> Path:
+    out_dir = workspace_progress_dir(workspace)
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    path = out_dir / f"progress_{state}_{stamp}.json"
+    payload = {
+        "ok": True,
+        "task_id": f"direct-{stamp}",
+        "report": {
+            "state": state,
+            "project": project,
+            "targets": str(workspace),
+            "action": action,
+            "checking": checking,
+            "risks": risks,
+            "blocked_on": blocked_on,
+            "tried": tried,
+            "needs_action_from": needs_action_from,
+            "created_at": now(),
+        },
+    }
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    return path
 
 
 def build_task_card(task: sqlite3.Row, workspace: Path, sandbox: str) -> str:
@@ -204,6 +248,95 @@ def direct_reply_text(agent: str, message: str) -> str:
     return f"{agent} 收到：{text}" if text else f"{agent} 收到"
 
 
+def is_lightweight_direct_message(message: str) -> bool:
+    text = message.strip()
+    if not text:
+        return True
+    if len(text) <= 160 and any(marker in text for marker in ("只回复", "在岗", "DIRECT_OK", "PROGRESS_OK", "ACK", "OK")):
+        return True
+    lower = text.lower()
+    execution_markers = ("执行", "修复", "实现", "测试", "验证", "git", "github", "repo", "项目", "文件", "代码", "开发", "push", "commit")
+    return not any(marker in lower or marker in text for marker in execution_markers)
+
+
+def build_direct_task_card(agent: str, source: str, session_key: str, message: str, workspace: Path) -> str:
+    project = workspace.name
+    return "\n".join(
+        [
+            "# Codex Direct Execution Task",
+            "",
+            "## Objective",
+            "",
+            message.strip() or "Handle the direct request and report status.",
+            "",
+            "## Canonical repo / workspace",
+            "",
+            f"- Path: `{workspace}`",
+            f"- Project: `{project}`",
+            f"- Source: `{source}`",
+            f"- Target: `{agent}`",
+            f"- Session key: `{session_key}`",
+            "",
+            "## Mandatory communication loop",
+            "",
+            "This is not a receipt-only direct message. You must do real work or report a real blocker.",
+            "Before completion, write structured progress inside the repo-local `reports/` directory.",
+            "",
+            "Required commands:",
+            "",
+            "```bash",
+            f"python3 scripts/progress_report.py --state acknowledged --project {project} --action \"received direct task from {source}\" --checking \"planning\" --out-dir reports/",
+            f"python3 scripts/progress_report.py --state in_progress --project {project} --action \"working on direct task\" --checking \"implementation and verification\" --out-dir reports/",
+            "```",
+            "",
+            "If blocked:",
+            "",
+            "```bash",
+            f"python3 scripts/progress_report.py --state blocked --project {project} --action \"blocked direct task\" --checking \"last attempted check\" --blocked_on \"<specific blocker>\" --out-dir reports/",
+            "```",
+            "",
+            "If completed:",
+            "",
+            "```bash",
+            f"python3 scripts/progress_report.py --state completed --project {project} --action \"completed direct task\" --checking \"<verification commands and results>\" --out-dir reports/",
+            "```",
+            "",
+            "## Required final output",
+            "",
+            "Return exactly these fields with concrete values, not placeholders:",
+            "",
+            "- status: working / blocked / done",
+            "- current_action",
+            "- changed_files",
+            "- verification_run",
+            "- blocker",
+            "- eta",
+            "",
+            "Do not echo this template. If you cannot perform the task, set status=blocked and explain the blocker.",
+            "",
+        ]
+    )
+
+
+def direct_execution_reply(state: str, output: Path, *, workspace_report: Path, exit_code: int = 0) -> str:
+    final = compact_output(output, max_chars=900)
+    status = "done" if state == "completed" else "blocked"
+    if not final:
+        final = "No final Codex output captured."
+    return "\n".join(
+        [
+            f"status: {status}",
+            f"current_action: Codex direct execution {'completed' if state == 'completed' else 'blocked'}",
+            f"changed_files: see workspace git diff / Codex final output",
+            f"verification_run: see Codex final output and progress report {workspace_report}",
+            f"blocker: {'-' if state == 'completed' else f'codex exit_code={exit_code}'}",
+            "eta: -",
+            "",
+            final,
+        ]
+    )
+
+
 def process(args: argparse.Namespace) -> int:
     emp = employee(args.agent)
     if not emp:
@@ -214,21 +347,108 @@ def process(args: argparse.Namespace) -> int:
         return 1
     if args.direct_message:
         code, hb_out, hb_err = run_companyctl(["heartbeat", "--agent", args.agent])
-        reply = direct_reply_text(args.agent, args.direct_message)
-        report = write_direct_report(args.agent, args.direct_source, args.direct_session_key, args.direct_message, reply)
+        workspace = Path(args.workspace or emp["workspace"] or DEFAULT_WORKSPACE).expanduser().resolve()
+        if is_lightweight_direct_message(args.direct_message):
+            reply = direct_reply_text(args.agent, args.direct_message)
+            report = write_direct_report(args.agent, args.direct_source, args.direct_session_key, args.direct_message, reply)
+            emit({
+                "ok": code == 0,
+                "processed": 0,
+                "agent": args.agent,
+                "direct_message": True,
+                "source": args.direct_source,
+                "session_key": args.direct_session_key,
+                "reply": reply,
+                "progress_report": str(report),
+                "direct_mode": "receipt",
+                "companyctl_stdout": hb_out,
+                "companyctl_stderr": hb_err,
+            })
+            return code
+        if not shutil.which("codex"):
+            workspace_report = write_workspace_progress(
+                workspace,
+                state="blocked",
+                project=workspace.name,
+                action="blocked direct task before execution",
+                checking="codex command availability",
+                blocked_on="codex command not found",
+                needs_action_from="operator",
+            )
+            reply = direct_execution_reply("blocked", workspace_report, workspace_report=workspace_report, exit_code=127)
+            report = write_direct_report(args.agent, args.direct_source, args.direct_session_key, args.direct_message, reply, state="blocked", workspace_report=workspace_report)
+            emit({
+                "ok": False,
+                "processed": 0,
+                "agent": args.agent,
+                "direct_message": True,
+                "source": args.direct_source,
+                "session_key": args.direct_session_key,
+                "reply": reply,
+                "progress_report": str(report),
+                "workspace_progress_report": str(workspace_report),
+                "direct_mode": "execution",
+                "error": "codex command not found",
+                "companyctl_stdout": hb_out,
+                "companyctl_stderr": hb_err,
+            })
+            return 1
+        artifact = direct_paths(args.agent)
+        artifact["task_card"].write_text(build_direct_task_card(args.agent, args.direct_source, args.direct_session_key, args.direct_message, workspace), encoding="utf-8")
+        acknowledged = write_workspace_progress(
+            workspace,
+            state="acknowledged",
+            project=workspace.name,
+            action=f"received direct task from {args.direct_source or 'unknown'}",
+            checking=f"task card {artifact['task_card']}",
+        )
+        run_code, cmd = run_codex(artifact["task_card"], workspace, artifact["last_message"], artifact["events"], "workspace-write", args.model, args.isolation, args.sandbox_profile)
+        if run_code == 0:
+            workspace_report = write_workspace_progress(
+                workspace,
+                state="completed",
+                project=workspace.name,
+                action="completed direct Codex execution",
+                checking=compact_output(artifact["last_message"], max_chars=600) or "codex exec exit_code=0",
+            )
+            state = "completed"
+        else:
+            workspace_report = write_workspace_progress(
+                workspace,
+                state="blocked",
+                project=workspace.name,
+                action="blocked direct Codex execution",
+                checking=compact_output(artifact["last_message"], max_chars=600),
+                blocked_on=f"codex exec exit_code={run_code}",
+                tried=cmd,
+                needs_action_from="operator",
+            )
+            state = "blocked"
+        detail = execution_detail(cmd, artifact["last_message"], exit_code=run_code, success=run_code == 0)
+        write_report(artifact["report"], {"id": f"direct-{datetime.now().strftime('%Y%m%d-%H%M%S')}"}, executed=True, status=state, detail=detail, task_card=artifact["task_card"], output=artifact["last_message"])
+        reply = direct_execution_reply(state, artifact["last_message"], workspace_report=workspace_report, exit_code=run_code)
+        report = write_direct_report(args.agent, args.direct_source, args.direct_session_key, args.direct_message, reply, state=state, workspace_report=workspace_report)
         emit({
-            "ok": code == 0,
-            "processed": 0,
+            "ok": code == 0 and run_code == 0,
+            "processed": 1,
             "agent": args.agent,
             "direct_message": True,
             "source": args.direct_source,
             "session_key": args.direct_session_key,
             "reply": reply,
+            "direct_mode": "execution",
+            "codex_exit_code": run_code,
+            "task_card": str(artifact["task_card"]),
+            "last_message": str(artifact["last_message"]),
+            "events": str(artifact["events"]),
+            "adapter_report": str(artifact["report"]),
             "progress_report": str(report),
+            "workspace_acknowledged_report": str(acknowledged),
+            "workspace_progress_report": str(workspace_report),
             "companyctl_stdout": hb_out,
             "companyctl_stderr": hb_err,
         })
-        return code
+        return code if code != 0 else run_code
     if args.attendance_probe:
         code, hb_out, hb_err = run_companyctl(["heartbeat", "--agent", args.agent])
         emit({"ok": code == 0, "processed": 0, "agent": args.agent, "attendance_probe": True, "reply": f"{args.agent} 在岗", "companyctl_stdout": hb_out, "companyctl_stderr": hb_err})

@@ -980,6 +980,81 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual("acknowledged", report_payload["state"])
         self.assertEqual("main", report_payload["source"])
 
+    def test_codex_direct_execution_runs_worker_and_writes_repo_progress(self) -> None:
+        workspace = self.root / "workspace" / "codex"
+        (workspace / "scripts").mkdir(parents=True, exist_ok=True)
+        (workspace / "scripts" / "progress_report.py").write_text("print('ok')\n", encoding="utf-8")
+        code, created = run_cli(
+            "employee",
+            "create",
+            "--id",
+            "codex",
+            "--name",
+            "Codex",
+            "--role",
+            "developer",
+            "--runtime",
+            "codex",
+            "--workspace",
+            str(workspace),
+        )
+        self.assertEqual(code, 0, created)
+
+        calls: list[dict] = []
+
+        def fake_run_codex(task_card: Path, workspace_arg: Path, output: Path, events: Path, sandbox: str, model: str, isolation: str, sandbox_profile: str) -> tuple[int, str]:
+            calls.append({"task_card": task_card, "workspace": workspace_arg, "sandbox": sandbox})
+            task_text = task_card.read_text(encoding="utf-8")
+            self.assertIn("Mandatory communication loop", task_text)
+            self.assertIn("Required final output", task_text)
+            output.write_text(
+                "\n".join(
+                    [
+                        "status: done",
+                        "current_action: implemented requested fix",
+                        "changed_files: README.md",
+                        "verification_run: python3 -m unittest discover -s tests -v OK",
+                        "blocker: -",
+                        "eta: -",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            events.write_text(json.dumps({"event": "done"}, ensure_ascii=False) + "\n", encoding="utf-8")
+            return 0, f"codex exec -C {workspace_arg} -s {sandbox}"
+
+        captured = io.StringIO()
+        with mock.patch.object(codex_adapter.shutil, "which", lambda name: "/usr/local/bin/codex"), mock.patch.object(codex_adapter, "run_codex", fake_run_codex), contextlib.redirect_stdout(captured):
+            code = codex_adapter.main(
+                [
+                    "--agent",
+                    "codex",
+                    "--direct-source",
+                    "main",
+                    "--direct-session-key",
+                    "agent:codex:main",
+                    "--direct-message",
+                    "请在这个 repo 修复 openclaw 控制 codex 的闭环，并运行测试。",
+                ]
+            )
+        payload = json.loads(captured.getvalue())
+        self.assertEqual(0, code, payload)
+        self.assertTrue(payload["ok"], payload)
+        self.assertEqual("execution", payload["direct_mode"])
+        self.assertEqual(1, payload["processed"])
+        self.assertIn("status: done", payload["reply"])
+        self.assertIn("changed_files: README.md", payload["reply"])
+        self.assertEqual("workspace-write", calls[0]["sandbox"])
+        workspace_reports = sorted((workspace / "reports").glob("progress_*.json"))
+        self.assertGreaterEqual(len(workspace_reports), 2)
+        states = [json.loads(path.read_text(encoding="utf-8"))["report"]["state"] for path in workspace_reports]
+        self.assertIn("acknowledged", states)
+        self.assertIn("completed", states)
+        adapter_report = Path(payload["progress_report"])
+        self.assertTrue(adapter_report.exists())
+        adapter_payload = json.loads(adapter_report.read_text(encoding="utf-8"))
+        self.assertEqual("completed", adapter_payload["state"])
+
     def test_message_direct_uses_antigravity_adapter_and_returns_receipt(self) -> None:
         code, created = run_cli("employee", "create", "--id", "main", "--name", "main", "--role", "operator", "--runtime", "openclaw", "--workspace", str(self.root / "workspace" / "main"))
         self.assertEqual(0, code, created)
