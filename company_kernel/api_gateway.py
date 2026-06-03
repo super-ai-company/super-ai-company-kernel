@@ -11,6 +11,106 @@ from urllib.parse import parse_qs, urlparse
 from . import companyctl
 
 
+API_VERSION = "v1"
+API_CAPABILITIES = [
+    "health",
+    "doctor",
+    "tasks",
+    "messages",
+    "conversations",
+    "approvals",
+    "heartbeats",
+    "adapter_runs",
+]
+API_ENDPOINTS = [
+    {"method": "GET", "path": "/v1/health", "summary": "Company Kernel health summary"},
+    {"method": "GET", "path": "/v1/doctor", "summary": "Doctor summary", "query": {"strict_launchd": "bool optional"}},
+    {"method": "GET", "path": "/v1/tasks", "summary": "List tasks", "query": {"agent": "employee id optional", "status": "task status optional"}},
+    {"method": "POST", "path": "/v1/tasks", "summary": "Submit task", "body": {"from": "employee id", "to": "employee id", "title": "string", "description": "string optional", "task_id": "string optional", "priority": "P0/P1/P2/P3 optional", "requires_approval": "action optional", "approval_id": "string optional"}},
+    {"method": "GET", "path": "/v1/tasks/{task_id}", "summary": "Show task"},
+    {"method": "GET", "path": "/v1/messages", "summary": "List messages", "query": {"agent": "employee id required"}},
+    {"method": "POST", "path": "/v1/messages", "summary": "Send message", "body": {"from": "employee id", "to": "employee id", "body": "string", "message_id": "string optional"}},
+    {"method": "GET", "path": "/v1/conversations", "summary": "List conversations for an agent", "query": {"agent": "employee id required"}},
+    {"method": "POST", "path": "/v1/conversations", "summary": "Start conversation", "body": {"from": "employee id", "participants": "comma-separated employee ids", "title": "string", "body": "string", "conversation_id": "string optional", "evidence": "path optional"}},
+    {"method": "GET", "path": "/v1/conversations/{conversation_id}", "summary": "Show conversation"},
+    {"method": "POST", "path": "/v1/conversations/{conversation_id}/reply", "summary": "Reply to conversation", "body": {"from": "employee id", "body": "string", "message_id": "string optional", "evidence": "path optional"}},
+    {"method": "GET", "path": "/v1/approvals", "summary": "List approvals", "query": {"status": "pending/approved/denied/all optional", "agent": "employee id optional", "action": "approval action optional", "limit": "integer optional"}},
+    {"method": "POST", "path": "/v1/approvals", "summary": "Request approval", "body": {"from": "employee id", "action": "string", "reason": "string", "target": "employee id optional", "risk": "P0/P1/P2/P3 optional", "approval_id": "string optional", "task_id": "string optional", "evidence": "path optional"}},
+    {"method": "GET", "path": "/v1/approvals/{approval_id}", "summary": "Show approval"},
+    {"method": "POST", "path": "/v1/approvals/{approval_id}/approve", "summary": "Approve request", "body": {"by": "employee id", "reason": "string"}},
+    {"method": "POST", "path": "/v1/approvals/{approval_id}/deny", "summary": "Deny request", "body": {"by": "employee id", "reason": "string"}},
+    {"method": "POST", "path": "/v1/heartbeats", "summary": "Write employee heartbeat", "body": {"agent": "employee id"}},
+    {"method": "GET", "path": "/v1/adapter-runs", "summary": "List adapter runs", "query": {"agent": "employee id optional", "status": "ok/failed optional", "unacknowledged_only": "bool optional", "limit": "integer optional"}},
+    {"method": "GET", "path": "/v1/adapter-runs/{run_id}", "summary": "Show adapter run", "query": {"summary": "bool optional"}},
+    {"method": "POST", "path": "/v1/adapter-runs/{run_id}/ack", "summary": "Acknowledge adapter failure", "body": {"by": "employee id", "reason": "string"}},
+    {"method": "POST", "path": "/v1/adapter-runs/{run_id}/retry", "summary": "Retry failed adapter task", "body": {"by": "employee id", "reason": "string", "task_id": "string optional"}},
+]
+
+
+def service_descriptor() -> dict:
+    return {
+        "ok": True,
+        "name": "Company Kernel API Gateway",
+        "version": API_VERSION,
+        "capabilities": API_CAPABILITIES,
+        "links": {
+            "self": "/v1",
+            "health": "/v1/health",
+            "openapi": "/v1/openapi.json",
+        },
+        "protocols": {
+            "rest": True,
+            "grpc": False,
+        },
+        "endpoints": API_ENDPOINTS,
+        "governance": {
+            "state_writer": "companyctl",
+            "direct_sqlite_writes": False,
+            "task_completion_requires": "evidence_or_blocker",
+            "high_risk_requires_approval": True,
+        },
+    }
+
+
+def openapi_descriptor() -> dict:
+    paths: dict[str, dict[str, dict]] = {}
+    for endpoint in API_ENDPOINTS:
+        path = endpoint["path"]
+        method = endpoint["method"].lower()
+        operation = {
+            "summary": endpoint["summary"],
+            "responses": {
+                "200": {"description": "OK"},
+                "201": {"description": "Created"},
+                "400": {"description": "Bad Request"},
+                "404": {"description": "Not Found"},
+            },
+        }
+        if "query" in endpoint:
+            operation["parameters"] = [
+                {"name": name, "in": "query", "required": "required" in detail, "schema": {"type": "string"}, "description": detail}
+                for name, detail in endpoint["query"].items()
+            ]
+        if "body" in endpoint:
+            operation["requestBody"] = {
+                "required": True,
+                "content": {
+                    "application/json": {
+                        "schema": {
+                            "type": "object",
+                            "properties": {name: {"type": "string", "description": detail} for name, detail in endpoint["body"].items()},
+                        }
+                    }
+                },
+            }
+        paths.setdefault(path, {})[method] = operation
+    return {
+        "openapi": "3.1.0",
+        "info": {"title": "Company Kernel API Gateway", "version": API_VERSION},
+        "paths": paths,
+    }
+
+
 def run_companyctl(argv: list[str]) -> tuple[int, dict]:
     buf = io.StringIO()
     with contextlib.redirect_stdout(buf):
@@ -25,6 +125,10 @@ def query_value(query: dict[str, list[str]], name: str, default: str = "") -> st
 
 
 def route_get(path: str, query: dict[str, list[str]]) -> tuple[int, dict]:
+    if path in {"/v1", "/v1/"}:
+        return HTTPStatus.OK, service_descriptor()
+    if path == "/v1/openapi.json":
+        return HTTPStatus.OK, openapi_descriptor()
     if path in {"/health", "/v1/health"}:
         code, payload = run_companyctl(["doctor", "--summary"])
         return (HTTPStatus.OK if code == 0 else HTTPStatus.BAD_REQUEST), {"exit_code": code, **payload}

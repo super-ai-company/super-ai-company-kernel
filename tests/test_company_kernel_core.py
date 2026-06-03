@@ -1071,6 +1071,20 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertGreaterEqual(len(payload["timeline"]), 3)
 
     def test_api_gateway_exposes_health_tasks_messages_and_heartbeats(self) -> None:
+        status, descriptor = api_gateway.route_get("/v1", {})
+        self.assertEqual(200, status, descriptor)
+        self.assertIn("conversations", descriptor["capabilities"])
+        self.assertIn("approvals", descriptor["capabilities"])
+        self.assertFalse(descriptor["protocols"]["grpc"])
+        self.assertFalse(descriptor["governance"]["direct_sqlite_writes"])
+        self.assertTrue(descriptor["governance"]["high_risk_requires_approval"])
+        status, openapi = api_gateway.route_get("/v1/openapi.json", {})
+        self.assertEqual(200, status, openapi)
+        self.assertEqual("3.1.0", openapi["openapi"])
+        self.assertIn("/v1/tasks", openapi["paths"])
+        self.assertIn("/v1/conversations/{conversation_id}/reply", openapi["paths"])
+        self.assertIn("/v1/approvals/{approval_id}/approve", openapi["paths"])
+
         for agent in ["video-ops", "video-creator", "video-publisher", "codex", "openclaw-main", "hermes", "nestcar"]:
             status, heartbeat = api_gateway.route_post("/v1/heartbeats", {"agent": agent})
             self.assertEqual(201, status, heartbeat)
