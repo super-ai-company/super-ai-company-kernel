@@ -957,6 +957,21 @@ class CompanyKernelCoreTest(unittest.TestCase):
             "employee",
             "create",
             "--id",
+            "main",
+            "--name",
+            "main",
+            "--role",
+            "operator",
+            "--runtime",
+            "openclaw",
+            "--workspace",
+            str(self.root / "workspace" / "main"),
+        )
+        self.assertEqual(code, 0, created)
+        code, created = run_cli(
+            "employee",
+            "create",
+            "--id",
             "codex",
             "--name",
             "Codex",
@@ -984,6 +999,21 @@ class CompanyKernelCoreTest(unittest.TestCase):
         workspace = self.root / "workspace" / "codex"
         (workspace / "scripts").mkdir(parents=True, exist_ok=True)
         (workspace / "scripts" / "progress_report.py").write_text("print('ok')\n", encoding="utf-8")
+        code, created = run_cli(
+            "employee",
+            "create",
+            "--id",
+            "main",
+            "--name",
+            "main",
+            "--role",
+            "operator",
+            "--runtime",
+            "openclaw",
+            "--workspace",
+            str(self.root / "workspace" / "main"),
+        )
+        self.assertEqual(code, 0, created)
         code, created = run_cli(
             "employee",
             "create",
@@ -1049,7 +1079,12 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertGreaterEqual(len(workspace_reports), 2)
         states = [json.loads(path.read_text(encoding="utf-8"))["report"]["state"] for path in workspace_reports]
         self.assertIn("acknowledged", states)
+        self.assertIn("in_progress", states)
         self.assertIn("completed", states)
+        self.assertTrue(payload["working_delivery"]["ok"], payload)
+        code, main_messages = run_cli("message", "list", "--agent", "main")
+        self.assertEqual(0, code, main_messages)
+        self.assertTrue(any(message["source_agent"] == "codex" and "status: working" in message["body"] for message in main_messages["messages"]))
         adapter_report = Path(payload["progress_report"])
         self.assertTrue(adapter_report.exists())
         adapter_payload = json.loads(adapter_report.read_text(encoding="utf-8"))
