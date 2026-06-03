@@ -451,7 +451,7 @@ bin/companyctl project review --project-id super-ai-company-kernel
 bin/companyctl project list --status active
 ```
 
-绑定了 `task_id` 的计划项会随任务状态自动同步：任务 `done` 会把计划项置为 `done`，任务 `block` 会把计划项置为 `blocked`，避免项目验收状态和任务真实状态漂移。
+绑定了 `task_id` 的计划项会随任务状态自动同步：任务 `done` 会把计划项置为 `done`，任务 `block` 会把计划项置为 `blocked`，任务 `reopen` 会把 blocked 计划项恢复为 `in_progress`，避免项目验收状态和任务真实状态漂移。
 
 ## Schema Migrations
 

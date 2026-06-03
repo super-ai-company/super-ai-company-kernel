@@ -675,11 +675,16 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual(["plan-sync-blocked"], [item["id"] for item in blocked["synced_plan_items"]])
         self.assertEqual(["blocked"], [item["status"] for item in blocked["synced_plan_items"]])
 
+        code, reopened = run_cli("task", "reopen", "--by", "ops", "--task-id", "task-plan-sync-blocked", "--reason", "input provided")
+        self.assertEqual(code, 0, reopened)
+        self.assertEqual(["plan-sync-blocked"], [item["id"] for item in reopened["synced_plan_items"]])
+        self.assertEqual(["in_progress"], [item["status"] for item in reopened["synced_plan_items"]])
+
         code, plan_list = run_cli("project", "plan-list", "--project-id", "project-plan-sync")
         self.assertEqual(code, 0, plan_list)
         statuses = {item["id"]: item["status"] for item in plan_list["plan_items"]}
         self.assertEqual("done", statuses["plan-sync-done"])
-        self.assertEqual("blocked", statuses["plan-sync-blocked"])
+        self.assertEqual("in_progress", statuses["plan-sync-blocked"])
 
     def test_doctor_reports_health_issues(self) -> None:
         for agent in ["video-ops", "video-creator", "video-publisher", "codex", "openclaw-main", "hermes", "nestcar"]:
