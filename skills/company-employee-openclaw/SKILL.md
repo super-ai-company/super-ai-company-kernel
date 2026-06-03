@@ -11,6 +11,16 @@ OpenClaw employees bridge Company Kernel tasks into OpenClaw workspaces and lega
 
 “Onboard this workspace as an OpenClaw employee, verify direct reply, keep external sends approval-gated, and mark unresolved targets as blocked.”
 
+## Installer Responsibility
+
+If OpenClaw main installs or repairs the Company Kernel, it must discover all local employees, not only OpenClaw workspaces. Run:
+
+```bash
+python3 skills/openclaw-local-agent-bootstrap/scripts/scan_install.py --openclaw-root <openclaw-root> --kernel-root <company-kernel-root>
+```
+
+Use `--apply` only to create discovered employees as `candidate`. Direct smoke and owner-confirmed routing are required before active promotion.
+
 ## Required Checks
 
 1. Locate OpenClaw:

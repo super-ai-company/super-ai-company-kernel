@@ -3567,6 +3567,41 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual("human-owner", owner["status"])
         self.assertEqual(["owner-shift"], [item["agent_id"] for item in report["human_owners"]])
 
+    def test_openclaw_bootstrap_scanner_discovers_and_applies_candidates(self) -> None:
+        openclaw_root = self.root / "openclaw"
+        (openclaw_root / "scripts").mkdir(parents=True)
+        (openclaw_root / "scripts" / "oc").write_text("#!/usr/bin/env bash\n", encoding="utf-8")
+        acme_workspace = openclaw_root / "workspace-acmeops"
+        acme_workspace.mkdir()
+        (acme_workspace / "AGENTS.md").write_text("AcmeOps business agent rules\n", encoding="utf-8")
+        script = Path(__file__).resolve().parents[1] / "skills" / "openclaw-local-agent-bootstrap" / "scripts" / "scan_install.py"
+
+        cp = subprocess.run(
+            [sys.executable, str(script), "--openclaw-root", str(openclaw_root), "--kernel-root", str(self.root)],
+            cwd=str(self.root),
+            text=True,
+            capture_output=True,
+            check=True,
+        )
+        report = json.loads(cp.stdout)
+        discovered = {item["agent_id"]: item for item in report["discovered_candidates"]}
+        self.assertIn("acmeops", discovered)
+        self.assertEqual("openclaw", discovered["acmeops"]["runtime"])
+        self.assertIn("status candidate", discovered["acmeops"]["recommended_command"])
+
+        applied = subprocess.run(
+            [sys.executable, str(script), "--openclaw-root", str(openclaw_root), "--kernel-root", str(self.root), "--apply"],
+            cwd=str(self.root),
+            text=True,
+            capture_output=True,
+            check=True,
+        )
+        applied_report = json.loads(applied.stdout)
+        acmeops = next(item for item in applied_report["employees"] if item["agent_id"] == "acmeops")
+        self.assertEqual("candidate", acmeops["status"])
+        self.assertEqual("openclaw", acmeops["runtime"]["type"])
+        self.assertEqual("agent:acmeops:<source>", acmeops["communication"]["session_key"])
+
 
 if __name__ == "__main__":
     unittest.main()

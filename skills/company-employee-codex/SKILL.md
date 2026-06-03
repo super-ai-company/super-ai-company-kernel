@@ -11,6 +11,16 @@ Codex is a developer employee. It should work from a canonical repo, produce evi
 
 “Onboard Codex for this repo, verify direct reply, generate task cards by default, and only execute code with an explicit sandbox and workspace.”
 
+## Installer Responsibility
+
+If Codex is the agent installing Company Kernel/OpenClaw, do not only configure Codex. First run the bootstrap scanner and discover all supported local employees:
+
+```bash
+python3 skills/openclaw-local-agent-bootstrap/scripts/scan_install.py --openclaw-root <openclaw-root> --kernel-root <company-kernel-root>
+```
+
+If the user asks for automatic setup, rerun with `--apply` to create missing employees as `candidate`, then smoke each one before promotion.
+
 ## Required Checks
 
 1. Verify CLI: `command -v codex`.

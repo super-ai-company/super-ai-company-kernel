@@ -5,7 +5,19 @@ description: Use when installing or configuring OpenClaw on a customer machine t
 
 # OpenClaw Local Agent Bootstrap
 
-Use this skill before onboarding or repairing OpenClaw employees in a new local environment. Do not write config first. Discover, classify, ask only for missing facts, then verify.
+Use this skill before onboarding or repairing OpenClaw employees in a new local environment. It should work no matter which agent performed the install. Do not make the customer manually reconfigure every employee. Discover, summarize, generate candidate onboarding, ask only for missing facts, then verify.
+
+## Automation Contract
+
+When triggered, do this without waiting for the user to name every employee:
+
+1. Scan local OpenClaw/Company Kernel roots.
+2. Discover installed or likely employees from workspaces, runtime commands, app locations, and existing employee files.
+3. Summarize each employee's local rules from `AGENTS.md`, `SOUL.md`, `CORE.md`, `SESSION-STATE.md`, `MEMORY.md`, and profile/capability files.
+4. Create an onboarding plan with active/candidate/blocked classification.
+5. If the user asked to configure automatically, run the scanner with `--apply` so new discoveries become `candidate`, not `active`.
+6. Generate direct smoke commands for each candidate.
+7. Promote only after direct smoke and owner/routing evidence pass.
 
 ## Fast Path
 
@@ -33,13 +45,19 @@ Use this skill before onboarding or repairing OpenClaw employees in a new local 
    - `bin/companyctl message direct --from main --to <agent> --body "只回复：<agent>_DIRECT_OK"`
    - API equivalent: `POST /v1/messages/direct`.
 
-For a read-only first pass, run the bundled scanner:
+For a read-only first pass, run the bundled scanner. It discovers existing employees plus likely new employees such as Hermes, Codex, Claude, Trae, Antigravity, OpenClaw workspaces, local models, Cursor, Devin, and Copilot:
 
 ```bash
 python3 skills/openclaw-local-agent-bootstrap/scripts/scan_install.py --openclaw-root /path/to/openclaw --kernel-root /path/to/company-kernel
 ```
 
-Use its output as a draft only. It cannot promote candidates or verify direct communication by itself.
+To create discovered employees as `candidate` entries:
+
+```bash
+python3 skills/openclaw-local-agent-bootstrap/scripts/scan_install.py --openclaw-root /path/to/openclaw --kernel-root /path/to/company-kernel --apply
+```
+
+Use scanner output as a draft until direct smoke passes. `--apply` must not promote to active.
 
 ## Message Semantics
 
@@ -56,6 +74,8 @@ Use its output as a draft only. It cannot promote candidates or verify direct co
 - If target, account, alias, runtime session, policy, or evidence is missing, mark blocked.
 - Chat is notification and record only. Execution requires an explicit task or approved adapter action.
 - Do not promote candidates or change global config automatically unless the user explicitly asks.
+- Automatic discovery may create `candidate`; it must not create schedulable `active` employees without smoke evidence.
+- If a different installer agent runs this skill, it still owns the same workflow: detect all supported runtimes, not only itself.
 
 ## Five-Line Employee Ask
 
@@ -91,6 +111,7 @@ Return this compact structure per employee:
   },
   "routing": {"active": [], "candidate": [], "blocked": []},
   "evidence": [],
+  "recommended_command": "bin/companyctl ...",
   "next_action": ""
 }
 ```
