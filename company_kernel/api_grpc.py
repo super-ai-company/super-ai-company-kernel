@@ -63,18 +63,60 @@ def grpc_available() -> bool:
     return bool(importlib.util.find_spec("grpc"))
 
 
+def encode_response(result: ApiResponse) -> bytes:
+    return json.dumps({"status": result.status, "body_json": result.body_json}, ensure_ascii=False).encode("utf-8")
+
+
+def decode_route_request(raw: bytes) -> RouteRequest:
+    if not raw:
+        return RouteRequest()
+    payload = json.loads(raw.decode("utf-8"))
+    if not isinstance(payload, dict):
+        raise ValueError("request payload must decode to object")
+    query = payload.get("query") or {}
+    if not isinstance(query, dict):
+        raise ValueError("query must be an object")
+    return RouteRequest(path=str(payload.get("path", "")), query={str(k): str(v) for k, v in query.items()}, body_json=str(payload.get("body_json", "{}")))
+
+
+def decode_describe_request(raw: bytes) -> DescribeRequest:
+    if raw:
+        payload = json.loads(raw.decode("utf-8"))
+        if not isinstance(payload, dict):
+            raise ValueError("describe payload must decode to object")
+    return DescribeRequest()
+
+
+def generic_method_handlers(service: CompanyKernelService) -> dict:
+    def describe(raw: bytes) -> bytes:
+        return encode_response(service.Describe(decode_describe_request(raw)))
+
+    def get(raw: bytes) -> bytes:
+        return encode_response(service.Get(decode_route_request(raw)))
+
+    def post(raw: bytes) -> bytes:
+        return encode_response(service.Post(decode_route_request(raw)))
+
+    return {"Describe": describe, "Get": get, "Post": post}
+
+
+def add_generic_service(server: object, grpc_module: object, service: CompanyKernelService) -> None:
+    handlers = generic_method_handlers(service)
+    method_handlers = {
+        name: grpc_module.unary_unary_rpc_method_handler(handler, request_deserializer=lambda raw: raw, response_serializer=lambda raw: raw)
+        for name, handler in handlers.items()
+    }
+    generic_handler = grpc_module.method_handlers_generic_handler("company.kernel.v1.CompanyKernel", method_handlers)
+    server.add_generic_rpc_handlers((generic_handler,))
+
+
 def run_server(host: str, port: int, max_workers: int = 8) -> None:
     if not grpc_available():
-        raise SystemExit("grpcio is not installed; install grpcio and generated stubs to run the gRPC server")
+        raise SystemExit("grpcio is not installed; install grpcio to run the gRPC server")
     import grpc  # type: ignore
 
-    try:
-        from . import company_kernel_pb2_grpc  # type: ignore
-    except ImportError as exc:
-        raise SystemExit("generated gRPC stubs are missing; run python -m grpc_tools.protoc for docs/company_kernel.proto") from exc
-
     server = grpc.server(futures.ThreadPoolExecutor(max_workers=max_workers))
-    company_kernel_pb2_grpc.add_CompanyKernelServicer_to_server(CompanyKernelService(), server)
+    add_generic_service(server, grpc, CompanyKernelService())
     server.add_insecure_port(f"{host}:{port}")
     server.start()
     try:

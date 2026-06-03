@@ -1416,6 +1416,33 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual(400, bad.status)
         self.assertEqual("body_json must decode to object", json.loads(bad.body_json)["error"])
 
+    def test_api_grpc_generic_handlers_route_json_payloads(self) -> None:
+        class FakeGrpc:
+            @staticmethod
+            def unary_unary_rpc_method_handler(handler, request_deserializer, response_serializer):
+                return {"handler": handler, "request_deserializer": request_deserializer, "response_serializer": response_serializer}
+
+            @staticmethod
+            def method_handlers_generic_handler(service_name, handlers):
+                return {"service_name": service_name, "handlers": handlers}
+
+        class FakeServer:
+            def __init__(self) -> None:
+                self.handlers = ()
+
+            def add_generic_rpc_handlers(self, handlers):
+                self.handlers = handlers
+
+        server = FakeServer()
+        api_grpc.add_generic_service(server, FakeGrpc, api_grpc.CompanyKernelService())
+        self.assertEqual("company.kernel.v1.CompanyKernel", server.handlers[0]["service_name"])
+
+        request = json.dumps({"path": "/v1/runtimes", "body_json": json.dumps({"runtime": "generic-grpc"}, ensure_ascii=False)}, ensure_ascii=False).encode("utf-8")
+        raw = server.handlers[0]["handlers"]["Post"]["handler"](request)
+        response = json.loads(raw.decode("utf-8"))
+        self.assertEqual(201, response["status"])
+        self.assertEqual("generic-grpc", json.loads(response["body_json"])["runtime"]["runtime"])
+
     def test_sandboxing_wraps_codex_and_hermes_commands_without_executing_container(self) -> None:
         workspace = self.root / "workspace" / "codex"
         profile_config = {

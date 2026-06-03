@@ -346,7 +346,7 @@ curl -X POST http://127.0.0.1:8765/v1/employees/cursor-dev/permissions \
 
 `/v1` 返回服务发现、能力列表、治理约束和端点清单；`/v1/openapi.json` 返回机器可读 OpenAPI 3.1 契约。已覆盖的端点：`/v1/health`、`/v1/doctor`、`/v1/employees`、`/v1/employees/<id>/capabilities|permissions`、`/v1/runtimes`、`/v1/tasks`、`/v1/tasks/<id>/claim|done|block|reopen|reassign`、`/v1/messages`、`/v1/conversations`、`/v1/approvals`、`/v1/projects`、`/v1/projects/<id>/review|accept`、`/v1/locks`、`/v1/heartbeats`、`/v1/adapter-runs`。
 
-`bin/company-api-rpc` 提供同一套治理路由的 JSON-RPC 2.0 服务层，默认端口 `8766`，用于非 HTTP path 风格的远端员工接入。`bin/company-api-grpc` 提供同一组 `Describe/Get/Post` gRPC 服务逻辑，默认端口 `8767`；运行真实网络 gRPC server 需要安装 `grpcio` 并生成 `docs/company_kernel.proto` 对应 stubs。
+`bin/company-api-rpc` 提供同一套治理路由的 JSON-RPC 2.0 服务层，默认端口 `8766`，用于非 HTTP path 风格的远端员工接入。`bin/company-api-grpc` 提供同一组 `Describe/Get/Post` gRPC 服务逻辑，默认端口 `8767`；运行真实网络 gRPC server 需要安装 `grpcio`。当前 server 使用 generic gRPC handler，payload 为 JSON bytes，语义与 `docs/company_kernel.proto` 的 `path/query/body_json/status/body_json` 字段对齐。
 
 ```bash
 curl -s http://127.0.0.1:8766/rpc
