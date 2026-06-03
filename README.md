@@ -239,6 +239,8 @@ bin/companyctl task split --task-id task-video-project-001 --by video-ops --plan
 `config/daemon.json` 里的 `heartbeat_agents` 是固定员工心跳，`heartbeat_runtimes` 会动态覆盖指定 runtime 下所有 active 员工；设为 `["*"]` 时覆盖所有 active 员工，新增员工后不用手改心跳列表。
 `config/daemon.json` 里的 `adapter_workers` 可以启用员工 worker，让 daemon 每轮自动领取任务、执行 adapter、写 evidence、回传状态。
 每个 worker 支持 `max_tasks_per_tick`，独立状态写到 `state/daemon/workers/<agent>.json`，汇总运行历史写入 SQLite `adapter_runs` 并显示在 dashboard；未确认的失败 adapter run 会让 `companyctl doctor` 报 `adapter_failures`。
+任务提交会生成 `trace_id`，并贯穿 task metadata、`company_events`、`adapter_runs` 和 dashboard，用来追踪派发、hook、adapter 执行链路。
+daemon 会按 `run_retries` 和 worker `retry_policy` 对到期失败 adapter run 自动调用 `runtime retry-adapter-run`，默认指数退避写入 `adapter_runs.next_retry_at`，人工确认后不再自动重试。
 `companyctl doctor` 会读取 `state/daemon/last-run.json` 检查 daemon 是否在 10 分钟内运行；如果超过阈值会报 `daemon_stale`，因此定时器应按 10 分钟以内周期执行 daemon。
 `companyctl doctor --summary` 还会显示 launchd 模板和 `~/Library/LaunchAgents` 安装状态，并给出 install/verify 命令；未安装只作为可观测字段，不直接让健康检查失败。
 

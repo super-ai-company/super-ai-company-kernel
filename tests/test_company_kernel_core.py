@@ -264,6 +264,19 @@ class CompanyKernelCoreTest(unittest.TestCase):
             )
             conn.execute(
                 """
+                CREATE TABLE company_events (
+                  id TEXT PRIMARY KEY,
+                  event_type TEXT NOT NULL,
+                  source_agent TEXT NOT NULL,
+                  task_id TEXT NOT NULL DEFAULT '',
+                  payload_json TEXT NOT NULL DEFAULT '{}',
+                  created_at TEXT NOT NULL,
+                  processed_at TEXT NOT NULL DEFAULT ''
+                )
+                """
+            )
+            conn.execute(
+                """
                 INSERT INTO adapter_runs(id, agent_id, command, ok, processed, result_json, created_at)
                 VALUES (?, 'codex', 'company-adapter-worker', 1, 1, ?, '2026-06-03T05:00:00+07:00')
                 """,
@@ -282,6 +295,11 @@ class CompanyKernelCoreTest(unittest.TestCase):
             self.assertIn("acknowledged_at", adapter_columns)
             self.assertIn("acknowledged_by", adapter_columns)
             self.assertIn("acknowledgement_reason", adapter_columns)
+            self.assertIn("trace_id", adapter_columns)
+            self.assertIn("attempt", adapter_columns)
+            self.assertIn("next_retry_at", adapter_columns)
+            event_columns = {row["name"] for row in conn.execute("PRAGMA table_info(company_events)").fetchall()}
+            self.assertIn("trace_id", event_columns)
             backfilled = conn.execute("SELECT task_id FROM adapter_runs WHERE id = 'adapter-run-backfill-task'").fetchone()
             self.assertEqual("task-backfilled-adapter-run", backfilled["task_id"])
             migrations = conn.execute("SELECT id FROM schema_migrations ORDER BY id").fetchall()
@@ -290,8 +308,12 @@ class CompanyKernelCoreTest(unittest.TestCase):
                     "20260603_adapter_runs_acknowledged_at",
                     "20260603_adapter_runs_acknowledged_by",
                     "20260603_adapter_runs_acknowledgement_reason",
+                    "20260603_adapter_runs_attempt",
                     "20260603_adapter_runs_backfill_task_id",
+                    "20260603_adapter_runs_next_retry_at",
                     "20260603_adapter_runs_task_id",
+                    "20260603_adapter_runs_trace_id",
+                    "20260603_company_events_trace_id",
                     "20260603_project_plan_items_task_id",
                 ],
                 [row["id"] for row in migrations],
@@ -953,6 +975,30 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertIn("task-long-001-child-01/video-creator/completed", html)
         self.assertIn("task-long-001-child-02/video-publisher/completed", html)
 
+    def test_task_trace_id_flows_into_events(self) -> None:
+        evidence = self.root / "evidence" / "trace.md"
+        evidence.parent.mkdir(exist_ok=True)
+        evidence.write_text("trace evidence", encoding="utf-8")
+
+        code, submitted = run_cli("task", "submit", "--from", "openclaw-main", "--to", "codex", "--task-id", "task-trace-flow", "--title", "trace flow")
+        self.assertEqual(code, 0, submitted)
+        trace_id = submitted["task"]["metadata"]["trace_id"]
+        self.assertTrue(trace_id.startswith("trace-"))
+
+        code, claimed = run_cli("task", "claim", "--agent", "codex", "--task-id", "task-trace-flow")
+        self.assertEqual(code, 0, claimed)
+        code, done = run_cli("task", "done", "--agent", "codex", "--task-id", "task-trace-flow", "--summary", "done", "--evidence", str(evidence))
+        self.assertEqual(code, 0, done)
+
+        conn = companyctl.connect()
+        try:
+            row = conn.execute("SELECT trace_id, event_type, task_id FROM company_events WHERE id = ?", (done["event_id"],)).fetchone()
+            self.assertEqual(trace_id, row["trace_id"])
+            self.assertEqual("task.done", row["event_type"])
+            self.assertEqual("task-trace-flow", row["task_id"])
+        finally:
+            conn.close()
+
     def test_direct_task_submit_requires_approval_for_high_risk_actions(self) -> None:
         code, blocked = run_cli(
             "task",
@@ -1437,6 +1483,9 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual(1, wildcard_agents.count("openclaw-main"))
 
     def test_daemon_records_adapter_runs_for_dashboard(self) -> None:
+        code, submitted = run_cli("task", "submit", "--from", "openclaw-main", "--to", "codex", "--task-id", "task-adapter-run-dashboard", "--title", "adapter run dashboard")
+        self.assertEqual(code, 0, submitted)
+        trace_id = submitted["task"]["metadata"]["trace_id"]
         state = {
             "ok": True,
             "agent": "codex",
@@ -1454,15 +1503,19 @@ class CompanyKernelCoreTest(unittest.TestCase):
             self.assertEqual(1, len(rows))
             self.assertEqual("codex", rows[0]["agent_id"])
             self.assertEqual("task-adapter-run-dashboard", rows[0]["task_id"])
+            self.assertEqual(trace_id, rows[0]["trace_id"])
             self.assertEqual("company-codex-adapter", rows[0]["command"])
             self.assertEqual(1, rows[0]["ok"])
             self.assertEqual(1, rows[0]["processed"])
+            self.assertEqual(1, rows[0]["attempt"])
+            self.assertEqual("", rows[0]["next_retry_at"])
         finally:
             conn.close()
 
         code, listed = run_cli("runtime", "adapter-runs", "--agent", "codex", "--status", "ok")
         self.assertEqual(code, 0, listed)
         self.assertEqual(["task-adapter-run-dashboard"], [run["task_id"] for run in listed["adapter_runs"]])
+        self.assertEqual([trace_id], [run["trace_id"] for run in listed["adapter_runs"]])
         run_id = listed["adapter_runs"][0]["id"]
         code, shown = run_cli("runtime", "adapter-run", "show", "--run-id", run_id)
         self.assertEqual(code, 0, shown)
@@ -1541,6 +1594,38 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual(["task-daemon-worker-e2e"], [run["task_id"] for run in runs["adapter_runs"]])
         self.assertTrue((self.root / "employees" / "codex" / "heartbeat.json").exists())
         self.assertTrue((self.root / "state" / "daemon" / "workers" / "codex.json").exists())
+
+    def test_daemon_retries_due_failed_adapter_run(self) -> None:
+        code, submitted = run_cli("task", "submit", "--from", "openclaw-main", "--to", "codex", "--task-id", "task-auto-retry", "--title", "auto retry")
+        self.assertEqual(code, 0, submitted)
+        code, blocked = run_cli("task", "block", "--agent", "codex", "--task-id", "task-auto-retry", "--blocker", "adapter failed")
+        self.assertEqual(code, 0, blocked)
+        trace_id = submitted["task"]["metadata"]["trace_id"]
+        conn = companyctl.connect()
+        try:
+            conn.execute(
+                """
+                INSERT INTO adapter_runs(id, trace_id, agent_id, task_id, command, ok, processed, attempt, next_retry_at, result_json, created_at)
+                VALUES ('adapter-run-auto-retry', ?, 'codex', 'task-auto-retry', 'company-codex-adapter', 0, 1, 1, '2000-01-01T00:00:00+00:00', '{}', ?)
+                """,
+                (trace_id, companyctl.now()),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        state = company_daemon.tick({"version": 1, "run_repair": False, "run_scheduler": False, "heartbeat_agents": [], "run_retries": True})
+        self.assertTrue(state["ok"], state)
+        self.assertEqual(["retry.adapter-run"], [item["step"] for item in state["results"]])
+
+        code, task = run_cli("task", "show", "--task-id", "task-auto-retry")
+        self.assertEqual(code, 0, task)
+        self.assertEqual("submitted", task["task"]["status"])
+        self.assertEqual("adapter-run-auto-retry", task["metadata"]["recovery"]["retry_adapter_run"])
+        code, run = run_cli("runtime", "adapter-run", "show", "--run-id", "adapter-run-auto-retry", "--summary")
+        self.assertEqual(code, 0, run)
+        self.assertEqual(trace_id, run["adapter_run"]["trace_id"])
+        self.assertEqual("openclaw-main", run["adapter_run"]["acknowledged_by"])
 
     def test_daemon_enable_worker_temporarily_overrides_config(self) -> None:
         config_path = self.root / "config" / "daemon-worker-enable.json"

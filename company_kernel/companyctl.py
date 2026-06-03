@@ -95,11 +95,32 @@ def audit(conn: sqlite3.Connection, actor: str, action: str, target: str = "", d
     conn.commit()
 
 
-def record_event(conn: sqlite3.Connection, event_type: str, source_agent: str, *, task_id: str = "", payload: dict | None = None) -> dict:
+def new_trace_id() -> str:
+    return f"trace-{datetime.now().strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:8]}"
+
+
+def trace_id_for_task(conn: sqlite3.Connection, task_id: str = "", fallback: str = "") -> str:
+    if not task_id:
+        return fallback or new_trace_id()
+    row = conn.execute("SELECT metadata_json FROM task_metadata WHERE task_id = ?", (task_id,)).fetchone()
+    if row:
+        try:
+            metadata = json.loads(row["metadata_json"] or "{}")
+        except json.JSONDecodeError:
+            metadata = {}
+        trace_id = str(metadata.get("trace_id", "") or "")
+        if trace_id:
+            return trace_id
+    return fallback or new_trace_id()
+
+
+def record_event(conn: sqlite3.Connection, event_type: str, source_agent: str, *, task_id: str = "", payload: dict | None = None, trace_id: str = "") -> dict:
     event_id = f"evt-{datetime.now().strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:6]}"
     ts = now()
+    event_trace_id = trace_id or trace_id_for_task(conn, task_id)
     event = {
         "id": event_id,
+        "trace_id": event_trace_id,
         "event_type": event_type,
         "source_agent": source_agent,
         "task_id": task_id,
@@ -108,10 +129,10 @@ def record_event(conn: sqlite3.Connection, event_type: str, source_agent: str, *
     }
     conn.execute(
         """
-        INSERT INTO company_events(id, event_type, source_agent, task_id, payload_json, created_at)
-        VALUES (?, ?, ?, ?, ?, ?)
+        INSERT INTO company_events(id, trace_id, event_type, source_agent, task_id, payload_json, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
         """,
-        (event_id, event_type, source_agent, task_id, json.dumps(payload or {}, ensure_ascii=False), ts),
+        (event_id, event_trace_id, event_type, source_agent, task_id, json.dumps(payload or {}, ensure_ascii=False), ts),
     )
     conn.commit()
     return event
@@ -878,7 +899,7 @@ def cmd_task_submit(args: argparse.Namespace) -> int:
         """,
         (task_id, source, target, args.title, args.description, args.priority, ts, ts),
     )
-    metadata = {"declared_changes": parse_csv(args.changed_files), "rfc": args.rfc, "approval": gate.get("approval")}
+    metadata = {"trace_id": new_trace_id(), "declared_changes": parse_csv(args.changed_files), "rfc": args.rfc, "approval": gate.get("approval")}
     conn.execute(
         "INSERT OR REPLACE INTO task_metadata(task_id, metadata_json, updated_at) VALUES (?, ?, ?)",
         (task_id, json.dumps(metadata, ensure_ascii=False), ts),
@@ -1015,9 +1036,11 @@ def submit_task_internal(
         """,
         (tid, source, target, title, description, priority, ts, ts),
     )
+    task_metadata_obj = {**(metadata or {})}
+    task_metadata_obj.setdefault("trace_id", new_trace_id())
     conn.execute(
         "INSERT OR REPLACE INTO task_metadata(task_id, metadata_json, updated_at) VALUES (?, ?, ?)",
-        (tid, json.dumps(metadata or {}, ensure_ascii=False), ts),
+        (tid, json.dumps(task_metadata_obj, ensure_ascii=False), ts),
     )
     conn.commit()
     inbox = employee_paths(target)["inbox"]
@@ -1031,7 +1054,7 @@ def submit_task_internal(
         "description": description,
         "priority": priority,
         "status": "submitted",
-        "metadata": metadata or {},
+        "metadata": task_metadata_obj,
         "communication_policy": policy,
         "created_at": ts,
     }
@@ -3118,7 +3141,7 @@ def cmd_runtime_adapter_runs(args: argparse.Namespace) -> int:
     adapter_runs = rows(
         conn,
         f"""
-        SELECT id, agent_id, task_id, command, ok, processed,
+        SELECT id, trace_id, agent_id, task_id, command, ok, processed, attempt, next_retry_at,
                acknowledged_at, acknowledged_by, acknowledgement_reason, created_at
         FROM adapter_runs
         {where_sql}

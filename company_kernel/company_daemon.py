@@ -6,7 +6,7 @@ import os
 import subprocess
 import time
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from company_kernel import companyctl
@@ -114,6 +114,7 @@ def run_adapter(worker: dict) -> dict:
         "command": worker.get("command", ""),
         "processed": processed_total,
         "runs": runs,
+        "retry_policy": worker.get("retry_policy", {}),
         "at": now(),
     }
     worker_state_path = STATE_DIR / "workers" / f"{worker.get('agent', 'unknown')}.json"
@@ -128,18 +129,24 @@ def record_adapter_run(state: dict) -> None:
     task_id = adapter_state_task_id(state)
     conn = companyctl.connect()
     try:
+        trace_id = companyctl.trace_id_for_task(conn, task_id, state.get("trace_id", ""))
+        attempt = adapter_attempt_for_task(conn, task_id)
+        next_retry_at = next_retry_at_for_state(state, attempt)
         conn.execute(
             """
-            INSERT INTO adapter_runs(id, agent_id, task_id, command, ok, processed, result_json, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO adapter_runs(id, trace_id, agent_id, task_id, command, ok, processed, attempt, next_retry_at, result_json, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 f"adapter-run-{datetime.now().strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:6]}",
+                trace_id,
                 state.get("agent", ""),
                 task_id,
                 state.get("command", ""),
                 1 if state.get("ok") else 0,
                 int(state.get("processed", 0) or 0),
+                attempt,
+                next_retry_at,
                 json.dumps(state, ensure_ascii=False),
                 state.get("at", now()),
             ),
@@ -149,6 +156,26 @@ def record_adapter_run(state: dict) -> None:
         conn.close()
 
 
+def adapter_attempt_for_task(conn, task_id: str) -> int:
+    if not task_id:
+        return 1
+    row = conn.execute("SELECT MAX(attempt) AS max_attempt FROM adapter_runs WHERE task_id = ?", (task_id,)).fetchone()
+    return int((row["max_attempt"] if row and row["max_attempt"] is not None else 0) or 0) + 1
+
+
+def next_retry_at_for_state(state: dict, attempt: int) -> str:
+    if state.get("ok"):
+        return ""
+    policy = state.get("retry_policy") or {}
+    max_attempts = int(policy.get("max_attempts", 0) or 0)
+    if max_attempts <= 0 or attempt >= max_attempts:
+        return ""
+    base = int(policy.get("base_delay_seconds", 60) or 60)
+    maximum = int(policy.get("max_delay_seconds", 3600) or 3600)
+    delay = min(maximum, base * (2 ** max(attempt - 1, 0)))
+    return (datetime.now(timezone.utc).astimezone() + timedelta(seconds=delay)).isoformat(timespec="seconds")
+
+
 def adapter_state_task_id(state: dict) -> str:
     for run in state.get("runs", []):
         if isinstance(run, dict):
@@ -156,6 +183,32 @@ def adapter_state_task_id(state: dict) -> str:
             if isinstance(parsed, dict) and parsed.get("task_id"):
                 return str(parsed["task_id"])
     return ""
+
+
+def retry_due_adapter_runs(config: dict) -> list[dict]:
+    if not config.get("run_retries", True):
+        return []
+    conn = companyctl.connect()
+    try:
+        due = conn.execute(
+            """
+            SELECT * FROM adapter_runs
+            WHERE ok = 0
+              AND acknowledged_at = ''
+              AND task_id != ''
+              AND next_retry_at != ''
+              AND next_retry_at <= ?
+            ORDER BY next_retry_at ASC
+            LIMIT ?
+            """,
+            (now(), int(config.get("max_retries_per_tick", 5) or 5)),
+        ).fetchall()
+    finally:
+        conn.close()
+    results = []
+    for run in due:
+        results.append(run_companyctl("runtime", "retry-adapter-run", "--run-id", run["id"], "--by", "openclaw-main", "--reason", "auto retry policy"))
+    return results
 
 
 def write_state(state: dict) -> Path:
@@ -205,6 +258,8 @@ def tick(config: dict) -> dict:
         results.append({"step": "repair.reset-stale-claims", "result": run_companyctl("repair", "reset-stale-claims")})
     if config.get("run_scheduler", True):
         results.append({"step": "scheduler.run", "result": run_companyctl("scheduler", "run")})
+    for result in retry_due_adapter_runs(config):
+        results.append({"step": "retry.adapter-run", "result": result})
     for agent in resolve_heartbeat_agents(config):
         results.append({"step": f"heartbeat.{agent}", "result": run_companyctl("heartbeat", "--agent", agent)})
     for worker in config.get("adapter_workers", []):

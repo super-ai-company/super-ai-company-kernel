@@ -396,11 +396,11 @@ def render(summary: dict) -> str:
     {render_table(["id", "author", "status", "paths", "reason", "decision_by", "updated"], rfcs, ["id", "author_agent", "status", "target_paths", "reason", "decision_by", "updated_at"])}
     <h2>Events</h2>
     <h2>Pending Events</h2>
-    {render_table(["id", "type", "source", "task", "created"], summary["pending_events"], ["id", "event_type", "source_agent", "task_id", "created_at"])}
+    {render_table(["id", "trace", "type", "source", "task", "created"], summary["pending_events"], ["id", "trace_id", "event_type", "source_agent", "task_id", "created_at"])}
     <h2>Recent Events</h2>
-    {render_table(["id", "type", "source", "task", "processed_at", "created"], summary["events"], ["id", "event_type", "source_agent", "task_id", "processed_at", "created_at"])}
+    {render_table(["id", "trace", "type", "source", "task", "processed_at", "created"], summary["events"], ["id", "trace_id", "event_type", "source_agent", "task_id", "processed_at", "created_at"])}
     <h2>Adapter Runs</h2>
-    {render_table(["id", "agent", "task", "command", "ok", "processed", "ack_by", "ack_reason", "state_file", "created"], adapter_runs, ["id", "agent_id", "task_id", "command", "ok_text", "processed", "acknowledged_by", "acknowledgement_reason", "state_file", "created_at"])}
+    {render_table(["id", "trace", "agent", "task", "command", "ok", "processed", "attempt", "next_retry", "ack_by", "ack_reason", "state_file", "created"], adapter_runs, ["id", "trace_id", "agent_id", "task_id", "command", "ok_text", "processed", "attempt", "next_retry_at", "acknowledged_by", "acknowledgement_reason", "state_file", "created_at"])}
     <h2>Locks</h2>
     {render_table(["resource", "owner", "lease_until", "updated"], summary["locks"], ["resource_key", "owner_agent", "lease_until", "updated_at"])}
   </main>

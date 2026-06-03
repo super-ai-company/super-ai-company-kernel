@@ -42,6 +42,30 @@ MIGRATIONS = (
         "column": "task_id",
         "backfill": "adapter_runs.task_id",
     },
+    {
+        "id": "20260603_company_events_trace_id",
+        "table": "company_events",
+        "column": "trace_id",
+        "sql": "ALTER TABLE company_events ADD COLUMN trace_id TEXT NOT NULL DEFAULT ''",
+    },
+    {
+        "id": "20260603_adapter_runs_trace_id",
+        "table": "adapter_runs",
+        "column": "trace_id",
+        "sql": "ALTER TABLE adapter_runs ADD COLUMN trace_id TEXT NOT NULL DEFAULT ''",
+    },
+    {
+        "id": "20260603_adapter_runs_attempt",
+        "table": "adapter_runs",
+        "column": "attempt",
+        "sql": "ALTER TABLE adapter_runs ADD COLUMN attempt INTEGER NOT NULL DEFAULT 1",
+    },
+    {
+        "id": "20260603_adapter_runs_next_retry_at",
+        "table": "adapter_runs",
+        "column": "next_retry_at",
+        "sql": "ALTER TABLE adapter_runs ADD COLUMN next_retry_at TEXT NOT NULL DEFAULT ''",
+    },
 )
 
 

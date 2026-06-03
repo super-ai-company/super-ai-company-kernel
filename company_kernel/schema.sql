@@ -174,6 +174,7 @@ CREATE TABLE IF NOT EXISTS audit_logs (
 
 CREATE TABLE IF NOT EXISTS company_events (
   id TEXT PRIMARY KEY,
+  trace_id TEXT NOT NULL DEFAULT '',
   event_type TEXT NOT NULL,
   source_agent TEXT NOT NULL,
   task_id TEXT NOT NULL DEFAULT '',
@@ -195,11 +196,14 @@ CREATE TABLE IF NOT EXISTS hook_action_runs (
 
 CREATE TABLE IF NOT EXISTS adapter_runs (
   id TEXT PRIMARY KEY,
+  trace_id TEXT NOT NULL DEFAULT '',
   agent_id TEXT NOT NULL,
   task_id TEXT NOT NULL DEFAULT '',
   command TEXT NOT NULL DEFAULT '',
   ok INTEGER NOT NULL DEFAULT 0,
   processed INTEGER NOT NULL DEFAULT 0,
+  attempt INTEGER NOT NULL DEFAULT 1,
+  next_retry_at TEXT NOT NULL DEFAULT '',
   result_json TEXT NOT NULL DEFAULT '{}',
   acknowledged_at TEXT NOT NULL DEFAULT '',
   acknowledged_by TEXT NOT NULL DEFAULT '',
