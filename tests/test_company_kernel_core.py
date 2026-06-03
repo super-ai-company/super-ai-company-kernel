@@ -721,7 +721,7 @@ class CompanyKernelCoreTest(unittest.TestCase):
 
             class Result:
                 returncode = 0
-                stdout = json.dumps({"ok": True, "agent": "codex", "direct_message": True, "reply": "CODEX_DIRECT_OK"})
+                stdout = json.dumps({"ok": True, "agent": "codex", "direct_message": True, "reply": "CODEX_DIRECT_OK", "progress_report": str(self.root / "employees" / "codex" / "reports" / "direct" / "progress_acknowledged_test.json")})
                 stderr = ""
 
             return Result()
@@ -742,11 +742,43 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual(0, code, sent)
         self.assertEqual("CODEX_DIRECT_OK", sent["reply"])
         self.assertEqual("agent:codex:main", sent["session_key"])
+        self.assertEqual("codex", sent["receipt"]["source_agent"])
+        self.assertEqual("main", sent["receipt"]["target_agent"])
+        self.assertEqual("CODEX_DIRECT_OK", sent["receipt"]["body"])
+        self.assertTrue(Path(sent["receipt_file"]).exists())
         self.assertIn("company-codex-adapter", calls[0][0])
         self.assertIn("--direct-message", calls[0])
         self.assertIn("--direct-source", calls[0])
         self.assertIn("--direct-session-key", calls[0])
         self.assertEqual("codex", sent["message"]["target_agent"])
+
+    def test_codex_direct_message_writes_progress_report(self) -> None:
+        code, created = run_cli(
+            "employee",
+            "create",
+            "--id",
+            "codex",
+            "--name",
+            "Codex",
+            "--role",
+            "developer",
+            "--runtime",
+            "codex",
+            "--workspace",
+            str(self.root / "workspace" / "codex"),
+        )
+        self.assertEqual(code, 0, created)
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            code = codex_adapter.main(["--agent", "codex", "--direct-source", "main", "--direct-session-key", "agent:codex:main", "--direct-message", "只回复 CODEX_PROGRESS_OK"])
+        self.assertEqual(0, code)
+        payload = json.loads(buf.getvalue())
+        self.assertEqual("CODEX_PROGRESS_OK", payload["reply"])
+        report = Path(payload["progress_report"])
+        self.assertTrue(report.exists())
+        report_payload = json.loads(report.read_text(encoding="utf-8"))
+        self.assertEqual("acknowledged", report_payload["state"])
+        self.assertEqual("main", report_payload["source"])
 
     def test_dashboard_renders_conversations_and_pending_events(self) -> None:
         code, created = run_cli("employee", "create", "--id", "main", "--name", "main", "--role", "operator", "--runtime", "openclaw", "--workspace", str(self.root / "workspace" / "main"))
@@ -3616,11 +3648,14 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertIn("rename_command", report["employee_directory"]["all"][0])
         self.assertEqual(["id", "alias", "name", "display_name"], hermes["identity"]["lookup_priority"])
         self.assertTrue(report["handshake"]["required"])
-        self.assertEqual("codex", report["handshake"]["installer_agent"])
-        hermes_plan = next(item for item in report["handshake"]["plan"] if item["to"] == "hermes")
-        self.assertEqual(3, hermes_plan["rounds"])
-        self.assertEqual(3, hermes_plan["required_success"])
-        self.assertIn("workspace", hermes_plan["messages"][1])
+        self.assertEqual("hermes", report["handshake"]["installer_agent"])
+        self.assertEqual("hermes", report["handshake"]["validation_admin"])
+        self.assertEqual("hermes", report["handshake"]["approval_validation_admin"])
+        codex_plan = next(item for item in report["handshake"]["plan"] if item["to"] == "codex")
+        self.assertEqual(3, codex_plan["rounds"])
+        self.assertEqual(3, codex_plan["required_success"])
+        self.assertIn("workspace", codex_plan["messages"][1])
+        self.assertNotIn("hermes", [item["to"] for item in report["handshake"]["plan"]])
         self.assertNotIn("owner-shift", [item["to"] for item in report["handshake"]["plan"]])
         self.assertEqual("default", hermes["runtime"]["runtime_agent_id"])
         self.assertEqual("agent:default:<source>", hermes["communication"]["session_key"])

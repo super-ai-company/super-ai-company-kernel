@@ -339,7 +339,7 @@ def main() -> int:
     parser.add_argument("--openclaw-root", default="")
     parser.add_argument("--kernel-root", default="")
     parser.add_argument("--apply", action="store_true", help="create discovered employees as candidate entries; default is read-only")
-    parser.add_argument("--installer-agent", default="codex", help="employee that performs onboarding handshakes")
+    parser.add_argument("--installer-agent", default="hermes", help="employee that performs onboarding handshakes; local validation admin defaults to Hermes")
     parser.add_argument("--handshake-rounds", type=int, default=3, choices=[2, 3, 4])
     parser.add_argument("--handshake", action="store_true", help="execute 2-4 direct-message onboarding rounds for discovered/registered employees")
     parser.add_argument("--handshake-timeout", type=int, default=120)
@@ -367,6 +367,8 @@ def main() -> int:
             "rounds": args.handshake_rounds,
             "auto_execute_requested": bool(args.handshake),
             "required": True,
+            "validation_admin": "hermes",
+            "approval_validation_admin": "hermes",
             "plan": [],
             "results": [],
         },

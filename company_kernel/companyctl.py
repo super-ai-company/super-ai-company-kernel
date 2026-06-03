@@ -1989,6 +1989,16 @@ def cmd_message_direct(args: argparse.Namespace) -> int:
         return 1
     reply = parse_openclaw_payload_text(cp.stdout)
     message_record = send_message_internal(conn, source=source, target=target, body=args.body, message_id=args.message_id)
+    receipt_record = None
+    if cp.returncode == 0 and reply:
+        receipt_id = f"{args.message_id}-receipt" if args.message_id else ""
+        receipt_record = send_message_internal(
+            conn,
+            source=target,
+            target=source,
+            body=reply,
+            message_id=receipt_id,
+        )
     result = {
         "ok": cp.returncode == 0,
         "source": source,
@@ -2004,6 +2014,8 @@ def cmd_message_direct(args: argparse.Namespace) -> int:
         "exit_code": cp.returncode,
         "message": message_record["message"],
         "file": message_record["file"],
+        "receipt": receipt_record["message"] if receipt_record else None,
+        "receipt_file": receipt_record["file"] if receipt_record else "",
         "stderr": cp.stderr[-2000:],
     }
     emit(result)

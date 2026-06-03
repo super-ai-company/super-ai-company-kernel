@@ -11,6 +11,8 @@ human -> hermes -> codex -> hermes -> main
 
 只看到 `message direct ok`、adapter stdout、inbox 文件、dashboard 显示 API ONLINE，都不算闭环成功。必须证明发起入口收到协作员工回执，并且最终操作员收到明确结果。
 
+本机验证和审批流程验证默认交给 Hermes 管理。任何“本机是否最新”“审批链路是否有效”“员工是否可上岗”的验收，先走 Hermes 作为 validation admin；如果任务路由被 approval gate 阻断，Hermes 必须用 direct read-only 验证路径回传 blocker 和证据，不能静默失败。
+
 ## 最近已实现
 
 - Dashboard:
@@ -32,6 +34,10 @@ human -> hermes -> codex -> hermes -> main
 - 服务:
   - launchd 固定 API `8765`、dashboard `8780`。
   - 当前 health 可达，但有 `pending_events` 时 `/v1/health` 会返回非 2xx。
+- 验证管理员:
+  - 本机 validation admin / approval-flow admin 默认是 Hermes。
+  - scanner 默认 `--installer-agent hermes`，用于员工握手、审批流验证和本机最新代码验收。
+  - Codex/OpenClaw 只能在用户显式指定时作为 installer agent 覆盖默认值。
 
 ## 仍未完整验收的问题
 
@@ -99,7 +105,7 @@ human -> hermes -> codex -> hermes -> main
 
 7. 验证 2-4 轮员工握手：
    - scanner 输出 handshake.plan。
-   - 选择 codex 或 openclaw-main 作为 installer_agent。
+   - 默认选择 hermes 作为 installer_agent 和 validation admin。
    - 至少对 codex/hermes/openclaw-main 跑 3 轮。
    - 每轮必须有回复或明确 blocked reason。
 
