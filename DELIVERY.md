@@ -15,6 +15,7 @@ Implemented and verified:
 - End-to-end daemon worker smoke for automatic task execution: daemon can enable a worker, claim a task, write evidence, complete it, heartbeat, and record `adapter_runs`.
 - Trace ID telemetry foundation: task metadata, company events, adapter runs, and dashboard now carry the same trace id.
 - Retry policy foundation: daemon records adapter attempts and `next_retry_at`, then automatically restores due failed adapter tasks through the existing recovery path.
+- API Gateway foundation: lightweight REST service exposes health, doctor, tasks, messages, heartbeats, and adapter runs while reusing `companyctl` governance.
 - Static dashboard with runtime health, evidence health, employees, capabilities, projects, recent tasks, long-task delegation, conversations, approvals, RFCs, events, adapter runs, and locks.
 - Daemon loop with heartbeat refresh, scheduler run, repair pass, compact summary output, adapter run recording, launchd template and install/uninstall scripts.
 - OpenClaw alert integration in `/Users/owner/openclaw/workspace-xmanx/scripts`, including Company Kernel heartbeat, daemon, launchd, capability, and evidence health fields.
@@ -36,7 +37,7 @@ python3 /Users/owner/openclaw/workspace-xmanx/scripts/heartbeat_summary_router.p
 
 ## Latest Verified Result
 
-- Unit tests: 30/30 passing.
+- Unit tests: 31/31 passing.
 - Daemon worker smoke: verified in automated tests; manual command path documented in README.
 - Doctor: `ok=true`, `issues=[]`.
 - Heartbeats: 14 active employee heartbeats, missing=0, stale=0.

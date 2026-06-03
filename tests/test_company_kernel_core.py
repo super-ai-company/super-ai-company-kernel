@@ -11,6 +11,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+from company_kernel import api_gateway
 from company_kernel import company_daemon
 from company_kernel import company_dashboard
 from company_kernel import companyctl
@@ -165,6 +166,20 @@ class CompanyKernelCoreTest(unittest.TestCase):
             mock.patch.object(policy_guard, "DB_PATH", root / "company.sqlite"),
             mock.patch.object(policy_guard, "SCHEMA", root / "company_kernel" / "schema.sql"),
             mock.patch.object(policy_guard, "APPROVAL_STATE_DIR", root / "state" / "approvals"),
+            mock.patch.object(api_gateway.companyctl, "ROOT", root),
+            mock.patch.object(api_gateway.companyctl, "DB_PATH", root / "company.sqlite"),
+            mock.patch.object(api_gateway.companyctl, "EMPLOYEES_DIR", root / "employees"),
+            mock.patch.object(api_gateway.companyctl, "STATE_DIR", root / "state"),
+            mock.patch.object(api_gateway.companyctl, "RFC_DIR", root / "rfcs"),
+            mock.patch.object(api_gateway.companyctl, "CONFIG_DIR", root / "config"),
+            mock.patch.object(api_gateway.companyctl, "WORKFLOW_DIR", root / "config" / "workflows"),
+            mock.patch.object(api_gateway.companyctl, "LAUNCHD_TEMPLATE", root / "config" / "launchd" / "ai.openclaw.company-kernel.daemon.plist"),
+            mock.patch.object(api_gateway.companyctl, "HOOKS_PATH", root / "config" / "hooks.json"),
+            mock.patch.object(api_gateway.companyctl, "COMMUNICATIONS_PATH", root / "config" / "company_communications.json"),
+            mock.patch.object(api_gateway.companyctl, "POLICY_PATH", root / "config" / "policy.json"),
+            mock.patch.object(api_gateway.companyctl, "PROTECTED_PATHS_CONFIG", root / "config" / "protected_paths.json"),
+            mock.patch.object(api_gateway.companyctl, "APPROVAL_STATE_DIR", root / "state" / "approvals"),
+            mock.patch.object(api_gateway.companyctl, "SCHEMA", root / "company_kernel" / "schema.sql"),
             mock.patch.object(companyctl, "ROOT", root),
             mock.patch.object(companyctl, "DB_PATH", root / "company.sqlite"),
             mock.patch.object(companyctl, "EMPLOYEES_DIR", root / "employees"),
@@ -998,6 +1013,41 @@ class CompanyKernelCoreTest(unittest.TestCase):
             self.assertEqual("task-trace-flow", row["task_id"])
         finally:
             conn.close()
+
+    def test_api_gateway_exposes_health_tasks_messages_and_heartbeats(self) -> None:
+        for agent in ["video-ops", "video-creator", "video-publisher", "codex", "openclaw-main", "hermes", "nestcar"]:
+            status, heartbeat = api_gateway.route_post("/v1/heartbeats", {"agent": agent})
+            self.assertEqual(201, status, heartbeat)
+        daemon_state = self.root / "state" / "daemon" / "last-run.json"
+        daemon_state.parent.mkdir(parents=True, exist_ok=True)
+        daemon_state.write_text(json.dumps({"ok": True, "at": companyctl.now(), "results": []}, ensure_ascii=False), encoding="utf-8")
+        status, health = api_gateway.route_get("/v1/health", {})
+        self.assertEqual(200, status, health)
+        self.assertTrue(health["ok"])
+
+        status, submitted = api_gateway.route_post(
+            "/v1/tasks",
+            {
+                "from": "openclaw-main",
+                "to": "codex",
+                "task_id": "task-api-gateway",
+                "title": "API Gateway task",
+                "description": "created through REST",
+            },
+        )
+        self.assertEqual(201, status, submitted)
+        self.assertEqual("task-api-gateway", submitted["task"]["id"])
+        self.assertTrue(submitted["task"]["metadata"]["trace_id"].startswith("trace-"))
+
+        status, shown = api_gateway.route_get("/v1/tasks/task-api-gateway", {})
+        self.assertEqual(200, status, shown)
+        self.assertEqual("task-api-gateway", shown["task"]["id"])
+
+        status, sent = api_gateway.route_post("/v1/messages", {"from": "hermes", "to": "codex", "body": "REST ping", "message_id": "msg-api-gateway"})
+        self.assertEqual(201, status, sent)
+        status, messages = api_gateway.route_get("/v1/messages", {"agent": ["codex"]})
+        self.assertEqual(200, status, messages)
+        self.assertIn("msg-api-gateway", [message["id"] for message in messages["messages"]])
 
     def test_direct_task_submit_requires_approval_for_high_risk_actions(self) -> None:
         code, blocked = run_cli(
