@@ -34,7 +34,7 @@ Implemented and verified:
 - RPC Gateway now exposes the same governed service layer through JSON-RPC plus a generic gRPC server contract.
 - Optional `requirements-optional.txt` pins `grpcio` for deployments that need real gRPC network service validation.
 - Service smoke now starts REST/RPC on random local ports and validates remote health/describe/get without direct SQLite access; with optional dependencies installed it also reports gRPC `ready`.
-- Owner `owner-shift` is registered as a human approval endpoint. Telegram button approval was verified through `/Users/shift/openclaw/scripts/ops_telegram_approval_watcher.py`, but that direct watcher is disabled by default because it conflicts with OpenClaw's own Telegram `getUpdates` loop; production should use an OpenClaw-native callback/plugin bridge.
+- Owner `owner-shift` is registered as a human approval endpoint. Telegram button approval must use an OpenClaw-native callback/plugin bridge; `/Users/shift/openclaw/scripts/ops_telegram_approval_watcher.py` is a disabled legacy smoke helper and must not run in production because it conflicts with OpenClaw's own Telegram `getUpdates` loop.
 - Tools that are not installed or connected on this Mac, such as Cursor, Devin, GitHub Copilot, and local-model-agent, are tracked as `candidate` employees instead of active employees; they are excluded from heartbeat and routing until activated.
 - Sandbox isolation foundation: Codex/Hermes adapters can wrap execution commands with Docker or Firejail profiles without changing task protocol.
 - Static dashboard with runtime health, evidence health, employees, capabilities, projects, recent tasks, long-task delegation, conversations, approvals, RFCs, events, adapter runs, and locks.
@@ -72,7 +72,7 @@ openclaw gateway probe
 - Evidence health: 0 issues.
 - Capability health: 0 issues.
 - OpenClaw runtime alert: `severity=ok`.
-- OpenClaw safety guard: `doctor --summary` includes read-only `openclaw_guard`; `--strict-openclaw` fails when an external Telegram polling watcher is enabled or native Telegram ingress spools are stuck.
+- OpenClaw safety guard: `doctor --summary` includes read-only `openclaw_guard`; CLI `--strict-openclaw` and REST `/v1/doctor?strict_openclaw=true` fail when an external Telegram polling watcher is enabled or native Telegram ingress spools are stuck.
 
 ## Runtime Note
 

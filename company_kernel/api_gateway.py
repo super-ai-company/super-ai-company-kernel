@@ -28,7 +28,7 @@ API_CAPABILITIES = [
 ]
 API_ENDPOINTS = [
     {"method": "GET", "path": "/v1/health", "summary": "Company Kernel health summary"},
-    {"method": "GET", "path": "/v1/doctor", "summary": "Doctor summary", "query": {"strict_launchd": "bool optional"}},
+    {"method": "GET", "path": "/v1/doctor", "summary": "Doctor summary", "query": {"strict_launchd": "bool optional", "strict_openclaw": "bool optional"}},
     {"method": "GET", "path": "/v1/employees", "summary": "List employees"},
     {"method": "POST", "path": "/v1/employees", "summary": "Create employee", "body": {"id": "employee id", "name": "display name", "role": "role", "runtime": "runtime id", "workspace": "path"}},
     {"method": "POST", "path": "/v1/employees/onboard", "summary": "Onboard employee with capabilities, permissions, communication, optional scaffold, and optional test task", "body": {"id": "employee id", "name": "display name", "role": "role", "runtime": "runtime id", "workspace": "path", "alias": "alias optional", "skills": "comma-separated optional", "tools": "comma-separated optional", "task_types": "comma-separated optional", "can_talk_to": "comma-separated optional", "can_assign_to": "comma-separated optional", "open_communication": "bool optional", "channel": "channel optional", "create_test_task": "bool optional"}},
@@ -185,6 +185,8 @@ def route_get(path: str, query: dict[str, list[str]]) -> tuple[int, dict]:
         argv = ["doctor", "--summary"]
         if query_value(query, "strict_launchd") in {"1", "true", "yes"}:
             argv.append("--strict-launchd")
+        if query_value(query, "strict_openclaw") in {"1", "true", "yes"}:
+            argv.append("--strict-openclaw")
         code, payload = run_companyctl(argv)
         return (HTTPStatus.OK if code == 0 else HTTPStatus.BAD_REQUEST), {"exit_code": code, **payload}
     if path == "/v1/employees":
