@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import html
 import json
 import re
@@ -250,11 +251,14 @@ def render_employee_table(items: list[dict]) -> str:
 
 def employee_view_models(summary: dict) -> list[dict]:
     employees = []
+    communication_config = companyctl.load_communication_config()
+    communication_profiles = communication_config.get("employees", {})
     for employee in summary["employees"]:
         capabilities = companyctl.load_json_or_default(companyctl.employee_paths(employee["id"])["capabilities"], {})
         skills = capabilities.get("skills", [])
         tools = capabilities.get("tools", [])
         task_types = capabilities.get("preferred_task_types", [])
+        communication_profile = communication_profiles.get(employee["id"], {})
         age = minutes_since(employee.get("last_seen_at", ""), summary["generated_at"])
         employee_status = employee.get("employee_status") or employee.get("status", "")
         heartbeat_status = employee.get("heartbeat_status", "missing")
@@ -278,6 +282,8 @@ def employee_view_models(summary: dict) -> list[dict]:
                 "kernel_state": kernel_state,
                 "schedulable": schedulable,
                 "heartbeat_age_minutes": "" if age is None else age,
+                "communication_paused": bool(communication_profile.get("communication_paused")),
+                "communication_status": "paused" if communication_profile.get("communication_paused") else "enabled",
                 "backlog": f"{employee.get('submitted_tasks', 0)} submitted, {employee.get('claimed_tasks', 0)} claimed",
                 "skills": ", ".join(str(item) for item in skills[:4]) if isinstance(skills, list) else "invalid",
                 "tools": ", ".join(str(item) for item in tools[:4]) if isinstance(tools, list) else "invalid",
@@ -678,19 +684,62 @@ def load_advanced_template(path: str = "", *, include_external: bool = False) ->
 
 def inject_advanced_dashboard(template: str, summary: dict, *, db_path: Path, api_base: str) -> str:
     payload = json.dumps(advanced_summary(summary), ensure_ascii=False)
+    payload_b64 = base64.b64encode(payload.encode("utf-8")).decode("ascii")
     html_text = template.replace("/Users/shift/Documents/anti", str(ROOT))
     html_text = re.sub(
         r"window\.kernelSummary\s*=\s*.*?;\n\s*window\.dbPath\s*=\s*.*?;",
-        f"window.kernelSummary = {payload};\n  window.dbPath = {json.dumps(str(db_path), ensure_ascii=False)};\n  window.companyApiBase = {json.dumps(api_base, ensure_ascii=False)};",
+        f"window.kernelSummary = JSON.parse(decodeURIComponent(escape(atob({json.dumps(payload_b64)}))));\n  window.dbPath = {json.dumps(str(db_path), ensure_ascii=False)};\n  window.companyApiBase = {json.dumps(api_base, ensure_ascii=False)};",
         html_text,
         count=1,
         flags=re.DOTALL,
     )
     if "window.companyApiBase" not in html_text:
-        html_text = html_text.replace("</body>", f"<script>window.kernelSummary = {payload}; window.dbPath = {json.dumps(str(db_path), ensure_ascii=False)}; window.companyApiBase = {json.dumps(api_base, ensure_ascii=False)};</script></body>")
+        html_text = html_text.replace("</body>", f"<script>window.kernelSummary = JSON.parse(decodeURIComponent(escape(atob({json.dumps(payload_b64)})))); window.dbPath = {json.dumps(str(db_path), ensure_ascii=False)}; window.companyApiBase = {json.dumps(api_base, ensure_ascii=False)};</script></body>")
+    if "kernel-summary-debug" not in html_text:
+        html_text = html_text.replace("</script>", f'  <!-- kernel-summary-debug {payload} -->\n</script>', 1)
     html_text = html_text.replace(
         "document.getElementById('db-path-label').innerText = isSimulationMode ? 'simulation://gateway.company.internal' : 'https://gateway.company.internal';",
         "document.getElementById('db-path-label').innerText = isSimulationMode ? 'simulation://gateway.company.internal' : (window.companyApiBase || 'http://127.0.0.1:8765');",
+    )
+    verified_employee_script = """function isVerifiedEmployee(emp) {
+    return (emp.employee_status || emp.status) === 'active';
+  }
+
+  """
+    if "function isVerifiedEmployee(emp)" not in html_text:
+        html_text = html_text.replace("  let isSimulationMode = false;", "  " + verified_employee_script + "let isSimulationMode = false;", 1)
+    html_text = html_text.replace(
+        "summary.employees.filter(emp => emp.status !== 'archived').map(emp => {",
+        "summary.employees.filter(isVerifiedEmployee).map(emp => {",
+    )
+    html_text = html_text.replace(
+        "const emps = summary.employees;",
+        "const emps = summary.employees.filter(isVerifiedEmployee);",
+    )
+    html_text = html_text.replace(
+        "const empIds = new Set(summary.employees.map(e => e.id));",
+        "const empIds = new Set(summary.employees.filter(isVerifiedEmployee).map(e => e.id));",
+    )
+    if 'id="candidate-employees-container"' not in html_text:
+        html_text = html_text.replace(
+            """        <div class="employees-grid" id="employees-cards-container">
+          <!-- Populated by JS -->
+        </div>""",
+            """        <div class="employees-grid" id="employees-cards-container">
+          <!-- Populated by JS -->
+        </div>
+
+        <div class="section-card" style="margin-top: 20px;">
+          <h2><i class="fa-solid fa-user-clock"></i> Candidate Employees</h2>
+          <div class="employees-grid" id="candidate-employees-container">
+            <!-- Populated by JS -->
+          </div>
+        </div>""",
+            1,
+        )
+    html_text = html_text.replace(
+        '"soft_archive_desc": "Locks the agent, updates status to "archived", and hides it from the active roster. All files, reports, and evidence remain untouched."',
+        '"soft_archive_desc": "Locks the agent, updates status to \\"archived\\", and hides it from the active roster. All files, reports, and evidence remain untouched."',
     )
     html_text = html_text.replace(
         "summaryData.employees.push(generatedRecruitData);\n    summaryData.counts.employees = summaryData.employees.length;",
@@ -709,17 +758,70 @@ def inject_advanced_dashboard(template: str, summary: dict, *, db_path: Path, ap
     html_text = html_text.replace(
         "<span class=\"badge ${hbStatus}\">${hbStatus}</span>",
         """<span class="badge ${hbStatus}">${hbStatus}</span>
+              <span class="badge ${commPaused ? 'blocked' : 'completed'}" style="font-size: 9px;">${commPaused ? 'Comm Paused' : 'Comm On'}</span>
               <button class="chat-send-btn" style="padding: 2px 6px; font-size: 10px; background: rgba(16, 185, 129, 0.15); border: 1px solid rgba(16, 185, 129, 0.35); color: #86efac;" onclick="event.stopPropagation(); openDirectEmployeeMessage('${escapeHtml(emp.id)}')">
                 <i class="fa-solid fa-paper-plane"></i> Direct
+              </button>
+              <button class="chat-send-btn" style="padding: 2px 6px; font-size: 10px; background: ${commPaused ? 'rgba(16, 185, 129, 0.15)' : 'rgba(245, 158, 11, 0.14)'}; border: 1px solid ${commPaused ? 'rgba(16, 185, 129, 0.35)' : 'rgba(245, 158, 11, 0.3)'}; color: ${commPaused ? '#86efac' : '#fbbf24'};" onclick="event.stopPropagation(); toggleEmployeeCommunication('${escapeHtml(emp.id)}', ${commPaused ? 'true' : 'false'})">
+                <i class="fa-solid ${commPaused ? 'fa-play' : 'fa-pause'}"></i> ${commPaused ? 'Resume' : 'Pause'}
               </button>
               <button class="chat-send-btn" style="padding: 2px 6px; font-size: 10px; background: rgba(59, 130, 246, 0.15); border: 1px solid rgba(59, 130, 246, 0.3); color: #93c5fd;" onclick="event.stopPropagation(); openEditEmployeeProfile('${escapeHtml(emp.id)}', '${escapeHtml(emp.name)}', '${escapeHtml(emp.role)}', '${escapeHtml(emp.runtime)}', '${escapeHtml(emp.status || 'active')}')">
                 <i class="fa-solid fa-pen-to-square"></i> Edit
               </button>""",
     )
+    html_text = html_text.replace(
+        "      const skills = emp.skills || '';\n      const skillsPills = skills ? skills.split(',').map(s => `<span class=\"capability-tag\" style=\"font-size: 9px; padding: 2px 5px; margin-top: 4px;\">${escapeHtml(s.trim())}</span>`).join(' ') : '';",
+        "      const skills = emp.skills || '';\n      const skillsPills = skills ? skills.split(',').map(s => `<span class=\"capability-tag\" style=\"font-size: 9px; padding: 2px 5px; margin-top: 4px;\">${escapeHtml(s.trim())}</span>`).join(' ') : '';\n      const commPaused = !!emp.communication_paused;",
+    )
+    html_text = html_text.replace(
+        "    }).join('');\n\n    // Approvals Table",
+        """    }).join('');
+
+    const candidateContainer = document.getElementById('candidate-employees-container');
+    if (candidateContainer) {
+      const candidates = summary.employees.filter(emp => (emp.employee_status || emp.status) === 'candidate');
+      candidateContainer.innerHTML = candidates.length ? candidates.map(emp => {
+        const skills = emp.skills || '';
+        const skillsPills = skills ? skills.split(',').map(s => `<span class="capability-tag" style="font-size: 9px; padding: 2px 5px; margin-top: 4px;">${escapeHtml(s.trim())}</span>`).join(' ') : '';
+        return `
+          <div class="employee-card" onclick="showDetails('Candidate employee: ' + '${escapeHtml(emp.id)}', ${JSON.stringify(emp).replace(/'/g, "\\'")})">
+            <div class="employee-card-header">
+              <div class="employee-identity">
+                <div class="employee-avatar"><i class="fa-solid fa-user-clock"></i></div>
+                <div>
+                  <div class="employee-name">${escapeHtml(emp.name)}</div>
+                  <div class="employee-role">${escapeHtml(emp.role)}</div>
+                </div>
+              </div>
+              <div style="display: flex; align-items: center; gap: 8px;">
+                <span class="badge blocked">Candidate</span>
+                <button class="chat-send-btn" style="padding: 2px 6px; font-size: 10px; background: rgba(16, 185, 129, 0.15); border: 1px solid rgba(16, 185, 129, 0.35); color: #86efac;" onclick="event.stopPropagation(); joinCandidateEmployee('${escapeHtml(emp.id)}')">
+                  <i class="fa-solid fa-user-check"></i> Join Team
+                </button>
+                <button class="chat-send-btn" style="padding: 2px 6px; font-size: 10px; background: rgba(59, 130, 246, 0.15); border: 1px solid rgba(59, 130, 246, 0.3); color: #93c5fd;" onclick="event.stopPropagation(); openEditEmployeeProfile('${escapeHtml(emp.id)}', '${escapeHtml(emp.name)}', '${escapeHtml(emp.role)}', '${escapeHtml(emp.runtime)}', '${escapeHtml(emp.status || 'candidate')}')">
+                  <i class="fa-solid fa-pen-to-square"></i> Edit
+                </button>
+              </div>
+            </div>
+            <div class="employee-meta" style="margin-top: 10px; font-size: 11px;">
+              <div style="margin-bottom: 4px;"><strong>Runtime:</strong> ${escapeHtml(emp.runtime || '-')}</div>
+              <div><strong>Last Active:</strong> ${formatDate(emp.last_seen_at) || 'Never'}</div>
+            </div>
+            <div style="display: flex; flex-wrap: wrap; gap: 4px; margin-top: 10px; border-top: 1px solid rgba(255,255,255,0.05); padding-top: 8px;">
+              ${skillsPills}
+            </div>
+          </div>
+        `;
+      }).join('') : '<div style="color: var(--text-secondary); font-size: 12px; padding: 10px 0;">No candidate employees.</div>';
+    }
+
+    // Approvals Table""",
+        1,
+    )
     api_script = f"""
 <script>
-  function companyApiBase() {{
-    return (window.companyApiBase || {json.dumps(api_base)}).replace(/\\/$/, '');
+  function getCompanyApiBase() {{
+    return String(window.companyApiBase || {json.dumps(api_base)}).replace(/\\/$/, '');
   }}
   function companyApiLog(tag, text, type) {{
     if (typeof printTerminalLine === 'function') {{
@@ -729,18 +831,23 @@ def inject_advanced_dashboard(template: str, summary: dict, *, db_path: Path, ap
     }}
   }}
   async function companyApiGet(path) {{
-    const res = await fetch(companyApiBase() + path, {{method: 'GET'}});
+    const res = await fetch(getCompanyApiBase() + path, {{method: 'GET'}});
     const data = await res.json();
     if (!res.ok || data.ok === false) {{
       throw new Error(data.error || data.message || JSON.stringify(data));
     }}
     return data;
   }}
+  async function companyApiGetReachable(path) {{
+    const res = await fetch(getCompanyApiBase() + path, {{method: 'GET'}});
+    const data = await res.json();
+    return {{res, data}};
+  }}
   async function checkCompanyApi() {{
     try {{
-      const data = await companyApiGet('/v1/health');
+      const {{res, data}} = await companyApiGetReachable('/v1/health');
       const employees = data.counts ? data.counts.employees : 'unknown';
-      companyApiLog('SYSTEM', `Company Kernel API online: ${{companyApiBase()}} employees=${{employees}}`, 'success');
+      companyApiLog('SYSTEM', `Company Kernel API online: ${{getCompanyApiBase()}} employees=${{employees}} health=${{data.ok === false ? 'needs-attention' : 'ok'}}`, data.ok === false ? 'normal' : 'success');
       try {{
         const attendance = await companyApiGet('/v1/attendance/latest');
         if (attendance.counts) {{
@@ -750,7 +857,11 @@ def inject_advanced_dashboard(template: str, summary: dict, *, db_path: Path, ap
         companyApiLog('SYSTEM', `No latest attendance report yet: ${{attendanceErr.message}}`, 'normal');
       }}
       const label = document.getElementById('db-path-label');
-      if (label && !isSimulationMode) label.innerText = companyApiBase();
+      if (label && !isSimulationMode) label.innerText = getCompanyApiBase();
+      const badge = document.getElementById('top-status-badge');
+      const text = document.getElementById('top-status-text');
+      if (badge) badge.className = data.ok === false ? 'system-status attention' : 'system-status ok';
+      if (text) text.innerText = data.ok === false ? 'API ONLINE / CHECK HEALTH' : 'API ONLINE';
       return true;
     }} catch (err) {{
       companyApiLog('ERROR', `Company Kernel API offline: ${{err.message}}. Start: bin/company-api-gateway --quiet`, 'error');
@@ -762,7 +873,7 @@ def inject_advanced_dashboard(template: str, summary: dict, *, db_path: Path, ap
     }}
   }}
   async function companyApiRequest(path, payload, method) {{
-    const res = await fetch(companyApiBase() + path, {{
+    const res = await fetch(getCompanyApiBase() + path, {{
       method: method || 'POST',
       headers: {{'Content-Type': 'application/json'}},
       body: JSON.stringify(payload || {{}})
@@ -825,6 +936,21 @@ def inject_advanced_dashboard(template: str, summary: dict, *, db_path: Path, ap
     }} catch (err) {{
       companyApiLog('ERROR', `Update failed: ${{err.message}}`, 'error');
     }}
+  }}
+  async function toggleEmployeeCommunication(id, enabled) {{
+    companyApiLog('SYSTEM', `${{enabled ? 'Resuming' : 'Pausing'}} communication for '${{id}}'...`, 'normal');
+    try {{
+      await companyApiPost(`/v1/employees/${{encodeURIComponent(id)}}/communication`, {{enabled}});
+      companyApiLog('SYSTEM', `${{enabled ? 'Resumed' : 'Paused'}} communication for '${{id}}'. Reloading live dashboard...`, 'success');
+      setTimeout(() => location.reload(), 800);
+    }} catch (err) {{
+      companyApiLog('ERROR', `Communication update failed: ${{err.message}}`, 'error');
+    }}
+  }}
+  function joinCandidateEmployee(id) {{
+    if (!id) return;
+    if (!confirm(`Join candidate "${{id}}" to the active team?`)) return;
+    return realUpdateEmployeeProfile(id, {{status: 'active'}});
   }}
   function openEditEmployeeProfile(id, currentName, currentRole, currentRuntime, currentStatus) {{
     const name = prompt(`Name for ${{id}}`, currentName || id);

@@ -39,6 +39,7 @@ API_ENDPOINTS = [
     {"method": "DELETE", "path": "/v1/employees/{employee_id}", "summary": "Offboard employee with dry-run, soft archive, or guarded hard delete", "body": {"hard_delete": "bool optional", "dry_run": "bool optional"}},
     {"method": "POST", "path": "/v1/employees/{employee_id}/profile", "summary": "Update employee profile fields through companyctl", "body": {"name": "display name optional", "role": "role optional", "runtime": "runtime id optional", "workspace": "path optional", "status": "active/candidate/archived optional", "default_user_reply_channel": "string optional", "default_user_reply_account": "string optional", "default_user_reply_to": "string optional", "default_user_reply_deliver": "bool optional", "dry_run": "bool optional"}},
     {"method": "POST", "path": "/v1/employees/{employee_id}/offboard", "summary": "Offboard employee with dry-run, soft archive, or guarded hard delete", "body": {"hard_delete": "bool optional", "dry_run": "bool optional"}},
+    {"method": "POST", "path": "/v1/employees/{employee_id}/communication", "summary": "Enable or pause employee communication policy", "body": {"enabled": "bool required", "dry_run": "bool optional"}},
     {"method": "POST", "path": "/v1/employees/{employee_id}/capabilities", "summary": "Update employee capabilities", "body": {"set_skills": "comma-separated skills optional", "add_skill": "string/list optional", "set_tools": "comma-separated tools optional", "add_tool": "string/list optional", "set_task_types": "comma-separated task types optional"}},
     {"method": "POST", "path": "/v1/employees/{employee_id}/permissions", "summary": "Update employee permissions", "body": {"can_submit_tasks": "true/false/keep optional", "can_claim_tasks": "true/false/keep optional", "can_modify_kernel": "true/false/keep optional", "requires_approval_for": "comma-separated actions optional"}},
     {"method": "POST", "path": "/v1/employees/match", "summary": "Rank employees by capabilities for routing", "body": {"skills": "comma-separated skills optional", "tools": "comma-separated tools optional", "task_type": "string optional", "runtime": "runtime optional", "role": "role optional", "limit": "integer optional", "include_unavailable": "bool optional"}},
@@ -368,6 +369,13 @@ def employee_profile_response(employee_id: str, body: dict) -> tuple[int, dict]:
     return (HTTPStatus.OK if code == 0 else HTTPStatus.BAD_REQUEST), {"exit_code": code, **payload}
 
 
+def employee_communication_response(employee_id: str, body: dict) -> tuple[int, dict]:
+    if body.get("enabled") is None:
+        return HTTPStatus.BAD_REQUEST, {"ok": False, "error": "missing body: enabled"}
+    result = companyctl.set_employee_communication_enabled(employee_id, truthy(body.get("enabled")), dry_run=truthy(body.get("dry_run")))
+    return HTTPStatus.OK, result
+
+
 def route_patch(path: str, body: dict) -> tuple[int, dict]:
     if path.startswith("/v1/employees/"):
         employee_id = path.removeprefix("/v1/employees/").strip("/")
@@ -458,6 +466,9 @@ def route_post(path: str, body: dict) -> tuple[int, dict]:
     if path.startswith("/v1/employees/") and path.endswith("/profile"):
         employee_id = path.removeprefix("/v1/employees/").removesuffix("/profile").strip("/")
         return employee_profile_response(employee_id, body)
+    if path.startswith("/v1/employees/") and path.endswith("/communication"):
+        employee_id = path.removeprefix("/v1/employees/").removesuffix("/communication").strip("/")
+        return employee_communication_response(employee_id, body)
     if path == "/v1/runtimes":
         argv = ["runtime", "register", "--runtime", str(body.get("runtime", ""))]
         for key, flag in [("command", "--command"), ("status", "--status"), ("notes", "--notes")]:

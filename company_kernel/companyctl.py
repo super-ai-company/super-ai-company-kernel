@@ -231,6 +231,13 @@ def communication_policy_decision(source: str, target: str, action: str) -> dict
     target = resolve_employee_alias(target)
     policy = config.get("policy", {})
     mode = policy.get("mode", "open")
+    employees = config.get("employees", {})
+    source_profile = employees.get(source, {})
+    target_profile = employees.get(target, {})
+    if source_profile.get("communication_paused"):
+        return {"allowed": False, "mode": mode, "source": source, "target": target, "action": action, "reason": "source communication paused"}
+    if target_profile.get("communication_paused"):
+        return {"allowed": False, "mode": mode, "source": source, "target": target, "action": action, "reason": "target communication paused"}
     relation_key = "can_assign_to" if action == "task.submit" else "can_talk_to"
     blocked_key = "blocked_assign_to" if action == "task.submit" else "blocked_talk_to"
     blocked = communication_list(config, source, blocked_key)
@@ -1197,6 +1204,32 @@ def update_employee_communication_profile(
     if not dry_run:
         write_communication_config(config)
     return config
+
+
+def set_employee_communication_enabled(employee_id: str, enabled: bool, *, dry_run: bool = False) -> dict:
+    employee_id = resolve_employee_alias(employee_id)
+    config = load_communication_config()
+    config.setdefault("version", 1)
+    config.setdefault("policy", {"mode": "open"})
+    employees = config.setdefault("employees", {})
+    profile = employees.setdefault(employee_id, {})
+    if enabled:
+        profile.pop("communication_paused", None)
+        profile.pop("communication_paused_at", None)
+    else:
+        profile["communication_paused"] = True
+        profile["communication_paused_at"] = now()
+    if not dry_run:
+        write_communication_config(config)
+    return {
+        "ok": True,
+        "agent": employee_id,
+        "communication_enabled": enabled,
+        "communication_paused": not enabled,
+        "profile": profile,
+        "file": str(COMMUNICATIONS_PATH),
+        "dry_run": dry_run,
+    }
 
 
 def workspace_is_managed(path: Path) -> bool:
