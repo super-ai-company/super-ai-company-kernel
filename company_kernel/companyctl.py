@@ -1440,8 +1440,6 @@ def cmd_employee_verify_direct(args: argparse.Namespace) -> int:
     report_path = evidence_dir / f"verify-direct-{datetime.now().strftime('%Y%m%d-%H%M%S')}.json"
     latest_path = evidence_dir / "latest.json"
     report["evidence"] = {"json": str(report_path), "latest": str(latest_path)}
-    report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    latest_path.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     if args.activate and report["activation_allowed"]:
         ts = now()
         conn.execute("UPDATE employees SET status = 'active', updated_at = ? WHERE id = ?", (ts, employee_id))
@@ -1453,6 +1451,8 @@ def cmd_employee_verify_direct(args: argparse.Namespace) -> int:
         report["activated"] = True
     else:
         report["activated"] = False
+    report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    latest_path.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     audit(conn, "companyctl", "employee.verify_direct", employee_id, report)
     conn.close()
     emit(report)
