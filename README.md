@@ -6,6 +6,8 @@
 
 项目总目标见：[docs/SUPER_AI_COMPANY_GOAL.md](docs/SUPER_AI_COMPANY_GOAL.md)
 
+第一版最短使用路径见：[docs/FIRST_RELEASE_RUNBOOK.md](docs/FIRST_RELEASE_RUNBOOK.md)
+
 ## Quick Start
 
 ```bash
