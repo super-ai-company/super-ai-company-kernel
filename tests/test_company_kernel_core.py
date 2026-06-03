@@ -13,6 +13,7 @@ from unittest import mock
 
 from company_kernel import antigravity_adapter
 from company_kernel import api_gateway
+from company_kernel import api_grpc
 from company_kernel import api_rpc
 from company_kernel import company_daemon
 from company_kernel import company_dashboard
@@ -50,7 +51,7 @@ class CompanyKernelCoreTest(unittest.TestCase):
             (root / "company_kernel" / source_file.name).write_text(source_file.read_text(encoding="utf-8"), encoding="utf-8")
         (root / "company_kernel" / "schema.sql").write_text(companyctl.SCHEMA.read_text(encoding="utf-8"), encoding="utf-8")
         (root / "bin").mkdir()
-        for executable in ["companyctl", "company-adapter-worker", "company-codex-adapter", "company-openclaw-adapter", "company-trace", "company-api-rpc"]:
+        for executable in ["companyctl", "company-adapter-worker", "company-codex-adapter", "company-openclaw-adapter", "company-trace", "company-api-rpc", "company-api-grpc"]:
             target = root / "bin" / executable
             target.write_text((Path(__file__).resolve().parents[1] / "bin" / executable).read_text(encoding="utf-8"), encoding="utf-8")
             target.chmod(0o755)
@@ -1082,7 +1083,7 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertIn("approvals", descriptor["capabilities"])
         self.assertTrue(descriptor["protocols"]["rest"])
         self.assertTrue(descriptor["protocols"]["json_rpc"])
-        self.assertEqual("contract-ready", descriptor["protocols"]["grpc"])
+        self.assertEqual("optional-grpcio", descriptor["protocols"]["grpc"])
         self.assertEqual("/rpc", descriptor["links"]["rpc"])
         self.assertFalse(descriptor["governance"]["direct_sqlite_writes"])
         self.assertTrue(descriptor["governance"]["high_risk_requires_approval"])
@@ -1366,7 +1367,7 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual("describe", described["id"])
         self.assertTrue(described["result"]["protocols"]["rest"])
         self.assertTrue(described["result"]["protocols"]["json_rpc"])
-        self.assertEqual("contract-ready", described["result"]["protocols"]["grpc"])
+        self.assertEqual("optional-grpcio", described["result"]["protocols"]["grpc"])
         self.assertEqual("companyctl", described["result"]["governance"]["state_writer"])
 
         created = api_rpc.handle_rpc(
@@ -1389,6 +1390,31 @@ class CompanyKernelCoreTest(unittest.TestCase):
         with self.assertRaises(api_rpc.RpcError) as missing_path:
             api_rpc.handle_rpc({"jsonrpc": "2.0", "id": "bad", "method": "company.post", "params": {"body": {}}})
         self.assertEqual(-32602, missing_path.exception.code)
+
+    def test_api_grpc_service_routes_governed_contract_without_direct_sqlite_access(self) -> None:
+        service = api_grpc.CompanyKernelService()
+        described = service.Describe(api_grpc.DescribeRequest())
+        self.assertEqual(200, described.status)
+        described_body = json.loads(described.body_json)
+        self.assertEqual("optional-grpcio", described_body["protocols"]["grpc"])
+        self.assertEqual("companyctl", described_body["governance"]["state_writer"])
+
+        created = service.Post(
+            api_grpc.RouteRequest(
+                path="/v1/runtimes",
+                body_json=json.dumps({"runtime": "grpc-worker", "command": "ssh grpc-worker", "notes": "remote grpc worker"}, ensure_ascii=False),
+            )
+        )
+        self.assertEqual(201, created.status, created)
+        self.assertEqual("grpc-worker", json.loads(created.body_json)["runtime"]["runtime"])
+
+        listed = service.Get(api_grpc.RouteRequest(path="/v1/runtimes"))
+        self.assertEqual(200, listed.status)
+        self.assertIn("grpc-worker", [runtime["runtime"] for runtime in json.loads(listed.body_json)["runtimes"]])
+
+        bad = service.Post(api_grpc.RouteRequest(path="/v1/runtimes", body_json="[]"))
+        self.assertEqual(400, bad.status)
+        self.assertEqual("body_json must decode to object", json.loads(bad.body_json)["error"])
 
     def test_sandboxing_wraps_codex_and_hermes_commands_without_executing_container(self) -> None:
         workspace = self.root / "workspace" / "codex"

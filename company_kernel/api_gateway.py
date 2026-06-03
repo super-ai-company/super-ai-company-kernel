@@ -92,7 +92,7 @@ def service_descriptor() -> dict:
         "protocols": {
             "rest": True,
             "json_rpc": True,
-            "grpc": "contract-ready",
+            "grpc": "optional-grpcio",
         },
         "endpoints": API_ENDPOINTS,
         "governance": {
