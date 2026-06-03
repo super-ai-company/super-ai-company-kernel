@@ -313,9 +313,15 @@ curl -X POST http://127.0.0.1:8765/v1/conversations \
 curl -X POST http://127.0.0.1:8765/v1/approvals \
   -H 'Content-Type: application/json' \
   --data '{"from":"hermes","action":"external_send","reason":"需要外发审批","target":"nestcar","risk":"P1"}'
+curl -X POST http://127.0.0.1:8765/v1/projects \
+  -H 'Content-Type: application/json' \
+  --data '{"project_id":"project-rest","title":"REST Project","owner":"openclaw-main","goal":"跨机项目治理"}'
+curl -X POST http://127.0.0.1:8765/v1/projects/project-rest/plan-items \
+  -H 'Content-Type: application/json' \
+  --data '{"plan_id":"plan-rest-001","title":"接入远程员工","owner":"codex"}'
 ```
 
-`/v1` 返回服务发现、能力列表、治理约束和端点清单；`/v1/openapi.json` 返回机器可读 OpenAPI 3.1 契约。已覆盖的端点：`/v1/health`、`/v1/doctor`、`/v1/tasks`、`/v1/tasks/<id>/claim|done|block|reopen|reassign`、`/v1/messages`、`/v1/conversations`、`/v1/approvals`、`/v1/heartbeats`、`/v1/adapter-runs`。
+`/v1` 返回服务发现、能力列表、治理约束和端点清单；`/v1/openapi.json` 返回机器可读 OpenAPI 3.1 契约。已覆盖的端点：`/v1/health`、`/v1/doctor`、`/v1/tasks`、`/v1/tasks/<id>/claim|done|block|reopen|reassign`、`/v1/messages`、`/v1/conversations`、`/v1/approvals`、`/v1/projects`、`/v1/heartbeats`、`/v1/adapter-runs`。
 
 ## Sandbox Isolation
 

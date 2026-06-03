@@ -1231,6 +1231,53 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual(200, status, failed)
         self.assertNotIn("adapter-run-api-retry", [item["id"] for item in failed["adapter_runs"]])
 
+    def test_api_gateway_exposes_project_governance(self) -> None:
+        status, project = api_gateway.route_post(
+            "/v1/projects",
+            {
+                "project_id": "project-api-gateway",
+                "title": "API Gateway Project",
+                "goal": "verify REST project governance",
+                "owner": "openclaw-main",
+                "acceptance": "plan tracked;task linked",
+            },
+        )
+        self.assertEqual(201, status, project)
+        self.assertEqual("project-api-gateway", project["project"]["id"])
+        self.assertEqual(["plan tracked", "task linked"], project["project"]["acceptance"])
+
+        status, projects = api_gateway.route_get("/v1/projects", {"status": ["active"]})
+        self.assertEqual(200, status, projects)
+        self.assertIn("project-api-gateway", [item["id"] for item in projects["projects"]])
+
+        status, submitted = api_gateway.route_post(
+            "/v1/tasks",
+            {"from": "openclaw-main", "to": "codex", "task_id": "task-api-project", "title": "project task", "description": "link through REST"},
+        )
+        self.assertEqual(201, status, submitted)
+        status, linked = api_gateway.route_post("/v1/projects/project-api-gateway/tasks", {"task_id": "task-api-project"})
+        self.assertEqual(200, status, linked)
+        self.assertEqual("task-api-project", linked["task_id"])
+
+        status, plan = api_gateway.route_post(
+            "/v1/projects/project-api-gateway/plan-items",
+            {"plan_id": "plan-api-project", "title": "Ship REST project API", "owner": "codex", "task_id": "task-api-project"},
+        )
+        self.assertEqual(201, status, plan)
+        self.assertEqual("plan-api-project", plan["plan_item"]["id"])
+        status, plan_status = api_gateway.route_post("/v1/projects/project-api-gateway/plan-items/plan-api-project/status", {"status": "done"})
+        self.assertEqual(200, status, plan_status)
+        self.assertEqual("done", plan_status["plan_item"]["status"])
+        status, project_status = api_gateway.route_post("/v1/projects/project-api-gateway/status", {"status": "completed"})
+        self.assertEqual(200, status, project_status)
+        self.assertEqual("completed", project_status["status"])
+
+        status, shown = api_gateway.route_get("/v1/projects/project-api-gateway", {})
+        self.assertEqual(200, status, shown)
+        self.assertEqual("completed", shown["project"]["status"])
+        self.assertEqual(["task-api-project"], [task["id"] for task in shown["tasks"]])
+        self.assertEqual(["plan-api-project"], [item["id"] for item in shown["plan_items"]])
+
     def test_sandboxing_wraps_codex_and_hermes_commands_without_executing_container(self) -> None:
         workspace = self.root / "workspace" / "codex"
         profile_config = {

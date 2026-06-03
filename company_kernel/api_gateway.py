@@ -21,6 +21,7 @@ API_CAPABILITIES = [
     "approvals",
     "heartbeats",
     "adapter_runs",
+    "projects",
 ]
 API_ENDPOINTS = [
     {"method": "GET", "path": "/v1/health", "summary": "Company Kernel health summary"},
@@ -45,6 +46,13 @@ API_ENDPOINTS = [
     {"method": "POST", "path": "/v1/approvals/{approval_id}/approve", "summary": "Approve request", "body": {"by": "employee id", "reason": "string"}},
     {"method": "POST", "path": "/v1/approvals/{approval_id}/deny", "summary": "Deny request", "body": {"by": "employee id", "reason": "string"}},
     {"method": "POST", "path": "/v1/heartbeats", "summary": "Write employee heartbeat", "body": {"agent": "employee id"}},
+    {"method": "GET", "path": "/v1/projects", "summary": "List projects", "query": {"status": "active/paused/completed/blocked/all optional"}},
+    {"method": "POST", "path": "/v1/projects", "summary": "Create project", "body": {"project_id": "string optional", "title": "string", "goal": "string optional", "owner": "employee id", "status": "active/paused/completed/blocked optional", "acceptance": "semicolon-separated criteria optional"}},
+    {"method": "GET", "path": "/v1/projects/{project_id}", "summary": "Show project with linked tasks and plan items"},
+    {"method": "POST", "path": "/v1/projects/{project_id}/tasks", "summary": "Link task to project", "body": {"task_id": "string"}},
+    {"method": "POST", "path": "/v1/projects/{project_id}/plan-items", "summary": "Add project plan item", "body": {"title": "string", "status": "planned/in_progress/done/completed/blocked/cancelled optional", "owner": "employee id optional", "due_at": "string optional", "task_id": "string optional", "plan_id": "string optional"}},
+    {"method": "POST", "path": "/v1/projects/{project_id}/plan-items/{plan_id}/status", "summary": "Update project plan item status", "body": {"status": "planned/in_progress/done/completed/blocked/cancelled"}},
+    {"method": "POST", "path": "/v1/projects/{project_id}/status", "summary": "Update project status", "body": {"status": "active/paused/completed/blocked"}},
     {"method": "GET", "path": "/v1/adapter-runs", "summary": "List adapter runs", "query": {"agent": "employee id optional", "status": "ok/failed optional", "unacknowledged_only": "bool optional", "limit": "integer optional"}},
     {"method": "GET", "path": "/v1/adapter-runs/{run_id}", "summary": "Show adapter run", "query": {"summary": "bool optional"}},
     {"method": "POST", "path": "/v1/adapter-runs/{run_id}/ack", "summary": "Acknowledge adapter failure", "body": {"by": "employee id", "reason": "string"}},
@@ -193,6 +201,17 @@ def route_get(path: str, query: dict[str, list[str]]) -> tuple[int, dict]:
         approval_id = path.removeprefix("/v1/approvals/").strip("/")
         code, payload = run_companyctl(["approval", "show", "--approval-id", approval_id])
         return (HTTPStatus.OK if code == 0 else HTTPStatus.BAD_REQUEST), {"exit_code": code, **payload}
+    if path == "/v1/projects":
+        argv = ["project", "list"]
+        status = query_value(query, "status")
+        if status:
+            argv.extend(["--status", status])
+        code, payload = run_companyctl(argv)
+        return (HTTPStatus.OK if code == 0 else HTTPStatus.BAD_REQUEST), {"exit_code": code, **payload}
+    if path.startswith("/v1/projects/"):
+        project_id = path.removeprefix("/v1/projects/").strip("/")
+        code, payload = run_companyctl(["project", "show", "--project-id", project_id])
+        return (HTTPStatus.OK if code == 0 else HTTPStatus.BAD_REQUEST), {"exit_code": code, **payload}
     if path == "/v1/adapter-runs":
         argv = ["runtime", "adapter-runs"]
         agent = query_value(query, "agent")
@@ -314,6 +333,40 @@ def route_post(path: str, body: dict) -> tuple[int, dict]:
     if path == "/v1/heartbeats":
         code, payload = run_companyctl(["heartbeat", "--agent", str(body.get("agent", ""))])
         return (HTTPStatus.CREATED if code == 0 else HTTPStatus.BAD_REQUEST), {"exit_code": code, **payload}
+    if path == "/v1/projects":
+        argv = [
+            "project",
+            "create",
+            "--title",
+            str(body.get("title", "")),
+            "--owner",
+            str(body.get("owner", "")),
+        ]
+        for key, flag in [("project_id", "--project-id"), ("goal", "--goal"), ("status", "--status"), ("acceptance", "--acceptance")]:
+            if body.get(key):
+                argv.extend([flag, str(body[key])])
+        code, payload = run_companyctl(argv)
+        return (HTTPStatus.CREATED if code == 0 else HTTPStatus.BAD_REQUEST), {"exit_code": code, **payload}
+    if path.startswith("/v1/projects/") and path.endswith("/tasks"):
+        project_id = path.removeprefix("/v1/projects/").removesuffix("/tasks").strip("/")
+        code, payload = run_companyctl(["project", "link-task", "--project-id", project_id, "--task-id", str(body.get("task_id", ""))])
+        return (HTTPStatus.OK if code == 0 else HTTPStatus.BAD_REQUEST), {"exit_code": code, **payload}
+    if path.startswith("/v1/projects/") and path.endswith("/plan-items"):
+        project_id = path.removeprefix("/v1/projects/").removesuffix("/plan-items").strip("/")
+        argv = ["project", "plan-add", "--project-id", project_id, "--title", str(body.get("title", ""))]
+        for key, flag in [("status", "--status"), ("owner", "--owner"), ("due_at", "--due-at"), ("task_id", "--task-id"), ("plan_id", "--plan-id")]:
+            if body.get(key):
+                argv.extend([flag, str(body[key])])
+        code, payload = run_companyctl(argv)
+        return (HTTPStatus.CREATED if code == 0 else HTTPStatus.BAD_REQUEST), {"exit_code": code, **payload}
+    if path.startswith("/v1/projects/") and path.endswith("/status"):
+        rest = path.removeprefix("/v1/projects/").removesuffix("/status").strip("/")
+        if "/plan-items/" in rest:
+            project_id, plan_id = rest.split("/plan-items/", 1)
+            code, payload = run_companyctl(["project", "plan-status", "--project-id", project_id.strip("/"), "--plan-id", plan_id.strip("/"), "--status", str(body.get("status", ""))])
+            return (HTTPStatus.OK if code == 0 else HTTPStatus.BAD_REQUEST), {"exit_code": code, **payload}
+        code, payload = run_companyctl(["project", "status", "--project-id", rest.strip("/"), "--status", str(body.get("status", ""))])
+        return (HTTPStatus.OK if code == 0 else HTTPStatus.BAD_REQUEST), {"exit_code": code, **payload}
     if path == "/v1/approvals":
         argv = [
             "approval",
