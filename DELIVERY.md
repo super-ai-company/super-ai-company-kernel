@@ -72,6 +72,7 @@ openclaw gateway probe
 - Evidence health: 0 issues.
 - Capability health: 0 issues.
 - OpenClaw runtime alert: `severity=ok`.
+- OpenClaw safety guard: `doctor --summary` includes read-only `openclaw_guard`; `--strict-openclaw` fails when an external Telegram polling watcher is enabled or native Telegram ingress spools are stuck.
 
 ## Runtime Note
 

@@ -46,6 +46,7 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         root = Path(self.tmp.name)
         self.root = root
+        (root / "home" / "Library" / "LaunchAgents").mkdir(parents=True, exist_ok=True)
         (root / "company_kernel").mkdir()
         source_pkg = Path(__file__).resolve().parents[1] / "company_kernel"
         for source_file in source_pkg.glob("*.py"):
@@ -221,7 +222,7 @@ class CompanyKernelCoreTest(unittest.TestCase):
             mock.patch.object(companyctl, "PROTECTED_PATHS_CONFIG", root / "config" / "protected_paths.json"),
             mock.patch.object(companyctl, "APPROVAL_STATE_DIR", root / "state" / "approvals"),
             mock.patch.object(companyctl, "SCHEMA", root / "company_kernel" / "schema.sql"),
-            mock.patch.dict("os.environ", {"HOME": str(root / "home"), "OPENCLAW_COMPANY_KERNEL_ROOT": str(root)}),
+            mock.patch.dict("os.environ", {"HOME": str(root / "home"), "OPENCLAW_COMPANY_KERNEL_ROOT": str(root), "OPENCLAW_ROOT": str(root / "openclaw")}),
         ]
         for patcher in self.patchers:
             patcher.start()
@@ -664,6 +665,32 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual("bash bin/company-daemon-install-launchd", healthy_summary["launchd"]["install_command"])
         self.assertEqual("bin/companyctl doctor --summary", healthy_summary["launchd"]["verify_command"])
         self.assertFalse(healthy_summary["launchd"]["matches_template"])
+        self.assertTrue(healthy_summary["openclaw_guard"]["ok"])
+        self.assertEqual([], healthy_summary["openclaw_guard"]["issues"])
+
+        openclaw_root = self.root / "openclaw"
+        nestcar_spool = openclaw_root / "telegram" / "ingress-spool-nestcar"
+        nestcar_spool.mkdir(parents=True, exist_ok=True)
+        (nestcar_spool / "0000000784356111.json").write_text('{"updateId":784356111}', encoding="utf-8")
+        code, non_strict_openclaw = run_cli("doctor", "--summary")
+        self.assertEqual(code, 0, non_strict_openclaw)
+        self.assertFalse(non_strict_openclaw["openclaw_guard"]["ok"])
+        self.assertIn("telegram_ingress_spool_backlog", non_strict_openclaw["openclaw_guard"]["issues"])
+        self.assertEqual(1, non_strict_openclaw["openclaw_guard"]["telegram_spools"]["nestcar"]["pending"])
+        code, strict_openclaw = run_cli("doctor", "--summary", "--strict-openclaw")
+        self.assertEqual(code, 1, strict_openclaw)
+        self.assertIn("telegram_ingress_spool_backlog", strict_openclaw["issues"])
+        (nestcar_spool / "0000000784356111.json").unlink()
+
+        watcher = Path.home() / "Library" / "LaunchAgents" / "ai.openclaw.ops-telegram-approval-watcher.plist"
+        watcher.parent.mkdir(parents=True, exist_ok=True)
+        watcher.write_text("<plist><dict></dict></plist>", encoding="utf-8")
+        code, watcher_guard = run_cli("doctor", "--summary", "--strict-openclaw")
+        self.assertEqual(code, 1, watcher_guard)
+        self.assertIn("external_telegram_approval_watcher_enabled", watcher_guard["issues"])
+        self.assertTrue(watcher_guard["openclaw_guard"]["external_approval_watcher"]["installed"])
+        watcher.unlink()
+
         code, strict_launchd = run_cli("doctor", "--summary", "--strict-launchd")
         self.assertEqual(code, 1, strict_launchd)
         self.assertIn("launchd_not_installed", strict_launchd["issues"])

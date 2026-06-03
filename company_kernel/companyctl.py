@@ -404,6 +404,74 @@ def launchd_health() -> dict:
     }
 
 
+def openclaw_root() -> Path:
+    env = os.environ.get("OPENCLAW_ROOT")
+    if env:
+        return Path(env).expanduser()
+    if Path("/Users/owner/openclaw").exists():
+        return Path("/Users/owner/openclaw")
+    return Path.home() / "openclaw"
+
+
+def count_spool_files(spool_dir: Path) -> dict:
+    pending = sorted(spool_dir.glob("*.json")) if spool_dir.exists() else []
+    processing = sorted(spool_dir.glob("*.processing")) if spool_dir.exists() else []
+    stale_processing = []
+    cutoff = datetime.now(timezone.utc).astimezone() - timedelta(minutes=15)
+    for path in processing:
+        mtime = datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc).astimezone()
+        if mtime < cutoff:
+            stale_processing.append(str(path))
+    return {
+        "path": str(spool_dir),
+        "exists": spool_dir.exists(),
+        "pending": len(pending),
+        "processing": len(processing),
+        "stale_processing": len(stale_processing),
+        "stale_processing_files": stale_processing[:10],
+        "pending_files": [str(path) for path in pending[:10]],
+    }
+
+
+def openclaw_guard_health() -> dict:
+    root = openclaw_root()
+    telegram_dir = root / "telegram"
+    launch_agents = Path.home() / "Library" / "LaunchAgents"
+    watcher_plist = launch_agents / "ai.openclaw.ops-telegram-approval-watcher.plist"
+    watcher_disabled = launch_agents / "ai.openclaw.ops-telegram-approval-watcher.plist.disabled"
+    spools = {}
+    if telegram_dir.exists():
+        for spool_dir in sorted(telegram_dir.glob("ingress-spool-*")):
+            account = spool_dir.name.removeprefix("ingress-spool-")
+            spools[account] = count_spool_files(spool_dir)
+    backlog_accounts = {
+        account: spool
+        for account, spool in spools.items()
+        if int(spool.get("pending", 0)) > 0 or int(spool.get("stale_processing", 0)) > 0
+    }
+    issues = []
+    if watcher_plist.exists():
+        issues.append("external_telegram_approval_watcher_enabled")
+    if backlog_accounts:
+        issues.append("telegram_ingress_spool_backlog")
+    return {
+        "ok": not issues,
+        "issues": issues,
+        "openclaw_root": str(root),
+        "telegram_dir": str(telegram_dir),
+        "external_approval_watcher": {
+            "installed_path": str(watcher_plist),
+            "installed": watcher_plist.exists(),
+            "disabled_path": str(watcher_disabled),
+            "disabled_file_exists": watcher_disabled.exists(),
+            "risk": "conflicts_with_openclaw_telegram_getupdates" if watcher_plist.exists() else "",
+        },
+        "telegram_spools": spools,
+        "backlog_accounts": backlog_accounts,
+        "note": "Read-only guard. It detects conditions that can break OpenClaw native Telegram routing; it does not start, stop, or poll Telegram.",
+    }
+
+
 def write_employee_capabilities(employee_id: str, profile: dict, *, dry_run: bool) -> str:
     path = employee_paths(employee_id)["capabilities"]
     if dry_run:
@@ -3575,6 +3643,7 @@ def cmd_doctor(args: argparse.Namespace) -> int:
                 stale_locks.append(dict(lock))
         daemon = daemon_health()
         launchd = launchd_health()
+        openclaw_guard = openclaw_guard_health()
         issues = []
         if not daemon["ok"]:
             issues.append(daemon["reason"] or "daemon_unhealthy")
@@ -3582,6 +3651,8 @@ def cmd_doctor(args: argparse.Namespace) -> int:
             issues.append("launchd_not_installed")
         if args.strict_launchd and launchd["installed"] and not launchd["matches_template"]:
             issues.append("launchd_template_mismatch")
+        if args.strict_openclaw and not openclaw_guard["ok"]:
+            issues.extend(openclaw_guard["issues"])
         if missing_heartbeats:
             issues.append("missing_heartbeats")
         if stale_heartbeats:
@@ -3614,6 +3685,7 @@ def cmd_doctor(args: argparse.Namespace) -> int:
             "stale_locks": stale_locks,
             "daemon": daemon,
             "launchd": launchd,
+            "openclaw_guard": openclaw_guard,
         }
         if args.summary:
             emit(
@@ -3654,6 +3726,7 @@ def cmd_doctor(args: argparse.Namespace) -> int:
                     },
                     "daemon": daemon,
                     "launchd": launchd,
+                    "openclaw_guard": openclaw_guard,
                 }
             )
             return 0 if health["ok"] else 1
@@ -4101,6 +4174,7 @@ def build_parser() -> argparse.ArgumentParser:
     doctor = sub.add_parser("doctor")
     doctor.add_argument("--summary", action="store_true", help="return compact health counts for low-token alert checks")
     doctor.add_argument("--strict-launchd", action="store_true", help="fail health check when the launchd agent is not installed")
+    doctor.add_argument("--strict-openclaw", action="store_true", help="fail health check when OpenClaw-native Telegram safety guard detects conflicts or stuck ingress spools")
     doctor.set_defaults(func=cmd_doctor)
     return parser
 

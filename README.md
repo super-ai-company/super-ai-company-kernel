@@ -276,6 +276,7 @@ bash bin/company-daemon-install-launchd
 bash bin/company-daemon-uninstall-launchd
 bin/companyctl doctor --summary
 bin/companyctl doctor --summary --strict-launchd
+bin/companyctl doctor --summary --strict-openclaw
 bin/companyctl runtime adapter-runs --status failed --unacknowledged-only
 bin/companyctl runtime adapter-run show --run-id <adapter-run-id> --summary
 bin/companyctl runtime ack-adapter-run --run-id <adapter-run-id> --by openclaw-main --reason "已复核，可消警"
@@ -286,6 +287,7 @@ bin/company-service-smoke --json-only
 
 `adapter_runs.task_id` 会记录本次 adapter 处理的任务，旧记录会从 `result_json` 自动回填；`retry-adapter-run` 默认用该字段恢复任务，仍缺失时可补 `--task-id`。
 Codex/Hermes/Claude/Trae 真实执行会把完整 stdout/stderr 写入员工 report 目录，并只把短输出摘要写进任务 summary/blocker。告警侧建议优先读取 `doctor --summary` 和 `adapter-run show --summary`，避免把完整 stdout/result_json 发给模型。
+`doctor --summary` 还会输出只读 `openclaw_guard`：检测外部 Telegram approval watcher 是否被重新启用、OpenClaw 原生 Telegram ingress spool 是否堆积。默认只展示；`--strict-openclaw` 会把这些问题作为失败 gate。该守门不会启动、停止或轮询 Telegram。
 
 最小自动执行闭环：
 
