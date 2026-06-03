@@ -173,6 +173,10 @@ def process(args: argparse.Namespace) -> int:
     if emp["runtime"] != "codex":
         emit({"ok": False, "error": "employee runtime is not codex", "agent": args.agent, "runtime": emp["runtime"]})
         return 1
+    if args.attendance_probe:
+        code, hb_out, hb_err = run_companyctl(["heartbeat", "--agent", args.agent])
+        emit({"ok": code == 0, "processed": 0, "agent": args.agent, "attendance_probe": True, "reply": f"{args.agent} 在岗", "companyctl_stdout": hb_out, "companyctl_stderr": hb_err})
+        return code
     if args.execute and not shutil.which("codex"):
         emit({"ok": False, "error": "codex command not found"})
         return 1
@@ -218,6 +222,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--isolation", default="none", choices=["none", "docker", "firejail"], help="wrap codex exec in a container/sandbox command")
     parser.add_argument("--sandbox-profile", default="default", help="sandbox profile name from config/sandbox_profiles.json")
     parser.add_argument("--execute", action="store_true", help="actually run codex exec; without this only writes task card and report")
+    parser.add_argument("--attendance-probe", action="store_true", help="reply to attendance without claiming or processing tasks")
     return parser
 
 

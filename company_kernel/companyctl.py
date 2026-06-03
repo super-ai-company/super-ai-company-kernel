@@ -473,6 +473,13 @@ def openclaw_guard_health() -> dict:
 
 
 ATTENDANCE_STATUSES = ("online", "session_missing", "worker_stalled", "heartbeat_disabled", "no_reply")
+ATTENDANCE_CLASSIFICATION_GUIDE = {
+    "online": "exact reply probe matched, or reply probing disabled with non-empty runtime session and clear ingress spool",
+    "session_missing": "runtime session store exists but has no active session entries",
+    "worker_stalled": "OpenClaw Telegram ingress spool has pending or processing files, so the worker is not continuously draining",
+    "heartbeat_disabled": "no runtime session store and no Company Kernel heartbeat file",
+    "no_reply": "employee has heartbeat/session metadata but no supported or successful reply path",
+}
 
 
 def attendance_session_candidates(employee_id: str) -> list[Path]:
@@ -568,26 +575,46 @@ def parse_openclaw_agent_reply(stdout: str) -> str:
 
 
 def attendance_reply_probe(employee_id: str, runtime: str, timeout: int) -> dict:
-    if runtime not in {"openclaw", "hermes"}:
-        return {"enabled": False, "ok": False, "reason": f"unsupported_runtime:{runtime}", "reply": "", "expected": f"{employee_id} 在岗"}
     expected = f"{employee_id} 在岗"
-    agent_runtime_id = attendance_agent_runtime_id(employee_id, runtime)
-    cmd = ["openclaw", "agent", "--agent", agent_runtime_id, "--message", f"只回复 {expected}", "--timeout", str(timeout), "--json"]
-    try:
-        cp = subprocess.run(cmd, cwd=str(ROOT), text=True, capture_output=True, timeout=timeout + 10)
-    except Exception as exc:
-        return {"enabled": True, "ok": False, "agent_runtime_id": agent_runtime_id, "expected": expected, "reply": "", "exit_code": 127, "reason": str(exc)}
-    reply = parse_openclaw_agent_reply(cp.stdout)
-    return {
-        "enabled": True,
-        "ok": cp.returncode == 0 and reply == expected,
-        "agent_runtime_id": agent_runtime_id,
-        "expected": expected,
-        "reply": reply,
-        "exit_code": cp.returncode,
-        "reason": "matched" if reply == expected else "reply_mismatch_or_empty",
-        "stderr": cp.stderr[-2000:],
-    }
+    if runtime in {"openclaw", "hermes"}:
+        agent_runtime_id = attendance_agent_runtime_id(employee_id, runtime)
+        cmd = ["openclaw", "agent", "--agent", agent_runtime_id, "--message", f"只回复 {expected}", "--timeout", str(timeout), "--json"]
+        try:
+            cp = subprocess.run(cmd, cwd=str(ROOT), text=True, capture_output=True, timeout=timeout + 10)
+        except Exception as exc:
+            return {"enabled": True, "ok": False, "agent_runtime_id": agent_runtime_id, "expected": expected, "reply": "", "exit_code": 127, "reason": str(exc)}
+        reply = parse_openclaw_agent_reply(cp.stdout)
+        return {
+            "enabled": True,
+            "ok": cp.returncode == 0 and reply == expected,
+            "agent_runtime_id": agent_runtime_id,
+            "expected": expected,
+            "reply": reply,
+            "exit_code": cp.returncode,
+            "reason": "matched" if reply == expected else "reply_mismatch_or_empty",
+            "stderr": cp.stderr[-2000:],
+        }
+    if runtime == "codex":
+        command = ROOT / "bin" / "company-codex-adapter"
+        try:
+            cp = subprocess.run([str(command), "--agent", employee_id, "--attendance-probe"], cwd=str(ROOT), text=True, capture_output=True, timeout=timeout + 10)
+        except Exception as exc:
+            return {"enabled": True, "ok": False, "adapter": str(command), "expected": expected, "reply": "", "exit_code": 127, "reason": str(exc)}
+        payload = parse_json_output(cp.stdout)
+        ok = cp.returncode == 0 and bool(payload.get("ok"))
+        return {
+            "enabled": True,
+            "ok": ok,
+            "adapter": str(command),
+            "expected": expected,
+            "reply": expected if ok else "",
+            "exit_code": cp.returncode,
+            "reason": "adapter_heartbeat_matched" if ok else str(payload.get("error") or "adapter_failed"),
+            "processed": payload.get("processed"),
+            "stdout": payload,
+            "stderr": cp.stderr[-2000:],
+        }
+    return {"enabled": False, "ok": False, "reason": f"unsupported_runtime:{runtime}", "reply": "", "expected": expected}
 
 
 def attendance_classify_employee(employee: dict, stale_minutes: int, *, probe_replies: bool = True, reply_timeout: int = 120) -> dict:
@@ -601,6 +628,22 @@ def attendance_classify_employee(employee: dict, stale_minutes: int, *, probe_re
     if int(spool.get("pending", 0)) > 0 or int(spool.get("processing", 0)) > 0:
         status = "worker_stalled"
         reason = "telegram_ingress_spool_not_drained"
+    elif probe_replies:
+        reply_probe = attendance_reply_probe(employee_id, runtime, reply_timeout)
+        if reply_probe.get("ok"):
+            status = "online"
+            reason = "agent_reply_matched"
+            reply = str(reply_probe.get("reply") or "")
+        elif not session["exists"] and not heartbeat:
+            status = "heartbeat_disabled"
+            reason = "no_session_store_or_employee_heartbeat"
+        elif session["exists"] and int(session.get("session_count", 0)) <= 0:
+            status = "session_missing"
+            reason = "session_store_empty"
+        else:
+            status = "no_reply"
+            reason = str(reply_probe.get("reason") or "reply_probe_failed")
+            reply = str(reply_probe.get("reply") or "")
     elif not session["exists"] and not heartbeat:
         status = "heartbeat_disabled"
         reason = "no_session_store_or_employee_heartbeat"
@@ -611,20 +654,9 @@ def attendance_classify_employee(employee: dict, stale_minutes: int, *, probe_re
         status = "no_reply"
         reason = "no_runtime_session_evidence"
     else:
-        if probe_replies:
-            reply_probe = attendance_reply_probe(employee_id, runtime, reply_timeout)
-            if reply_probe.get("ok"):
-                status = "online"
-                reason = "agent_reply_matched"
-                reply = str(reply_probe.get("reply") or "")
-            else:
-                status = "no_reply"
-                reason = str(reply_probe.get("reason") or "reply_probe_failed")
-                reply = str(reply_probe.get("reply") or "")
-        else:
-            status = "online"
-            reason = "session_store_has_active_entries_and_spool_clear"
-            reply = f"{employee_id} 报到"
+        status = "online"
+        reason = "session_store_has_active_entries_and_spool_clear"
+        reply = f"{employee_id} 报到"
     return {
         "agent": employee_id,
         "name": employee.get("name", ""),
@@ -666,12 +698,15 @@ def cmd_attendance_sweep(args: argparse.Namespace) -> int:
         "counts": counts,
         "employees": rows_out,
         "evidence_rule": "online requires clear ingress spool plus exact agent reply when reply probing is enabled; employee_directory.status is reported but never sufficient",
+        "classification_guide": ATTENDANCE_CLASSIFICATION_GUIDE,
     }
     report_dir = STATE_DIR / "attendance"
     report_dir.mkdir(parents=True, exist_ok=True)
     report_path = report_dir / f"{report['sweep_id']}.json"
-    report["evidence"] = {"json": str(report_path)}
+    latest_path = report_dir / "latest.json"
+    report["evidence"] = {"json": str(report_path), "latest": str(latest_path)}
     report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    latest_path.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     emit(report)
     return 0 if report["ok"] else 1
 
