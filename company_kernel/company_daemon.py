@@ -211,6 +211,37 @@ def retry_due_adapter_runs(config: dict) -> list[dict]:
     return results
 
 
+def employee_exists(agent: str) -> bool:
+    conn = companyctl.connect()
+    try:
+        return bool(conn.execute("SELECT 1 FROM employees WHERE id = ? AND status = 'active'", (agent,)).fetchone())
+    finally:
+        conn.close()
+
+
+def ensure_enabled_workers(config: dict, agents: list[str]) -> None:
+    if not agents:
+        return
+    workers = config.setdefault("adapter_workers", [])
+    by_agent = {str(worker.get("agent", "")): worker for worker in workers}
+    for agent in agents:
+        if agent in by_agent:
+            by_agent[agent]["enabled"] = True
+            continue
+        if not employee_exists(agent):
+            raise SystemExit(f"cannot enable unknown or inactive worker: {agent}")
+        workers.append(
+            {
+                "agent": agent,
+                "enabled": True,
+                "command": "company-adapter-worker",
+                "args": ["--dry-run"],
+                "max_tasks_per_tick": 1,
+                "temporary": True,
+            }
+        )
+
+
 def write_state(state: dict) -> Path:
     STATE_DIR.mkdir(parents=True, exist_ok=True)
     path = STATE_DIR / "last-run.json"
@@ -275,11 +306,7 @@ def tick(config: dict) -> dict:
 
 def run(args: argparse.Namespace) -> int:
     config = load_config(Path(args.config))
-    if args.enable_worker:
-        enabled = set(args.enable_worker)
-        for worker in config.get("adapter_workers", []):
-            if worker.get("agent", "") in enabled:
-                worker["enabled"] = True
+    ensure_enabled_workers(config, args.enable_worker)
     interval = args.interval or int(config.get("interval_seconds", 30))
     iterations = 1 if args.once else max(args.iterations, 0)
     count = 0

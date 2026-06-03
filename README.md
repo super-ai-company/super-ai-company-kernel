@@ -261,7 +261,7 @@ bin/companyctl task split --task-id task-video-project-001 --by video-ops --plan
 
 `bin/company-daemon` 是本机巡检循环，默认只运行 repair、scheduler 和 heartbeat，不启动真实外部工具。
 `config/daemon.json` 里的 `heartbeat_agents` 是固定员工心跳，`heartbeat_runtimes` 会动态覆盖指定 runtime 下所有 active 员工；设为 `["*"]` 时覆盖所有 active 员工，新增员工后不用手改心跳列表。
-`config/daemon.json` 里的 `adapter_workers` 可以启用员工 worker，让 daemon 每轮自动领取任务、执行 adapter、写 evidence、回传状态。
+`config/daemon.json` 里的 `adapter_workers` 可以启用员工 worker，让 daemon 每轮自动领取任务、执行 adapter、写 evidence、回传状态。`company-daemon --enable-worker <agent>` 可临时启用任意 active 员工；若该员工未在 daemon config 里预配置，会自动使用 `company-adapter-worker --dry-run`，不启动真实外部工具，也不修改 config 文件。
 每个 worker 支持 `max_tasks_per_tick`，独立状态写到 `state/daemon/workers/<agent>.json`，汇总运行历史写入 SQLite `adapter_runs` 并显示在 dashboard；未确认的失败 adapter run 会让 `companyctl doctor` 报 `adapter_failures`。
 任务提交会生成 `trace_id`，并贯穿 task metadata、`company_events`、`adapter_runs` 和 dashboard，用来追踪派发、hook、adapter 执行链路。
 `bin/company-trace --task-id <task-id>` 会导出同一条链路的 JSON 和 HTML 时间线到 `state/traces/<trace_id>.html`，用于查看派发、hook、adapter run 的火焰图式耗时视图。
@@ -299,7 +299,7 @@ bin/companyctl task show --task-id task-daemon-worker-smoke
 bin/companyctl runtime adapter-runs --agent codex --status ok --limit 3
 ```
 
-这条 smoke 会证明 daemon 能临时启用 `codex` worker，自动领取任务、写 evidence、完成任务、写 heartbeat，并把本次执行写入 `adapter_runs` 供 dashboard/doctor/告警读取。
+这条 smoke 会证明 daemon 能临时启用员工 worker，自动领取任务、写 evidence、完成任务、写 heartbeat，并把本次执行写入 `adapter_runs` 供 dashboard/doctor/告警读取。对未预配置 worker 的 active 员工，同一命令会走安全 dry-run 通用 worker。
 上线验收可使用 `doctor --summary --strict-launchd`，把 launchd 未安装或安装文件与模板不一致作为失败 gate。
 服务层验收可使用 `bin/company-service-smoke --json-only`，它会启动本机随机端口 REST/RPC 服务并验证 health/describe/get，gRPC 依赖缺失时返回 `grpcio_not_installed`。
 如需把 gRPC 真实端口也纳入验收，先在部署环境安装可选依赖：
@@ -453,7 +453,7 @@ bin/companyctl project list --status active
 
 `bin/company-adapter-worker` 是第二阶段的最小 worker。它会领取指定员工的一个待处理任务，写入 evidence report，并通过 `companyctl task done/block` 回写状态。
 
-默认建议先用 `--dry-run`，真实启动 OpenClaw/Hermes/Codex/Claude/Trae/Antigravity 需要后续专用 adapter。
+默认建议先用 `--dry-run`；daemon 临时启用未预配置员工时也会自动使用该安全模式。真实启动 OpenClaw/Hermes/Codex/Claude/Trae/Antigravity 需要后续专用 adapter。
 
 ## Codex Adapter
 
