@@ -53,6 +53,8 @@ API_ENDPOINTS = [
     {"method": "POST", "path": "/v1/projects/{project_id}/plan-items", "summary": "Add project plan item", "body": {"title": "string", "status": "planned/in_progress/done/completed/blocked/cancelled optional", "owner": "employee id optional", "due_at": "string optional", "task_id": "string optional", "plan_id": "string optional"}},
     {"method": "POST", "path": "/v1/projects/{project_id}/plan-items/{plan_id}/status", "summary": "Update project plan item status", "body": {"status": "planned/in_progress/done/completed/blocked/cancelled"}},
     {"method": "POST", "path": "/v1/projects/{project_id}/status", "summary": "Update project status", "body": {"status": "active/paused/completed/blocked"}},
+    {"method": "GET", "path": "/v1/projects/{project_id}/review", "summary": "Review project readiness"},
+    {"method": "POST", "path": "/v1/projects/{project_id}/accept", "summary": "Accept project completion", "body": {"by": "employee id", "summary": "string", "force": "bool optional"}},
     {"method": "GET", "path": "/v1/adapter-runs", "summary": "List adapter runs", "query": {"agent": "employee id optional", "status": "ok/failed optional", "unacknowledged_only": "bool optional", "limit": "integer optional"}},
     {"method": "GET", "path": "/v1/adapter-runs/{run_id}", "summary": "Show adapter run", "query": {"summary": "bool optional"}},
     {"method": "POST", "path": "/v1/adapter-runs/{run_id}/ack", "summary": "Acknowledge adapter failure", "body": {"by": "employee id", "reason": "string"}},
@@ -207,6 +209,10 @@ def route_get(path: str, query: dict[str, list[str]]) -> tuple[int, dict]:
         if status:
             argv.extend(["--status", status])
         code, payload = run_companyctl(argv)
+        return (HTTPStatus.OK if code == 0 else HTTPStatus.BAD_REQUEST), {"exit_code": code, **payload}
+    if path.startswith("/v1/projects/") and path.endswith("/review"):
+        project_id = path.removeprefix("/v1/projects/").removesuffix("/review").strip("/")
+        code, payload = run_companyctl(["project", "review", "--project-id", project_id])
         return (HTTPStatus.OK if code == 0 else HTTPStatus.BAD_REQUEST), {"exit_code": code, **payload}
     if path.startswith("/v1/projects/"):
         project_id = path.removeprefix("/v1/projects/").strip("/")
@@ -366,6 +372,13 @@ def route_post(path: str, body: dict) -> tuple[int, dict]:
             code, payload = run_companyctl(["project", "plan-status", "--project-id", project_id.strip("/"), "--plan-id", plan_id.strip("/"), "--status", str(body.get("status", ""))])
             return (HTTPStatus.OK if code == 0 else HTTPStatus.BAD_REQUEST), {"exit_code": code, **payload}
         code, payload = run_companyctl(["project", "status", "--project-id", rest.strip("/"), "--status", str(body.get("status", ""))])
+        return (HTTPStatus.OK if code == 0 else HTTPStatus.BAD_REQUEST), {"exit_code": code, **payload}
+    if path.startswith("/v1/projects/") and path.endswith("/accept"):
+        project_id = path.removeprefix("/v1/projects/").removesuffix("/accept").strip("/")
+        argv = ["project", "accept", "--project-id", project_id, "--by", str(body.get("by", "")), "--summary", str(body.get("summary", ""))]
+        if body.get("force") in {True, "1", "true", "yes"}:
+            argv.append("--force")
+        code, payload = run_companyctl(argv)
         return (HTTPStatus.OK if code == 0 else HTTPStatus.BAD_REQUEST), {"exit_code": code, **payload}
     if path == "/v1/approvals":
         argv = [
