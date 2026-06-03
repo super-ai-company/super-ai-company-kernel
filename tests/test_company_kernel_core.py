@@ -14,6 +14,7 @@ from unittest import mock
 from company_kernel import company_daemon
 from company_kernel import company_dashboard
 from company_kernel import companyctl
+from company_kernel import codex_adapter
 from company_kernel import openclaw_adapter
 from company_kernel import policy_guard
 from company_kernel import schema_migrations
@@ -44,7 +45,7 @@ class CompanyKernelCoreTest(unittest.TestCase):
             (root / "company_kernel" / source_file.name).write_text(source_file.read_text(encoding="utf-8"), encoding="utf-8")
         (root / "company_kernel" / "schema.sql").write_text(companyctl.SCHEMA.read_text(encoding="utf-8"), encoding="utf-8")
         (root / "bin").mkdir()
-        for executable in ["companyctl", "company-adapter-worker", "company-openclaw-adapter"]:
+        for executable in ["companyctl", "company-adapter-worker", "company-codex-adapter", "company-openclaw-adapter"]:
             target = root / "bin" / executable
             target.write_text((Path(__file__).resolve().parents[1] / "bin" / executable).read_text(encoding="utf-8"), encoding="utf-8")
             target.chmod(0o755)
@@ -154,6 +155,9 @@ class CompanyKernelCoreTest(unittest.TestCase):
             mock.patch.object(company_dashboard, "DB_PATH", root / "company.sqlite"),
             mock.patch.object(company_dashboard, "SCHEMA", root / "company_kernel" / "schema.sql"),
             mock.patch.object(company_dashboard, "DEFAULT_OUTPUT", root / "state" / "dashboard.html"),
+            mock.patch.object(codex_adapter, "ROOT", root),
+            mock.patch.object(codex_adapter, "DB_PATH", root / "company.sqlite"),
+            mock.patch.object(codex_adapter, "DEFAULT_WORKSPACE", root / "workspace" / "codex"),
             mock.patch.object(openclaw_adapter, "ROOT", root),
             mock.patch.object(openclaw_adapter, "DB_PATH", root / "company.sqlite"),
             mock.patch.object(openclaw_adapter, "OPENCLAW_ROOT", root / "openclaw"),
@@ -201,7 +205,7 @@ class CompanyKernelCoreTest(unittest.TestCase):
             ("hermes", "supervisor"),
             ("nestcar", "business-agent"),
         ]:
-            runtime = "hermes" if employee_id == "hermes" else "openclaw" if employee_id == "nestcar" else "local"
+            runtime = "hermes" if employee_id == "hermes" else "openclaw" if employee_id == "nestcar" else "codex" if employee_id == "codex" else "local"
             code, obj = run_cli(
                 "employee",
                 "create",
@@ -1201,6 +1205,126 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual("completed", task["task"]["status"])
         self.assertEqual(executed["report"], task["task"]["evidence_path"])
         self.assertIn("Submitted Company Kernel task to OpenClaw legacy bus", Path(executed["report"]).read_text(encoding="utf-8"))
+
+    def test_codex_adapter_dry_run_writes_task_card_and_evidence(self) -> None:
+        code, submitted = run_cli(
+            "task",
+            "submit",
+            "--from",
+            "openclaw-main",
+            "--to",
+            "codex",
+            "--task-id",
+            "task-codex-dry-run",
+            "--title",
+            "修复项目脚本",
+            "--description",
+            "生成 task card 并回传 evidence",
+        )
+        self.assertEqual(code, 0, submitted)
+
+        captured = io.StringIO()
+        with contextlib.redirect_stdout(captured):
+            code = codex_adapter.main(["--agent", "codex"])
+        result = json.loads(captured.getvalue())
+        self.assertEqual(0, code, result)
+        self.assertTrue(result["ok"], result)
+        self.assertFalse(result["executed"])
+        self.assertTrue(Path(result["task_card"]).exists())
+        self.assertTrue(Path(result["report"]).exists())
+
+        task_card = Path(result["task_card"]).read_text(encoding="utf-8")
+        self.assertIn("修复项目脚本", task_card)
+        self.assertIn("task-codex-dry-run", task_card)
+        self.assertIn(str(self.root / "workspace" / "codex"), task_card)
+
+        code, task = run_cli("task", "show", "--task-id", "task-codex-dry-run")
+        self.assertEqual(code, 0, task)
+        self.assertEqual("completed", task["task"]["status"])
+        self.assertEqual(result["report"], task["task"]["evidence_path"])
+        self.assertTrue((self.root / "employees" / "codex" / "heartbeat.json").exists())
+
+    def test_codex_adapter_execute_success_completes_task(self) -> None:
+        task_id = "task-codex-execute-ok"
+        code, submitted = run_cli(
+            "task",
+            "submit",
+            "--from",
+            "openclaw-main",
+            "--to",
+            "codex",
+            "--task-id",
+            task_id,
+            "--title",
+            "运行 codex exec",
+            "--description",
+            "mock 成功路径",
+        )
+        self.assertEqual(code, 0, submitted)
+
+        calls: list[dict] = []
+
+        def fake_run_codex(task_card: Path, workspace: Path, output: Path, events: Path, sandbox: str, model: str) -> tuple[int, str]:
+            calls.append({"task_card": task_card, "workspace": workspace, "output": output, "events": events, "sandbox": sandbox, "model": model})
+            output.write_text("codex completed\n", encoding="utf-8")
+            events.write_text(json.dumps({"event": "done"}, ensure_ascii=False) + "\n", encoding="utf-8")
+            return 0, f"codex exec -C {workspace} -s {sandbox}"
+
+        captured = io.StringIO()
+        with mock.patch.object(codex_adapter.shutil, "which", lambda name: "/usr/local/bin/codex"), mock.patch.object(codex_adapter, "run_codex", fake_run_codex), contextlib.redirect_stdout(captured):
+            code = codex_adapter.main(["--agent", "codex", "--execute", "--sandbox", "workspace-write", "--model", "gpt-test"])
+        result = json.loads(captured.getvalue())
+        self.assertEqual(0, code, result)
+        self.assertTrue(result["ok"], result)
+        self.assertTrue(result["executed"])
+        self.assertEqual(0, result["codex_exit_code"])
+        self.assertEqual("workspace-write", calls[0]["sandbox"])
+        self.assertEqual("gpt-test", calls[0]["model"])
+        self.assertTrue(Path(result["last_message"]).exists())
+        self.assertTrue(Path(result["events"]).exists())
+
+        code, task = run_cli("task", "show", "--task-id", task_id)
+        self.assertEqual(code, 0, task)
+        self.assertEqual("completed", task["task"]["status"])
+        self.assertEqual(result["report"], task["task"]["evidence_path"])
+        self.assertIn("codex exec completed", Path(result["report"]).read_text(encoding="utf-8"))
+
+    def test_codex_adapter_execute_failure_blocks_task_with_report(self) -> None:
+        task_id = "task-codex-execute-fail"
+        code, submitted = run_cli(
+            "task",
+            "submit",
+            "--from",
+            "openclaw-main",
+            "--to",
+            "codex",
+            "--task-id",
+            task_id,
+            "--title",
+            "运行 codex exec 失败",
+            "--description",
+            "mock 失败路径",
+        )
+        self.assertEqual(code, 0, submitted)
+
+        def fake_run_codex(task_card: Path, workspace: Path, output: Path, events: Path, sandbox: str, model: str) -> tuple[int, str]:
+            output.write_text("codex failed\n", encoding="utf-8")
+            events.write_text(json.dumps({"event": "error"}, ensure_ascii=False) + "\n", encoding="utf-8")
+            return 7, f"codex exec -C {workspace} -s {sandbox}"
+
+        captured = io.StringIO()
+        with mock.patch.object(codex_adapter.shutil, "which", lambda name: "/usr/local/bin/codex"), mock.patch.object(codex_adapter, "run_codex", fake_run_codex), contextlib.redirect_stdout(captured):
+            code = codex_adapter.main(["--agent", "codex", "--execute"])
+        result = json.loads(captured.getvalue())
+        self.assertEqual(7, code, result)
+        self.assertFalse(result["ok"])
+        self.assertEqual(7, result["codex_exit_code"])
+
+        code, task = run_cli("task", "show", "--task-id", task_id)
+        self.assertEqual(code, 0, task)
+        self.assertEqual("blocked", task["task"]["status"])
+        self.assertIn("codex exec failed exit_code=7", task["task"]["blocker"])
+        self.assertIn("codex exec failed exit_code=7", Path(result["report"]).read_text(encoding="utf-8"))
 
     def test_employee_onboard_writes_config_and_creates_test_task(self) -> None:
         code, onboard = run_cli(

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import shutil
 import sqlite3
 import subprocess
@@ -9,9 +10,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(os.environ.get("OPENCLAW_COMPANY_KERNEL_ROOT", Path(__file__).resolve().parents[1])).resolve()
 DB_PATH = ROOT / "company.sqlite"
-DEFAULT_WORKSPACE = Path("/Users/shift/openclaw/workspace-xmanx/projects/openclaw-codex-controller")
+DEFAULT_WORKSPACE = Path(os.environ.get("OPENCLAW_CODEX_WORKSPACE", "/Users/shift/openclaw/workspace-xmanx/projects/openclaw-codex-controller")).resolve()
 
 
 def now() -> str:
@@ -31,21 +32,28 @@ def connect() -> sqlite3.Connection:
 
 
 def run_companyctl(args: list[str]) -> tuple[int, str, str]:
-    cp = subprocess.run([str(ROOT / "bin" / "companyctl"), *args], cwd=str(ROOT), text=True, capture_output=True)
+    env = {**os.environ, "OPENCLAW_COMPANY_KERNEL_ROOT": str(ROOT)}
+    cp = subprocess.run([str(ROOT / "bin" / "companyctl"), *args], cwd=str(ROOT), text=True, capture_output=True, env=env)
     return cp.returncode, cp.stdout, cp.stderr
 
 
 def employee(agent: str) -> sqlite3.Row | None:
     conn = connect()
-    return conn.execute("SELECT * FROM employees WHERE id = ?", (agent,)).fetchone()
+    try:
+        return conn.execute("SELECT * FROM employees WHERE id = ?", (agent,)).fetchone()
+    finally:
+        conn.close()
 
 
 def next_codex_task(agent: str) -> sqlite3.Row | None:
     conn = connect()
-    return conn.execute(
-        "SELECT * FROM tasks WHERE target_agent = ? AND status = 'submitted' ORDER BY created_at LIMIT 1",
-        (agent,),
-    ).fetchone()
+    try:
+        return conn.execute(
+            "SELECT * FROM tasks WHERE target_agent = ? AND status = 'submitted' ORDER BY created_at LIMIT 1",
+            (agent,),
+        ).fetchone()
+    finally:
+        conn.close()
 
 
 def paths(agent: str, task_id: str) -> dict[str, Path]:
