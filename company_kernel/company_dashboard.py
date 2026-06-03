@@ -629,6 +629,27 @@ def render(summary: dict) -> str:
     </div>
     <div class="api-note">Employee actions call Company Kernel REST API and then reload this static dashboard. Start with: <code>bin/company-api-gateway --quiet</code></div>
     <div class="api-status" id="employee-api-status"></div>
+    <h2>Notification Settings</h2>
+    <div class="toolbar" id="notification-settings">
+      <label>Telegram Account
+        <input id="notify-telegram-account" value="employee-notify">
+      </label>
+      <label>Bot Token Env Var
+        <input id="notify-telegram-token-env" value="COMPANY_EMPLOYEE_TELEGRAM_BOT_TOKEN">
+      </label>
+      <label>Default Target
+        <input id="notify-telegram-target" placeholder="telegram chat/user target">
+      </label>
+      <label>Enabled
+        <select id="notify-enabled">
+          <option value="true">true</option>
+          <option value="false">false</option>
+        </select>
+      </label>
+      <button type="button" onclick="saveNotificationSettings()">Save Notification</button>
+      <button type="button" onclick="loadNotificationSettings()">Load Notification</button>
+    </div>
+    <div class="api-note">Do not paste bot tokens here. Export the token in the environment variable shown above before starting the API/daemon.</div>
     {render_employee_table(employees)}
     <h2>Projects</h2>
     {render_table(["id", "owner", "status", "review", "plan", "open_plan", "accepted", "goal", "acceptance", "retro", "title", "updated"], projects, ["id", "owner_agent", "status", "review_state", "plan", "open_plan_items", "acceptance_count", "goal", "acceptance", "latest_acceptance_summary", "title", "updated_at"])}
@@ -717,6 +738,41 @@ def render(summary: dict) -> str:
         setTimeout(() => location.reload(), 800);
       }} catch (err) {{
         setEmployeeApiStatus(`Onboard failed: ${{err.message}}`, true);
+      }}
+    }}
+    async function loadNotificationSettings() {{
+      setEmployeeApiStatus('Loading notification settings...', false);
+      try {{
+        const data = await getCompanyApi('/v1/settings/notification');
+        const cfg = data.employee_notifications || {{}};
+        const account = cfg.account || 'employee-notify';
+        const telegram = (data.telegram_accounts || {{}})[account] || {{}};
+        document.getElementById('notify-telegram-account').value = account;
+        document.getElementById('notify-telegram-token-env').value = telegram.bot_token_env || 'COMPANY_EMPLOYEE_TELEGRAM_BOT_TOKEN';
+        document.getElementById('notify-telegram-target').value = cfg.target || telegram.default_target || '';
+        document.getElementById('notify-enabled').value = cfg.enabled ? 'true' : 'false';
+        setEmployeeApiStatus(`Notification loaded. token_configured=${{telegram.token_configured ? 'yes' : 'no'}}`, false);
+      }} catch (err) {{
+        setEmployeeApiStatus(`Notification load failed: ${{err.message}}`, true);
+      }}
+    }}
+    async function saveNotificationSettings() {{
+      const payload = {{
+        telegram_account: document.getElementById('notify-telegram-account').value.trim() || 'employee-notify',
+        telegram_bot_token_env: document.getElementById('notify-telegram-token-env').value.trim(),
+        telegram_default_target: document.getElementById('notify-telegram-target').value.trim(),
+        employee_notifications_enabled: document.getElementById('notify-enabled').value === 'true'
+      }};
+      if (!payload.telegram_bot_token_env) {{
+        setEmployeeApiStatus('Bot token env var is required. Do not paste the token itself.', true);
+        return;
+      }}
+      setEmployeeApiStatus('Saving notification settings...', false);
+      try {{
+        await callCompanyApi('/v1/settings/notification', payload, 'POST');
+        setEmployeeApiStatus('Notification settings saved without storing token.', false);
+      }} catch (err) {{
+        setEmployeeApiStatus(`Notification save failed: ${{err.message}}`, true);
       }}
     }}
     async function directMessageEmployee(id) {{
@@ -1707,6 +1763,75 @@ def inject_advanced_dashboard(template: str, summary: dict, *, db_path: Path, ap
       printTerminalLine({{tag: 'ERROR', text: `Offboard failed: ${{err.message}}`, type: 'error'}});
     }}
   }}
+  function installNotificationSettingsPanel() {{
+    if (document.getElementById('notification-settings-panel')) return;
+    const sidebar = document.querySelector('.sidebar') || document.querySelector('aside') || document.body;
+    const panel = document.createElement('div');
+    panel.id = 'notification-settings-panel';
+    panel.style.cssText = 'margin:12px;padding:10px;border:1px solid rgba(129,140,248,.25);border-radius:8px;background:rgba(15,23,42,.72);font-size:11px;color:#c7d2fe;';
+    panel.innerHTML = `
+      <div style="font-weight:800;margin-bottom:8px;">通知设置</div>
+      <label style="display:block;margin-bottom:6px;">Telegram Account
+        <input id="notify-telegram-account" value="employee-notify" style="width:100%;margin-top:3px;background:#0b1020;color:#e5e7eb;border:1px solid rgba(129,140,248,.25);border-radius:6px;padding:6px;">
+      </label>
+      <label style="display:block;margin-bottom:6px;">Token Env Var
+        <input id="notify-telegram-token-env" value="COMPANY_EMPLOYEE_TELEGRAM_BOT_TOKEN" style="width:100%;margin-top:3px;background:#0b1020;color:#e5e7eb;border:1px solid rgba(129,140,248,.25);border-radius:6px;padding:6px;">
+      </label>
+      <label style="display:block;margin-bottom:6px;">Default Target
+        <input id="notify-telegram-target" placeholder="telegram chat/user target" style="width:100%;margin-top:3px;background:#0b1020;color:#e5e7eb;border:1px solid rgba(129,140,248,.25);border-radius:6px;padding:6px;">
+      </label>
+      <label style="display:block;margin-bottom:8px;">Enabled
+        <select id="notify-enabled" style="width:100%;margin-top:3px;background:#0b1020;color:#e5e7eb;border:1px solid rgba(129,140,248,.25);border-radius:6px;padding:6px;">
+          <option value="true">true</option>
+          <option value="false">false</option>
+        </select>
+      </label>
+      <div style="display:flex;gap:6px;">
+        <button type="button" onclick="saveNotificationSettings()" style="flex:1;border:0;border-radius:6px;padding:7px;background:#4f46e5;color:white;font-weight:700;">Save</button>
+        <button type="button" onclick="loadNotificationSettings()" style="flex:1;border:1px solid rgba(129,140,248,.35);border-radius:6px;padding:7px;background:transparent;color:#c7d2fe;font-weight:700;">Load</button>
+      </div>
+      <div style="margin-top:7px;color:#94a3b8;">不要粘贴 token，只保存环境变量名。</div>
+    `;
+    sidebar.appendChild(panel);
+  }}
+  async function loadNotificationSettings() {{
+    companyApiLog('SYSTEM', 'Loading notification settings...', 'normal');
+    try {{
+      const data = await companyApiGet('/v1/settings/notification');
+      const cfg = data.employee_notifications || {{}};
+      const account = cfg.account || 'employee-notify';
+      const telegram = (data.telegram_accounts || {{}})[account] || {{}};
+      const accountInput = document.getElementById('notify-telegram-account');
+      const tokenInput = document.getElementById('notify-telegram-token-env');
+      const targetInput = document.getElementById('notify-telegram-target');
+      const enabledInput = document.getElementById('notify-enabled');
+      if (accountInput) accountInput.value = account;
+      if (tokenInput) tokenInput.value = telegram.bot_token_env || 'COMPANY_EMPLOYEE_TELEGRAM_BOT_TOKEN';
+      if (targetInput) targetInput.value = cfg.target || telegram.default_target || '';
+      if (enabledInput) enabledInput.value = cfg.enabled ? 'true' : 'false';
+      companyApiLog('SYSTEM', `Notification loaded. token_configured=${{telegram.token_configured ? 'yes' : 'no'}}`, 'success');
+    }} catch (err) {{
+      companyApiLog('ERROR', `Notification load failed: ${{err.message}}`, 'error');
+    }}
+  }}
+  async function saveNotificationSettings() {{
+    const tokenEnv = (document.getElementById('notify-telegram-token-env')?.value || '').trim();
+    if (!tokenEnv) {{
+      companyApiLog('ERROR', 'Bot token env var is required. Do not paste the token itself.', 'error');
+      return;
+    }}
+    try {{
+      await companyApiPost('/v1/settings/notification', {{
+        telegram_account: (document.getElementById('notify-telegram-account')?.value || 'employee-notify').trim(),
+        telegram_bot_token_env: tokenEnv,
+        telegram_default_target: (document.getElementById('notify-telegram-target')?.value || '').trim(),
+        employee_notifications_enabled: (document.getElementById('notify-enabled')?.value || 'true') === 'true'
+      }});
+      companyApiLog('SYSTEM', 'Notification settings saved without storing token.', 'success');
+    }} catch (err) {{
+      companyApiLog('ERROR', `Notification save failed: ${{err.message}}`, 'error');
+    }}
+  }}
   function populateFollowups() {{
     const summary = window.summaryData || window.kernelSummary || {{followups: []}};
     const tbody = document.getElementById('followups-tbody');
@@ -1726,6 +1851,7 @@ def inject_advanced_dashboard(template: str, summary: dict, *, db_path: Path, ap
   }}
   document.addEventListener('DOMContentLoaded', () => {{
     window.sendChatMessage = realSendChatMessage;
+    installNotificationSettingsPanel();
     bindChatControlButtons();
     bindMentionAutocomplete();
     document.getElementById('chat-join-btn')?.addEventListener('click', (event) => {{

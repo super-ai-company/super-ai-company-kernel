@@ -30,6 +30,8 @@ Antigravity is a GUI employee. There may be no stable CLI, so keep execution exp
 - Direct messages must not fail with “unsupported runtime”. They must write a direct GUI brief under `employees/antigravity/reports/direct/`, return an ACK to the sender, and clearly state that implementation still requires GUI evidence or a blocker.
 - Direct GUI brief ACK keeps Antigravity as `candidate`; it does not prove active employee readiness.
 - Active status is forbidden until `employee verify-direct` completes 2-4 rounds with receipt and the runtime has a real implementation/blocker evidence return path.
+- If Antigravity cannot actually inspect the GUI pages and return implementation evidence, it must stay `candidate` and must not receive autonomous tasks.
+- Any model quota, app, CLI, browser, or GUI execution error must mark the employee unavailable: `candidate` status plus paused communication until a new 2-4 round verification succeeds.
 - `--execute` only opens Antigravity; it does not prove task completion.
 - Use `--complete --task-id <id> --summary ... --evidence ...` or equivalent Company Kernel task completion after GUI work has real evidence.
 - Use `--block --task-id <id> --blocker ...` if the GUI cannot complete safely.

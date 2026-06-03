@@ -367,7 +367,9 @@
         "video-ops",
         "video-publisher"
       ],
-      "handoff_mode": "task_or_hook"
+      "handoff_mode": "task_or_hook",
+      "communication_paused": true,
+      "communication_paused_at": "2026-06-04T01:09:58+07:00"
     },
     "invest": {
       "display_name": "invest",
@@ -644,6 +646,23 @@
     "local-model-agent": {
       "status": "not_onboarded",
       "reason": "runtime not installed or not connected on this machine"
+    }
+  },
+  "notification": {
+    "telegram_accounts": {
+      "employee-notify": {
+        "channel": "telegram",
+        "bot_token_env": "COMPANY_EMPLOYEE_TELEGRAM_BOT_TOKEN",
+        "default_target": "telegram:shift",
+        "updated_at": "2026-06-04T01:22:08+07:00"
+      }
+    },
+    "employee_notifications": {
+      "enabled": true,
+      "channel": "telegram",
+      "account": "employee-notify",
+      "target": "telegram:shift",
+      "updated_at": "2026-06-04T01:22:08+07:00"
     }
   }
 }

@@ -27,6 +27,7 @@ API_CAPABILITIES = [
     "followups",
     "employees",
     "runtimes",
+    "settings",
 ]
 API_ENDPOINTS = [
     {"method": "GET", "path": "/v1/health", "summary": "Company Kernel health summary"},
@@ -43,6 +44,8 @@ API_ENDPOINTS = [
     {"method": "POST", "path": "/v1/employees/{employee_id}/capabilities", "summary": "Update employee capabilities", "body": {"set_skills": "comma-separated skills optional", "add_skill": "string/list optional", "set_tools": "comma-separated tools optional", "add_tool": "string/list optional", "set_task_types": "comma-separated task types optional"}},
     {"method": "POST", "path": "/v1/employees/{employee_id}/permissions", "summary": "Update employee permissions", "body": {"can_submit_tasks": "true/false/keep optional", "can_claim_tasks": "true/false/keep optional", "can_modify_kernel": "true/false/keep optional", "requires_approval_for": "comma-separated actions optional"}},
     {"method": "POST", "path": "/v1/employees/match", "summary": "Rank employees by capabilities for routing", "body": {"skills": "comma-separated skills optional", "tools": "comma-separated tools optional", "task_type": "string optional", "runtime": "runtime optional", "role": "role optional", "limit": "integer optional", "include_unavailable": "bool optional"}},
+    {"method": "GET", "path": "/v1/settings/notification", "summary": "Read sanitized notification settings without secrets"},
+    {"method": "POST", "path": "/v1/settings/notification", "summary": "Configure employee notification account without storing tokens", "body": {"telegram_account": "account id", "telegram_bot_token_env": "environment variable name containing token", "telegram_default_target": "chat/user target optional", "employee_notifications_enabled": "bool optional"}},
     {"method": "GET", "path": "/v1/runtimes", "summary": "List runtimes"},
     {"method": "POST", "path": "/v1/runtimes", "summary": "Register runtime", "body": {"runtime": "runtime id", "command": "command optional", "status": "registered/disabled optional", "notes": "string optional"}},
     {"method": "GET", "path": "/v1/tasks", "summary": "List tasks", "query": {"agent": "employee id optional", "status": "task status optional"}},
@@ -210,6 +213,8 @@ def route_get(path: str, query: dict[str, list[str]]) -> tuple[int, dict]:
         return (HTTPStatus.OK if code == 0 else HTTPStatus.BAD_REQUEST), {"exit_code": code, **payload}
     if path == "/v1/employees/match":
         return HTTPStatus.METHOD_NOT_ALLOWED, {"ok": False, "error": "use POST", "path": path}
+    if path == "/v1/settings/notification":
+        return HTTPStatus.OK, companyctl.notification_settings()
     if path.startswith("/v1/employees/"):
         employee_id = path.removeprefix("/v1/employees/").strip("/")
         code, payload = run_companyctl(["employee", "show", "--id", employee_id])
@@ -396,6 +401,9 @@ def route_delete(path: str, body: dict) -> tuple[int, dict]:
 
 
 def route_post(path: str, body: dict) -> tuple[int, dict]:
+    if path == "/v1/settings/notification":
+        payload = companyctl.update_notification_settings(body)
+        return (HTTPStatus.OK if payload.get("ok") else HTTPStatus.BAD_REQUEST), payload
     if path == "/v1/employees/onboard":
         argv = [
             "employee",

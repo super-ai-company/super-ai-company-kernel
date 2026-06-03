@@ -191,6 +191,69 @@ def write_communication_config(config: dict) -> None:
     COMMUNICATIONS_PATH.write_text(json.dumps(config, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
 
+def notification_settings() -> dict:
+    config = load_communication_config()
+    notification = config.get("notification", {}) if isinstance(config.get("notification"), dict) else {}
+    telegram_accounts = notification.get("telegram_accounts", {}) if isinstance(notification.get("telegram_accounts"), dict) else {}
+    sanitized_accounts = {}
+    for account_id, account in telegram_accounts.items():
+        if not isinstance(account, dict):
+            continue
+        token_env = str(account.get("bot_token_env", "") or "")
+        sanitized_accounts[str(account_id)] = {
+            "channel": str(account.get("channel", "telegram") or "telegram"),
+            "bot_token_env": token_env,
+            "token_configured": bool(token_env and os.environ.get(token_env)),
+            "default_target": str(account.get("default_target", "") or ""),
+            "updated_at": str(account.get("updated_at", "") or ""),
+        }
+    employee_notifications = notification.get("employee_notifications", {}) if isinstance(notification.get("employee_notifications"), dict) else {}
+    return {
+        "ok": True,
+        "file": str(COMMUNICATIONS_PATH),
+        "employee_notifications": {
+            "enabled": bool(employee_notifications.get("enabled", False)),
+            "channel": str(employee_notifications.get("channel", "telegram") or "telegram"),
+            "account": str(employee_notifications.get("account", "") or ""),
+            "target": str(employee_notifications.get("target", "") or ""),
+        },
+        "telegram_accounts": sanitized_accounts,
+    }
+
+
+def update_notification_settings(payload: dict) -> dict:
+    forbidden = {"token", "bot_token", "telegram_bot_token", "secret", "password"}
+    if any(key in payload for key in forbidden):
+        return {"ok": False, "error": "do not store Telegram bot token in config; set an environment variable and save only its name"}
+    account_id = str(payload.get("telegram_account") or payload.get("account") or "employee-notify").strip()
+    token_env = str(payload.get("telegram_bot_token_env") or payload.get("bot_token_env") or "").strip()
+    target = str(payload.get("telegram_default_target") or payload.get("default_target") or payload.get("target") or "").strip()
+    enabled = bool(payload.get("employee_notifications_enabled", payload.get("enabled", False)))
+    if not account_id:
+        return {"ok": False, "error": "telegram account id is required"}
+    if not token_env:
+        return {"ok": False, "error": "telegram bot token environment variable name is required"}
+    config = load_communication_config()
+    config.setdefault("version", 1)
+    notification = config.setdefault("notification", {})
+    accounts = notification.setdefault("telegram_accounts", {})
+    accounts[account_id] = {
+        "channel": "telegram",
+        "bot_token_env": token_env,
+        "default_target": target,
+        "updated_at": now(),
+    }
+    notification["employee_notifications"] = {
+        "enabled": enabled,
+        "channel": "telegram",
+        "account": account_id,
+        "target": target,
+        "updated_at": now(),
+    }
+    write_communication_config(config)
+    return notification_settings()
+
+
 def normalize_employee_lookup(value: str) -> str:
     return " ".join(str(value or "").strip().split()).casefold()
 
@@ -1277,7 +1340,8 @@ def cmd_employee_verify_direct(args: argparse.Namespace) -> int:
         except json.JSONDecodeError:
             payload = {"ok": False, "error": "invalid direct response", "raw": captured.getvalue()}
         reply = str(payload.get("reply") or "")
-        passed = code == 0 and payload.get("ok") is True and expected in reply and bool(payload.get("receipt"))
+        activation_eligible = payload.get("activation_eligible", True) is not False
+        passed = code == 0 and payload.get("ok") is True and expected in reply and bool(payload.get("receipt")) and activation_eligible
         if not passed:
             ok = False
         results.append({"round": index, "expected": expected, "passed": passed, "response": payload})
@@ -1413,6 +1477,21 @@ def set_employee_communication_enabled(employee_id: str, enabled: bool, *, dry_r
         "file": str(COMMUNICATIONS_PATH),
         "dry_run": dry_run,
     }
+
+
+def mark_employee_unavailable(conn: sqlite3.Connection, employee_id: str, reason: str) -> dict:
+    employee_id = resolve_employee_alias(employee_id)
+    ts = now()
+    conn.execute("UPDATE employees SET status = 'candidate', updated_at = ? WHERE id = ? AND status = 'active'", (ts, employee_id))
+    result = set_employee_communication_enabled(employee_id, False, dry_run=False)
+    paths = employee_paths(employee_id)
+    profile = load_json_or_default(paths["profile"], {})
+    profile["status"] = "candidate"
+    profile["unavailable_reason"] = reason
+    profile["updated_at"] = ts
+    paths["profile"].write_text(json.dumps(profile, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    audit(conn, "companyctl", "employee.unavailable", employee_id, {"reason": reason, "communication": result})
+    return {"agent": employee_id, "status": "candidate", "communication_paused": True, "reason": reason}
 
 
 def workspace_is_managed(path: Path) -> bool:
@@ -1560,17 +1639,25 @@ def cmd_employee_onboard(args: argparse.Namespace) -> int:
     )
     test_task = {}
     if args.create_test_task and not args.dry_run:
-        task = submit_task_internal(
-            conn,
-            source=args.test_source,
-            target=employee_id,
-            title=f"Onboarding test: {employee_id}",
-            description="请领取此测试任务，写入 heartbeat，并用 evidence 或 blocker 回传结果。",
-            priority="P3",
-            task_id=args.test_task_id or f"task-onboard-{slug(employee_id)}",
-            metadata={"onboarding": True},
-        )
-        test_task = task["task"]
+        inactive = require_active_employee(conn, employee_id, "employee.onboard.create_test_task")
+        if inactive:
+            test_task = {
+                "blocked": True,
+                "reason": "onboarding test task requires a verified active employee",
+                "required_command": inactive["required_command"],
+            }
+        else:
+            task = submit_task_internal(
+                conn,
+                source=args.test_source,
+                target=employee_id,
+                title=f"Onboarding test: {employee_id}",
+                description="请领取此测试任务，写入 heartbeat，并用 evidence 或 blocker 回传结果。",
+                priority="P3",
+                task_id=args.test_task_id or f"task-onboard-{slug(employee_id)}",
+                metadata={"onboarding": True},
+            )
+            test_task = task["task"]
     if not args.dry_run:
         audit(
             conn,
@@ -1668,12 +1755,35 @@ def require_employee(conn: sqlite3.Connection, employee_id: str) -> None:
         raise SystemExit(f"unknown employee: {employee_id}")
 
 
+def require_active_employee(conn: sqlite3.Connection, employee_id: str, action: str) -> dict | None:
+    row = conn.execute("SELECT * FROM employees WHERE id = ?", (employee_id,)).fetchone()
+    if not row:
+        raise SystemExit(f"unknown employee: {employee_id}")
+    employee = dict(row)
+    if employee.get("status") != "active":
+        return {
+            "ok": False,
+            "error": "target employee is not active",
+            "target": employee_id,
+            "status": employee.get("status", ""),
+            "action": action,
+            "required_command": f"bin/companyctl employee verify-direct --id {employee_id} --from main --rounds 3 --activate",
+        }
+    if is_human_owner_employee(employee):
+        return {"ok": False, "error": "human owner is not schedulable", "target": employee_id, "status": employee.get("status", ""), "action": action}
+    return None
+
+
 def cmd_task_submit(args: argparse.Namespace) -> int:
     conn = connect()
     source = resolve_employee_alias(args.source)
     target = resolve_employee_alias(args.target)
     require_employee(conn, source)
     require_employee(conn, target)
+    inactive = require_active_employee(conn, target, "task.submit")
+    if inactive:
+        emit(inactive)
+        return 2
     policy = require_communication_allowed(source, target, "task.submit")
     approval_action = detect_route_approval_action(args.title, args.description, args.requires_approval)
     gate = route_approval_gate(conn, args, source, target, [{"agent": target, "reason": "direct_submit"}], approval_action)
@@ -1816,6 +1926,9 @@ def submit_task_internal(
     target = resolve_employee_alias(target)
     require_employee(conn, source)
     require_employee(conn, target)
+    inactive = require_active_employee(conn, target, "task.submit")
+    if inactive:
+        raise SystemExit(json.dumps(inactive, ensure_ascii=False))
     policy = require_communication_allowed(source, target, "task.submit")
     tid = task_id or f"task-{datetime.now().strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:6]}"
     ts = now()
@@ -2104,8 +2217,11 @@ def cmd_message_direct(args: argparse.Namespace) -> int:
     try:
         cp = subprocess.run(cmd, cwd=str(ROOT), text=True, capture_output=True, timeout=args.timeout + 10)
     except Exception as exc:
-        emit({"ok": False, "error": str(exc), "target": target, "runtime": runtime, "session_key": session_key, "command": cmd})
+        unavailable = mark_employee_unavailable(conn, target, str(exc))
+        conn.commit()
+        emit({"ok": False, "error": str(exc), "target": target, "runtime": runtime, "session_key": session_key, "command": cmd, "employee_unavailable": unavailable})
         return 1
+    adapter_payload = parse_json_output(cp.stdout)
     reply = parse_openclaw_payload_text(cp.stdout)
     message_record = send_message_internal(conn, source=source, target=target, body=args.body, message_id=args.message_id)
     receipt_record = None
@@ -2118,8 +2234,11 @@ def cmd_message_direct(args: argparse.Namespace) -> int:
             body=reply,
             message_id=receipt_id,
         )
+    delivery_status = adapter_payload.get("deliveryStatus") if isinstance(adapter_payload.get("deliveryStatus"), dict) else {}
+    delivery_failed = bool(delivery_status.get("attempted") and delivery_status.get("succeeded") is False)
+    ok = cp.returncode == 0 and not delivery_failed
     result = {
-        "ok": cp.returncode == 0,
+        "ok": ok,
         "source": source,
         "target": target,
         "runtime": runtime,
@@ -2130,6 +2249,8 @@ def cmd_message_direct(args: argparse.Namespace) -> int:
         "reply_account": args.reply_account,
         "reply_to": args.reply_to,
         "reply": reply,
+        "activation_eligible": adapter_payload.get("activation_eligible", True),
+        "adapter_payload": adapter_payload,
         "exit_code": cp.returncode,
         "message": message_record["message"],
         "file": message_record["file"],
@@ -2137,8 +2258,12 @@ def cmd_message_direct(args: argparse.Namespace) -> int:
         "receipt_file": receipt_record["file"] if receipt_record else "",
         "stderr": cp.stderr[-2000:],
     }
+    if cp.returncode != 0 or delivery_failed:
+        reason = str(delivery_status.get("errorMessage") or cp.stderr[-1000:] or cp.stdout[-1000:] or f"direct command exit_code={cp.returncode}")
+        result["employee_unavailable"] = mark_employee_unavailable(conn, target, reason)
+        conn.commit()
     emit(result)
-    return 0 if cp.returncode == 0 else 1
+    return 0 if ok else 1
 
 
 def cmd_message_list(args: argparse.Namespace) -> int:

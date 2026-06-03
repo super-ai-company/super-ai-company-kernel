@@ -284,6 +284,16 @@ class CompanyKernelCoreTest(unittest.TestCase):
                 str(root / "workspace" / employee_id),
             )
             self.assertEqual(code, 0, obj)
+        self.mark_active("video-ops", "video-creator", "video-publisher", "codex", "openclaw-main", "hermes", "nestcar")
+
+    def mark_active(self, *employee_ids: str) -> None:
+        conn = companyctl.connect()
+        try:
+            for employee_id in employee_ids:
+                conn.execute("UPDATE employees SET status = 'active' WHERE id = ?", (employee_id,))
+            conn.commit()
+        finally:
+            conn.close()
 
     def tearDown(self) -> None:
         self.connect_patcher.stop()
@@ -531,19 +541,19 @@ class CompanyKernelCoreTest(unittest.TestCase):
         code, created = run_cli("employee", "create", "--id", "main", "--name", "main", "--role", "operator", "--runtime", "openclaw", "--workspace", str(self.root / "workspace" / "main"))
         self.assertEqual(0, code, created)
         self.assertEqual("candidate", created["employee"].get("status", "candidate"))
-        code, created = run_cli("employee", "create", "--id", "codex", "--name", "Codex", "--role", "developer", "--runtime", "codex", "--workspace", str(self.root / "workspace" / "codex"))
+        code, created = run_cli("employee", "create", "--id", "new-codex", "--name", "New Codex", "--role", "developer", "--runtime", "codex", "--workspace", str(self.root / "workspace" / "new-codex"))
         self.assertEqual(0, code, created)
-        code, blocked = run_cli("employee", "update", "--id", "codex", "--status", "active")
+        code, blocked = run_cli("employee", "update", "--id", "new-codex", "--status", "active")
         self.assertEqual(2, code, blocked)
         self.assertEqual("employee activation requires 2-4 verified direct communication rounds", blocked["error"])
 
-        code, verified = run_cli("employee", "verify-direct", "--id", "codex", "--from", "main", "--rounds", "2", "--activate")
+        code, verified = run_cli("employee", "verify-direct", "--id", "new-codex", "--from", "main", "--rounds", "2", "--activate")
         self.assertEqual(0, code, verified)
         self.assertTrue(verified["ok"])
         self.assertTrue(verified["activated"])
         self.assertEqual(2, verified["rounds_completed"])
         self.assertTrue(Path(verified["evidence"]["latest"]).exists())
-        code, shown = run_cli("employee", "show", "codex")
+        code, shown = run_cli("employee", "show", "new-codex")
         self.assertEqual(0, code, shown)
         self.assertEqual("active", shown["employee"]["status"])
 
@@ -617,6 +627,40 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual(200, status, resumed)
         self.assertTrue(resumed["communication_enabled"])
         self.assertTrue(companyctl.communication_policy_decision("main", "nestcar", "message.send")["allowed"])
+
+    def test_notification_settings_store_env_var_not_telegram_token(self) -> None:
+        status, rejected = api_gateway.route_post(
+            "/v1/settings/notification",
+            {"telegram_account": "employee-notify", "bot_token": "123456:secret"},
+        )
+        self.assertEqual(HTTPStatus.BAD_REQUEST, status)
+        self.assertIn("do not store Telegram bot token", rejected["error"])
+
+        with mock.patch.dict("os.environ", {"COMPANY_EMPLOYEE_TELEGRAM_BOT_TOKEN": "123456:secret"}):
+            status, saved = api_gateway.route_post(
+                "/v1/settings/notification",
+                {
+                    "telegram_account": "employee-notify",
+                    "telegram_bot_token_env": "COMPANY_EMPLOYEE_TELEGRAM_BOT_TOKEN",
+                    "telegram_default_target": "telegram:shift",
+                    "employee_notifications_enabled": "true",
+                },
+            )
+            self.assertEqual(HTTPStatus.OK, status, saved)
+            account = saved["telegram_accounts"]["employee-notify"]
+            self.assertEqual("COMPANY_EMPLOYEE_TELEGRAM_BOT_TOKEN", account["bot_token_env"])
+            self.assertTrue(account["token_configured"])
+            self.assertNotIn("123456:secret", json.dumps(saved, ensure_ascii=False))
+
+            status, loaded = api_gateway.route_get("/v1/settings/notification", {})
+            self.assertEqual(HTTPStatus.OK, status, loaded)
+            self.assertTrue(loaded["employee_notifications"]["enabled"])
+            self.assertEqual("employee-notify", loaded["employee_notifications"]["account"])
+            self.assertNotIn("123456:secret", json.dumps(loaded, ensure_ascii=False))
+
+        config_text = (self.root / "config" / "company_communications.json").read_text(encoding="utf-8")
+        self.assertIn("COMPANY_EMPLOYEE_TELEGRAM_BOT_TOKEN", config_text)
+        self.assertNotIn("123456:secret", config_text)
 
     def test_human_owner_can_use_real_conversation_api_without_being_schedulable(self) -> None:
         code, codex = run_cli("employee", "create", "--id", "codex", "--name", "Codex", "--role", "developer", "--runtime", "codex", "--workspace", str(self.root / "workspace" / "codex"))
@@ -810,7 +854,7 @@ class CompanyKernelCoreTest(unittest.TestCase):
 
             class Result:
                 returncode = 0
-                stdout = json.dumps({"ok": True, "agent": "antigravity", "direct_message": True, "reply": "ANTIGRAVITY_DIRECT_OK"})
+                stdout = json.dumps({"ok": True, "agent": "antigravity", "direct_message": True, "reply": "ANTIGRAVITY_DIRECT_OK", "activation_eligible": False})
                 stderr = ""
 
             return Result()
@@ -830,11 +874,97 @@ class CompanyKernelCoreTest(unittest.TestCase):
             )
         self.assertEqual(0, code, sent)
         self.assertEqual("ANTIGRAVITY_DIRECT_OK", sent["reply"])
+        self.assertFalse(sent["activation_eligible"])
         self.assertEqual("agent:antigravity:main", sent["session_key"])
         self.assertEqual("antigravity", sent["receipt"]["source_agent"])
         self.assertEqual("main", sent["receipt"]["target_agent"])
         self.assertTrue(Path(sent["receipt_file"]).exists())
         self.assertIn("company-antigravity-adapter", calls[0][0])
+
+    def test_antigravity_brief_ack_cannot_activate_employee(self) -> None:
+        code, created = run_cli("employee", "create", "--id", "main", "--name", "main", "--role", "operator", "--runtime", "openclaw", "--workspace", str(self.root / "workspace" / "main"))
+        self.assertEqual(0, code, created)
+        code, created = run_cli("employee", "create", "--id", "antigravity", "--name", "Antigravity", "--role", "developer", "--runtime", "antigravity", "--workspace", str(self.root / "workspace" / "antigravity"))
+        self.assertEqual(0, code, created)
+        code, verified = run_cli("employee", "verify-direct", "--id", "antigravity", "--from", "main", "--rounds", "2", "--activate")
+        self.assertEqual(1, code, verified)
+        self.assertFalse(verified["ok"])
+        self.assertFalse(verified["activation_allowed"])
+        self.assertEqual(0, verified["rounds_completed"])
+        code, shown = run_cli("employee", "show", "antigravity")
+        self.assertEqual(0, code, shown)
+        self.assertEqual("candidate", shown["employee"]["status"])
+
+    def test_task_submit_rejects_candidate_employee(self) -> None:
+        code, created = run_cli("employee", "create", "--id", "main", "--name", "main", "--role", "operator", "--runtime", "openclaw", "--workspace", str(self.root / "workspace" / "main"))
+        self.assertEqual(0, code, created)
+        code, created = run_cli("employee", "create", "--id", "antigravity", "--name", "Antigravity", "--role", "developer", "--runtime", "antigravity", "--workspace", str(self.root / "workspace" / "antigravity"))
+        self.assertEqual(0, code, created)
+        code, submitted = run_cli("task", "submit", "--from", "main", "--to", "antigravity", "--task-id", "task-candidate-rejected", "--title", "candidate must not receive work")
+        self.assertEqual(2, code, submitted)
+        self.assertEqual("target employee is not active", submitted["error"])
+
+    def test_direct_failure_marks_active_employee_unavailable(self) -> None:
+        code, created = run_cli("employee", "create", "--id", "main", "--name", "main", "--role", "operator", "--runtime", "openclaw", "--workspace", str(self.root / "workspace" / "main"))
+        self.assertEqual(0, code, created)
+        code, created = run_cli("employee", "create", "--id", "codex", "--name", "Codex", "--role", "developer", "--runtime", "codex", "--workspace", str(self.root / "workspace" / "codex"))
+        self.assertEqual(0, code, created)
+        conn = companyctl.connect()
+        try:
+            conn.execute("UPDATE employees SET status = 'active' WHERE id = 'codex'")
+            conn.commit()
+        finally:
+            conn.close()
+
+        def fake_run(cmd, cwd=None, text=None, capture_output=None, timeout=None):
+            class Result:
+                returncode = 7
+                stdout = ""
+                stderr = "model quota exhausted"
+
+            return Result()
+
+        with mock.patch.object(companyctl.subprocess, "run", side_effect=fake_run):
+            code, sent = run_cli("message", "direct", "--from", "main", "--to", "codex", "--body", "ping")
+        self.assertEqual(1, code, sent)
+        self.assertEqual("candidate", sent["employee_unavailable"]["status"])
+        self.assertTrue(sent["employee_unavailable"]["communication_paused"])
+        code, shown = run_cli("employee", "show", "codex")
+        self.assertEqual(0, code, shown)
+        self.assertEqual("candidate", shown["employee"]["status"])
+        self.assertEqual("model quota exhausted", shown["profile"]["unavailable_reason"])
+
+    def test_direct_delivery_failure_marks_active_employee_unavailable(self) -> None:
+        code, created = run_cli("employee", "create", "--id", "main", "--name", "main", "--role", "operator", "--runtime", "openclaw", "--workspace", str(self.root / "workspace" / "main"))
+        self.assertEqual(0, code, created)
+        code, created = run_cli("employee", "create", "--id", "hermes-delivery", "--name", "Hermes Delivery", "--role", "supervisor", "--runtime", "hermes", "--workspace", str(self.root / "workspace" / "hermes-delivery"))
+        self.assertEqual(0, code, created)
+        self.mark_active("hermes-delivery")
+
+        def fake_run(cmd, cwd=None, text=None, capture_output=None, timeout=None):
+            class Result:
+                returncode = 0
+                stdout = json.dumps(
+                    {
+                        "result": {"payloads": [{"text": "HERMES_DELIVERY_ACK"}]},
+                        "deliveryStatus": {"attempted": True, "succeeded": False, "errorMessage": "telegram delivery failed"},
+                    }
+                )
+                stderr = ""
+
+            return Result()
+
+        with mock.patch.object(companyctl.subprocess, "run", side_effect=fake_run):
+            code, sent = run_cli("message", "direct", "--from", "main", "--to", "hermes-delivery", "--body", "ping")
+        self.assertEqual(1, code, sent)
+        self.assertFalse(sent["ok"])
+        self.assertEqual("HERMES_DELIVERY_ACK", sent["reply"])
+        self.assertEqual("candidate", sent["employee_unavailable"]["status"])
+        self.assertTrue(sent["employee_unavailable"]["communication_paused"])
+        code, shown = run_cli("employee", "show", "hermes-delivery")
+        self.assertEqual(0, code, shown)
+        self.assertEqual("candidate", shown["employee"]["status"])
+        self.assertEqual("telegram delivery failed", shown["profile"]["unavailable_reason"])
 
     def test_dashboard_renders_conversations_and_pending_events(self) -> None:
         code, created = run_cli("employee", "create", "--id", "main", "--name", "main", "--role", "operator", "--runtime", "openclaw", "--workspace", str(self.root / "workspace" / "main"))
@@ -2434,7 +2564,9 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual("api-reviewer", onboarded["employee"]["id"])
         self.assertTrue((managed_workspace / "SOUL.md").exists())
         self.assertIn(str((managed_workspace / "SOUL.md").resolve()), onboarded["scaffolded_files"])
-        self.assertEqual("task-onboard-api-reviewer", onboarded["test_task"]["id"])
+        self.assertTrue(onboarded["test_task"]["blocked"])
+        self.assertEqual("onboarding test task requires a verified active employee", onboarded["test_task"]["reason"])
+        self.assertIn("employee verify-direct", onboarded["test_task"]["required_command"])
         self.assertTrue(onboarded["communication"]["default_user_reply_deliver"])
         self.assertEqual("telegram", onboarded["communication"]["default_user_reply_channel"])
 
@@ -3015,6 +3147,7 @@ class CompanyKernelCoreTest(unittest.TestCase):
             str(workspace),
         )
         self.assertEqual(code, 0, employee)
+        self.mark_active("antigravity")
 
         task_id = "task-antigravity-return-ok"
         code, submitted = run_cli("task", "submit", "--from", "openclaw-main", "--to", "antigravity", "--task-id", task_id, "--title", "GUI flow")
@@ -3205,7 +3338,7 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual("codex 在岗", row["reply"])
         self.assertEqual("adapter_heartbeat_matched", row["reply_probe"]["reason"])
 
-    def test_employee_onboard_writes_config_and_creates_test_task(self) -> None:
+    def test_employee_onboard_writes_config_and_blocks_test_task_until_verified(self) -> None:
         code, onboard = run_cli(
             "employee",
             "onboard",
@@ -3245,7 +3378,9 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual(code, 0, onboard)
         self.assertEqual("reviewer", onboard["employee"]["id"])
         self.assertEqual(["review", "qa"], onboard["capabilities"]["skills"])
-        self.assertEqual("task-onboard-reviewer", onboard["test_task"]["id"])
+        self.assertTrue(onboard["test_task"]["blocked"])
+        self.assertEqual("onboarding test task requires a verified active employee", onboard["test_task"]["reason"])
+        self.assertIn("employee verify-direct", onboard["test_task"]["required_command"])
 
         communication = json.loads((self.root / "config" / "company_communications.json").read_text(encoding="utf-8"))
         self.assertEqual("reviewer", communication["aliases"]["rev"])
@@ -3261,7 +3396,8 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual("reviewer", sent["message"]["target_agent"])
 
         code, claimed = run_cli("task", "claim", "--agent", "rev", "--task-id", "task-onboard-reviewer")
-        self.assertEqual(code, 0, claimed)
+        self.assertEqual(code, 1, claimed)
+        self.assertEqual("no claimable task", claimed["error"])
 
     def test_employee_update_changes_profile_through_companyctl(self) -> None:
         workspace = self.root / "employees" / "profile-reviewer"
