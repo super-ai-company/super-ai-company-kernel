@@ -19,7 +19,7 @@ When triggered, do this without waiting for the user to name every employee:
 6. Generate direct smoke commands for each candidate.
 7. Promote only after direct smoke and owner/routing evidence pass.
 8. After configuration, always output the full employee directory and each rename command.
-9. Run a 2-4 round employee handshake from the installer agent to every reachable employee.
+9. Run a 2-4 round employee handshake through the local validation admin. On this Mac, the default validation and approval-flow admin is Hermes.
 
 ## Identity and Naming
 
@@ -88,8 +88,9 @@ Use scanner output as a draft until direct smoke passes. `--apply` must not prom
 
 ## Automatic Employee Handshake
 
-- After any agent installs or repairs this system, it must use its already-onboarded identity as `installer_agent` and start 2-4 direct-message rounds with each other registered/reachable employee.
-- Example: if Codex deployed the system, Codex runs the handshake. If OpenClaw configured the system, OpenClaw runs the handshake.
+- After any agent installs or repairs this system, it must start 2-4 direct-message rounds with each other registered/reachable employee.
+- On this Mac, use Hermes as the default `installer_agent` and validation admin for employee onboarding, local verification, and approval-flow verification. Codex/OpenClaw may be passed explicitly only when the user asks for that installer to own the run.
+- Approval-flow verification must go through Hermes first. If a task route is blocked by approval policy, use Hermes direct read-only validation and record the blocker instead of silently skipping the verification.
 - The handshake is mandatory because configuration quality depends on real replies, not guessed paths.
 - Round 1 proves communication and identity: employee replies with id/name/runtime.
 - Round 2 collects environment: workspace, config directory, adapter/CLI command, login/tool blockers.
@@ -99,8 +100,8 @@ Use scanner output as a draft until direct smoke passes. `--apply` must not prom
 - Use the bundled scanner to produce or execute the handshake plan:
 
 ```bash
-python3 skills/openclaw-local-agent-bootstrap/scripts/scan_install.py --openclaw-root /path/to/openclaw --kernel-root /path/to/company-kernel --installer-agent codex
-python3 skills/openclaw-local-agent-bootstrap/scripts/scan_install.py --openclaw-root /path/to/openclaw --kernel-root /path/to/company-kernel --installer-agent codex --handshake --handshake-rounds 3
+python3 skills/openclaw-local-agent-bootstrap/scripts/scan_install.py --openclaw-root /path/to/openclaw --kernel-root /path/to/company-kernel --installer-agent hermes
+python3 skills/openclaw-local-agent-bootstrap/scripts/scan_install.py --openclaw-root /path/to/openclaw --kernel-root /path/to/company-kernel --installer-agent hermes --handshake --handshake-rounds 3
 ```
 - Success means every active employee completed the required rounds and returned a usable reply. Anything else is not “fully onboarded”.
 

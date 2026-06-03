@@ -71,6 +71,36 @@ def paths(agent: str, task_id: str) -> dict[str, Path]:
     }
 
 
+def direct_report_path(agent: str) -> Path:
+    base = ROOT / "employees" / agent / "reports" / "direct"
+    base.mkdir(parents=True, exist_ok=True)
+    return base / f"progress_acknowledged_{datetime.now().strftime('%Y%m%d-%H%M%S')}.json"
+
+
+def write_direct_report(agent: str, source: str, session_key: str, message: str, reply: str) -> Path:
+    report = direct_report_path(agent)
+    report.write_text(
+        json.dumps(
+            {
+                "ok": True,
+                "state": "acknowledged",
+                "agent": agent,
+                "source": source,
+                "session_key": session_key,
+                "message": message,
+                "reply": reply,
+                "created_at": now(),
+                "next_action": "reply delivered to Company Kernel sender inbox",
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    return report
+
+
 def build_task_card(task: sqlite3.Row, workspace: Path, sandbox: str) -> str:
     return "\n".join(
         [
@@ -184,6 +214,8 @@ def process(args: argparse.Namespace) -> int:
         return 1
     if args.direct_message:
         code, hb_out, hb_err = run_companyctl(["heartbeat", "--agent", args.agent])
+        reply = direct_reply_text(args.agent, args.direct_message)
+        report = write_direct_report(args.agent, args.direct_source, args.direct_session_key, args.direct_message, reply)
         emit({
             "ok": code == 0,
             "processed": 0,
@@ -191,7 +223,8 @@ def process(args: argparse.Namespace) -> int:
             "direct_message": True,
             "source": args.direct_source,
             "session_key": args.direct_session_key,
-            "reply": direct_reply_text(args.agent, args.direct_message),
+            "reply": reply,
+            "progress_report": str(report),
             "companyctl_stdout": hb_out,
             "companyctl_stderr": hb_err,
         })
