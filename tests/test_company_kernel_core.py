@@ -4,6 +4,7 @@ import contextlib
 import io
 import json
 import plistlib
+import runpy
 import sqlite3
 import subprocess
 import sys
@@ -3614,6 +3615,13 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertTrue(report["employee_directory"]["rename_supported"])
         self.assertIn("rename_command", report["employee_directory"]["all"][0])
         self.assertEqual(["id", "alias", "name", "display_name"], hermes["identity"]["lookup_priority"])
+        self.assertTrue(report["handshake"]["required"])
+        self.assertEqual("codex", report["handshake"]["installer_agent"])
+        hermes_plan = next(item for item in report["handshake"]["plan"] if item["to"] == "hermes")
+        self.assertEqual(3, hermes_plan["rounds"])
+        self.assertEqual(3, hermes_plan["required_success"])
+        self.assertIn("workspace", hermes_plan["messages"][1])
+        self.assertNotIn("owner-shift", [item["to"] for item in report["handshake"]["plan"]])
         self.assertEqual("default", hermes["runtime"]["runtime_agent_id"])
         self.assertEqual("agent:default:<source>", hermes["communication"]["session_key"])
         self.assertTrue(hermes["communication"]["ack_required"])
@@ -3621,6 +3629,38 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual(0, hermes["communication"]["pending_inbox_messages"])
         self.assertEqual("human-owner", owner["status"])
         self.assertEqual(["owner-shift"], [item["agent_id"] for item in report["human_owners"]])
+
+    def test_openclaw_bootstrap_scanner_can_execute_handshake_rounds(self) -> None:
+        script = Path(__file__).resolve().parents[1] / "skills" / "openclaw-local-agent-bootstrap" / "scripts" / "scan_install.py"
+        scanner = runpy.run_path(str(script), run_name="scanner_for_test")
+        plan = scanner["build_handshake_plan"](
+            [
+                {"agent_id": "codex", "status": "active"},
+                {"agent_id": "main", "status": "active"},
+                {"agent_id": "owner-shift", "status": "human-owner"},
+            ],
+            "codex",
+            2,
+        )
+        self.assertEqual(["main"], [item["to"] for item in plan])
+        self.assertEqual(2, plan[0]["rounds"])
+        calls = []
+
+        def fake_run(cmd, cwd=None, text=None, capture_output=None, timeout=None):
+            calls.append(cmd)
+
+            class Result:
+                returncode = 0
+                stdout = json.dumps({"ok": True, "reply": "HANDSHAKE_OK"})
+                stderr = ""
+
+            return Result()
+
+        with mock.patch.object(scanner["subprocess"], "run", side_effect=fake_run):
+            results = scanner["run_handshake"](self.root, plan, 5)
+        self.assertTrue(results[0]["ok"])
+        self.assertEqual(2, results[0]["rounds_completed"])
+        self.assertTrue(any("message" in call and "direct" in call for call in calls))
 
     def test_openclaw_bootstrap_scanner_discovers_and_applies_candidates(self) -> None:
         openclaw_root = self.root / "openclaw"
