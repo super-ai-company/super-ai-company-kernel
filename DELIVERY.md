@@ -9,6 +9,7 @@ Implemented and verified:
 - SQLite-backed company kernel schema for employees, runtimes, messages, tasks, locks, heartbeats, approvals, audit logs, events, conversations, RFCs, projects, adapter runs, and task relations.
 - `companyctl` command interface for employee onboarding, runtime registration, communication, task routing, task execution, approvals, recovery, heartbeats, project governance, scheduler, adapter run recovery, and doctor checks.
 - Runtime adapters for OpenClaw, Hermes, Codex, Claude, Trae, and Antigravity.
+- OpenClaw adapter bridge tests cover dry-run payload/evidence generation and `--execute` approval gating before legacy bus submit.
 - Custom runtime registration via `companyctl runtime register`, so future tools such as Cursor or Devin can be added without code changes.
 - End-to-end daemon worker smoke for automatic task execution: daemon can enable a worker, claim a task, write evidence, complete it, heartbeat, and record `adapter_runs`.
 - Static dashboard with runtime health, evidence health, employees, capabilities, projects, recent tasks, long-task delegation, conversations, approvals, RFCs, events, adapter runs, and locks.
@@ -32,7 +33,7 @@ python3 /Users/owner/openclaw/workspace-xmanx/scripts/heartbeat_summary_router.p
 
 ## Latest Verified Result
 
-- Unit tests: 22/22 passing.
+- Unit tests: 25/25 passing.
 - Daemon worker smoke: verified in automated tests; manual command path documented in README.
 - Doctor: `ok=true`, `issues=[]`.
 - Heartbeats: 14 active employee heartbeats, missing=0, stale=0.

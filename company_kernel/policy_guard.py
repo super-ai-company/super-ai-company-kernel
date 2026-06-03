@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(os.environ.get("OPENCLAW_COMPANY_KERNEL_ROOT", Path(__file__).resolve().parents[1])).resolve()
 DB_PATH = ROOT / "company.sqlite"
 SCHEMA = ROOT / "company_kernel" / "schema.sql"
 APPROVAL_STATE_DIR = ROOT / "state" / "approvals"
@@ -155,21 +156,24 @@ def require_approval(
     approval_id: str = "",
 ) -> dict:
     conn = connect()
-    approved = approved_approval(conn, approval_id, action, source, target) if approval_id else None
-    if not approved:
-        approved = find_matching_approval(conn, action, source, target, metadata)
-    if approved:
-        return {"allowed": True, "approval": approved}
-    pending_id = approval_id or f"approval-{metadata.get('adapter', 'adapter')}-{metadata.get('task_id', datetime.now().strftime('%Y%m%d-%H%M%S'))}-{action}"
-    request = create_approval_request(
-        conn,
-        source=source,
-        action=action,
-        reason=reason,
-        target=target,
-        risk=risk,
-        evidence=evidence,
-        approval_id=pending_id,
-        metadata=metadata,
-    )
-    return {"allowed": False, "approval_request": request["approval"], "file": request["file"]}
+    try:
+        approved = approved_approval(conn, approval_id, action, source, target) if approval_id else None
+        if not approved:
+            approved = find_matching_approval(conn, action, source, target, metadata)
+        if approved:
+            return {"allowed": True, "approval": approved}
+        pending_id = approval_id or f"approval-{metadata.get('adapter', 'adapter')}-{metadata.get('task_id', datetime.now().strftime('%Y%m%d-%H%M%S'))}-{action}"
+        request = create_approval_request(
+            conn,
+            source=source,
+            action=action,
+            reason=reason,
+            target=target,
+            risk=risk,
+            evidence=evidence,
+            approval_id=pending_id,
+            metadata=metadata,
+        )
+        return {"allowed": False, "approval_request": request["approval"], "file": request["file"]}
+    finally:
+        conn.close()
