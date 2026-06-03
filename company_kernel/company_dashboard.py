@@ -209,6 +209,7 @@ def load_summary(conn: sqlite3.Connection) -> dict:
         ),
         "approvals": rows(conn, "SELECT * FROM approvals ORDER BY updated_at DESC LIMIT 20"),
         "rfcs": rows(conn, "SELECT * FROM rfcs ORDER BY updated_at DESC LIMIT 20"),
+        "followups": companyctl.list_followups("all")[:20],
         "pending_events": rows(conn, "SELECT * FROM company_events WHERE processed_at = '' ORDER BY created_at ASC LIMIT 20"),
         "events": rows(conn, "SELECT * FROM company_events ORDER BY created_at DESC LIMIT 20"),
         "adapter_runs": rows(conn, "SELECT * FROM adapter_runs ORDER BY created_at DESC LIMIT 20"),
@@ -518,6 +519,8 @@ def render(summary: dict) -> str:
     {render_table(["id", "source", "action", "status", "reason", "updated"], approvals, ["id", "source_agent", "action", "status", "reason", "updated_at"])}
     <h2>RFCs</h2>
     {render_table(["id", "author", "status", "paths", "reason", "decision_by", "updated"], rfcs, ["id", "author_agent", "status", "target_paths", "reason", "decision_by", "updated_at"])}
+    <h2>Followups</h2>
+    {render_table(["id", "status", "source", "target", "question", "answer", "answered_at"], summary["followups"], ["id", "status", "source_agent", "target_agent", "question", "answer", "answered_at"])}
     <h2>Events</h2>
     <h2>Pending Events</h2>
     {render_table(["id", "trace", "type", "source", "task", "created"], summary["pending_events"], ["id", "trace_id", "event_type", "source_agent", "task_id", "created_at"])}

@@ -583,6 +583,8 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual("codex", sent["message"]["target_agent"])
 
     def test_dashboard_renders_conversations_and_pending_events(self) -> None:
+        code, created = run_cli("employee", "create", "--id", "main", "--name", "main", "--role", "operator", "--runtime", "openclaw", "--workspace", str(self.root / "workspace" / "main"))
+        self.assertEqual(code, 0, created)
         code, started = run_cli(
             "conversation",
             "start",
@@ -601,11 +603,40 @@ class CompanyKernelCoreTest(unittest.TestCase):
 
         output = self.root / "state" / "dashboard.html"
         with contextlib.redirect_stdout(io.StringIO()):
+            code = companyctl.main([
+                "followup",
+                "request",
+                "--from",
+                "nestcar",
+                "--to",
+                "main",
+                "--question",
+                "请补充本次还车里程",
+                "--followup-id",
+                "followup-dashboard-001",
+            ])
+        self.assertEqual(0, code)
+        with contextlib.redirect_stdout(io.StringIO()):
+            code = companyctl.main([
+                "followup",
+                "reply",
+                "--followup-id",
+                "followup-dashboard-001",
+                "--by",
+                "main",
+                "--answer",
+                "本次还车里程是 10234 km",
+            ])
+        self.assertEqual(0, code)
+        with contextlib.redirect_stdout(io.StringIO()):
             code = company_dashboard.main(["--output", str(output)])
         self.assertEqual(0, code)
         html = output.read_text(encoding="utf-8")
         self.assertIn("Conversations", html)
         self.assertIn("Pending Events", html)
+        self.assertIn("Followups", html)
+        self.assertIn("followup-dashboard-001", html)
+        self.assertIn("本次还车里程是 10234 km", html)
         self.assertIn("conv-dashboard-001", html)
         self.assertIn("conversation.message", html)
         self.assertIn("Runtime Health", html)
