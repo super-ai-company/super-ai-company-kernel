@@ -1343,7 +1343,7 @@ def update_task_metadata(conn: sqlite3.Connection, task_id: str, patch: dict) ->
 
 
 def sync_project_plan_for_task(conn: sqlite3.Connection, *, task_id: str, task_status: str, actor: str) -> list[dict]:
-    plan_status = {"completed": "done", "blocked": "blocked"}.get(task_status)
+    plan_status = {"completed": "done", "blocked": "blocked", "submitted": "in_progress", "claimed": "in_progress"}.get(task_status)
     if not plan_status:
         return []
     ts = now()
@@ -1351,6 +1351,8 @@ def sync_project_plan_for_task(conn: sqlite3.Connection, *, task_id: str, task_s
     updated = []
     for item in plan_items:
         if item["status"] in {"done", "completed", "cancelled"} and plan_status == "done":
+            continue
+        if task_status in {"submitted", "claimed"} and item["status"] != "blocked":
             continue
         if item["status"] == plan_status:
             continue
@@ -2779,11 +2781,12 @@ def cmd_task_reopen(args: argparse.Namespace) -> int:
         (args.status, claimed_by, now(), args.task_id),
     )
     conn.execute("DELETE FROM locks WHERE resource_key = ?", (f"task:{args.task_id}",))
+    synced_plan_items = sync_project_plan_for_task(conn, task_id=args.task_id, task_status=args.status, actor=actor)
     conn.commit()
     updated = dict(conn.execute("SELECT * FROM tasks WHERE id = ?", (args.task_id,)).fetchone())
     task_file = write_task_inbox_file(updated)
     audit(conn, actor, "task.reopen", args.task_id, {"reason": args.reason, "status": args.status, "file": task_file})
-    emit({"ok": True, "task": updated, "file": task_file})
+    emit({"ok": True, "task": updated, "file": task_file, "synced_plan_items": synced_plan_items})
     return 0
 
 
