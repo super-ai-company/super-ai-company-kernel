@@ -1330,6 +1330,29 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertTrue(Path(shown["files"]["capabilities"]).exists())
         self.assertFalse(shown["permissions"]["can_modify_kernel"])
 
+        status, capabilities = api_gateway.route_post(
+            "/v1/employees/cursor-dev/capabilities",
+            {"set_skills": "engineering,review", "add_tool": ["cursor", "git"], "set_task_types": "code,review"},
+        )
+        self.assertEqual(200, status, capabilities)
+        self.assertEqual(["engineering", "review"], capabilities["capabilities"]["skills"])
+        self.assertIn("cursor", capabilities["capabilities"]["tools"])
+        self.assertEqual(["code", "review"], capabilities["capabilities"]["preferred_task_types"])
+
+        status, permissions = api_gateway.route_post(
+            "/v1/employees/cursor-dev/permissions",
+            {"can_submit_tasks": "false", "can_claim_tasks": "true", "requires_approval_for": "external_send,payment"},
+        )
+        self.assertEqual(200, status, permissions)
+        self.assertFalse(permissions["permissions"]["can_submit_tasks"])
+        self.assertTrue(permissions["permissions"]["can_claim_tasks"])
+        self.assertEqual(["external_send", "payment"], permissions["permissions"]["requires_approval_for"])
+
+        status, shown_updated = api_gateway.route_get("/v1/employees/cursor-dev", {})
+        self.assertEqual(200, status, shown_updated)
+        self.assertIn("engineering", shown_updated["capabilities"]["skills"])
+        self.assertFalse(shown_updated["permissions"]["can_submit_tasks"])
+
     def test_sandboxing_wraps_codex_and_hermes_commands_without_executing_container(self) -> None:
         workspace = self.root / "workspace" / "codex"
         profile_config = {

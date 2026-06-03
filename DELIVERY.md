@@ -25,6 +25,7 @@ Implemented and verified:
 - API Gateway project review and acceptance endpoints now expose readiness checks and completion acceptance records.
 - API Gateway lock endpoints now expose acquire/list/release/unlock-stale for distributed worker coordination.
 - API Gateway employee and runtime endpoints now expose employee creation, employee inspection, runtime registration, and runtime listing.
+- API Gateway employee governance endpoints now expose capability and permission updates.
 - Sandbox isolation foundation: Codex/Hermes adapters can wrap execution commands with Docker or Firejail profiles without changing task protocol.
 - Static dashboard with runtime health, evidence health, employees, capabilities, projects, recent tasks, long-task delegation, conversations, approvals, RFCs, events, adapter runs, and locks.
 - Daemon loop with heartbeat refresh, scheduler run, repair pass, compact summary output, adapter run recording, launchd template and install/uninstall scripts.

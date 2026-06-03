@@ -32,6 +32,8 @@ API_ENDPOINTS = [
     {"method": "GET", "path": "/v1/employees", "summary": "List employees"},
     {"method": "POST", "path": "/v1/employees", "summary": "Create employee", "body": {"id": "employee id", "name": "display name", "role": "role", "runtime": "runtime id", "workspace": "path"}},
     {"method": "GET", "path": "/v1/employees/{employee_id}", "summary": "Show employee profile, capabilities, permissions, heartbeat, and files"},
+    {"method": "POST", "path": "/v1/employees/{employee_id}/capabilities", "summary": "Update employee capabilities", "body": {"set_skills": "comma-separated skills optional", "add_skill": "string/list optional", "set_tools": "comma-separated tools optional", "add_tool": "string/list optional", "set_task_types": "comma-separated task types optional"}},
+    {"method": "POST", "path": "/v1/employees/{employee_id}/permissions", "summary": "Update employee permissions", "body": {"can_submit_tasks": "true/false/keep optional", "can_claim_tasks": "true/false/keep optional", "can_modify_kernel": "true/false/keep optional", "requires_approval_for": "comma-separated actions optional"}},
     {"method": "GET", "path": "/v1/runtimes", "summary": "List runtimes"},
     {"method": "POST", "path": "/v1/runtimes", "summary": "Register runtime", "body": {"runtime": "runtime id", "command": "command optional", "status": "registered/disabled optional", "notes": "string optional"}},
     {"method": "GET", "path": "/v1/tasks", "summary": "List tasks", "query": {"agent": "employee id optional", "status": "task status optional"}},
@@ -149,6 +151,15 @@ def run_companyctl(argv: list[str]) -> tuple[int, dict]:
 def query_value(query: dict[str, list[str]], name: str, default: str = "") -> str:
     values = query.get(name, [])
     return values[0] if values else default
+
+
+def body_values(body: dict, name: str) -> list[str]:
+    value = body.get(name)
+    if value is None or value == "":
+        return []
+    if isinstance(value, list):
+        return [str(item) for item in value if str(item)]
+    return [str(value)]
 
 
 def route_get(path: str, query: dict[str, list[str]]) -> tuple[int, dict]:
@@ -298,6 +309,31 @@ def route_post(path: str, body: dict) -> tuple[int, dict]:
                 argv.extend([flag, str(body[key])])
         code, payload = run_companyctl(argv)
         return (HTTPStatus.CREATED if code == 0 else HTTPStatus.BAD_REQUEST), {"exit_code": code, **payload}
+    if path.startswith("/v1/employees/") and path.endswith("/capabilities"):
+        employee_id = path.removeprefix("/v1/employees/").removesuffix("/capabilities").strip("/")
+        argv = ["employee", "capabilities", "--id", employee_id]
+        for key, flag in [("set_skills", "--set-skills"), ("set_tools", "--set-tools"), ("set_task_types", "--set-task-types")]:
+            if body.get(key):
+                argv.extend([flag, str(body[key])])
+        for value in body_values(body, "add_skill"):
+            argv.extend(["--add-skill", value])
+        for value in body_values(body, "add_tool"):
+            argv.extend(["--add-tool", value])
+        code, payload = run_companyctl(argv)
+        return (HTTPStatus.OK if code == 0 else HTTPStatus.BAD_REQUEST), {"exit_code": code, **payload}
+    if path.startswith("/v1/employees/") and path.endswith("/permissions"):
+        employee_id = path.removeprefix("/v1/employees/").removesuffix("/permissions").strip("/")
+        argv = ["employee", "permissions", "--id", employee_id]
+        for key, flag in [
+            ("can_submit_tasks", "--can-submit-tasks"),
+            ("can_claim_tasks", "--can-claim-tasks"),
+            ("can_modify_kernel", "--can-modify-kernel"),
+            ("requires_approval_for", "--requires-approval-for"),
+        ]:
+            if body.get(key) not in {None, ""}:
+                argv.extend([flag, str(body[key]).lower()])
+        code, payload = run_companyctl(argv)
+        return (HTTPStatus.OK if code == 0 else HTTPStatus.BAD_REQUEST), {"exit_code": code, **payload}
     if path == "/v1/tasks":
         argv = [
             "task",
