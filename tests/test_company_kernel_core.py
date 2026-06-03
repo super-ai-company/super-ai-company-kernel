@@ -2004,6 +2004,23 @@ class CompanyKernelCoreTest(unittest.TestCase):
 
     def test_runtime_verify_adapters_creates_task_and_requires_evidence_and_heartbeat(self) -> None:
         def fake_run(cmd: list[str], cwd: str, text: bool, capture_output: bool) -> subprocess.CompletedProcess:
+            if cmd[1:3] == ["task", "submit"]:
+                task_id = cmd[cmd.index("--task-id") + 1]
+                target = cmd[cmd.index("--to") + 1]
+                title = cmd[cmd.index("--title") + 1]
+                with companyctl.connect() as conn:
+                    companyctl.submit_task_internal(
+                        conn,
+                        source="openclaw-main",
+                        target=target,
+                        task_id=task_id,
+                        title=title,
+                        description="adapter verification",
+                        priority="P3",
+                        metadata={"runtime_verify": True},
+                    )
+                stdout = json.dumps({"ok": True, "task": {"id": task_id}}, ensure_ascii=False)
+                return subprocess.CompletedProcess(cmd, 0, stdout=stdout, stderr="")
             if cmd[1:3] == ["scheduler", "run"]:
                 stdout = json.dumps({"ok": True, "dry_run": False, "events": []}, ensure_ascii=False)
                 return subprocess.CompletedProcess(cmd, 0, stdout=stdout, stderr="")

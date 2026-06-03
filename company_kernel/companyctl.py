@@ -3463,6 +3463,11 @@ def parse_json_output(raw: str) -> dict:
         return {"raw": raw}
 
 
+def run_companyctl_json(args: list[str]) -> tuple[int, dict, str]:
+    cp = subprocess.run([str(ROOT / "bin" / "companyctl"), *args], cwd=str(ROOT), text=True, capture_output=True)
+    return cp.returncode, parse_json_output(cp.stdout), cp.stderr
+
+
 def cmd_runtime_ack_adapter_run(args: argparse.Namespace) -> int:
     conn = connect()
     actor = resolve_employee_alias(args.by)
@@ -3648,7 +3653,7 @@ def cmd_runtime_verify_adapters(args: argparse.Namespace) -> int:
         runtime = emp["runtime"]
         command = ADAPTER_COMMANDS.get(runtime, "")
         task_id = args.task_id_prefix + f"-{emp['id']}"
-        title = f"Adapter dry-run verification: {emp['id']}"
+        title = f"Runtime adapter dry-run check: {emp['id']}"
         result = {
             "agent": emp["id"],
             "runtime": runtime,
@@ -3662,16 +3667,30 @@ def cmd_runtime_verify_adapters(args: argparse.Namespace) -> int:
             continue
         existing = conn.execute("SELECT status, evidence_path FROM tasks WHERE id = ?", (task_id,)).fetchone()
         if not existing:
-            submit_task_internal(
-                conn,
-                source=args.source,
-                target=emp["id"],
-                task_id=task_id,
-                title=title,
-                description="Company Kernel adapter dry-run verification task. Adapter must claim, write evidence, complete, and heartbeat.",
-                priority="P3",
-                metadata={"runtime_verify": True, "runtime": runtime},
+            submit_code, submit_payload, submit_stderr = run_companyctl_json(
+                [
+                    "task",
+                    "submit",
+                    "--from",
+                    args.source,
+                    "--to",
+                    emp["id"],
+                    "--task-id",
+                    task_id,
+                    "--title",
+                    title,
+                    "--description",
+                    "Adapter dry-run check task. Adapter must claim, write evidence, complete, and heartbeat.",
+                    "--priority",
+                    "P3",
+                ]
             )
+            if submit_code != 0:
+                result.update({"error": "task submit failed", "submit_stdout": submit_payload, "submit_stderr": submit_stderr})
+                results.append(result)
+                continue
+            conn.close()
+            conn = connect()
         cmd = [str(ROOT / "bin" / command), "--agent", emp["id"]]
         if args.execute:
             cmd.append("--execute")
@@ -3709,8 +3728,14 @@ def cmd_runtime_verify_adapters(args: argparse.Namespace) -> int:
     ok = all(item["ok"] for item in results) if results else False
     if args.run_scheduler and scheduler_result.get("exit_code") != 0:
         ok = False
-    audit(conn, "companyctl", "runtime.verify_adapters", "", {"execute": args.execute, "agents": [r["agent"] for r in results], "ok": ok, "scheduler": scheduler_result})
-    emit({"ok": ok, "execute": args.execute, "count": len(results), "results": results, "scheduler": scheduler_result})
+    audit_error = ""
+    try:
+        audit(conn, "companyctl", "runtime.verify_adapters", "", {"execute": args.execute, "agents": [r["agent"] for r in results], "ok": ok, "scheduler": scheduler_result})
+    except sqlite3.OperationalError as exc:
+        audit_error = str(exc)
+        if "readonly" not in audit_error.lower():
+            raise
+    emit({"ok": ok, "execute": args.execute, "count": len(results), "results": results, "scheduler": scheduler_result, "audit_error": audit_error})
     return 0 if ok else 1
 
 
