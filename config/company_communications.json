@@ -511,7 +511,11 @@
         "video-ops",
         "video-publisher"
       ],
-      "handoff_mode": "task_or_hook"
+      "handoff_mode": "task_or_hook",
+      "default_user_reply_deliver": true,
+      "default_user_reply_channel": "telegram",
+      "default_user_reply_account": "default",
+      "default_user_reply_to": "current"
     },
     "openclaw-main": {
       "display_name": "OpenClaw Main",

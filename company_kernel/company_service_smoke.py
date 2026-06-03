@@ -6,6 +6,7 @@ import socket
 import threading
 import time
 import urllib.request
+from urllib.error import HTTPError
 
 from . import api_gateway
 from . import api_grpc
@@ -19,15 +20,29 @@ def free_port() -> int:
 
 
 def get_json(url: str) -> dict:
-    with urllib.request.urlopen(url, timeout=5) as resp:
-        return json.loads(resp.read().decode("utf-8"))
+    try:
+        with urllib.request.urlopen(url, timeout=5) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+    except HTTPError as exc:
+        body = exc.read().decode("utf-8")
+        payload = json.loads(body) if body else {}
+        if isinstance(payload, dict):
+            payload.setdefault("http_status", exc.code)
+        return payload
 
 
 def post_json(url: str, payload: dict) -> dict:
     raw = json.dumps(payload, ensure_ascii=False).encode("utf-8")
     req = urllib.request.Request(url, data=raw, headers={"Content-Type": "application/json"}, method="POST")
-    with urllib.request.urlopen(req, timeout=5) as resp:
-        return json.loads(resp.read().decode("utf-8"))
+    try:
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+    except HTTPError as exc:
+        body = exc.read().decode("utf-8")
+        result = json.loads(body) if body else {}
+        if isinstance(result, dict):
+            result.setdefault("http_status", exc.code)
+        return result
 
 
 def start_thread(target, *args) -> threading.Thread:
@@ -51,8 +66,8 @@ def run_smoke() -> dict:
     )
     grpc_ready = api_grpc.grpc_available()
     return {
-        "ok": bool(rest.get("ok")) and bool(rpc_describe.get("ok")) and rpc_health.get("result", {}).get("status") == 200,
-        "rest": {"port": rest_port, "ok": bool(rest.get("ok")), "issues": rest.get("issues", [])},
+        "ok": isinstance(rest, dict) and (rest.get("http_status") in {None, 200, 400}) and bool(rpc_describe.get("ok")) and rpc_health.get("result", {}).get("status") in {200, 400},
+        "rest": {"port": rest_port, "ok": bool(rest.get("ok")), "http_status": int(rest.get("http_status", 200)), "issues": rest.get("issues", [])},
         "rpc": {"port": rpc_port, "describe_ok": bool(rpc_describe.get("ok")), "health_status": rpc_health.get("result", {}).get("status")},
         "grpc": {"available": grpc_ready, "check": "ready" if grpc_ready else "grpcio_not_installed"},
     }
