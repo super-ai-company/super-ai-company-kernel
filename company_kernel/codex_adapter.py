@@ -165,6 +165,15 @@ def run_codex(task_card: Path, workspace: Path, output: Path, events: Path, sand
     return cp.returncode, " ".join(cmd)
 
 
+def direct_reply_text(agent: str, message: str) -> str:
+    text = message.strip()
+    for marker in ("只回复：", "只回复:", "只回复"):
+        if marker in text:
+            reply = text.split(marker, 1)[1].strip()
+            return reply or f"{agent} 收到"
+    return f"{agent} 收到：{text}" if text else f"{agent} 收到"
+
+
 def process(args: argparse.Namespace) -> int:
     emp = employee(args.agent)
     if not emp:
@@ -173,6 +182,20 @@ def process(args: argparse.Namespace) -> int:
     if emp["runtime"] != "codex":
         emit({"ok": False, "error": "employee runtime is not codex", "agent": args.agent, "runtime": emp["runtime"]})
         return 1
+    if args.direct_message:
+        code, hb_out, hb_err = run_companyctl(["heartbeat", "--agent", args.agent])
+        emit({
+            "ok": code == 0,
+            "processed": 0,
+            "agent": args.agent,
+            "direct_message": True,
+            "source": args.direct_source,
+            "session_key": args.direct_session_key,
+            "reply": direct_reply_text(args.agent, args.direct_message),
+            "companyctl_stdout": hb_out,
+            "companyctl_stderr": hb_err,
+        })
+        return code
     if args.attendance_probe:
         code, hb_out, hb_err = run_companyctl(["heartbeat", "--agent", args.agent])
         emit({"ok": code == 0, "processed": 0, "agent": args.agent, "attendance_probe": True, "reply": f"{args.agent} 在岗", "companyctl_stdout": hb_out, "companyctl_stderr": hb_err})
@@ -223,6 +246,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--sandbox-profile", default="default", help="sandbox profile name from config/sandbox_profiles.json")
     parser.add_argument("--execute", action="store_true", help="actually run codex exec; without this only writes task card and report")
     parser.add_argument("--attendance-probe", action="store_true", help="reply to attendance without claiming or processing tasks")
+    parser.add_argument("--direct-message", default="", help="reply to a direct reachability message without claiming tasks")
+    parser.add_argument("--direct-source", default="", help="source employee for direct reachability messages")
+    parser.add_argument("--direct-session-key", default="", help="session key used by the company direct message resolver")
     return parser
 
 

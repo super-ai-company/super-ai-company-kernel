@@ -1750,7 +1750,35 @@ def parse_openclaw_payload_text(stdout: str) -> str:
         texts = [str(item.get("text", "")) for item in payloads if isinstance(item, dict) and item.get("text")]
         if texts:
             return "\n".join(texts)
-    return str(payload.get("summary") or "")
+    return str(payload.get("summary") or payload.get("reply") or "")
+
+
+def direct_runtime_command(runtime: str, target: str, source: str, body: str, timeout: int, session_key: str, args: argparse.Namespace) -> tuple[list[str], str]:
+    if runtime in {"openclaw", "hermes"}:
+        agent_runtime_id = attendance_agent_runtime_id(target, runtime)
+        cmd = ["openclaw", "agent", "--agent", agent_runtime_id, "--session-key", session_key, "--message", body, "--timeout", str(timeout), "--json"]
+        if args.deliver:
+            cmd.append("--deliver")
+        if args.reply_channel:
+            cmd.extend(["--reply-channel", args.reply_channel])
+        if args.reply_to:
+            cmd.extend(["--reply-to", args.reply_to])
+        if args.reply_account:
+            cmd.extend(["--reply-account", args.reply_account])
+        return cmd, agent_runtime_id
+    if runtime == "codex":
+        return [
+            str(ROOT / "bin" / "company-codex-adapter"),
+            "--agent",
+            target,
+            "--direct-message",
+            body,
+            "--direct-source",
+            source,
+            "--direct-session-key",
+            session_key,
+        ], target
+    raise ValueError(f"direct send unsupported runtime: {runtime}")
 
 
 def cmd_message_direct(args: argparse.Namespace) -> int:
@@ -1764,20 +1792,12 @@ def cmd_message_direct(args: argparse.Namespace) -> int:
     target_employee = dict(target_row)
     require_communication_allowed(source, target, "message.direct")
     runtime = str(target_employee.get("runtime") or "")
-    if runtime not in {"openclaw", "hermes"}:
+    session_key = args.session_key or f"agent:{target}:{source}"
+    try:
+        cmd, agent_runtime_id = direct_runtime_command(runtime, target, source, args.body, args.timeout, session_key, args)
+    except ValueError:
         emit({"ok": False, "error": "direct send unsupported runtime", "target": target, "runtime": runtime})
         return 2
-    session_key = args.session_key or f"agent:{target}:{source}"
-    agent_runtime_id = attendance_agent_runtime_id(target, runtime)
-    cmd = ["openclaw", "agent", "--agent", agent_runtime_id, "--session-key", session_key, "--message", args.body, "--timeout", str(args.timeout), "--json"]
-    if args.deliver:
-        cmd.append("--deliver")
-    if args.reply_channel:
-        cmd.extend(["--reply-channel", args.reply_channel])
-    if args.reply_to:
-        cmd.extend(["--reply-to", args.reply_to])
-    if args.reply_account:
-        cmd.extend(["--reply-account", args.reply_account])
     try:
         cp = subprocess.run(cmd, cwd=str(ROOT), text=True, capture_output=True, timeout=args.timeout + 10)
     except Exception as exc:

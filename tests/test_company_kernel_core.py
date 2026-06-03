@@ -425,6 +425,45 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertIn("agent:nestcar:main", calls[0])
         self.assertEqual("nestcar", sent["message"]["target_agent"])
 
+    def test_message_direct_uses_codex_adapter_without_claiming_tasks(self) -> None:
+        code, created = run_cli("employee", "create", "--id", "main", "--name", "main", "--role", "operator", "--runtime", "openclaw", "--workspace", str(self.root / "workspace" / "main"))
+        self.assertEqual(0, code, created)
+        code, created = run_cli("employee", "create", "--id", "codex", "--name", "Codex", "--role", "developer", "--runtime", "codex", "--workspace", str(self.root / "workspace" / "codex"))
+        self.assertEqual(0, code, created)
+        calls = []
+
+        def fake_run(cmd, cwd=None, text=None, capture_output=None, timeout=None):
+            calls.append(cmd)
+
+            class Result:
+                returncode = 0
+                stdout = json.dumps({"ok": True, "agent": "codex", "direct_message": True, "reply": "CODEX_DIRECT_OK"})
+                stderr = ""
+
+            return Result()
+
+        with mock.patch.object(companyctl.subprocess, "run", side_effect=fake_run):
+            code, sent = run_cli(
+                "message",
+                "direct",
+                "--from",
+                "main",
+                "--to",
+                "codex",
+                "--body",
+                "只回复 CODEX_DIRECT_OK",
+                "--message-id",
+                "msg-direct-codex",
+            )
+        self.assertEqual(0, code, sent)
+        self.assertEqual("CODEX_DIRECT_OK", sent["reply"])
+        self.assertEqual("agent:codex:main", sent["session_key"])
+        self.assertIn("company-codex-adapter", calls[0][0])
+        self.assertIn("--direct-message", calls[0])
+        self.assertIn("--direct-source", calls[0])
+        self.assertIn("--direct-session-key", calls[0])
+        self.assertEqual("codex", sent["message"]["target_agent"])
+
     def test_dashboard_renders_conversations_and_pending_events(self) -> None:
         code, started = run_cli(
             "conversation",

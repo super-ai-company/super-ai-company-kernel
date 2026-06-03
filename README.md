@@ -77,6 +77,13 @@ Hook action 可用 `requires_approval` 标记高风险动作；未批准时 `sch
 通信策略默认是 `policy.mode=open`：任意已注册员工都能互发消息和派任务，除非配置了 `blocked_talk_to` / `blocked_assign_to`。
 如果切到 `policy.mode=strict`，则必须显式配置 `can_talk_to` / `can_assign_to`，否则会被 `companyctl` 拦截。
 
+直连消息会调用目标员工 runtime 并返回真实 reply，同时写入目标 inbox evidence；OpenClaw 业务员工和 Codex 已接通：
+
+```bash
+bin/companyctl message direct --from main --to nestcar --body "只回复：NESTCAR_OK"
+bin/companyctl message direct --from main --to codex --body "只回复：CODEX_OK"
+```
+
 添加员工只需要命令创建，再按需配置通信。
 本机未安装、未登录或没有可调用执行入口的工具只能登记为 `candidate`，不能算正式员工，也不能进入心跳和自动调度；等真实 runtime 接通后再重新 `employee onboard` 激活。当前 `cursor`、`devin`、`github-copilot`、`local-model-agent` 属于候选员工，`owner` 是人类审批端点。
 
