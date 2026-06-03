@@ -29,6 +29,9 @@ Antigravity is a GUI employee. There may be no stable CLI, so keep execution exp
 - `--execute` only opens Antigravity; it does not prove task completion.
 - Use `--complete --task-id <id> --summary ... --evidence ...` or equivalent Company Kernel task completion after GUI work has real evidence.
 - Use `--block --task-id <id> --blocker ...` if the GUI cannot complete safely.
+- Every received request must ACK or return a blocker reply to the sender.
+- On failure, include status, blocker, evidence path, and next action; suggest active `@agent` collaborators when helpful.
+- Human-originated requests must return through the requesting agent so the human operator receives a clear update.
 
 ## Blocked Cases
 

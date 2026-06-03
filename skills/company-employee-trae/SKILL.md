@@ -27,6 +27,9 @@ Trae is an IDE/runtime employee. Treat real execution as potentially GUI-affecti
 - `--execute` runs `trae chat --mode ask|edit|agent <prompt>`.
 - Real execution may open or reuse Trae GUI state.
 - Use `ask` for analysis, `edit` for scoped code edits, and `agent` only when a bounded autonomous task is acceptable.
+- Every received request must ACK or return a blocker reply to the sender.
+- On failure, include status, blocker, evidence path, and next action; suggest `@agent` collaborators when another employee can help.
+- Human-originated work must return through the requesting agent to notify the human operator.
 
 ## Blocked Cases
 

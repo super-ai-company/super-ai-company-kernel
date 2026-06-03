@@ -886,6 +886,10 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertIn("timeZone: 'Asia/Bangkok'", html)
         self.assertIn("THA", html)
         self.assertNotIn("d.toLocaleTimeString() + ' ' + d.toLocaleDateString()", html)
+        self.assertIn("bindMentionAutocomplete", html)
+        self.assertIn("agent-mention-suggestions", html)
+        self.assertIn("collaborationHelpText", html)
+        self.assertIn("是否需要其他员工协助", html)
 
     def test_dashboard_renders_task_evidence_blocker_and_approval_counts(self) -> None:
         code, submitted = run_cli("task", "submit", "--from", "ops", "--to", "maker", "--task-id", "task-dashboard-blocked", "--title", "blocked task")
@@ -3561,8 +3565,11 @@ class CompanyKernelCoreTest(unittest.TestCase):
         report = json.loads(cp.stdout)
         hermes = next(item for item in report["employees"] if item["agent_id"] == "hermes")
         owner = next(item for item in report["employees"] if item["agent_id"] == "owner-shift")
+        self.assertTrue(report["coordination"]["closed_loop_required"])
         self.assertEqual("default", hermes["runtime"]["runtime_agent_id"])
         self.assertEqual("agent:default:<source>", hermes["communication"]["session_key"])
+        self.assertTrue(hermes["communication"]["ack_required"])
+        self.assertTrue(hermes["coordination"]["human_notification_required"])
         self.assertEqual(0, hermes["communication"]["pending_inbox_messages"])
         self.assertEqual("human-owner", owner["status"])
         self.assertEqual(["owner-shift"], [item["agent_id"] for item in report["human_owners"]])
