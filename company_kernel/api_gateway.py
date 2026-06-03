@@ -31,6 +31,8 @@ API_ENDPOINTS = [
     {"method": "POST", "path": "/v1/tasks/{task_id}/claim", "summary": "Claim task", "body": {"agent": "employee id", "lease_seconds": "integer optional"}},
     {"method": "POST", "path": "/v1/tasks/{task_id}/done", "summary": "Complete task", "body": {"agent": "employee id", "summary": "string", "evidence": "path"}},
     {"method": "POST", "path": "/v1/tasks/{task_id}/block", "summary": "Block task", "body": {"agent": "employee id", "blocker": "string"}},
+    {"method": "POST", "path": "/v1/tasks/{task_id}/reopen", "summary": "Reopen blocked/interrupted task", "body": {"by": "employee id", "reason": "string", "status": "submitted/claimed optional"}},
+    {"method": "POST", "path": "/v1/tasks/{task_id}/reassign", "summary": "Reassign task to another employee", "body": {"by": "employee id", "to": "employee id", "reason": "string"}},
     {"method": "GET", "path": "/v1/messages", "summary": "List messages", "query": {"agent": "employee id required"}},
     {"method": "POST", "path": "/v1/messages", "summary": "Send message", "body": {"from": "employee id", "to": "employee id", "body": "string", "message_id": "string optional"}},
     {"method": "GET", "path": "/v1/conversations", "summary": "List conversations for an agent", "query": {"agent": "employee id required"}},
@@ -260,6 +262,17 @@ def route_post(path: str, body: dict) -> tuple[int, dict]:
     if path.startswith("/v1/tasks/") and path.endswith("/block"):
         task_id = path.removeprefix("/v1/tasks/").removesuffix("/block").strip("/")
         code, payload = run_companyctl(["task", "block", "--agent", str(body.get("agent", "")), "--task-id", task_id, "--blocker", str(body.get("blocker", ""))])
+        return (HTTPStatus.OK if code == 0 else HTTPStatus.BAD_REQUEST), {"exit_code": code, **payload}
+    if path.startswith("/v1/tasks/") and path.endswith("/reopen"):
+        task_id = path.removeprefix("/v1/tasks/").removesuffix("/reopen").strip("/")
+        argv = ["task", "reopen", "--task-id", task_id, "--by", str(body.get("by", "")), "--reason", str(body.get("reason", ""))]
+        if body.get("status"):
+            argv.extend(["--status", str(body["status"])])
+        code, payload = run_companyctl(argv)
+        return (HTTPStatus.OK if code == 0 else HTTPStatus.BAD_REQUEST), {"exit_code": code, **payload}
+    if path.startswith("/v1/tasks/") and path.endswith("/reassign"):
+        task_id = path.removeprefix("/v1/tasks/").removesuffix("/reassign").strip("/")
+        code, payload = run_companyctl(["task", "reassign", "--task-id", task_id, "--by", str(body.get("by", "")), "--to", str(body.get("to", "")), "--reason", str(body.get("reason", ""))])
         return (HTTPStatus.OK if code == 0 else HTTPStatus.BAD_REQUEST), {"exit_code": code, **payload}
     if path == "/v1/conversations":
         argv = [

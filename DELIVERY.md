@@ -20,6 +20,7 @@ Implemented and verified:
 - API Gateway collaboration and governance endpoints now expose conversations, approvals, adapter-run detail, acknowledgement, and retry without direct SQLite access.
 - API Gateway service discovery and OpenAPI descriptors expose machine-readable capabilities, endpoints, and governance constraints for multi-machine employees.
 - API Gateway task execution endpoints now let remote employees claim, complete with evidence, or block tasks through the same `companyctl` rules.
+- API Gateway task recovery endpoints now let supervisors reopen and reassign interrupted work without direct SQLite access.
 - Sandbox isolation foundation: Codex/Hermes adapters can wrap execution commands with Docker or Firejail profiles without changing task protocol.
 - Static dashboard with runtime health, evidence health, employees, capabilities, projects, recent tasks, long-task delegation, conversations, approvals, RFCs, events, adapter runs, and locks.
 - Daemon loop with heartbeat refresh, scheduler run, repair pass, compact summary output, adapter run recording, launchd template and install/uninstall scripts.
