@@ -18,6 +18,7 @@ from company_kernel import companyctl
 from company_kernel import codex_adapter
 from company_kernel import openclaw_adapter
 from company_kernel import policy_guard
+from company_kernel import sandboxing
 from company_kernel import schema_migrations
 
 
@@ -1049,6 +1050,34 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual(200, status, messages)
         self.assertIn("msg-api-gateway", [message["id"] for message in messages["messages"]])
 
+    def test_sandboxing_wraps_codex_and_hermes_commands_without_executing_container(self) -> None:
+        workspace = self.root / "workspace" / "codex"
+        profile_config = {
+            "profiles": {
+                "codex": {
+                    "default": {
+                        "image": "codex-test:latest",
+                        "network": "none",
+                        "readonly_paths": [str(self.root / "readonly")],
+                        "writable_paths": [str(workspace)],
+                    }
+                },
+                "hermes": {"default": {"image": "hermes-test:latest", "network": "bridge", "readonly_paths": [], "writable_paths": []}},
+            }
+        }
+        codex_cmd = sandboxing.wrap_command(["codex", "exec", "-"], runtime="codex", workspace=workspace, isolation="docker", config=profile_config)
+        self.assertEqual("docker", codex_cmd[0])
+        self.assertIn("codex-test:latest", codex_cmd)
+        self.assertIn("--network", codex_cmd)
+        self.assertIn("none", codex_cmd)
+        self.assertIn(f"{workspace}:{workspace}:rw", codex_cmd)
+        self.assertIn(f"{self.root / 'readonly'}:{self.root / 'readonly'}:ro", codex_cmd)
+
+        hermes_cmd = sandboxing.wrap_command(["hermes", "-z", "prompt"], runtime="hermes", workspace=self.root / "workspace" / "hermes", isolation="firejail", config=profile_config)
+        self.assertEqual("firejail", hermes_cmd[0])
+        self.assertIn("--private=" + str(self.root / "workspace" / "hermes"), hermes_cmd)
+        self.assertEqual(["codex", "exec"], sandboxing.wrap_command(["codex", "exec"], runtime="codex", workspace=workspace, isolation="none")[:2])
+
     def test_direct_task_submit_requires_approval_for_high_risk_actions(self) -> None:
         code, blocked = run_cli(
             "task",
@@ -1360,15 +1389,15 @@ class CompanyKernelCoreTest(unittest.TestCase):
 
         calls: list[dict] = []
 
-        def fake_run_codex(task_card: Path, workspace: Path, output: Path, events: Path, sandbox: str, model: str) -> tuple[int, str]:
-            calls.append({"task_card": task_card, "workspace": workspace, "output": output, "events": events, "sandbox": sandbox, "model": model})
+        def fake_run_codex(task_card: Path, workspace: Path, output: Path, events: Path, sandbox: str, model: str, isolation: str, sandbox_profile: str) -> tuple[int, str]:
+            calls.append({"task_card": task_card, "workspace": workspace, "output": output, "events": events, "sandbox": sandbox, "model": model, "isolation": isolation, "sandbox_profile": sandbox_profile})
             output.write_text("codex completed\n", encoding="utf-8")
             events.write_text(json.dumps({"event": "done"}, ensure_ascii=False) + "\n", encoding="utf-8")
             return 0, f"codex exec -C {workspace} -s {sandbox}"
 
         captured = io.StringIO()
         with mock.patch.object(codex_adapter.shutil, "which", lambda name: "/usr/local/bin/codex"), mock.patch.object(codex_adapter, "run_codex", fake_run_codex), contextlib.redirect_stdout(captured):
-            code = codex_adapter.main(["--agent", "codex", "--execute", "--sandbox", "workspace-write", "--model", "gpt-test"])
+            code = codex_adapter.main(["--agent", "codex", "--execute", "--sandbox", "workspace-write", "--model", "gpt-test", "--isolation", "docker", "--sandbox-profile", "default"])
         result = json.loads(captured.getvalue())
         self.assertEqual(0, code, result)
         self.assertTrue(result["ok"], result)
@@ -1376,6 +1405,8 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual(0, result["codex_exit_code"])
         self.assertEqual("workspace-write", calls[0]["sandbox"])
         self.assertEqual("gpt-test", calls[0]["model"])
+        self.assertEqual("docker", calls[0]["isolation"])
+        self.assertEqual("default", calls[0]["sandbox_profile"])
         self.assertTrue(Path(result["last_message"]).exists())
         self.assertTrue(Path(result["events"]).exists())
 
@@ -1403,7 +1434,7 @@ class CompanyKernelCoreTest(unittest.TestCase):
         )
         self.assertEqual(code, 0, submitted)
 
-        def fake_run_codex(task_card: Path, workspace: Path, output: Path, events: Path, sandbox: str, model: str) -> tuple[int, str]:
+        def fake_run_codex(task_card: Path, workspace: Path, output: Path, events: Path, sandbox: str, model: str, isolation: str, sandbox_profile: str) -> tuple[int, str]:
             output.write_text("codex failed\n", encoding="utf-8")
             events.write_text(json.dumps({"event": "error"}, ensure_ascii=False) + "\n", encoding="utf-8")
             return 7, f"codex exec -C {workspace} -s {sandbox}"

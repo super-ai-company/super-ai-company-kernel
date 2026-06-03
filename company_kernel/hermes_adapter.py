@@ -2,16 +2,19 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import shutil
 import sqlite3
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 
+from .sandboxing import wrap_command
 
-ROOT = Path(__file__).resolve().parents[1]
+
+ROOT = Path(os.environ.get("OPENCLAW_COMPANY_KERNEL_ROOT", Path(__file__).resolve().parents[1])).resolve()
 DB_PATH = ROOT / "company.sqlite"
-DEFAULT_WORKSPACE = Path("/Users/owner/.hermes")
+DEFAULT_WORKSPACE = Path(os.environ.get("OPENCLAW_HERMES_WORKSPACE", "/Users/owner/.hermes")).resolve()
 
 
 def now() -> str:
@@ -31,21 +34,28 @@ def connect() -> sqlite3.Connection:
 
 
 def run_companyctl(args: list[str]) -> tuple[int, str, str]:
-    cp = subprocess.run([str(ROOT / "bin" / "companyctl"), *args], cwd=str(ROOT), text=True, capture_output=True)
+    env = {**os.environ, "OPENCLAW_COMPANY_KERNEL_ROOT": str(ROOT)}
+    cp = subprocess.run([str(ROOT / "bin" / "companyctl"), *args], cwd=str(ROOT), text=True, capture_output=True, env=env)
     return cp.returncode, cp.stdout, cp.stderr
 
 
 def employee(agent: str) -> sqlite3.Row | None:
     conn = connect()
-    return conn.execute("SELECT * FROM employees WHERE id = ?", (agent,)).fetchone()
+    try:
+        return conn.execute("SELECT * FROM employees WHERE id = ?", (agent,)).fetchone()
+    finally:
+        conn.close()
 
 
 def next_task(agent: str) -> sqlite3.Row | None:
     conn = connect()
-    return conn.execute(
-        "SELECT * FROM tasks WHERE target_agent = ? AND status = 'submitted' ORDER BY created_at LIMIT 1",
-        (agent,),
-    ).fetchone()
+    try:
+        return conn.execute(
+            "SELECT * FROM tasks WHERE target_agent = ? AND status = 'submitted' ORDER BY created_at LIMIT 1",
+            (agent,),
+        ).fetchone()
+    finally:
+        conn.close()
 
 
 def paths(agent: str, task_id: str) -> dict[str, Path]:
@@ -110,12 +120,17 @@ def write_report(path: Path, task: sqlite3.Row, *, executed: bool, status: str, 
     )
 
 
-def run_hermes(prompt: Path, output: Path, workspace: Path, model: str, provider: str) -> tuple[int, str]:
+def build_hermes_command(prompt: Path, model: str, provider: str) -> list[str]:
     cmd = ["hermes", "-z", prompt.read_text(encoding="utf-8")]
     if model:
         cmd[1:1] = ["--model", model]
     if provider:
         cmd[1:1] = ["--provider", provider]
+    return cmd
+
+
+def run_hermes(prompt: Path, output: Path, workspace: Path, model: str, provider: str, isolation: str, sandbox_profile: str) -> tuple[int, str]:
+    cmd = wrap_command(build_hermes_command(prompt, model, provider), runtime="hermes", workspace=workspace, isolation=isolation, profile_name=sandbox_profile)
     cp = subprocess.run(cmd, cwd=str(workspace), text=True, capture_output=True)
     output.write_text((cp.stdout or "") + ("\n\n## stderr\n\n" + cp.stderr if cp.stderr else ""), encoding="utf-8")
     return cp.returncode, " ".join(["hermes", "-z", "<prompt>"])
@@ -151,7 +166,7 @@ def process(args: argparse.Namespace) -> int:
         run_companyctl(["heartbeat", "--agent", args.agent])
         emit({"ok": done_code == 0, "processed": 1, "executed": False, "task_id": task["id"], "prompt": str(artifact["prompt"]), "report": str(artifact["report"]), "companyctl_stdout": done_out, "companyctl_stderr": done_err})
         return done_code
-    code, cmd = run_hermes(artifact["prompt"], artifact["output"], workspace, args.model, args.provider)
+    code, cmd = run_hermes(artifact["prompt"], artifact["output"], workspace, args.model, args.provider, args.isolation, args.sandbox_profile)
     if code == 0:
         detail = f"hermes oneshot completed. command={cmd}"
         write_report(artifact["report"], task, executed=True, status="completed", detail=detail, prompt=artifact["prompt"], output=artifact["output"])
@@ -171,6 +186,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--workspace", default="")
     parser.add_argument("--model", default="")
     parser.add_argument("--provider", default="")
+    parser.add_argument("--isolation", default="none", choices=["none", "docker", "firejail"], help="wrap hermes execution in a container/sandbox command")
+    parser.add_argument("--sandbox-profile", default="default", help="sandbox profile name from config/sandbox_profiles.json")
     parser.add_argument("--execute", action="store_true", help="actually run hermes -z; without this only writes prompt and report")
     return parser
 

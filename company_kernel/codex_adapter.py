@@ -9,6 +9,8 @@ import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 
+from .sandboxing import wrap_command
+
 
 ROOT = Path(os.environ.get("OPENCLAW_COMPANY_KERNEL_ROOT", Path(__file__).resolve().parents[1])).resolve()
 DB_PATH = ROOT / "company.sqlite"
@@ -136,7 +138,7 @@ def write_report(p: Path, task: sqlite3.Row, *, executed: bool, status: str, det
     )
 
 
-def run_codex(task_card: Path, workspace: Path, output: Path, events: Path, sandbox: str, model: str) -> tuple[int, str]:
+def build_codex_command(workspace: Path, output: Path, sandbox: str, model: str) -> list[str]:
     cmd = [
         "codex",
         "exec",
@@ -152,6 +154,11 @@ def run_codex(task_card: Path, workspace: Path, output: Path, events: Path, sand
     ]
     if model:
         cmd[2:2] = ["--model", model]
+    return cmd
+
+
+def run_codex(task_card: Path, workspace: Path, output: Path, events: Path, sandbox: str, model: str, isolation: str, sandbox_profile: str) -> tuple[int, str]:
+    cmd = wrap_command(build_codex_command(workspace, output, sandbox, model), runtime="codex", workspace=workspace, isolation=isolation, profile_name=sandbox_profile)
     with task_card.open("r", encoding="utf-8") as stdin, events.open("w", encoding="utf-8") as event_out:
         cp = subprocess.run(cmd, stdin=stdin, stdout=event_out, stderr=subprocess.STDOUT, text=True)
     return cp.returncode, " ".join(cmd)
@@ -187,7 +194,7 @@ def process(args: argparse.Namespace) -> int:
         run_companyctl(["heartbeat", "--agent", args.agent])
         emit({"ok": done_code == 0, "processed": 1, "executed": False, "task_id": task["id"], "task_card": str(artifact["task_card"]), "report": str(artifact["report"]), "companyctl_stdout": done_out, "companyctl_stderr": done_err})
         return done_code
-    code, cmd = run_codex(artifact["task_card"], workspace, artifact["last_message"], artifact["events"], args.sandbox, args.model)
+    code, cmd = run_codex(artifact["task_card"], workspace, artifact["last_message"], artifact["events"], args.sandbox, args.model, args.isolation, args.sandbox_profile)
     if code == 0:
         detail = f"codex exec completed. command={cmd}"
         write_report(artifact["report"], task, executed=True, status="completed", detail=detail, task_card=artifact["task_card"], output=artifact["last_message"])
@@ -207,6 +214,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--workspace", default="")
     parser.add_argument("--sandbox", default="read-only", choices=["read-only", "workspace-write", "danger-full-access"])
     parser.add_argument("--model", default="")
+    parser.add_argument("--isolation", default="none", choices=["none", "docker", "firejail"], help="wrap codex exec in a container/sandbox command")
+    parser.add_argument("--sandbox-profile", default="default", help="sandbox profile name from config/sandbox_profiles.json")
     parser.add_argument("--execute", action="store_true", help="actually run codex exec; without this only writes task card and report")
     return parser
 
