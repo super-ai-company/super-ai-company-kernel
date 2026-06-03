@@ -1,0 +1,89 @@
+{
+  "version": 1,
+  "hooks": [
+    {
+      "id": "video-maker-question-to-ops-reply",
+      "enabled": true,
+      "description": "When maker asks ops what video to create, ops replies with the creative brief and wakes maker.",
+      "match": {
+        "event_type": "message.send",
+        "source_agent": "maker",
+        "target_agent": "ops",
+        "body_contains": [
+          "创作什么视频",
+          "做什么视频",
+          "视频主题"
+        ]
+      },
+      "actions": [
+        {
+          "type": "message",
+          "from": "ops",
+          "to": "maker",
+          "body": "收到你的问题 {{message_id}}。请创作一个搞笑的中文竖版短视频：9:16，30-45 秒，轻松吐槽办公室 AI 同事协作，结尾留一个发布文案钩子。完成后用 task done 回传成片路径、脚本和封面证据。"
+        },
+        {
+          "type": "heartbeat",
+          "agent": "maker"
+        }
+      ]
+    },
+    {
+      "id": "video-maker-done-to-publisher",
+      "enabled": true,
+      "description": "When video maker completes a task, notify ops and submit a publish task.",
+      "match": {
+        "event_type": "task.done",
+        "source_agent": "maker",
+        "target_agent": "maker",
+        "skip_child_tasks": true
+      },
+      "actions": [
+        {
+          "type": "message",
+          "from": "maker",
+          "to": "ops",
+          "body": "maker 已完成任务 {{task_id}}。摘要：{{summary}}。证据：{{evidence}}。我已触发 publisher 发布接力。"
+        },
+        {
+          "type": "task_submit",
+          "from": "ops",
+          "to": "publisher",
+          "requires_approval": "external_send",
+          "approval_reason": "maker 已完成视频任务 {{task_id}}，需要审批后才能交给 publisher 执行外发/发布动作。证据：{{evidence}}",
+          "pending_approval_id": "approval-publish-{{task_id}}",
+          "risk": "P1",
+          "title": "发布 maker 完成的视频",
+          "description": "maker 已完成视频任务 {{task_id}}。请根据证据 {{evidence}} 准备发布，并完成后回传发布报告。",
+          "priority": "P1"
+        },
+        {
+          "type": "heartbeat",
+          "agent": "publisher"
+        }
+      ]
+    },
+    {
+      "id": "video-publisher-done-to-ops",
+      "enabled": true,
+      "description": "When publisher completes a publish task, notify ops.",
+      "match": {
+        "event_type": "task.done",
+        "source_agent": "publisher",
+        "target_agent": "publisher"
+      },
+      "actions": [
+        {
+          "type": "message",
+          "from": "publisher",
+          "to": "ops",
+          "body": "publisher 已完成发布任务 {{task_id}}。摘要：{{summary}}。证据：{{evidence}}。"
+        },
+        {
+          "type": "heartbeat",
+          "agent": "ops"
+        }
+      ]
+    }
+  ]
+}

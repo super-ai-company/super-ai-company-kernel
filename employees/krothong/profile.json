@@ -1,0 +1,8 @@
+{
+  "id": "krothong",
+  "name": "krothong",
+  "role": "business-agent",
+  "runtime": "openclaw",
+  "workspace": "/Users/shift/openclaw/workspace-krothong",
+  "created_at": "2026-06-03T01:34:36+07:00"
+}

@@ -1,0 +1,256 @@
+from __future__ import annotations
+
+import argparse
+import json
+import subprocess
+import time
+import uuid
+from datetime import datetime, timezone
+from pathlib import Path
+
+from company_kernel import companyctl
+
+
+ROOT = Path(__file__).resolve().parents[1]
+CONFIG_PATH = ROOT / "config" / "daemon.json"
+STATE_DIR = ROOT / "state" / "daemon"
+LOG_PATH = ROOT / "logs" / "daemon.log"
+
+
+def now() -> str:
+    return datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
+
+
+def emit(obj: dict) -> None:
+    print(json.dumps(obj, ensure_ascii=False, indent=2))
+
+
+def load_config(path: Path) -> dict:
+    if not path.exists():
+        raise SystemExit(f"daemon config not found: {path}")
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def run_cmd(args: list[str]) -> dict:
+    cp = subprocess.run(args, cwd=str(ROOT), text=True, capture_output=True)
+    result = {
+        "command": args,
+        "returncode": cp.returncode,
+        "stdout": cp.stdout,
+        "stderr": cp.stderr,
+    }
+    LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    with LOG_PATH.open("a", encoding="utf-8") as f:
+        f.write(json.dumps({"at": now(), **result}, ensure_ascii=False) + "\n")
+    return result
+
+
+def run_companyctl(*args: str) -> dict:
+    return run_cmd([str(ROOT / "bin" / "companyctl"), *args])
+
+
+def resolve_heartbeat_agents(config: dict) -> list[str]:
+    agents = list(config.get("heartbeat_agents", []))
+    runtimes = [runtime for runtime in config.get("heartbeat_runtimes", []) if runtime]
+    if runtimes:
+        wildcard = "*" in runtimes
+        conn = companyctl.connect()
+        try:
+            if wildcard:
+                rows = conn.execute("SELECT id FROM employees WHERE status = 'active' ORDER BY id").fetchall()
+            else:
+                rows = conn.execute(
+                    f"""
+                    SELECT id FROM employees
+                    WHERE status = 'active'
+                      AND runtime IN ({",".join("?" for _ in runtimes)})
+                    ORDER BY id
+                    """,
+                    runtimes,
+                ).fetchall()
+        finally:
+            conn.close()
+        agents.extend(row["id"] for row in rows)
+    seen = set()
+    return [agent for agent in agents if agent and not (agent in seen or seen.add(agent))]
+
+
+def run_adapter_once(worker: dict) -> dict:
+    command = worker.get("command", "")
+    if not command:
+        return {"ok": False, "error": "missing adapter command", "worker": worker}
+    executable = ROOT / "bin" / command
+    args = [str(executable), "--agent", worker["agent"], *worker.get("args", [])]
+    return run_cmd(args)
+
+
+def parsed_stdout(result: dict) -> dict:
+    raw = (result.get("stdout") or "").strip()
+    if not raw:
+        return {}
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        return {"raw": raw[-1000:]}
+
+
+def run_adapter(worker: dict) -> dict:
+    max_tasks = int(worker.get("max_tasks_per_tick", worker.get("runs", 1)) or 1)
+    runs = []
+    processed_total = 0
+    for index in range(max_tasks):
+        result = run_adapter_once(worker)
+        parsed = parsed_stdout(result)
+        processed = int(parsed.get("processed", 0) or 0)
+        processed_total += processed
+        runs.append({"index": index + 1, "result": result, "parsed_stdout": parsed})
+        if result.get("returncode", 1) != 0 or processed == 0:
+            break
+    state = {
+        "ok": all(item["result"].get("returncode", 1) == 0 for item in runs),
+        "agent": worker.get("agent", ""),
+        "command": worker.get("command", ""),
+        "processed": processed_total,
+        "runs": runs,
+        "at": now(),
+    }
+    worker_state_path = STATE_DIR / "workers" / f"{worker.get('agent', 'unknown')}.json"
+    worker_state_path.parent.mkdir(parents=True, exist_ok=True)
+    worker_state_path.write_text(json.dumps(state, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    state["state_file"] = str(worker_state_path)
+    record_adapter_run(state)
+    return state
+
+
+def record_adapter_run(state: dict) -> None:
+    task_id = adapter_state_task_id(state)
+    conn = companyctl.connect()
+    try:
+        conn.execute(
+            """
+            INSERT INTO adapter_runs(id, agent_id, task_id, command, ok, processed, result_json, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                f"adapter-run-{datetime.now().strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:6]}",
+                state.get("agent", ""),
+                task_id,
+                state.get("command", ""),
+                1 if state.get("ok") else 0,
+                int(state.get("processed", 0) or 0),
+                json.dumps(state, ensure_ascii=False),
+                state.get("at", now()),
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def adapter_state_task_id(state: dict) -> str:
+    for run in state.get("runs", []):
+        if isinstance(run, dict):
+            parsed = run.get("parsed_stdout", {})
+            if isinstance(parsed, dict) and parsed.get("task_id"):
+                return str(parsed["task_id"])
+    return ""
+
+
+def write_state(state: dict) -> Path:
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    path = STATE_DIR / "last-run.json"
+    path.write_text(json.dumps(state, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    return path
+
+
+def summarize_state(state: dict) -> dict:
+    steps = state.get("results", [])
+    failed_steps = []
+    heartbeat_agents = []
+    adapter_steps = []
+    counts = {"steps": len(steps), "heartbeats": 0, "adapters": 0, "repair": 0, "scheduler": 0, "failed": 0}
+    for item in steps:
+        step = str(item.get("step", ""))
+        result = item.get("result", {})
+        returncode = result.get("returncode", 1) if isinstance(result, dict) else 1
+        if returncode != 0:
+            counts["failed"] += 1
+            failed_steps.append(step)
+        if step.startswith("heartbeat."):
+            counts["heartbeats"] += 1
+            heartbeat_agents.append(step.removeprefix("heartbeat."))
+        elif step.startswith("adapter."):
+            counts["adapters"] += 1
+            adapter_steps.append(step.removeprefix("adapter."))
+        elif step.startswith("repair."):
+            counts["repair"] += 1
+        elif step.startswith("scheduler."):
+            counts["scheduler"] += 1
+    return {
+        "ok": state.get("ok", False),
+        "at": state.get("at", ""),
+        "counts": counts,
+        "failed_steps": failed_steps,
+        "heartbeat_agents": heartbeat_agents,
+        "adapter_agents": adapter_steps,
+        "state_file": state.get("state_file", ""),
+    }
+
+
+def tick(config: dict) -> dict:
+    results = []
+    if config.get("run_repair", True):
+        results.append({"step": "repair.reset-stale-claims", "result": run_companyctl("repair", "reset-stale-claims")})
+    if config.get("run_scheduler", True):
+        results.append({"step": "scheduler.run", "result": run_companyctl("scheduler", "run")})
+    for agent in resolve_heartbeat_agents(config):
+        results.append({"step": f"heartbeat.{agent}", "result": run_companyctl("heartbeat", "--agent", agent)})
+    for worker in config.get("adapter_workers", []):
+        if not worker.get("enabled", False):
+            continue
+        adapter_state = run_adapter(worker)
+        results.append({"step": f"adapter.{worker.get('agent', '')}", "result": {"returncode": 0 if adapter_state["ok"] else 1, "stdout": json.dumps(adapter_state, ensure_ascii=False), "stderr": ""}})
+    state = {"ok": all(item["result"].get("returncode", 1) == 0 for item in results), "at": now(), "results": results}
+    path = write_state(state)
+    state["state_file"] = str(path)
+    return state
+
+
+def run(args: argparse.Namespace) -> int:
+    config = load_config(Path(args.config))
+    if args.enable_worker:
+        enabled = set(args.enable_worker)
+        for worker in config.get("adapter_workers", []):
+            if worker.get("agent", "") in enabled:
+                worker["enabled"] = True
+    interval = args.interval or int(config.get("interval_seconds", 30))
+    iterations = 1 if args.once else max(args.iterations, 0)
+    count = 0
+    last_state = {}
+    while True:
+        last_state = tick(config)
+        count += 1
+        if args.once or (iterations and count >= iterations):
+            break
+        time.sleep(interval)
+    emit(summarize_state(last_state) if args.summary else last_state)
+    return 0 if last_state.get("ok") else 1
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="Company Kernel daemon loop")
+    parser.add_argument("--config", default=str(CONFIG_PATH))
+    parser.add_argument("--once", action="store_true")
+    parser.add_argument("--iterations", type=int, default=0)
+    parser.add_argument("--interval", type=int, default=0)
+    parser.add_argument("--enable-worker", action="append", default=[], help="temporarily enable adapter worker for one agent without editing config")
+    parser.add_argument("--summary", action="store_true", help="print compact run summary while preserving full state/log files")
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    return run(build_parser().parse_args(argv))
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

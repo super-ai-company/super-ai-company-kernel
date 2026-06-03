@@ -1,0 +1,82 @@
+{
+  "id": "video-pipeline-5round",
+  "title": "Ops Maker Publisher 5 Round Video Pipeline",
+  "topic": "搞笑的中文竖版视频",
+  "employees": ["ops", "maker", "publisher"],
+  "steps": [
+    {
+      "type": "conversation_start",
+      "from": "maker",
+      "participants": ["maker", "ops", "publisher"],
+      "conversation_id": "conv-video-pipeline-{{run_id}}",
+      "title": "视频创作需求确认",
+      "body": "ops，我准备开始创作视频。请确认这次要创作什么主题、语言、画幅和风格。"
+    },
+    {
+      "type": "conversation_reply",
+      "from": "ops",
+      "conversation_id": "{{conversation_id}}",
+      "body": "这次做一个搞笑的中文竖版短视频，节奏快，适合手机观看。先做可发布版本，完成后把成片证据交给我。"
+    },
+    {
+      "type": "task_submit",
+      "from": "ops",
+      "to": "maker",
+      "task_id": "task-video-make-{{run_id}}",
+      "title": "创作搞笑中文竖版视频",
+      "description": "主题：{{topic}}。要求：中文、竖版、搞笑、可发布。完成后提交成片路径或报告。",
+      "priority": "P1"
+    },
+    {
+      "type": "heartbeat",
+      "agent": "maker"
+    },
+    {
+      "type": "task_execute",
+      "agent": "maker",
+      "task_id": "{{maker_task_id}}",
+      "summary": "已完成搞笑中文竖版视频创作 dry-run，生成成片交付报告。",
+      "evidence_name": "maker-video-result",
+      "report": "# Maker Result\n\n主题：{{topic}}\n\n状态：dry-run 完成。\n\n交付：模拟生成一条搞笑中文竖版视频，等待 ops 审核并交给 publisher 发布。\n"
+    },
+    {
+      "type": "conversation_reply",
+      "from": "maker",
+      "conversation_id": "{{conversation_id}}",
+      "body": "ops，视频已完成。证据：{{last_evidence}}。请确认是否交给 publisher 发布。"
+    },
+    {
+      "type": "conversation_reply",
+      "from": "ops",
+      "conversation_id": "{{conversation_id}}",
+      "body": "确认发布。publisher，请根据 maker 的交付证据准备发布，发布完成后回传发布报告。"
+    },
+    {
+      "type": "task_submit",
+      "from": "ops",
+      "to": "publisher",
+      "task_id": "task-video-publish-{{run_id}}",
+      "title": "发布搞笑中文竖版视频",
+      "description": "请发布 maker 已完成的视频。成片证据：{{last_evidence}}。发布完成后提交发布报告。",
+      "priority": "P1"
+    },
+    {
+      "type": "heartbeat",
+      "agent": "publisher"
+    },
+    {
+      "type": "task_execute",
+      "agent": "publisher",
+      "task_id": "{{publisher_task_id}}",
+      "summary": "已完成发布 dry-run，生成发布报告。",
+      "evidence_name": "publisher-result",
+      "report": "# Publisher Result\n\n输入证据：{{last_evidence}}\n\n状态：dry-run 发布完成。\n\n结果：模拟发布完成，等待 ops 归档。\n"
+    },
+    {
+      "type": "conversation_reply",
+      "from": "publisher",
+      "conversation_id": "{{conversation_id}}",
+      "body": "ops，发布已完成。发布证据：{{last_evidence}}。"
+    }
+  ]
+}

@@ -1,0 +1,23 @@
+{
+  "version": 1,
+  "requires_rfc": true,
+  "protected": [
+    "company_kernel/**",
+    "bin/**",
+    "config/policy.json",
+    "config/hooks.json",
+    "config/company_communications.json",
+    "config/daemon.json",
+    "company.sqlite",
+    "state/**",
+    "employees/*/profile.json",
+    "employees/*/permissions.json",
+    "employees/*/capabilities.json",
+    "PROTECTED_PATHS.md",
+    "config/protected_paths.json"
+  ],
+  "rfc_allowed": [
+    "rfcs/**"
+  ],
+  "notes": "普通员工修改 protected 路径必须提交 RFC；由内核维护者批准后再改。"
+}
