@@ -828,6 +828,34 @@ def inject_advanced_dashboard(template: str, summary: dict, *, db_path: Path, ap
         count=1,
         flags=re.DOTALL,
     )
+    html_text = re.sub(
+        r"function formatDate\(isoStr\) \{\s*if \(!isoStr\) return '';\s*try \{\s*const d = new Date\(isoStr\);\s*return d\.toLocaleTimeString\(\) \+ ' ' \+ d\.toLocaleDateString\(\);\s*\} catch\(e\) \{\s*return isoStr;\s*\}\s*\}",
+        """function formatDate(isoStr) {
+    if (!isoStr) return '';
+    try {
+      const d = new Date(isoStr);
+      const formatted = new Intl.DateTimeFormat('en-GB', {
+        timeZone: 'Asia/Bangkok',
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit',
+        hour12: false
+      }).formatToParts(d).reduce((acc, part) => {
+        acc[part.type] = part.value;
+        return acc;
+      }, {});
+      return `${formatted.hour}:${formatted.minute}:${formatted.second} ${formatted.year}/${formatted.month}/${formatted.day} THA`;
+    } catch(e) {
+      return isoStr;
+    }
+  }""",
+        html_text,
+        count=1,
+        flags=re.DOTALL,
+    )
     html_text = html_text.replace(
         "document.getElementById('db-path-label').innerText = isSimulationMode ? 'simulation://gateway.company.internal' : 'https://gateway.company.internal';",
         "document.getElementById('db-path-label').innerText = isSimulationMode ? 'simulation://gateway.company.internal' : (window.companyApiBase || 'http://127.0.0.1:8765');",

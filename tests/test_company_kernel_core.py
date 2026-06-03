@@ -798,6 +798,15 @@ class CompanyKernelCoreTest(unittest.TestCase):
       if (mode === 'hard') {}
     }
   }
+  function formatDate(isoStr) {
+    if (!isoStr) return '';
+    try {
+      const d = new Date(isoStr);
+      return d.toLocaleTimeString() + ' ' + d.toLocaleDateString();
+    } catch(e) {
+      return isoStr;
+    }
+  }
   document.getElementById('db-path-label').innerText = isSimulationMode ? 'simulation://gateway.company.internal' : 'https://gateway.company.internal';
 </script>
 </body></html>
@@ -833,6 +842,9 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertIn("realUpdateEmployeeProfile", html)
         self.assertIn("'PATCH'", html)
         self.assertIn("'DELETE'", html)
+        self.assertIn("timeZone: 'Asia/Bangkok'", html)
+        self.assertIn("THA", html)
+        self.assertNotIn("d.toLocaleTimeString() + ' ' + d.toLocaleDateString()", html)
 
     def test_dashboard_renders_task_evidence_blocker_and_approval_counts(self) -> None:
         code, submitted = run_cli("task", "submit", "--from", "ops", "--to", "maker", "--task-id", "task-dashboard-blocked", "--title", "blocked task")
