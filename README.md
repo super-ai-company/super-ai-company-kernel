@@ -443,7 +443,7 @@ bin/company-api-gateway --quiet
 bin/company-dashboard --variant advanced
 ```
 
-高级操作台的招募/归档入口会调用 `/v1/employees/onboard` 和 `/v1/employees/<id>/offboard`，支持 OpenClaw、Hermes、Codex、Claude、Trae、Antigravity 和 local runtime。
+高级操作台会在加载时检查 `/v1/health`；API 未启动时顶部会显示 `API OFFLINE`，招募/归档失败会直接写入终端日志。招募/归档入口会调用 `/v1/employees/onboard` 和 `/v1/employees/<id>/offboard`，支持 OpenClaw、Hermes、Codex、Claude、Trae、Antigravity 和 local runtime。
 
 ## Projects
 

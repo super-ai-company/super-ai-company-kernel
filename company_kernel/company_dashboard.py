@@ -498,6 +498,7 @@ def render(summary: dict) -> str:
       <label>Skills
         <input id="employee-skills" placeholder="ops,review">
       </label>
+      <button type="button" onclick="checkCompanyApi()">Check API</button>
       <button type="button" onclick="onboardEmployee()">Onboard</button>
     </div>
     <div class="api-note">Employee actions call Company Kernel REST API and then reload this static dashboard. Start with: <code>bin/company-api-gateway --quiet</code></div>
@@ -533,6 +534,26 @@ def render(summary: dict) -> str:
       const el = document.getElementById('employee-api-status');
       el.textContent = text;
       el.style.color = isError ? '#9f1d1d' : '#3f6f32';
+    }}
+    async function getCompanyApi(path) {{
+      const res = await fetch(apiBase() + path, {{method: 'GET'}});
+      const data = await res.json();
+      if (!res.ok || data.ok === false) {{
+        throw new Error(data.error || data.message || JSON.stringify(data));
+      }}
+      return data;
+    }}
+    async function checkCompanyApi() {{
+      setEmployeeApiStatus(`Checking ${{apiBase()}}/v1/health...`, false);
+      try {{
+        const data = await getCompanyApi('/v1/health');
+        const employees = data.counts ? data.counts.employees : 'unknown';
+        setEmployeeApiStatus(`API online. employees=${{employees}}`, false);
+        return true;
+      }} catch (err) {{
+        setEmployeeApiStatus(`API offline: ${{err.message}}. Start: bin/company-api-gateway --quiet`, true);
+        return false;
+      }}
     }}
     async function callCompanyApi(path, payload) {{
       const res = await fetch(apiBase() + path, {{
@@ -583,6 +604,7 @@ def render(summary: dict) -> str:
         setEmployeeApiStatus(`Offboard failed: ${{err.message}}`, true);
       }}
     }}
+    window.addEventListener('DOMContentLoaded', checkCompanyApi);
   </script>
 </body>
 </html>
@@ -634,9 +656,43 @@ def inject_advanced_dashboard(template: str, summary: dict, *, db_path: Path, ap
     )
     api_script = f"""
 <script>
+  function companyApiBase() {{
+    return (window.companyApiBase || {json.dumps(api_base)}).replace(/\\/$/, '');
+  }}
+  function companyApiLog(tag, text, type) {{
+    if (typeof printTerminalLine === 'function') {{
+      printTerminalLine({{tag, text, type}});
+    }} else {{
+      console.log(`[${{tag}}] ${{text}}`);
+    }}
+  }}
+  async function companyApiGet(path) {{
+    const res = await fetch(companyApiBase() + path, {{method: 'GET'}});
+    const data = await res.json();
+    if (!res.ok || data.ok === false) {{
+      throw new Error(data.error || data.message || JSON.stringify(data));
+    }}
+    return data;
+  }}
+  async function checkCompanyApi() {{
+    try {{
+      const data = await companyApiGet('/v1/health');
+      const employees = data.counts ? data.counts.employees : 'unknown';
+      companyApiLog('SYSTEM', `Company Kernel API online: ${{companyApiBase()}} employees=${{employees}}`, 'success');
+      const label = document.getElementById('db-path-label');
+      if (label && !isSimulationMode) label.innerText = companyApiBase();
+      return true;
+    }} catch (err) {{
+      companyApiLog('ERROR', `Company Kernel API offline: ${{err.message}}. Start: bin/company-api-gateway --quiet`, 'error');
+      const badge = document.getElementById('top-status-badge');
+      const text = document.getElementById('top-status-text');
+      if (badge) badge.className = 'system-status attention';
+      if (text) text.innerText = 'API OFFLINE';
+      return false;
+    }}
+  }}
   async function companyApiPost(path, payload) {{
-    const base = (window.companyApiBase || {json.dumps(api_base)}).replace(/\\/$/, '');
-    const res = await fetch(base + path, {{
+    const res = await fetch(companyApiBase() + path, {{
       method: 'POST',
       headers: {{'Content-Type': 'application/json'}},
       body: JSON.stringify(payload || {{}})
@@ -679,6 +735,7 @@ def inject_advanced_dashboard(template: str, summary: dict, *, db_path: Path, ap
       printTerminalLine({{tag: 'ERROR', text: `Offboard failed: ${{err.message}}`, type: 'error'}});
     }}
   }}
+  window.addEventListener('DOMContentLoaded', checkCompanyApi);
 </script>
 """
     return html_text.replace("</body>", api_script + "\n</body>")

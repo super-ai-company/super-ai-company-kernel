@@ -447,6 +447,9 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertIn("employee-manager", html)
         self.assertIn("/v1/employees/onboard", html)
         self.assertIn("offboardEmployee", html)
+        self.assertIn("checkCompanyApi", html)
+        self.assertIn("/v1/health", html)
+        self.assertIn("API offline", html)
 
     def test_dashboard_advanced_template_uses_live_summary_and_real_employee_api(self) -> None:
         template = self.root / "gemini-dashboard-template.html"
@@ -488,6 +491,10 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertIn('"employees": 7', html)
         self.assertIn('"id": "hermes"', html)
         self.assertIn("window.companyApiBase", html)
+        self.assertIn("companyApiGet", html)
+        self.assertIn("checkCompanyApi", html)
+        self.assertIn("/v1/health", html)
+        self.assertIn("API OFFLINE", html)
         self.assertIn("realOnboardGeneratedEmployee", html)
         self.assertIn("realOffboardEmployee", html)
 
