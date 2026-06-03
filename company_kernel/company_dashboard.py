@@ -238,6 +238,7 @@ def render_employee_table(items: list[dict]) -> str:
         cells = "".join(f"<td>{e(item.get(field, ''))}</td>" for field in fields)
         actions = (
             "<td>"
+            f"<button type='button' onclick=\"editEmployee('{employee_id}')\">Edit</button> "
             f"<button class='danger-button' type='button' onclick=\"offboardEmployee('{employee_id}', false)\">Archive</button>"
             "</td>"
         )
@@ -591,6 +592,33 @@ def render(summary: dict) -> str:
         setEmployeeApiStatus(`Onboard failed: ${{err.message}}`, true);
       }}
     }}
+    async function editEmployee(id) {{
+      if (!id) return;
+      const row = Array.from(document.querySelectorAll('tbody tr')).find((candidate) => candidate.firstElementChild && candidate.firstElementChild.textContent === id);
+      const currentStatus = row && row.children[1] ? row.children[1].textContent : '';
+      const currentRole = row && row.children[4] ? row.children[4].textContent : '';
+      const currentRuntime = row && row.children[5] ? row.children[5].textContent : '';
+      const name = prompt(`Name for ${{id}} (blank keeps current)`, '');
+      if (name === null) return;
+      const role = prompt(`Role for ${{id}}`, currentRole || 'business-agent');
+      if (role === null) return;
+      const runtime = prompt(`Runtime for ${{id}}`, currentRuntime || 'local');
+      if (runtime === null) return;
+      const status = prompt(`Status for ${{id}}: active, candidate, archived`, currentStatus || 'active');
+      if (status === null) return;
+      if (!['active', 'candidate', 'archived'].includes(status)) {{
+        setEmployeeApiStatus(`Invalid status: ${{status}}`, true);
+        return;
+      }}
+      setEmployeeApiStatus(`Updating ${{id}}...`, false);
+      try {{
+        await callCompanyApi(`/v1/employees/${{encodeURIComponent(id)}}/profile`, {{name, role, runtime, status}});
+        setEmployeeApiStatus(`Updated ${{id}}. Reloading dashboard...`, false);
+        setTimeout(() => location.reload(), 800);
+      }} catch (err) {{
+        setEmployeeApiStatus(`Update failed: ${{err.message}}`, true);
+      }}
+    }}
     async function offboardEmployee(id, hardDelete) {{
       if (!id) return;
       const action = hardDelete ? 'hard delete' : 'archive';
@@ -653,6 +681,13 @@ def inject_advanced_dashboard(template: str, summary: dict, *, db_path: Path, ap
     html_text = html_text.replace(
         "if (isSimulationMode) {\n      if (mode === 'hard') {",
         "if (!isSimulationMode) {\n      return realOffboardEmployee(employeeToFire, mode === 'hard');\n    }\n\n    if (isSimulationMode) {\n      if (mode === 'hard') {",
+    )
+    html_text = html_text.replace(
+        "<span class=\"badge ${hbStatus}\">${hbStatus}</span>",
+        """<span class="badge ${hbStatus}">${hbStatus}</span>
+              <button class="chat-send-btn" style="padding: 2px 6px; font-size: 10px; background: rgba(59, 130, 246, 0.15); border: 1px solid rgba(59, 130, 246, 0.3); color: #93c5fd;" onclick="event.stopPropagation(); openEditEmployeeProfile('${escapeHtml(emp.id)}', '${escapeHtml(emp.name)}', '${escapeHtml(emp.role)}', '${escapeHtml(emp.runtime)}', '${escapeHtml(emp.status || 'active')}')">
+                <i class="fa-solid fa-pen-to-square"></i> Edit
+              </button>""",
     )
     api_script = f"""
 <script>
@@ -724,6 +759,31 @@ def inject_advanced_dashboard(template: str, summary: dict, *, db_path: Path, ap
     }} catch (err) {{
       printTerminalLine({{tag: 'ERROR', text: `Onboard failed: ${{err.message}}`, type: 'error'}});
     }}
+  }}
+  async function realUpdateEmployeeProfile(id, payload) {{
+    companyApiLog('SYSTEM', `Calling Company Kernel API to update '${{id}}'...`, 'normal');
+    try {{
+      await companyApiPost(`/v1/employees/${{encodeURIComponent(id)}}/profile`, payload || {{}});
+      companyApiLog('SYSTEM', `Updated '${{id}}'. Reloading live dashboard...`, 'success');
+      setTimeout(() => location.reload(), 800);
+    }} catch (err) {{
+      companyApiLog('ERROR', `Update failed: ${{err.message}}`, 'error');
+    }}
+  }}
+  function openEditEmployeeProfile(id, currentName, currentRole, currentRuntime, currentStatus) {{
+    const name = prompt(`Name for ${{id}}`, currentName || id);
+    if (name === null) return;
+    const role = prompt(`Role for ${{id}}`, currentRole || 'business-agent');
+    if (role === null) return;
+    const runtime = prompt(`Runtime for ${{id}}`, currentRuntime || 'local');
+    if (runtime === null) return;
+    const status = prompt(`Status for ${{id}}: active, candidate, archived`, currentStatus || 'active');
+    if (status === null) return;
+    if (!['active', 'candidate', 'archived'].includes(status)) {{
+      companyApiLog('ERROR', `Invalid employee status: ${{status}}`, 'error');
+      return;
+    }}
+    return realUpdateEmployeeProfile(id, {{name, role, runtime, status}});
   }}
   async function realOffboardEmployee(id, hardDelete) {{
     printTerminalLine({{tag: 'SYSTEM', text: `Calling Company Kernel API to offboard '${{id}}'...`, type: 'normal'}});

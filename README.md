@@ -388,7 +388,7 @@ curl -X POST http://127.0.0.1:8765/v1/employees/cursor-dev/permissions \
   --data '{"can_submit_tasks":"false","requires_approval_for":"external_send,payment"}'
 ```
 
-`/v1` 返回服务发现、能力列表、治理约束和端点清单；`/v1/openapi.json` 返回机器可读 OpenAPI 3.1 契约。已覆盖的端点：`/v1/health`、`/v1/doctor`、`/v1/employees`、`/v1/employees/onboard`、`/v1/employees/<id>/offboard|capabilities|permissions`、`/v1/runtimes`、`/v1/tasks`、`/v1/tasks/<id>/claim|done|block|reopen|reassign|conversations`、`/v1/messages`、`/v1/conversations`、`/v1/approvals`、`/v1/projects`、`/v1/projects/<id>/review|accept`、`/v1/locks`、`/v1/heartbeats`、`/v1/adapter-runs`。
+`/v1` 返回服务发现、能力列表、治理约束和端点清单；`/v1/openapi.json` 返回机器可读 OpenAPI 3.1 契约。已覆盖的端点：`/v1/health`、`/v1/doctor`、`/v1/employees`、`/v1/employees/onboard`、`/v1/employees/<id>/profile|offboard|capabilities|permissions`、`/v1/runtimes`、`/v1/tasks`、`/v1/tasks/<id>/claim|done|block|reopen|reassign|conversations`、`/v1/messages`、`/v1/conversations`、`/v1/approvals`、`/v1/projects`、`/v1/projects/<id>/review|accept`、`/v1/locks`、`/v1/heartbeats`、`/v1/adapter-runs`。
 
 `bin/company-api-rpc` 提供同一套治理路由的 JSON-RPC 2.0 服务层，默认端口 `8766`，用于非 HTTP path 风格的远端员工接入。`bin/company-api-grpc` 提供同一组 `Describe/Get/Post` gRPC 服务逻辑，默认端口 `8767`；运行真实网络 gRPC server 需要安装 `requirements-optional.txt` 中的 `grpcio`。当前 server 使用 generic gRPC handler，payload 为 JSON bytes，语义与 `docs/company_kernel.proto` 的 `path/query/body_json/status/body_json` 字段对齐。
 
@@ -444,6 +444,7 @@ bin/company-dashboard --variant advanced
 ```
 
 高级操作台会在加载时检查 `/v1/health`；API 未启动时顶部会显示 `API OFFLINE`，招募/归档失败会直接写入终端日志。招募/归档入口会调用 `/v1/employees/onboard` 和 `/v1/employees/<id>/offboard`，支持 OpenClaw、Hermes、Codex、Claude、Trae、Antigravity 和 local runtime。
+员工卡片的编辑入口调用 `/v1/employees/<id>/profile`，可以调整 name/role/runtime/status；状态变更仍由 `companyctl employee update` 落库和写审计。
 
 ## Projects
 

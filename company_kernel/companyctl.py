@@ -569,6 +569,68 @@ def cmd_employee_list(_args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_employee_update(args: argparse.Namespace) -> int:
+    conn = connect()
+    employee_id = resolve_employee_alias(args.id)
+    row = conn.execute("SELECT * FROM employees WHERE id = ?", (employee_id,)).fetchone()
+    if not row:
+        conn.close()
+        emit({"ok": False, "error": "unknown employee", "employee_id": employee_id})
+        return 1
+    current = dict(row)
+    runtime = args.runtime or current["runtime"]
+    try:
+        require_runtime(conn, runtime)
+    except SystemExit:
+        conn.close()
+        raise
+    updated = {
+        **current,
+        "name": args.name or current["name"],
+        "role": args.role or current["role"],
+        "runtime": runtime,
+        "workspace": args.workspace or current["workspace"],
+        "status": args.status or current["status"],
+        "updated_at": now(),
+    }
+    if args.dry_run:
+        conn.close()
+        emit({"ok": True, "dry_run": True, "changed": updated != current, "employee": updated})
+        return 0
+    conn.execute(
+        """
+        UPDATE employees
+        SET name = ?, role = ?, runtime = ?, workspace = ?, status = ?, updated_at = ?
+        WHERE id = ?
+        """,
+        (
+            updated["name"],
+            updated["role"],
+            updated["runtime"],
+            updated["workspace"],
+            updated["status"],
+            updated["updated_at"],
+            employee_id,
+        ),
+    )
+    profile = {
+        "id": employee_id,
+        "name": updated["name"],
+        "role": updated["role"],
+        "runtime": updated["runtime"],
+        "workspace": updated["workspace"],
+        "status": updated["status"],
+        "created_at": current.get("created_at", ""),
+        "updated_at": updated["updated_at"],
+    }
+    files = write_employee_files(employee_id, profile, dry_run=False)
+    conn.commit()
+    audit(conn, "companyctl", "employee.update", employee_id, {"before": current, "after": updated, "files": files})
+    conn.close()
+    emit({"ok": True, "changed": updated != current, "employee": updated, "files": files})
+    return 0
+
+
 def employee_file_bundle(conn: sqlite3.Connection, employee_id: str) -> dict:
     employee_id = resolve_employee_alias(employee_id)
     row = conn.execute("SELECT * FROM employees WHERE id = ?", (employee_id,)).fetchone()
@@ -3850,6 +3912,15 @@ def build_parser() -> argparse.ArgumentParser:
     emp_show = emp_sub.add_parser("show")
     emp_show.add_argument("--id", required=True)
     emp_show.set_defaults(func=cmd_employee_show)
+    emp_update = emp_sub.add_parser("update")
+    emp_update.add_argument("--id", required=True)
+    emp_update.add_argument("--name", default="")
+    emp_update.add_argument("--role", default="")
+    emp_update.add_argument("--runtime", default="")
+    emp_update.add_argument("--workspace", default="")
+    emp_update.add_argument("--status", choices=["active", "candidate", "archived"], default="")
+    emp_update.add_argument("--dry-run", action="store_true")
+    emp_update.set_defaults(func=cmd_employee_update)
     emp_capabilities = emp_sub.add_parser("capabilities")
     emp_capabilities.add_argument("--id", required=True)
     emp_capabilities.add_argument("--set-skills", default="", help="comma-separated replacement list")

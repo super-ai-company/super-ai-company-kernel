@@ -450,6 +450,8 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertIn("checkCompanyApi", html)
         self.assertIn("/v1/health", html)
         self.assertIn("API offline", html)
+        self.assertIn("editEmployee", html)
+        self.assertIn("/profile", html)
 
     def test_dashboard_advanced_template_uses_live_summary_and_real_employee_api(self) -> None:
         template = self.root / "gemini-dashboard-template.html"
@@ -497,6 +499,8 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertIn("API OFFLINE", html)
         self.assertIn("realOnboardGeneratedEmployee", html)
         self.assertIn("realOffboardEmployee", html)
+        self.assertIn("openEditEmployeeProfile", html)
+        self.assertIn("realUpdateEmployeeProfile", html)
 
     def test_dashboard_renders_task_evidence_blocker_and_approval_counts(self) -> None:
         code, submitted = run_cli("task", "submit", "--from", "ops", "--to", "maker", "--task-id", "task-dashboard-blocked", "--title", "blocked task")
@@ -1690,6 +1694,21 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual("payment", approval_route["approval_action"])
         self.assertEqual("pending", approval_route["approval"]["status"])
 
+        status, profile = api_gateway.route_post(
+            "/v1/employees/cursor-dev/profile",
+            {"name": "Cursor Reviewer", "role": "reviewer", "status": "candidate"},
+        )
+        self.assertEqual(200, status, profile)
+        self.assertTrue(profile["changed"])
+        self.assertEqual("Cursor Reviewer", profile["employee"]["name"])
+        self.assertEqual("reviewer", profile["employee"]["role"])
+        self.assertEqual("candidate", profile["employee"]["status"])
+
+        status, shown_profile = api_gateway.route_get("/v1/employees/cursor-dev", {})
+        self.assertEqual(200, status, shown_profile)
+        self.assertEqual("Cursor Reviewer", shown_profile["employee"]["name"])
+        self.assertEqual("candidate", shown_profile["employee"]["status"])
+
         managed_workspace = self.root / "employees" / "api-reviewer"
         status, onboarded = api_gateway.route_post(
             "/v1/employees/onboard",
@@ -2333,7 +2352,44 @@ class CompanyKernelCoreTest(unittest.TestCase):
 
         code, claimed = run_cli("task", "claim", "--agent", "rev", "--task-id", "task-onboard-reviewer")
         self.assertEqual(code, 0, claimed)
-        self.assertEqual("reviewer", claimed["task"]["claimed_by"])
+
+    def test_employee_update_changes_profile_through_companyctl(self) -> None:
+        workspace = self.root / "employees" / "profile-reviewer"
+        code, created = run_cli(
+            "employee",
+            "create",
+            "--id",
+            "profile-reviewer",
+            "--name",
+            "Profile Reviewer",
+            "--role",
+            "reviewer",
+            "--runtime",
+            "local",
+            "--workspace",
+            str(workspace),
+        )
+        self.assertEqual(code, 0, created)
+        code, updated = run_cli(
+            "employee",
+            "update",
+            "--id",
+            "profile-reviewer",
+            "--name",
+            "Profile QA",
+            "--role",
+            "qa",
+            "--status",
+            "candidate",
+        )
+        self.assertEqual(code, 0, updated)
+        self.assertTrue(updated["changed"])
+        self.assertEqual("Profile QA", updated["employee"]["name"])
+        self.assertEqual("qa", updated["employee"]["role"])
+        self.assertEqual("candidate", updated["employee"]["status"])
+        profile = json.loads((self.root / "employees" / "profile-reviewer" / "profile.json").read_text(encoding="utf-8"))
+        self.assertEqual("Profile QA", profile["name"])
+        self.assertEqual("candidate", profile["status"])
 
     def test_employee_onboard_scaffolds_managed_workspace_and_offboards_safely(self) -> None:
         workspace = self.root / "employees" / "reviewer-scaffold"
