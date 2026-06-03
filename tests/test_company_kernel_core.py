@@ -542,6 +542,30 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual(200, status)
         self.assertEqual(["请 Codex 和 Trae 一起确认方案", "补充一条真实回复"], [message["body"] for message in shown["messages"]])
 
+        status, agent_started = api_gateway.route_post(
+            "/v1/conversations",
+            {
+                "from": "codex",
+                "participants": "codex,trae",
+                "conversation_id": "conv-agent-agent",
+                "title": "agent pair discussion",
+                "body": "agent-only message",
+            },
+        )
+        self.assertEqual(201, status, agent_started)
+        self.assertEqual(["codex", "trae"], agent_started["conversation"]["participants"])
+
+        status, joined = api_gateway.route_post("/v1/conversations/conv-agent-agent/join", {"agent": "owner"})
+        self.assertEqual(200, status, joined)
+        self.assertTrue(joined["joined"])
+        self.assertEqual(["owner", "codex", "trae"], joined["conversation"]["participants"])
+
+        status, owner_reply = api_gateway.route_post(
+            "/v1/conversations/conv-agent-agent/reply",
+            {"from": "owner", "body": "管理员插入会话", "message_id": "msg-owner-inserted"},
+        )
+        self.assertEqual(201, status, owner_reply)
+
         status, employees = api_gateway.route_get("/v1/employees", {})
         self.assertEqual(200, status)
         self.assertNotIn("owner", [employee["id"] for employee in employees["employees"]])

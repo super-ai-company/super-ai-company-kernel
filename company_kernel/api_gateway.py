@@ -66,6 +66,7 @@ API_ENDPOINTS = [
     {"method": "GET", "path": "/v1/conversations", "summary": "List conversations for an agent", "query": {"agent": "employee id required"}},
     {"method": "POST", "path": "/v1/conversations", "summary": "Start conversation", "body": {"from": "employee id", "participants": "comma-separated employee ids", "title": "string", "body": "string", "conversation_id": "string optional", "evidence": "path optional"}},
     {"method": "GET", "path": "/v1/conversations/{conversation_id}", "summary": "Show conversation"},
+    {"method": "POST", "path": "/v1/conversations/{conversation_id}/join", "summary": "Join an existing conversation as Human Owner or another employee", "body": {"agent": "employee id optional, defaults owner"}},
     {"method": "POST", "path": "/v1/conversations/{conversation_id}/reply", "summary": "Reply to conversation", "body": {"from": "employee id", "body": "string", "message_id": "string optional", "evidence": "path optional"}},
     {"method": "GET", "path": "/v1/approvals", "summary": "List approvals", "query": {"status": "pending/approved/denied/all optional", "agent": "employee id optional", "action": "approval action optional", "limit": "integer optional"}},
     {"method": "POST", "path": "/v1/approvals", "summary": "Request approval", "body": {"from": "employee id", "action": "string", "reason": "string", "target": "employee id optional", "risk": "P0/P1/P2/P3 optional", "approval_id": "string optional", "task_id": "string optional", "evidence": "path optional"}},
@@ -667,6 +668,19 @@ def route_post(path: str, body: dict) -> tuple[int, dict]:
             argv.extend(["--conversation-id", str(body["conversation_id"])])
         code, payload = run_companyctl(argv)
         return (HTTPStatus.CREATED if code == 0 else HTTPStatus.BAD_REQUEST), {"exit_code": code, **payload}
+    if path.startswith("/v1/conversations/") and path.endswith("/join"):
+        conversation_id = path.removeprefix("/v1/conversations/").removesuffix("/join").strip("/")
+        code, payload = run_companyctl(
+            [
+                "conversation",
+                "join",
+                "--agent",
+                str(body.get("agent", "owner") or "owner"),
+                "--conversation-id",
+                conversation_id,
+            ]
+        )
+        return (HTTPStatus.OK if code == 0 else HTTPStatus.BAD_REQUEST), {"exit_code": code, **payload}
     if path.startswith("/v1/conversations/") and path.endswith("/reply"):
         conversation_id = path.removeprefix("/v1/conversations/").removesuffix("/reply").strip("/")
         argv = [

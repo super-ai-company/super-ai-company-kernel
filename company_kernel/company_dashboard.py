@@ -795,6 +795,75 @@ def inject_advanced_dashboard(template: str, summary: dict, *, db_path: Path, ap
         </div>""",
             1,
         )
+    if 'id="chat-create-btn"' not in html_text:
+        html_text = html_text.replace(
+            """              <div class="chat-threads-title" data-i18n="chat_threads_title">Conversations</div>
+              <div id="chat-threads-list">""",
+            """              <div class="chat-threads-title" data-i18n="chat_threads_title">Conversations</div>
+              <div class="chat-toolbar">
+                <button id="chat-create-btn" class="chat-tool-btn" onclick="window.openNewConversationComposer()"><i class="fa-solid fa-plus"></i> New</button>
+                <button id="chat-refresh-btn" class="chat-tool-btn" onclick="window.refreshChatHub()"><i class="fa-solid fa-rotate"></i> Refresh</button>
+              </div>
+              <div id="chat-threads-list">""",
+            1,
+        )
+        html_text = html_text.replace(
+            """                <h3 id="chat-header-title">No Conversation Selected</h3>
+                <span class="chat-header-participants" id="chat-header-members">Participants: -</span>""",
+            """                <div class="chat-header-main">
+                  <div>
+                    <h3 id="chat-header-title">No Conversation Selected</h3>
+                    <span class="chat-header-participants" id="chat-header-members">Participants: -</span>
+                  </div>
+                  <button id="chat-join-btn" class="chat-tool-btn" onclick="window.joinActiveConversation()"><i class="fa-solid fa-user-plus"></i> Insert Owner</button>
+                </div>""",
+            1,
+        )
+    if ".chat-toolbar" not in html_text:
+        html_text = html_text.replace(
+            "    .chat-view {\n      display: flex;\n      flex-direction: column;\n      height: 100%;\n    }",
+            """    .chat-toolbar {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+      padding: 10px 12px 12px;
+      border-bottom: 1px solid var(--border-color);
+    }
+
+    .chat-tool-btn {
+      min-height: 30px;
+      border: 1px solid rgba(129, 140, 248, 0.32);
+      border-radius: 6px;
+      background: rgba(99, 102, 241, 0.12);
+      color: #c7d2fe;
+      font-size: 11px;
+      font-weight: 700;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+    }
+
+    .chat-tool-btn:hover {
+      background: rgba(99, 102, 241, 0.22);
+      border-color: rgba(129, 140, 248, 0.5);
+    }
+
+    .chat-header-main {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+    }
+
+    .chat-view {
+      display: flex;
+      flex-direction: column;
+      height: 100%;
+    }""",
+            1,
+        )
     html_text = html_text.replace(
         '"soft_archive_desc": "Locks the agent, updates status to "archived", and hides it from the active roster. All files, reports, and evidence remain untouched."',
         '"soft_archive_desc": "Locks the agent, updates status to \\"archived\\", and hides it from the active roster. All files, reports, and evidence remain untouched."',
@@ -946,8 +1015,14 @@ def inject_advanced_dashboard(template: str, summary: dict, *, db_path: Path, ap
   async function companyApiPost(path, payload) {{
     return companyApiRequest(path, payload, 'POST');
   }}
+  function getDashboardSummary() {{
+    window.summaryData = window.summaryData || window.kernelSummary || {{conversations: [], employees: []}};
+    window.summaryData.conversations = window.summaryData.conversations || [];
+    window.summaryData.employees = window.summaryData.employees || [];
+    return window.summaryData;
+  }}
   function parseMentionedEmployees(text) {{
-    const activeIds = new Set(((window.summaryData || window.kernelSummary || {{}}).employees || []).filter(isVerifiedEmployee).map(emp => emp.id));
+    const activeIds = new Set((getDashboardSummary().employees || []).filter(isVerifiedEmployee).map(emp => emp.id));
     document.querySelectorAll("button[onclick*='openDirectEmployeeMessage']").forEach(button => {{
       const match = String(button.getAttribute('onclick') || '').match(/openDirectEmployeeMessage\\('([^']+)'\\)/);
       if (match) activeIds.add(match[1]);
@@ -973,9 +1048,8 @@ def inject_advanced_dashboard(template: str, summary: dict, *, db_path: Path, ap
     const conversation = result.conversation || {{}};
     const message = result.message;
     if (!conversation.id) return null;
-    window.summaryData = window.summaryData || {{conversations: [], employees: []}};
-    window.summaryData.conversations = window.summaryData.conversations || [];
-    let existing = window.summaryData.conversations.find(item => item.id === conversation.id);
+    const summary = getDashboardSummary();
+    let existing = summary.conversations.find(item => item.id === conversation.id);
     if (!existing) {{
       const participants = conversation.participants || [];
       existing = {{
@@ -987,7 +1061,7 @@ def inject_advanced_dashboard(template: str, summary: dict, *, db_path: Path, ap
         message_count: 0,
         messages: []
       }};
-      window.summaryData.conversations.unshift(existing);
+      summary.conversations.unshift(existing);
     }}
     if (message && !(existing.messages || []).some(item => item.id === message.id)) {{
       existing.messages = existing.messages || [];
@@ -996,6 +1070,88 @@ def inject_advanced_dashboard(template: str, summary: dict, *, db_path: Path, ap
       existing.last_message_at = message.created_at || new Date().toISOString();
     }}
     return existing;
+  }}
+  function conversationParticipants(conversation) {{
+    try {{
+      const parsed = JSON.parse(conversation.participants_json || '[]');
+      return Array.isArray(parsed) ? parsed : [];
+    }} catch (err) {{
+      return [];
+    }}
+  }}
+  function ownerInConversation(conversation) {{
+    return conversationParticipants(conversation).includes(HUMAN_OWNER_ID);
+  }}
+  function renderRealChatMessages() {{
+    const summary = getDashboardSummary();
+    const conversation = summary.conversations.find(conv => conv.id === getActiveConversationId());
+    const title = document.getElementById('chat-header-title');
+    const members = document.getElementById('chat-header-members');
+    const joinButton = document.getElementById('chat-join-btn');
+    const container = document.getElementById('chat-messages-container');
+    if (!conversation || !container) return;
+    const participants = conversationParticipants(conversation);
+    if (title) title.innerText = conversation.title || conversation.id;
+    if (members) members.innerText = `Participants: ${{participants.join(', ') || '-'}}`;
+    if (joinButton) {{
+      joinButton.disabled = ownerInConversation(conversation);
+      joinButton.innerHTML = ownerInConversation(conversation) ? '<i class="fa-solid fa-user-check"></i> Owner Inserted' : '<i class="fa-solid fa-user-plus"></i> Insert Owner';
+    }}
+    const messages = conversation.messages || [];
+    if (!messages.length) {{
+      container.innerHTML = '<div style="color: var(--text-muted); font-size: 12px; padding: 28px; text-align: center;">No messages recorded in this conversation.</div>';
+      return;
+    }}
+    container.innerHTML = messages.map((message) => {{
+      const isOwner = message.source_agent === HUMAN_OWNER_ID;
+      const avatarChar = String(message.source_agent || '--').slice(0, 2).toUpperCase();
+      return `
+        <div class="chat-bubble-container ${{isOwner ? 'sent' : ''}}">
+          <div class="chat-bubble-avatar">${{escapeHtml(avatarChar)}}</div>
+          <div class="chat-bubble-wrapper">
+            <div class="chat-bubble-sender">${{escapeHtml(message.source_agent || '-')}}</div>
+            <div class="chat-bubble-body">${{escapeHtml(message.body || '')}}</div>
+            <div class="chat-bubble-time">${{formatDate(message.created_at || message.time || '')}}</div>
+          </div>
+        </div>
+      `;
+    }}).join('');
+    container.scrollTop = container.scrollHeight;
+  }}
+  function refreshChatHub() {{
+    if (typeof window.populateChatHub === 'function') window.populateChatHub();
+    renderRealChatMessages();
+    companyApiLog('SYSTEM', 'Chat list refreshed from embedded live summary.', 'normal');
+  }}
+  async function joinActiveConversation() {{
+    const conversationId = getActiveConversationId();
+    if (!conversationId) {{
+      companyApiLog('ERROR', 'Select a conversation before inserting owner.', 'error');
+      return;
+    }}
+    companyApiLog('SYSTEM', `Inserting ${{HUMAN_OWNER_ID}} into ${{conversationId}}...`, 'normal');
+    try {{
+      const result = await companyApiPost(`/v1/conversations/${{encodeURIComponent(conversationId)}}/join`, {{agent: HUMAN_OWNER_ID}});
+      const conversation = upsertConversationFromApi({{conversation: result.conversation}});
+      if (conversation && result.conversation && result.conversation.participants) {{
+        conversation.participants_json = JSON.stringify(result.conversation.participants);
+      }}
+      if (typeof window.populateChatHub === 'function') window.populateChatHub();
+      renderRealChatMessages();
+      companyApiLog('SYSTEM', `${{HUMAN_OWNER_ID}} inserted into conversation: ${{conversationId}}`, 'success');
+    }} catch (err) {{
+      companyApiLog('ERROR', `Insert owner failed: ${{err.message}}`, 'error');
+    }}
+  }}
+  function openNewConversationComposer() {{
+    const participants = prompt('Participants, comma-separated. You can also type @codex @trae in the message box.', 'codex,trae');
+    if (participants === null) return;
+    const body = prompt('Opening message', '');
+    if (body === null) return;
+    const mentions = parseMentionedEmployees(`${{participants.split(',').map(item => '@' + item.trim()).join(' ')}} ${{body}}`);
+    const input = document.getElementById('chat-input-field');
+    if (input) input.value = `${{mentions.map(item => '@' + item).join(' ')}} ${{body}}`.trim();
+    return realSendChatMessage();
   }}
   async function realSendChatMessage() {{
     const input = document.getElementById('chat-input-field');
@@ -1017,7 +1173,7 @@ def inject_advanced_dashboard(template: str, summary: dict, *, db_path: Path, ap
         conversation = upsertConversationFromApi(result);
       }} else {{
       const currentThreadId = getActiveConversationId();
-      const current = ((window.summaryData || window.kernelSummary || {{}}).conversations || []).find(item => item.id === currentThreadId) || {{id: currentThreadId, messages: []}};
+      const current = (getDashboardSummary().conversations || []).find(item => item.id === currentThreadId) || {{id: currentThreadId, messages: []}};
         if (!current) {{
           companyApiLog('ERROR', 'Please select a conversation thread first, or @ one or more active employees.', 'error');
           return;
@@ -1035,13 +1191,31 @@ def inject_advanced_dashboard(template: str, summary: dict, *, db_path: Path, ap
       input.value = '';
       if (conversation) window.activeThreadId = conversation.id;
       if (typeof window.populateChatHub === 'function') window.populateChatHub();
-      if (typeof window.renderChatMessages === 'function') window.renderChatMessages();
+      renderRealChatMessages();
       companyApiLog('SYSTEM', `Conversation message recorded: ${{conversation ? conversation.id : 'unknown'}}`, 'success');
     }} catch (err) {{
       companyApiLog('ERROR', `Conversation send failed: ${{err.message}}`, 'error');
     }}
   }}
   window.sendChatMessage = realSendChatMessage;
+  window.joinActiveConversation = joinActiveConversation;
+  window.openNewConversationComposer = openNewConversationComposer;
+  window.refreshChatHub = refreshChatHub;
+  function bindChatControlButtons() {{
+    if (window.chatControlButtonsBound) return;
+    window.chatControlButtonsBound = true;
+    document.addEventListener('click', (event) => {{
+      const target = event.target && event.target.closest ? event.target.closest('#chat-join-btn, #chat-create-btn, #chat-refresh-btn') : null;
+      if (!target) return;
+      event.preventDefault();
+      event.stopPropagation();
+      companyApiLog('SYSTEM', `Chat control clicked: ${{target.id}}`, 'normal');
+      if (target.id === 'chat-join-btn') joinActiveConversation();
+      if (target.id === 'chat-create-btn') openNewConversationComposer();
+      if (target.id === 'chat-refresh-btn') refreshChatHub();
+    }}, true);
+  }}
+  bindChatControlButtons();
   async function realOnboardGeneratedEmployee() {{
     if (!generatedRecruitData) return;
     printTerminalLine({{tag: 'SYSTEM', text: `Calling Company Kernel API to onboard '${{generatedRecruitData.id}}'...`, type: 'normal'}});
@@ -1151,8 +1325,24 @@ def inject_advanced_dashboard(template: str, summary: dict, *, db_path: Path, ap
   }}
   document.addEventListener('DOMContentLoaded', () => {{
     window.sendChatMessage = realSendChatMessage;
+    bindChatControlButtons();
+    document.getElementById('chat-join-btn')?.addEventListener('click', (event) => {{
+      event.preventDefault();
+      joinActiveConversation();
+    }});
+    document.getElementById('chat-create-btn')?.addEventListener('click', (event) => {{
+      event.preventDefault();
+      openNewConversationComposer();
+    }});
+    document.getElementById('chat-refresh-btn')?.addEventListener('click', (event) => {{
+      event.preventDefault();
+      refreshChatHub();
+    }});
     if (typeof simulateAgentResponse === 'function') {{
       window.simulateAgentResponse = function() {{}};
+    }}
+    if (typeof window.renderChatMessages === 'function') {{
+      window.renderChatMessages = renderRealChatMessages;
     }}
   }});
   document.addEventListener('DOMContentLoaded', () => setTimeout(populateFollowups, 200));
