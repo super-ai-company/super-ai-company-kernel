@@ -421,6 +421,30 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertIn("ops-support", html)
         self.assertIn("Needs Attention", html)
 
+    def test_dashboard_distinguishes_active_online_from_candidate_heartbeat(self) -> None:
+        code, hermes = run_cli("employee", "create", "--id", "hermes", "--name", "Hermes", "--role", "supervisor", "--runtime", "hermes", "--workspace", str(self.root / "hermes"))
+        self.assertEqual(code, 0, hermes)
+        code, cursor = run_cli("employee", "onboard", "--id", "cursor", "--name", "Cursor", "--role", "developer", "--runtime", "local", "--workspace", str(self.root / "employees" / "cursor"))
+        self.assertEqual(code, 0, cursor)
+        conn = companyctl.connect()
+        try:
+            conn.execute("UPDATE employees SET status = 'candidate' WHERE id = 'cursor'")
+            conn.commit()
+            companyctl.heartbeat_internal(conn, "hermes", {"source": "test"})
+            companyctl.heartbeat_internal(conn, "cursor", {"source": "old-candidate"})
+        finally:
+            conn.close()
+
+        output = self.root / "state" / "dashboard-employees.html"
+        with contextlib.redirect_stdout(io.StringIO()):
+            code = company_dashboard.main(["--output", str(output)])
+        self.assertEqual(0, code)
+        html = output.read_text(encoding="utf-8")
+        self.assertIn("<td>hermes</td><td>active</td><td>online</td><td>yes</td>", html)
+        self.assertIn("<td>cursor</td><td>candidate</td><td>candidate</td><td>no</td>", html)
+        self.assertIn("active_employees", html)
+        self.assertIn("candidate_employees", html)
+
     def test_dashboard_renders_task_evidence_blocker_and_approval_counts(self) -> None:
         code, submitted = run_cli("task", "submit", "--from", "ops", "--to", "maker", "--task-id", "task-dashboard-blocked", "--title", "blocked task")
         self.assertEqual(code, 0, submitted)

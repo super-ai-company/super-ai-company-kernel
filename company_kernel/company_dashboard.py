@@ -46,6 +46,23 @@ def status_counts(conn: sqlite3.Connection, table: str) -> dict[str, int]:
     return {row["status"]: int(row["count"]) for row in rows(conn, f"SELECT status, COUNT(*) AS count FROM {table} GROUP BY status")}
 
 
+def parse_time(value: str) -> datetime | None:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def minutes_since(value: str, generated_at: str) -> int | None:
+    timestamp = parse_time(value)
+    generated = parse_time(generated_at)
+    if not timestamp or not generated:
+        return None
+    return max(0, int((generated - timestamp).total_seconds() // 60))
+
+
 def load_summary(conn: sqlite3.Connection) -> dict:
     return {
         "generated_at": now(),
@@ -58,6 +75,9 @@ def load_summary(conn: sqlite3.Connection) -> dict:
         },
         "counts": {
             "employees": scalar(conn, "SELECT COUNT(*) FROM employees"),
+            "active_employees": scalar(conn, "SELECT COUNT(*) FROM employees WHERE status = 'active'"),
+            "candidate_employees": scalar(conn, "SELECT COUNT(*) FROM employees WHERE status = 'candidate'"),
+            "archived_employees": scalar(conn, "SELECT COUNT(*) FROM employees WHERE status = 'archived'"),
             "projects": scalar(conn, "SELECT COUNT(*) FROM projects"),
             "active_projects": scalar(conn, "SELECT COUNT(*) FROM projects WHERE status = 'active'"),
             "completed_projects": scalar(conn, "SELECT COUNT(*) FROM projects WHERE status = 'completed'"),
@@ -81,12 +101,23 @@ def load_summary(conn: sqlite3.Connection) -> dict:
         "employees": rows(
             conn,
             """
-            SELECT e.id, e.name, e.role, e.runtime, e.status, e.workspace,
+            SELECT e.id, e.name, e.role, e.runtime, e.status AS employee_status, e.workspace,
                    COALESCE(h.status, 'missing') AS heartbeat_status,
-                   COALESCE(h.last_seen_at, '') AS last_seen_at
+                   COALESCE(h.last_seen_at, '') AS last_seen_at,
+                   COALESCE(h.metadata_json, '{}') AS heartbeat_metadata_json,
+                   COALESCE(
+                     (SELECT COUNT(*) FROM tasks t WHERE t.target_agent = e.id AND t.status = 'submitted'),
+                     0
+                   ) AS submitted_tasks,
+                   COALESCE(
+                     (SELECT COUNT(*) FROM tasks t WHERE t.target_agent = e.id AND t.status = 'claimed'),
+                     0
+                   ) AS claimed_tasks
             FROM employees e
             LEFT JOIN heartbeats h ON h.agent_id = e.id
-            ORDER BY e.id
+            ORDER BY
+              CASE e.status WHEN 'active' THEN 0 WHEN 'candidate' THEN 1 ELSE 2 END,
+              e.id
             """,
         ),
         "projects": rows(
@@ -325,9 +356,28 @@ def render(summary: dict) -> str:
         skills = capabilities.get("skills", [])
         tools = capabilities.get("tools", [])
         task_types = capabilities.get("preferred_task_types", [])
+        age = minutes_since(employee.get("last_seen_at", ""), summary["generated_at"])
+        employee_status = employee.get("employee_status", "")
+        heartbeat_status = employee.get("heartbeat_status", "missing")
+        if employee_status != "active":
+            kernel_state = employee_status
+            schedulable = "no"
+        elif heartbeat_status == "missing":
+            kernel_state = "missing_heartbeat"
+            schedulable = "no"
+        elif age is not None and age > 15:
+            kernel_state = "stale_heartbeat"
+            schedulable = "no"
+        else:
+            kernel_state = "online"
+            schedulable = "yes"
         employees.append(
             {
                 **employee,
+                "kernel_state": kernel_state,
+                "schedulable": schedulable,
+                "heartbeat_age_minutes": "" if age is None else age,
+                "backlog": f"{employee.get('submitted_tasks', 0)} submitted, {employee.get('claimed_tasks', 0)} claimed",
                 "skills": ", ".join(str(item) for item in skills[:4]) if isinstance(skills, list) else "invalid",
                 "tools": ", ".join(str(item) for item in tools[:4]) if isinstance(tools, list) else "invalid",
                 "task_types": ", ".join(str(item) for item in task_types[:4]) if isinstance(task_types, list) else "invalid",
@@ -381,7 +431,7 @@ def render(summary: dict) -> str:
     <h2>Evidence Health</h2>
     {render_table(["task", "agent", "reason", "path"], evidence_health, ["task_id", "agent", "reason", "path"])}
     <h2>Employees</h2>
-    {render_table(["id", "role", "runtime", "heartbeat", "skills", "tools", "task_types", "last_seen"], employees, ["id", "role", "runtime", "heartbeat_status", "skills", "tools", "task_types", "last_seen_at"])}
+    {render_table(["id", "status", "kernel_state", "schedulable", "role", "runtime", "heartbeat", "age_min", "backlog", "skills", "tools", "task_types", "last_seen"], employees, ["id", "employee_status", "kernel_state", "schedulable", "role", "runtime", "heartbeat_status", "heartbeat_age_minutes", "backlog", "skills", "tools", "task_types", "last_seen_at"])}
     <h2>Projects</h2>
     {render_table(["id", "owner", "status", "review", "plan", "open_plan", "accepted", "goal", "acceptance", "retro", "title", "updated"], projects, ["id", "owner_agent", "status", "review_state", "plan", "open_plan_items", "acceptance_count", "goal", "acceptance", "latest_acceptance_summary", "title", "updated_at"])}
     <h2>Recent Tasks</h2>
