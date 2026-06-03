@@ -1293,6 +1293,13 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertIn("agent-mention-suggestions", html)
         self.assertIn("collaborationHelpText", html)
         self.assertIn("是否需要其他员工协助", html)
+        self.assertIn("dashboard-layout-fix", html)
+        self.assertIn("showApprovalDetails", html)
+        self.assertIn("refreshGovernanceTables", html)
+        self.assertIn("refreshTraceTelemetry", html)
+        self.assertIn("notify-route-status", html)
+        self.assertIn("setTimeout(loadNotificationSettings, 350)", html)
+        self.assertNotIn("onclick='showApprovalDetails(${JSON.stringify(app)", html)
 
     def test_dashboard_renders_task_evidence_blocker_and_approval_counts(self) -> None:
         code, submitted = run_cli("task", "submit", "--from", "ops", "--to", "maker", "--task-id", "task-dashboard-blocked", "--title", "blocked task")

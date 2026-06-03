@@ -2138,6 +2138,7 @@ def inject_advanced_dashboard(template: str, summary: dict, *, db_path: Path, ap
     window.populateTraces = refreshTraceTelemetry;
     window.filterTraces = refreshTraceTelemetry;
     setTimeout(refreshDashboardPresentation, 250);
+    setTimeout(loadNotificationSettings, 350);
   }});
   document.addEventListener('DOMContentLoaded', () => setTimeout(populateFollowups, 200));
   window.addEventListener('DOMContentLoaded', checkCompanyApi);
