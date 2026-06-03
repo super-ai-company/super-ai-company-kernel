@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+set -euo pipefail
+LABEL="ai.openclaw.company-kernel.daemon"
+DST="$HOME/Library/LaunchAgents/${LABEL}.plist"
+
+launchctl bootout "gui/$(id -u)" "$DST" >/dev/null 2>&1 || true
+rm -f "$DST"

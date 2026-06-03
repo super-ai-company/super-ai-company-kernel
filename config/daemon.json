@@ -1,0 +1,31 @@
+{
+  "version": 1,
+  "interval_seconds": 30,
+  "heartbeat_agents": ["openclaw-main", "hermes", "codex"],
+  "heartbeat_runtimes": ["*"],
+  "run_repair": true,
+  "run_scheduler": true,
+  "adapter_workers": [
+    {
+      "agent": "codex",
+      "enabled": false,
+      "command": "company-adapter-worker",
+      "args": ["--dry-run"],
+      "max_tasks_per_tick": 1
+    },
+    {
+      "agent": "hermes",
+      "enabled": false,
+      "command": "company-hermes-adapter",
+      "args": [],
+      "max_tasks_per_tick": 1
+    },
+    {
+      "agent": "nestcar",
+      "enabled": false,
+      "command": "company-openclaw-adapter",
+      "args": [],
+      "max_tasks_per_tick": 1
+    }
+  ]
+}

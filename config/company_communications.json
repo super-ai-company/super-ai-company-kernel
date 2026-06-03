@@ -1,0 +1,81 @@
+{
+  "version": 1,
+  "policy": {
+    "mode": "open",
+    "notes": "open means any registered employee can talk or assign unless blocked_* denies it. Use strict to enforce can_talk_to/can_assign_to allowlists."
+  },
+  "aliases": {
+    "ops": "video-ops",
+    "maker": "video-creator",
+    "publisher": "video-publisher"
+  },
+  "employees": {
+    "video-ops": {
+      "display_name": "Video Ops",
+      "role": "producer",
+      "can_talk_to": [
+        "video-creator",
+        "video-publisher",
+        "codex"
+      ],
+      "can_assign_to": [
+        "video-creator",
+        "video-publisher",
+        "codex"
+      ],
+      "handoff_mode": "heartbeat_and_task_done"
+    },
+    "video-creator": {
+      "display_name": "Video Maker",
+      "role": "maker",
+      "can_talk_to": [
+        "video-ops",
+        "video-publisher",
+        "codex"
+      ],
+      "can_assign_to": [
+        "video-ops"
+      ],
+      "handoff_mode": "task_done_then_next"
+    },
+    "video-publisher": {
+      "display_name": "Video Publisher",
+      "role": "publisher",
+      "can_talk_to": [
+        "video-ops",
+        "video-creator",
+        "codex"
+      ],
+      "can_assign_to": [
+        "video-ops"
+      ],
+      "handoff_mode": "task_done_then_next"
+    },
+    "codex": {
+      "display_name": "Codex",
+      "role": "engineering-support",
+      "can_talk_to": [
+        "video-ops",
+        "video-creator",
+        "video-publisher"
+      ],
+      "can_assign_to": [
+        "video-ops",
+        "video-creator",
+        "video-publisher"
+      ],
+      "handoff_mode": "task_or_hook"
+    }
+  },
+  "channels": {
+    "video-production": {
+      "participants": [
+        "video-ops",
+        "video-creator",
+        "video-publisher"
+      ],
+      "max_rounds_without_task": 5,
+      "on_task_done": "continue_workflow"
+    }
+  }
+}

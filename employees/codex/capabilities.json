@@ -1,0 +1,31 @@
+{
+  "agent_id": "codex",
+  "runtime": "codex",
+  "role": "developer",
+  "skills": [
+    "code-editing",
+    "testing",
+    "review",
+    "git-workflow",
+    "project-delivery",
+    "company-kernel-worker"
+  ],
+  "tools": [
+    "codex exec",
+    "shell",
+    "apply_patch",
+    "company-daemon"
+  ],
+  "preferred_task_types": [
+    "engineering",
+    "debugging",
+    "test-fix",
+    "repo-maintenance"
+  ],
+  "handoff": {
+    "can_receive_tasks": true,
+    "can_send_messages": true,
+    "requires_adapter": true
+  },
+  "updated_at": "2026-06-03T02:44:23+07:00"
+}

@@ -1,0 +1,436 @@
+from __future__ import annotations
+
+import argparse
+import html
+import json
+import sqlite3
+from datetime import datetime, timezone
+from pathlib import Path
+
+from . import companyctl
+from .schema_migrations import ensure_schema_migrations
+
+
+ROOT = Path(__file__).resolve().parents[1]
+DB_PATH = ROOT / "company.sqlite"
+SCHEMA = ROOT / "company_kernel" / "schema.sql"
+DEFAULT_OUTPUT = ROOT / "state" / "dashboard.html"
+
+
+def now() -> str:
+    return datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
+
+
+def connect() -> sqlite3.Connection:
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    conn.executescript(SCHEMA.read_text(encoding="utf-8"))
+    ensure_schema_migrations(conn)
+    conn.commit()
+    return conn
+
+
+def rows(conn: sqlite3.Connection, sql: str, params: tuple = ()) -> list[dict]:
+    return [dict(r) for r in conn.execute(sql, params).fetchall()]
+
+
+def scalar(conn: sqlite3.Connection, sql: str, params: tuple = ()) -> int:
+    return int(conn.execute(sql, params).fetchone()[0])
+
+
+def e(value: object) -> str:
+    return html.escape("" if value is None else str(value))
+
+
+def status_counts(conn: sqlite3.Connection, table: str) -> dict[str, int]:
+    return {row["status"]: int(row["count"]) for row in rows(conn, f"SELECT status, COUNT(*) AS count FROM {table} GROUP BY status")}
+
+
+def load_summary(conn: sqlite3.Connection) -> dict:
+    return {
+        "generated_at": now(),
+        "runtime_health": {
+            "daemon": companyctl.daemon_health(),
+            "launchd": companyctl.launchd_health(),
+        },
+        "evidence_health": {
+            "issues": companyctl.task_evidence_issues(conn),
+        },
+        "counts": {
+            "employees": scalar(conn, "SELECT COUNT(*) FROM employees"),
+            "projects": scalar(conn, "SELECT COUNT(*) FROM projects"),
+            "active_projects": scalar(conn, "SELECT COUNT(*) FROM projects WHERE status = 'active'"),
+            "completed_projects": scalar(conn, "SELECT COUNT(*) FROM projects WHERE status = 'completed'"),
+            "tasks": scalar(conn, "SELECT COUNT(*) FROM tasks"),
+            "conversations": scalar(conn, "SELECT COUNT(*) FROM conversations"),
+            "open_conversations": scalar(conn, "SELECT COUNT(*) FROM conversations WHERE status = 'open'"),
+            "submitted_tasks": scalar(conn, "SELECT COUNT(*) FROM tasks WHERE status = 'submitted'"),
+            "claimed_tasks": scalar(conn, "SELECT COUNT(*) FROM tasks WHERE status = 'claimed'"),
+            "blocked_tasks": scalar(conn, "SELECT COUNT(*) FROM tasks WHERE status = 'blocked'"),
+            "pending_approvals": scalar(conn, "SELECT COUNT(*) FROM approvals WHERE status = 'pending'"),
+            "rfcs": scalar(conn, "SELECT COUNT(*) FROM rfcs"),
+            "pending_rfcs": scalar(conn, "SELECT COUNT(*) FROM rfcs WHERE status = 'pending'"),
+            "pending_events": scalar(conn, "SELECT COUNT(*) FROM company_events WHERE processed_at = ''"),
+            "locks": scalar(conn, "SELECT COUNT(*) FROM locks"),
+            "adapter_runs": scalar(conn, "SELECT COUNT(*) FROM adapter_runs"),
+        },
+        "task_status": status_counts(conn, "tasks"),
+        "project_status": status_counts(conn, "projects"),
+        "approval_status": status_counts(conn, "approvals"),
+        "rfc_status": status_counts(conn, "rfcs"),
+        "employees": rows(
+            conn,
+            """
+            SELECT e.id, e.name, e.role, e.runtime, e.status, e.workspace,
+                   COALESCE(h.status, 'missing') AS heartbeat_status,
+                   COALESCE(h.last_seen_at, '') AS last_seen_at
+            FROM employees e
+            LEFT JOIN heartbeats h ON h.agent_id = e.id
+            ORDER BY e.id
+            """,
+        ),
+        "projects": rows(
+            conn,
+            """
+            SELECT p.*,
+                   COUNT(pt.task_id) AS task_count,
+                   COALESCE(SUM(CASE WHEN t.status = 'completed' THEN 1 ELSE 0 END), 0) AS completed_tasks,
+                   COALESCE(SUM(CASE WHEN t.status = 'blocked' THEN 1 ELSE 0 END), 0) AS blocked_tasks,
+                   COALESCE(SUM(CASE WHEN t.status NOT IN ('completed', 'blocked') THEN 1 ELSE 0 END), 0) AS open_tasks,
+                   (SELECT COUNT(*) FROM project_acceptances pa WHERE pa.project_id = p.id) AS acceptance_count,
+                   (SELECT COUNT(*) FROM project_plan_items ppi WHERE ppi.project_id = p.id) AS plan_item_count,
+                   (SELECT COUNT(*) FROM project_plan_items ppi WHERE ppi.project_id = p.id AND ppi.status NOT IN ('done', 'completed', 'cancelled')) AS open_plan_items,
+                   COALESCE(
+                       (
+                         SELECT GROUP_CONCAT(
+                           ppi.status || ':' || ppi.title ||
+                           CASE WHEN ppi.task_id != '' THEN ' [' || ppi.task_id || '/' || COALESCE(t2.status, 'missing') || ']' ELSE '' END,
+                           '; '
+                         )
+                         FROM project_plan_items ppi
+                         LEFT JOIN tasks t2 ON t2.id = ppi.task_id
+                         WHERE ppi.project_id = p.id
+                         ORDER BY ppi.created_at ASC
+                       ),
+                       ''
+                   ) AS plan_items,
+                   COALESCE((SELECT pa.summary FROM project_acceptances pa WHERE pa.project_id = p.id ORDER BY pa.created_at DESC LIMIT 1), '') AS latest_acceptance_summary
+            FROM projects p
+            LEFT JOIN project_tasks pt ON pt.project_id = p.id
+            LEFT JOIN tasks t ON t.id = pt.task_id
+            GROUP BY p.id
+            ORDER BY p.updated_at DESC
+            LIMIT 20
+            """,
+        ),
+        "tasks": rows(
+            conn,
+            """
+            SELECT t.*
+            FROM tasks t
+            ORDER BY t.updated_at DESC, t.created_at DESC
+            LIMIT 30
+            """,
+        ),
+        "task_delegations": rows(
+            conn,
+            """
+            SELECT parent.id AS parent_id,
+                   parent.title AS parent_title,
+                   parent.status AS parent_status,
+                   parent.target_agent AS parent_owner,
+                   COUNT(child.id) AS child_count,
+                   COALESCE(SUM(CASE WHEN child.status = 'completed' THEN 1 ELSE 0 END), 0) AS completed_children,
+                   COALESCE(SUM(CASE WHEN child.status = 'blocked' THEN 1 ELSE 0 END), 0) AS blocked_children,
+                   COALESCE(SUM(CASE WHEN child.status NOT IN ('completed', 'blocked') THEN 1 ELSE 0 END), 0) AS open_children,
+                   COALESCE(
+                       GROUP_CONCAT(child.id || '/' || child.target_agent || '/' || child.status, '; '),
+                       ''
+                   ) AS child_summary,
+                   MAX(child.updated_at) AS latest_child_update
+            FROM task_relations tr
+            JOIN tasks parent ON parent.id = tr.parent_task_id
+            JOIN tasks child ON child.id = tr.child_task_id
+            GROUP BY parent.id
+            ORDER BY latest_child_update DESC, parent.updated_at DESC
+            LIMIT 20
+            """,
+        ),
+        "conversations": rows(
+            conn,
+            """
+            SELECT c.id, c.title, c.created_by, c.status, c.updated_at,
+                   c.participants_json,
+                   COUNT(cm.id) AS message_count,
+                   COALESCE(MAX(cm.created_at), c.created_at) AS last_message_at
+            FROM conversations c
+            LEFT JOIN conversation_messages cm ON cm.conversation_id = c.id
+            GROUP BY c.id
+            ORDER BY c.updated_at DESC
+            LIMIT 20
+            """,
+        ),
+        "approvals": rows(conn, "SELECT * FROM approvals ORDER BY updated_at DESC LIMIT 20"),
+        "rfcs": rows(conn, "SELECT * FROM rfcs ORDER BY updated_at DESC LIMIT 20"),
+        "pending_events": rows(conn, "SELECT * FROM company_events WHERE processed_at = '' ORDER BY created_at ASC LIMIT 20"),
+        "events": rows(conn, "SELECT * FROM company_events ORDER BY created_at DESC LIMIT 20"),
+        "adapter_runs": rows(conn, "SELECT * FROM adapter_runs ORDER BY created_at DESC LIMIT 20"),
+        "locks": rows(conn, "SELECT * FROM locks ORDER BY updated_at DESC"),
+    }
+
+
+def pills(counts: dict[str, int]) -> str:
+    return "".join(f"<span class='pill'>{e(k)}: <strong>{v}</strong></span>" for k, v in counts.items())
+
+
+def render_table(headers: list[str], items: list[dict], fields: list[str]) -> str:
+    head = "".join(f"<th>{e(h)}</th>" for h in headers)
+    body = []
+    for item in items:
+        body.append("<tr>" + "".join(f"<td>{e(item.get(field, ''))}</td>" for field in fields) + "</tr>")
+    return f"<table><thead><tr>{head}</tr></thead><tbody>{''.join(body)}</tbody></table>"
+
+
+def approval_task_id(approval: dict) -> str:
+    raw = approval.get("reason", "")
+    try:
+        detail = json.loads(raw or "{}")
+    except json.JSONDecodeError:
+        return ""
+    if not isinstance(detail, dict):
+        return ""
+    metadata = detail.get("metadata", {})
+    if isinstance(metadata, dict) and metadata.get("task_id"):
+        return str(metadata["task_id"])
+    return ""
+
+
+def task_approval_counts(tasks: list[dict], approvals: list[dict]) -> dict[str, int]:
+    task_ids = {str(task["id"]) for task in tasks}
+    counts = {task_id: 0 for task_id in task_ids}
+    for approval in approvals:
+        structured_task_id = approval_task_id(approval)
+        if structured_task_id in counts:
+            counts[structured_task_id] += 1
+            continue
+        raw = approval.get("reason", "")
+        for task_id in task_ids:
+            if task_id in raw:
+                counts[task_id] += 1
+                break
+    return counts
+
+
+def render(summary: dict) -> str:
+    counts = summary["counts"]
+    danger = (
+        counts["pending_approvals"]
+        or counts["pending_rfcs"]
+        or counts["pending_events"]
+        or counts["claimed_tasks"]
+        or counts["locks"]
+        or summary["evidence_health"]["issues"]
+        or not summary["runtime_health"]["daemon"].get("ok")
+    )
+    state = "attention" if danger else "normal"
+    approvals = []
+    for approval in summary["approvals"]:
+        detail = approval.get("reason", "")
+        try:
+            detail_obj = json.loads(detail or "{}")
+            detail = detail_obj.get("request_reason", detail)
+        except json.JSONDecodeError:
+            pass
+        approvals.append({**approval, "reason": detail})
+    approval_counts = task_approval_counts(summary["tasks"], summary["approvals"])
+    projects = []
+    for project in summary["projects"]:
+        try:
+            acceptance = json.loads(project.get("acceptance_json", "[]") or "[]")
+        except json.JSONDecodeError:
+            acceptance = []
+        open_tasks = int(project.get("open_tasks", 0) or 0)
+        blocked_tasks = int(project.get("blocked_tasks", 0) or 0)
+        task_count = int(project.get("task_count", 0) or 0)
+        open_plan_items = int(project.get("open_plan_items", 0) or 0)
+        ready = bool(task_count and not open_tasks and not blocked_tasks and not open_plan_items)
+        projects.append(
+            {
+                **project,
+                "acceptance": "; ".join(str(item) for item in acceptance),
+                "review_state": "ready" if ready else "blocked" if blocked_tasks else "in_progress",
+                "plan": project.get("plan_items") or f"{project.get('completed_tasks', 0)}/{task_count} done, {open_tasks} open, {blocked_tasks} blocked",
+            }
+        )
+    tasks = []
+    for task in summary["tasks"]:
+        tasks.append(
+            {
+                **task,
+                "evidence": "yes" if task.get("evidence_path") else "",
+                "blocker_detail": task.get("blocker", ""),
+                "approval_count": approval_counts.get(str(task["id"]), 0),
+            }
+        )
+    task_delegations = []
+    for item in summary["task_delegations"]:
+        child_count = int(item.get("child_count", 0) or 0)
+        completed = int(item.get("completed_children", 0) or 0)
+        blocked = int(item.get("blocked_children", 0) or 0)
+        open_children = int(item.get("open_children", 0) or 0)
+        task_delegations.append(
+            {
+                **item,
+                "progress": f"{completed}/{child_count}",
+                "review_state": "ready" if child_count and completed == child_count else "blocked" if blocked else "in_progress",
+                "open_blocked": f"{open_children} open, {blocked} blocked",
+            }
+        )
+    rfcs = []
+    for rfc in summary["rfcs"]:
+        try:
+            target_paths = json.loads(rfc.get("target_paths_json", "[]") or "[]")
+        except json.JSONDecodeError:
+            target_paths = []
+        rfcs.append({**rfc, "target_paths": ", ".join(str(path) for path in target_paths)})
+    conversations = []
+    for conversation in summary["conversations"]:
+        try:
+            participants = json.loads(conversation.get("participants_json", "[]") or "[]")
+        except json.JSONDecodeError:
+            participants = []
+        conversations.append({**conversation, "participants": ", ".join(str(participant) for participant in participants)})
+    adapter_runs = []
+    for run in summary["adapter_runs"]:
+        try:
+            result = json.loads(run.get("result_json", "{}") or "{}")
+        except json.JSONDecodeError:
+            result = {}
+        adapter_runs.append({**run, "ok_text": "yes" if run.get("ok") else "no", "state_file": result.get("state_file", "")})
+    runtime_health = [
+        {"name": "daemon", "path": summary["runtime_health"]["daemon"].get("state_file", ""), **summary["runtime_health"]["daemon"]},
+        {"name": "launchd", "path": summary["runtime_health"]["launchd"].get("template", ""), **summary["runtime_health"]["launchd"]},
+    ]
+    evidence_health = []
+    for issue in summary["evidence_health"]["issues"]:
+        evidence_health.append(
+            {
+                **issue,
+                "path": issue.get("evidence_path", ""),
+            }
+        )
+    employees = []
+    for employee in summary["employees"]:
+        capabilities = companyctl.load_json_or_default(companyctl.employee_paths(employee["id"])["capabilities"], {})
+        skills = capabilities.get("skills", [])
+        tools = capabilities.get("tools", [])
+        task_types = capabilities.get("preferred_task_types", [])
+        employees.append(
+            {
+                **employee,
+                "skills": ", ".join(str(item) for item in skills[:4]) if isinstance(skills, list) else "invalid",
+                "tools": ", ".join(str(item) for item in tools[:4]) if isinstance(tools, list) else "invalid",
+                "task_types": ", ".join(str(item) for item in task_types[:4]) if isinstance(task_types, list) else "invalid",
+            }
+        )
+    return f"""<!doctype html>
+<html lang="zh">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Company Kernel Dashboard</title>
+  <style>
+    body {{ margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #f7f7f4; color: #202124; }}
+    header {{ padding: 24px 28px 14px; border-bottom: 1px solid #ddd9cf; background: #fff; }}
+    h1 {{ margin: 0 0 6px; font-size: 24px; }}
+    h2 {{ margin: 24px 0 10px; font-size: 17px; }}
+    main {{ padding: 18px 28px 36px; }}
+    .meta {{ color: #68665f; font-size: 13px; }}
+    .status {{ display: inline-block; padding: 4px 10px; border-radius: 999px; font-size: 13px; background: {"#fff0d6" if state == "attention" else "#e6f4ea"}; }}
+    .grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; margin-top: 16px; }}
+    .metric {{ background: #fff; border: 1px solid #dedbd2; border-radius: 8px; padding: 12px; }}
+    .metric strong {{ display: block; font-size: 24px; margin-top: 4px; }}
+    .pill {{ display: inline-block; margin: 0 8px 8px 0; padding: 6px 10px; background: #fff; border: 1px solid #dedbd2; border-radius: 999px; font-size: 13px; }}
+    table {{ width: 100%; border-collapse: collapse; background: #fff; border: 1px solid #dedbd2; border-radius: 8px; overflow: hidden; }}
+    th, td {{ padding: 9px 10px; border-bottom: 1px solid #ece8df; text-align: left; vertical-align: top; font-size: 13px; }}
+    th {{ background: #efede7; color: #4d4a43; font-weight: 600; }}
+    tr:last-child td {{ border-bottom: 0; }}
+    td {{ max-width: 360px; overflow-wrap: anywhere; }}
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Company Kernel Dashboard</h1>
+    <div class="meta">Generated at {e(summary["generated_at"])} from {e(DB_PATH)}</div>
+    <div style="margin-top:10px"><span class="status">{'Needs Attention' if state == 'attention' else 'Normal'}</span></div>
+  </header>
+  <main>
+    <section class="grid">
+      {''.join(f"<div class='metric'>{e(k)}<strong>{v}</strong></div>" for k, v in counts.items())}
+    </section>
+    <h2>Task Status</h2>
+    <div>{pills(summary["task_status"])}</div>
+    <h2>Project Status</h2>
+    <div>{pills(summary["project_status"])}</div>
+    <h2>Approval Status</h2>
+    <div>{pills(summary["approval_status"])}</div>
+    <h2>RFC Status</h2>
+    <div>{pills(summary["rfc_status"])}</div>
+    <h2>Runtime Health</h2>
+    {render_table(["name", "ok", "installed", "age", "reason", "state/template", "install", "verify"], runtime_health, ["name", "ok", "installed", "age_minutes", "reason", "path", "install_command", "verify_command"])}
+    <h2>Evidence Health</h2>
+    {render_table(["task", "agent", "reason", "path"], evidence_health, ["task_id", "agent", "reason", "path"])}
+    <h2>Employees</h2>
+    {render_table(["id", "role", "runtime", "heartbeat", "skills", "tools", "task_types", "last_seen"], employees, ["id", "role", "runtime", "heartbeat_status", "skills", "tools", "task_types", "last_seen_at"])}
+    <h2>Projects</h2>
+    {render_table(["id", "owner", "status", "review", "plan", "open_plan", "accepted", "goal", "acceptance", "retro", "title", "updated"], projects, ["id", "owner_agent", "status", "review_state", "plan", "open_plan_items", "acceptance_count", "goal", "acceptance", "latest_acceptance_summary", "title", "updated_at"])}
+    <h2>Recent Tasks</h2>
+    {render_table(["id", "source", "target", "priority", "status", "claimed_by", "evidence", "blocker", "approvals", "title", "updated"], tasks, ["id", "source_agent", "target_agent", "priority", "status", "claimed_by", "evidence", "blocker_detail", "approval_count", "title", "updated_at"])}
+    <h2>Long Task Delegation</h2>
+    {render_table(["parent", "owner", "status", "review", "progress", "open/blocked", "children", "latest_child_update"], task_delegations, ["parent_id", "parent_owner", "parent_status", "review_state", "progress", "open_blocked", "child_summary", "latest_child_update"])}
+    <h2>Conversations</h2>
+    {render_table(["id", "status", "created_by", "participants", "messages", "last_message", "title"], conversations, ["id", "status", "created_by", "participants", "message_count", "last_message_at", "title"])}
+    <h2>Approvals</h2>
+    {render_table(["id", "source", "action", "status", "reason", "updated"], approvals, ["id", "source_agent", "action", "status", "reason", "updated_at"])}
+    <h2>RFCs</h2>
+    {render_table(["id", "author", "status", "paths", "reason", "decision_by", "updated"], rfcs, ["id", "author_agent", "status", "target_paths", "reason", "decision_by", "updated_at"])}
+    <h2>Events</h2>
+    <h2>Pending Events</h2>
+    {render_table(["id", "type", "source", "task", "created"], summary["pending_events"], ["id", "event_type", "source_agent", "task_id", "created_at"])}
+    <h2>Recent Events</h2>
+    {render_table(["id", "type", "source", "task", "processed_at", "created"], summary["events"], ["id", "event_type", "source_agent", "task_id", "processed_at", "created_at"])}
+    <h2>Adapter Runs</h2>
+    {render_table(["id", "agent", "task", "command", "ok", "processed", "ack_by", "ack_reason", "state_file", "created"], adapter_runs, ["id", "agent_id", "task_id", "command", "ok_text", "processed", "acknowledged_by", "acknowledgement_reason", "state_file", "created_at"])}
+    <h2>Locks</h2>
+    {render_table(["resource", "owner", "lease_until", "updated"], summary["locks"], ["resource_key", "owner_agent", "lease_until", "updated_at"])}
+  </main>
+</body>
+</html>
+"""
+
+
+def run(args: argparse.Namespace) -> int:
+    conn = connect()
+    try:
+        summary = load_summary(conn)
+    finally:
+        conn.close()
+    output = Path(args.output)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(render(summary), encoding="utf-8")
+    print(json.dumps({"ok": True, "output": str(output), "counts": summary["counts"]}, ensure_ascii=False, indent=2))
+    return 0
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="Generate Company Kernel static dashboard")
+    parser.add_argument("--output", default=str(DEFAULT_OUTPUT))
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    return run(build_parser().parse_args(argv))
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

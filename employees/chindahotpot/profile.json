@@ -1,0 +1,8 @@
+{
+  "id": "chindahotpot",
+  "name": "chindahotpot",
+  "role": "business-agent",
+  "runtime": "openclaw",
+  "workspace": "/Users/owner/openclaw/workspace-chindahotpot",
+  "created_at": "2026-06-03T01:34:36+07:00"
+}

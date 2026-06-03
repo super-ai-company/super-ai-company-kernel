@@ -1,0 +1,17 @@
+__pycache__/
+*.py[cod]
+.DS_Store
+
+company.sqlite
+company.sqlite-*
+logs/
+state/
+
+employees/*/heartbeat.json
+employees/*/inbox/
+employees/*/outbox/
+employees/*/reports/
+
+.pytest_cache/
+.coverage
+htmlcov/

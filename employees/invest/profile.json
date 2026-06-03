@@ -1,0 +1,8 @@
+{
+  "id": "invest",
+  "name": "invest",
+  "role": "business-agent",
+  "runtime": "openclaw",
+  "workspace": "/Users/owner/openclaw/workspace-invest",
+  "created_at": "2026-06-03T01:34:36+07:00"
+}

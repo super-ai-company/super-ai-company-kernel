@@ -1,0 +1,16 @@
+{
+  "version": 1,
+  "route_approval": {
+    "default_risk": "P1",
+    "actions": {
+      "payment": ["payment", "pay ", "付款", "支付", "打款"],
+      "compensation": ["compensation", "赔偿", "赔付", "押金", "保险", "事故"],
+      "salary": ["salary", "工资", "薪资"],
+      "penalty": ["penalty", "处罚", "罚款"],
+      "external_send": ["external send", "外发", "发送给客户", "发给客户", "发布", "publish"],
+      "production_deploy": ["production deploy", "deploy", "上线", "生产部署"],
+      "secret_change": ["secret", "token", "password", "密钥", "密码"],
+      "kernel_change": ["kernel", "schema", "approval rule", "内核", "审批规则", "通信协议"]
+    }
+  }
+}
