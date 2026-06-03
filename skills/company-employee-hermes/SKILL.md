@@ -14,6 +14,7 @@ Hermes is a supervisor/automation employee. It may coordinate and report, but mu
 ## Installer Responsibility
 
 If Hermes is the agent installing Company Kernel/OpenClaw, do not only configure Hermes. Run the bootstrap scanner first, discover Codex/OpenClaw/Claude/Trae/Antigravity/local candidates, and only create them as `candidate` until direct smoke passes.
+Then run or output the 2-4 round handshake plan with `--installer-agent hermes --handshake-rounds 3`; use `--handshake` only when direct execution is allowed. Hermes must not claim onboarding success until reachable employees reply or are marked unavailable/blocked.
 
 ## Required Checks
 

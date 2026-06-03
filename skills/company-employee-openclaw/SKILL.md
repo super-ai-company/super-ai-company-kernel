@@ -20,6 +20,7 @@ python3 skills/openclaw-local-agent-bootstrap/scripts/scan_install.py --openclaw
 ```
 
 Use `--apply` only to create discovered employees as `candidate`. Direct smoke and owner-confirmed routing are required before active promotion.
+After scan/apply, OpenClaw must run or output the 2-4 round handshake plan as the installer agent. Use `--installer-agent openclaw-main --handshake-rounds 3`; use `--handshake` when direct execution is allowed. OpenClaw must keep configuring until the target replies or is marked unavailable/blocked.
 
 ## Required Checks
 

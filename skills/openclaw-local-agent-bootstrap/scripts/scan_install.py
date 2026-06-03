@@ -264,11 +264,85 @@ def classify_employee(employee: dict, kernel_root: Path) -> dict:
     }
 
 
+def handshake_messages(installer_agent: str, target_agent: str, rounds: int) -> list[str]:
+    templates = [
+        f"入职握手第1轮：我是 {installer_agent}，正在帮你接入 Company Kernel。请只回复：{target_agent}_HANDSHAKE_ID_OK，并说明你的员工id/name/runtime。",
+        "入职握手第2轮：请只回复你的 workspace、主要配置目录、可用命令/adapter、缺失工具或登录状态。",
+        "入职握手第3轮：请只回复你的默认通信面、session_key/canonical runtime id、是否能回发给发起人、失败时如何反馈。",
+        "入职握手第4轮：请只回复最终验收：ONBOARDING_READY 或 ONBOARDING_BLOCKED，并给 blocker/next_action。",
+    ]
+    return templates[: max(2, min(4, rounds))]
+
+
+def build_handshake_plan(employees: list[dict], installer_agent: str, rounds: int) -> list[dict]:
+    plan = []
+    for employee in employees:
+        agent_id = employee["agent_id"]
+        if agent_id == installer_agent or employee.get("status") == "human-owner":
+            continue
+        messages = handshake_messages(installer_agent, agent_id, rounds)
+        plan.append(
+            {
+                "from": installer_agent,
+                "to": agent_id,
+                "rounds": len(messages),
+                "required_success": len(messages),
+                "purpose": [
+                    "prove direct communication works",
+                    "let employees know each other",
+                    "collect runtime/workspace/config parameters",
+                    "confirm ACK/failure feedback loop",
+                ],
+                "messages": messages,
+                "commands": [
+                    f"bin/companyctl message direct --from {installer_agent} --to {agent_id} --body {json.dumps(body, ensure_ascii=False)}"
+                    for body in messages
+                ],
+            }
+        )
+    return plan
+
+
+def run_handshake(kernel_root: Path, plan: list[dict], timeout: int) -> list[dict]:
+    results = []
+    for item in plan:
+        rounds = []
+        for index, body in enumerate(item["messages"], start=1):
+            cmd = [str(kernel_root / "bin" / "companyctl"), "message", "direct", "--from", item["from"], "--to", item["to"], "--body", body, "--timeout", str(timeout)]
+            cp = subprocess.run(cmd, cwd=str(kernel_root), text=True, capture_output=True, timeout=timeout + 15)
+            ok = False
+            parsed: dict = {}
+            try:
+                parsed = json.loads(cp.stdout)
+                ok = cp.returncode == 0 and bool(parsed.get("ok"))
+            except json.JSONDecodeError:
+                ok = False
+            rounds.append({"round": index, "ok": ok, "exit_code": cp.returncode, "reply": parsed.get("reply", ""), "stdout": cp.stdout[-1200:], "stderr": cp.stderr[-1200:]})
+            if not ok:
+                break
+        results.append(
+            {
+                "from": item["from"],
+                "to": item["to"],
+                "ok": len(rounds) == item["required_success"] and all(round_item["ok"] for round_item in rounds),
+                "rounds_completed": len(rounds),
+                "rounds_required": item["required_success"],
+                "rounds": rounds,
+                "next_action": "promote or keep active" if len(rounds) == item["required_success"] and all(round_item["ok"] for round_item in rounds) else "fix runtime/direct route or mark unavailable",
+            }
+        )
+    return results
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Scan OpenClaw and Company Kernel local employee install")
     parser.add_argument("--openclaw-root", default="")
     parser.add_argument("--kernel-root", default="")
     parser.add_argument("--apply", action="store_true", help="create discovered employees as candidate entries; default is read-only")
+    parser.add_argument("--installer-agent", default="codex", help="employee that performs onboarding handshakes")
+    parser.add_argument("--handshake-rounds", type=int, default=3, choices=[2, 3, 4])
+    parser.add_argument("--handshake", action="store_true", help="execute 2-4 direct-message onboarding rounds for discovered/registered employees")
+    parser.add_argument("--handshake-timeout", type=int, default=120)
     args = parser.parse_args()
 
     openclaw_root = find_openclaw_root(args.openclaw_root)
@@ -288,6 +362,14 @@ def main() -> int:
         "discovered_candidates": [],
         "apply_results": [],
         "blocked": [],
+        "handshake": {
+            "installer_agent": args.installer_agent,
+            "rounds": args.handshake_rounds,
+            "auto_execute_requested": bool(args.handshake),
+            "required": True,
+            "plan": [],
+            "results": [],
+        },
         "coordination": {
             "closed_loop_required": True,
             "ack_required": True,
@@ -359,6 +441,9 @@ def main() -> int:
             ]
             employees = [classify_employee(emp, kernel_root) for emp in raw_employees]
         report["employees"] = employees
+        report["handshake"]["plan"] = build_handshake_plan(employees, args.installer_agent, args.handshake_rounds)
+        if args.handshake:
+            report["handshake"]["results"] = run_handshake(kernel_root, report["handshake"]["plan"], args.handshake_timeout)
         report["discovered_candidates"] = deduped
         report["blocked"] = [emp for emp in employees if emp["status"] == "blocked"]
         report["human_owners"] = [emp for emp in employees if emp["status"] == "human-owner"]

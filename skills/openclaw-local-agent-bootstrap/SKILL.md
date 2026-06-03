@@ -19,6 +19,7 @@ When triggered, do this without waiting for the user to name every employee:
 6. Generate direct smoke commands for each candidate.
 7. Promote only after direct smoke and owner/routing evidence pass.
 8. After configuration, always output the full employee directory and each rename command.
+9. Run a 2-4 round employee handshake from the installer agent to every reachable employee.
 
 ## Identity and Naming
 
@@ -85,6 +86,24 @@ Use scanner output as a draft until direct smoke passes. `--apply` must not prom
 - Use `@agent` mentions to create or reuse group conversations. Participants must include the human owner/requesting agent and all mentioned active employees.
 - Chat and mentions are coordination records only. Risky execution still requires an explicit task, approval, or adapter action.
 
+## Automatic Employee Handshake
+
+- After any agent installs or repairs this system, it must use its already-onboarded identity as `installer_agent` and start 2-4 direct-message rounds with each other registered/reachable employee.
+- Example: if Codex deployed the system, Codex runs the handshake. If OpenClaw configured the system, OpenClaw runs the handshake.
+- The handshake is mandatory because configuration quality depends on real replies, not guessed paths.
+- Round 1 proves communication and identity: employee replies with id/name/runtime.
+- Round 2 collects environment: workspace, config directory, adapter/CLI command, login/tool blockers.
+- Round 3 collects routing: default reply surface, canonical runtime id/session key, whether it can report failures back to the sender.
+- Round 4 is optional final validation: `ONBOARDING_READY` or `ONBOARDING_BLOCKED` with blocker and next action.
+- If a round fails, keep configuring that employee until direct reply works, then rerun the failed round. If the runtime does not exist, mark `candidate` or `blocked` and include the missing command/app/path.
+- Use the bundled scanner to produce or execute the handshake plan:
+
+```bash
+python3 skills/openclaw-local-agent-bootstrap/scripts/scan_install.py --openclaw-root /path/to/openclaw --kernel-root /path/to/company-kernel --installer-agent codex
+python3 skills/openclaw-local-agent-bootstrap/scripts/scan_install.py --openclaw-root /path/to/openclaw --kernel-root /path/to/company-kernel --installer-agent codex --handshake --handshake-rounds 3
+```
+- Success means every active employee completed the required rounds and returned a usable reply. Anything else is not “fully onboarded”.
+
 ## Hard Rules
 
 - Default reply surface is the current initiating conversation until a canonical business target is locked.
@@ -138,6 +157,12 @@ Return this compact structure per employee:
     "pending_inbox_messages": 0
   },
   "routing": {"active": [], "candidate": [], "blocked": []},
+  "handshake": {
+    "from": "codex",
+    "to": "nestcar",
+    "rounds": 3,
+    "required_success": 3
+  },
   "evidence": [],
   "recommended_command": "bin/companyctl ...",
   "next_action": ""

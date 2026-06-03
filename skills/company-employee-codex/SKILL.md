@@ -20,6 +20,7 @@ python3 skills/openclaw-local-agent-bootstrap/scripts/scan_install.py --openclaw
 ```
 
 If the user asks for automatic setup, rerun with `--apply` to create missing employees as `candidate`, then smoke each one before promotion.
+After scan/apply, Codex must run or output the 2-4 round handshake plan as the installer agent. Use `--installer-agent codex --handshake-rounds 3`; use `--handshake` when direct execution is allowed. Codex is not done until reachable employees have replied or are explicitly marked missing/blocked.
 
 ## Required Checks
 
