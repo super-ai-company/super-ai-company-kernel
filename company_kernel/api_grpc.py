@@ -88,13 +88,13 @@ def decode_describe_request(raw: bytes) -> DescribeRequest:
 
 
 def generic_method_handlers(service: CompanyKernelService) -> dict:
-    def describe(raw: bytes) -> bytes:
+    def describe(raw: bytes, context: object | None = None) -> bytes:
         return encode_response(service.Describe(decode_describe_request(raw)))
 
-    def get(raw: bytes) -> bytes:
+    def get(raw: bytes, context: object | None = None) -> bytes:
         return encode_response(service.Get(decode_route_request(raw)))
 
-    def post(raw: bytes) -> bytes:
+    def post(raw: bytes, context: object | None = None) -> bytes:
         return encode_response(service.Post(decode_route_request(raw)))
 
     return {"Describe": describe, "Get": get, "Post": post}
