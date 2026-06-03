@@ -985,6 +985,39 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual("", reassigned["task"]["claimed_by"])
         self.assertTrue(Path(reassigned["file"]).exists())
 
+    def test_task_discussion_binds_conversation_to_task(self) -> None:
+        code, submitted = run_cli("task", "submit", "--from", "ops", "--to", "maker", "--task-id", "task-discuss-001", "--title", "协作任务")
+        self.assertEqual(code, 0, submitted)
+
+        code, discussed = run_cli(
+            "task",
+            "discuss",
+            "--task-id",
+            "task-discuss-001",
+            "--from",
+            "ops",
+            "--participants",
+            "codex",
+            "--body",
+            "请 maker 和 codex 讨论执行方案",
+            "--conversation-id",
+            "conv-task-discuss-001",
+        )
+        self.assertEqual(code, 0, discussed)
+        self.assertEqual("conv-task-discuss-001", discussed["conversation"]["id"])
+        self.assertEqual(["video-ops", "video-creator", "codex"], discussed["conversation"]["participants"])
+        self.assertEqual(["conv-task-discuss-001"], discussed["conversation_ids"])
+
+        code, conversations = run_cli("task", "conversations", "--task-id", "task-discuss-001")
+        self.assertEqual(code, 0, conversations)
+        self.assertEqual(["conv-task-discuss-001"], conversations["conversation_ids"])
+        self.assertEqual(["请 maker 和 codex 讨论执行方案"], [message["body"] for message in conversations["conversations"][0]["messages"]])
+
+        code, shown = run_cli("task", "show", "--task-id", "task-discuss-001")
+        self.assertEqual(code, 0, shown)
+        self.assertEqual(["conv-task-discuss-001"], shown["metadata"]["conversation_ids"])
+        self.assertTrue(any(row["action"] == "task.discuss" for row in shown["audit_logs"]))
+
     def test_task_split_plan_collects_long_task_with_evidence(self) -> None:
         code, submitted = run_cli("task", "submit", "--from", "ops", "--to", "maker", "--task-id", "task-long-001", "--title", "长任务")
         self.assertEqual(code, 0, submitted)
@@ -1219,6 +1252,22 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual("hermes", reassigned["task"]["target_agent"])
         self.assertEqual("submitted", reassigned["task"]["status"])
         self.assertEqual("", reassigned["task"]["blocker"])
+
+        status, task_conversation = api_gateway.route_post(
+            "/v1/tasks/task-api-gateway-block/conversations",
+            {
+                "from": "openclaw-main",
+                "participants": "codex,hermes",
+                "conversation_id": "conv-api-task-gateway-block",
+                "body": "discuss reassigned task",
+            },
+        )
+        self.assertEqual(201, status, task_conversation)
+        self.assertEqual("conv-api-task-gateway-block", task_conversation["conversation"]["id"])
+        status, task_conversations = api_gateway.route_get("/v1/tasks/task-api-gateway-block/conversations", {})
+        self.assertEqual(200, status, task_conversations)
+        self.assertEqual(["conv-api-task-gateway-block"], task_conversations["conversation_ids"])
+        self.assertEqual(["discuss reassigned task"], [message["body"] for message in task_conversations["conversations"][0]["messages"]])
 
         status, sent = api_gateway.route_post("/v1/messages", {"from": "hermes", "to": "codex", "body": "REST ping", "message_id": "msg-api-gateway"})
         self.assertEqual(201, status, sent)

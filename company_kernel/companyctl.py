@@ -1650,6 +1650,60 @@ def cmd_conversation_show(args: argparse.Namespace) -> int:
     return 0
 
 
+def task_conversation_ids(metadata: dict) -> list[str]:
+    values = metadata.get("conversation_ids", [])
+    if isinstance(values, str):
+        values = [values] if values else []
+    return [str(value) for value in values if str(value)]
+
+
+def cmd_task_discuss(args: argparse.Namespace) -> int:
+    conn = connect()
+    task = conn.execute("SELECT * FROM tasks WHERE id = ?", (args.task_id,)).fetchone()
+    if not task:
+        emit({"ok": False, "error": "task not found", "task_id": args.task_id})
+        return 1
+    source = resolve_employee_alias(args.source or task["source_agent"])
+    extra_participants = [resolve_employee_alias(item) for item in parse_participants(args.participants)]
+    participants = []
+    for participant in [source, task["source_agent"], task["target_agent"], task["claimed_by"], *extra_participants]:
+        participant = resolve_employee_alias(str(participant or ""))
+        if participant and participant not in participants:
+            participants.append(participant)
+    title = args.title or f"Task discussion: {task['id']} - {task['title']}"
+    body = args.body or f"Discuss task `{task['id']}`: {task['title']}"
+    conversation_id = args.conversation_id or f"conv-task-{slug(task['id'])}-{uuid.uuid4().hex[:6]}"
+    result = conversation_start_internal(conn, source=source, participants=participants, title=title, body=body, evidence=args.evidence, conversation_id=conversation_id)
+    metadata = task_metadata(conn, task["id"])
+    conversation_ids = task_conversation_ids(metadata)
+    if result["conversation"]["id"] not in conversation_ids:
+        conversation_ids.append(result["conversation"]["id"])
+    update_task_metadata(conn, task["id"], {"conversation_ids": conversation_ids})
+    audit(conn, source, "task.discuss", task["id"], {"conversation_id": result["conversation"]["id"], "participants": participants})
+    emit({"ok": True, "task_id": task["id"], **result, "conversation_ids": conversation_ids})
+    return 0
+
+
+def cmd_task_conversations(args: argparse.Namespace) -> int:
+    conn = connect()
+    task = conn.execute("SELECT * FROM tasks WHERE id = ?", (args.task_id,)).fetchone()
+    if not task:
+        emit({"ok": False, "error": "task not found", "task_id": args.task_id})
+        return 1
+    conversation_ids = task_conversation_ids(task_metadata(conn, args.task_id))
+    conversations = []
+    for conversation_id in conversation_ids:
+        conv = conn.execute("SELECT * FROM conversations WHERE id = ?", (conversation_id,)).fetchone()
+        if not conv:
+            continue
+        obj = dict(conv)
+        obj["participants"] = json.loads(obj.pop("participants_json"))
+        obj["messages"] = rows(conn, "SELECT * FROM conversation_messages WHERE conversation_id = ? ORDER BY created_at ASC", (conversation_id,))
+        conversations.append(obj)
+    emit({"ok": True, "task_id": args.task_id, "conversation_ids": conversation_ids, "conversations": conversations})
+    return 0
+
+
 def load_json_file(path: Path) -> dict:
     if not path.exists():
         raise SystemExit(f"config not found: {path}")
@@ -3870,6 +3924,18 @@ def build_parser() -> argparse.ArgumentParser:
     task_collect.add_argument("--evidence", default="")
     task_collect.add_argument("--force", action="store_true")
     task_collect.set_defaults(func=cmd_task_collect)
+    task_discuss = task_sub.add_parser("discuss")
+    task_discuss.add_argument("--task-id", required=True)
+    task_discuss.add_argument("--from", dest="source", default="")
+    task_discuss.add_argument("--participants", default="", help="comma-separated extra participants")
+    task_discuss.add_argument("--title", default="")
+    task_discuss.add_argument("--body", default="")
+    task_discuss.add_argument("--evidence", default="")
+    task_discuss.add_argument("--conversation-id", default="")
+    task_discuss.set_defaults(func=cmd_task_discuss)
+    task_conversations = task_sub.add_parser("conversations")
+    task_conversations.add_argument("--task-id", required=True)
+    task_conversations.set_defaults(func=cmd_task_conversations)
     task_claim = task_sub.add_parser("claim")
     task_claim.add_argument("--agent", required=True)
     task_claim.add_argument("--task-id", default="")
