@@ -17,6 +17,7 @@ Implemented and verified:
 - Trace telemetry export: `bin/company-trace` writes per-trace JSON and HTML timeline files for dispatch, hook, and adapter latency inspection.
 - Retry policy foundation: daemon records adapter attempts and `next_retry_at`, then automatically restores due failed adapter tasks through the existing recovery path.
 - API Gateway foundation: lightweight REST service exposes health, doctor, tasks, messages, heartbeats, and adapter runs while reusing `companyctl` governance.
+- API Gateway collaboration and governance endpoints now expose conversations, approvals, adapter-run detail, acknowledgement, and retry without direct SQLite access.
 - Sandbox isolation foundation: Codex/Hermes adapters can wrap execution commands with Docker or Firejail profiles without changing task protocol.
 - Static dashboard with runtime health, evidence health, employees, capabilities, projects, recent tasks, long-task delegation, conversations, approvals, RFCs, events, adapter runs, and locks.
 - Daemon loop with heartbeat refresh, scheduler run, repair pass, compact summary output, adapter run recording, launchd template and install/uninstall scripts.
@@ -39,7 +40,7 @@ python3 /Users/owner/openclaw/workspace-xmanx/scripts/heartbeat_summary_router.p
 
 ## Latest Verified Result
 
-- Unit tests: 33/33 passing.
+- Unit tests: 34/34 passing.
 - Daemon worker smoke: verified in automated tests; manual command path documented in README.
 - Doctor: `ok=true`, `issues=[]`.
 - Heartbeats: 14 active employee heartbeats, missing=0, stale=0.
