@@ -1737,6 +1737,14 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual(200, status, offboarded)
         self.assertEqual("soft-delete", offboarded["action"])
 
+        status, attendance = api_gateway.route_post(
+            "/v1/attendance/sweep",
+            {"source": "main", "agents": "api-reviewer", "sweep_id": "api-attendance", "probe_replies": "false"},
+        )
+        self.assertEqual(202, status, attendance)
+        self.assertEqual("api-attendance", attendance["sweep_id"])
+        self.assertIn(attendance["employees"][0]["status"], {"heartbeat_disabled", "no_reply"})
+
     def test_api_rpc_routes_rest_contract_without_direct_sqlite_access(self) -> None:
         described = api_rpc.handle_rpc({"jsonrpc": "2.0", "id": "describe", "method": "company.describe", "params": {}})
         self.assertEqual("describe", described["id"])
@@ -2351,7 +2359,7 @@ class CompanyKernelCoreTest(unittest.TestCase):
         spool.mkdir(parents=True)
         (spool / "0000000001.json.processing").write_text('{"update_id": 1}', encoding="utf-8")
 
-        code, swept = run_cli("attendance", "sweep", "--source", "main", "--agents", "main,nestcar,codex", "--sweep-id", "attendance-test")
+        code, swept = run_cli("attendance", "sweep", "--source", "main", "--agents", "main,nestcar,codex", "--sweep-id", "attendance-test", "--no-probe-replies")
         self.assertEqual(code, 1, swept)
         rows = {row["agent"]: row for row in swept["employees"]}
         self.assertEqual("online", rows["main"]["status"])
@@ -2361,6 +2369,42 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual(1, swept["counts"]["online"])
         self.assertEqual(1, swept["counts"]["worker_stalled"])
         self.assertTrue(Path(swept["evidence"]["json"]).exists())
+
+    def test_attendance_sweep_can_require_exact_agent_reply(self) -> None:
+        code, created = run_cli(
+            "employee",
+            "create",
+            "--id",
+            "main",
+            "--name",
+            "main",
+            "--role",
+            "agent",
+            "--runtime",
+            "openclaw",
+            "--workspace",
+            str(self.root / "workspace" / "main"),
+        )
+        self.assertEqual(code, 0, created)
+        session_dir = self.root / "openclaw" / "agents" / "main" / "sessions"
+        session_dir.mkdir(parents=True)
+        (session_dir / "sessions.json").write_text('{"s1": {}}', encoding="utf-8")
+
+        def fake_run(cmd, cwd=None, text=None, capture_output=None, timeout=None):
+            class Result:
+                returncode = 0
+                stdout = json.dumps({"result": {"payloads": [{"text": "main 在岗"}]}})
+                stderr = ""
+            return Result()
+
+        with mock.patch.object(companyctl.subprocess, "run", side_effect=fake_run):
+            code, swept = run_cli("attendance", "sweep", "--source", "main", "--agents", "main", "--sweep-id", "attendance-reply-test")
+        self.assertEqual(code, 0, swept)
+        row = swept["employees"][0]
+        self.assertEqual("online", row["status"])
+        self.assertEqual("main 在岗", row["reply"])
+        self.assertEqual("agent_reply_matched", row["reason"])
+        self.assertTrue(row["reply_probe"]["ok"])
 
     def test_employee_onboard_writes_config_and_creates_test_task(self) -> None:
         code, onboard = run_cli(

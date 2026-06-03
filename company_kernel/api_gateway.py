@@ -20,6 +20,7 @@ API_CAPABILITIES = [
     "conversations",
     "approvals",
     "heartbeats",
+    "attendance",
     "adapter_runs",
     "projects",
     "locks",
@@ -63,6 +64,7 @@ API_ENDPOINTS = [
     {"method": "POST", "path": "/v1/approvals/{approval_id}/approve", "summary": "Approve request", "body": {"by": "employee id", "reason": "string"}},
     {"method": "POST", "path": "/v1/approvals/{approval_id}/deny", "summary": "Deny request", "body": {"by": "employee id", "reason": "string"}},
     {"method": "POST", "path": "/v1/heartbeats", "summary": "Write employee heartbeat", "body": {"agent": "employee id"}},
+    {"method": "POST", "path": "/v1/attendance/sweep", "summary": "Run attendance sweep with optional exact agent reply probes", "body": {"source": "source employee optional", "agents": "comma-separated employees optional", "sweep_id": "string optional", "include_candidates": "bool optional", "stale_minutes": "integer optional", "probe_replies": "bool optional", "reply_timeout": "integer optional"}},
     {"method": "GET", "path": "/v1/projects", "summary": "List projects", "query": {"status": "active/paused/completed/blocked/all optional"}},
     {"method": "POST", "path": "/v1/projects", "summary": "Create project", "body": {"project_id": "string optional", "title": "string", "goal": "string optional", "owner": "employee id", "status": "active/paused/completed/blocked optional", "acceptance": "semicolon-separated criteria optional"}},
     {"method": "GET", "path": "/v1/projects/{project_id}", "summary": "Show project with linked tasks and plan items"},
@@ -578,6 +580,17 @@ def route_post(path: str, body: dict) -> tuple[int, dict]:
     if path == "/v1/heartbeats":
         code, payload = run_companyctl(["heartbeat", "--agent", str(body.get("agent", ""))])
         return (HTTPStatus.CREATED if code == 0 else HTTPStatus.BAD_REQUEST), {"exit_code": code, **payload}
+    if path == "/v1/attendance/sweep":
+        argv = ["attendance", "sweep", "--source", str(body.get("source", "main"))]
+        for key, flag in [("agents", "--agents"), ("sweep_id", "--sweep-id"), ("stale_minutes", "--stale-minutes"), ("reply_timeout", "--reply-timeout")]:
+            if body.get(key) not in {None, ""}:
+                argv.extend([flag, str(body[key])])
+        if truthy(body.get("include_candidates")):
+            argv.append("--include-candidates")
+        if body.get("probe_replies") is not None and not truthy(body.get("probe_replies")):
+            argv.append("--no-probe-replies")
+        code, payload = run_companyctl(argv)
+        return (HTTPStatus.OK if code == 0 else HTTPStatus.ACCEPTED), {"exit_code": code, **payload}
     if path == "/v1/locks/acquire":
         argv = ["lock", "acquire", "--agent", str(body.get("agent", "")), "--resource", str(body.get("resource", ""))]
         if body.get("lease_seconds"):

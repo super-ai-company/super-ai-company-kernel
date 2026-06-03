@@ -543,12 +543,61 @@ def attendance_spool_probe(employee_id: str, stale_minutes: int) -> dict:
     return probe
 
 
-def attendance_classify_employee(employee: dict, stale_minutes: int) -> dict:
+def attendance_agent_runtime_id(employee_id: str, runtime: str) -> str:
+    if employee_id == "openclaw-main":
+        return "main"
+    if employee_id == "hermes" and runtime == "hermes":
+        return "default"
+    return employee_id
+
+
+def parse_openclaw_agent_reply(stdout: str) -> str:
+    payload = parse_json_output(stdout)
+    result = payload.get("result") if isinstance(payload, dict) else {}
+    payloads = result.get("payloads") if isinstance(result, dict) else []
+    if isinstance(payloads, list):
+        for item in payloads:
+            if isinstance(item, dict) and str(item.get("text") or "").strip():
+                return str(item["text"]).strip()
+    meta = result.get("meta") if isinstance(result, dict) else {}
+    if isinstance(meta, dict):
+        for key in ("finalAssistantVisibleText", "finalAssistantRawText"):
+            if str(meta.get(key) or "").strip():
+                return str(meta[key]).strip()
+    return ""
+
+
+def attendance_reply_probe(employee_id: str, runtime: str, timeout: int) -> dict:
+    if runtime not in {"openclaw", "hermes"}:
+        return {"enabled": False, "ok": False, "reason": f"unsupported_runtime:{runtime}", "reply": "", "expected": f"{employee_id} 在岗"}
+    expected = f"{employee_id} 在岗"
+    agent_runtime_id = attendance_agent_runtime_id(employee_id, runtime)
+    cmd = ["openclaw", "agent", "--agent", agent_runtime_id, "--message", f"只回复 {expected}", "--timeout", str(timeout), "--json"]
+    try:
+        cp = subprocess.run(cmd, cwd=str(ROOT), text=True, capture_output=True, timeout=timeout + 10)
+    except Exception as exc:
+        return {"enabled": True, "ok": False, "agent_runtime_id": agent_runtime_id, "expected": expected, "reply": "", "exit_code": 127, "reason": str(exc)}
+    reply = parse_openclaw_agent_reply(cp.stdout)
+    return {
+        "enabled": True,
+        "ok": cp.returncode == 0 and reply == expected,
+        "agent_runtime_id": agent_runtime_id,
+        "expected": expected,
+        "reply": reply,
+        "exit_code": cp.returncode,
+        "reason": "matched" if reply == expected else "reply_mismatch_or_empty",
+        "stderr": cp.stderr[-2000:],
+    }
+
+
+def attendance_classify_employee(employee: dict, stale_minutes: int, *, probe_replies: bool = True, reply_timeout: int = 120) -> dict:
     employee_id = employee["id"]
+    runtime = employee.get("runtime", "")
     session = attendance_session_probe(employee_id)
     spool = attendance_spool_probe(employee_id, stale_minutes)
     heartbeat = load_json_or_default(employee_paths(employee_id)["heartbeat"], {})
     reply = ""
+    reply_probe = {"enabled": False, "ok": False, "reply": "", "reason": "disabled"}
     if int(spool.get("pending", 0)) > 0 or int(spool.get("processing", 0)) > 0:
         status = "worker_stalled"
         reason = "telegram_ingress_spool_not_drained"
@@ -562,17 +611,29 @@ def attendance_classify_employee(employee: dict, stale_minutes: int) -> dict:
         status = "no_reply"
         reason = "no_runtime_session_evidence"
     else:
-        status = "online"
-        reason = "session_store_has_active_entries_and_spool_clear"
-        reply = f"{employee_id} 报到"
+        if probe_replies:
+            reply_probe = attendance_reply_probe(employee_id, runtime, reply_timeout)
+            if reply_probe.get("ok"):
+                status = "online"
+                reason = "agent_reply_matched"
+                reply = str(reply_probe.get("reply") or "")
+            else:
+                status = "no_reply"
+                reason = str(reply_probe.get("reason") or "reply_probe_failed")
+                reply = str(reply_probe.get("reply") or "")
+        else:
+            status = "online"
+            reason = "session_store_has_active_entries_and_spool_clear"
+            reply = f"{employee_id} 报到"
     return {
         "agent": employee_id,
         "name": employee.get("name", ""),
-        "runtime": employee.get("runtime", ""),
+        "runtime": runtime,
         "employee_status": employee.get("status", ""),
         "status": status,
         "reply": reply,
         "reason": reason,
+        "reply_probe": reply_probe,
         "session": session,
         "spool": spool,
         "heartbeat_file": str(employee_paths(employee_id)["heartbeat"]),
@@ -593,7 +654,7 @@ def cmd_attendance_sweep(args: argparse.Namespace) -> int:
     else:
         where = "" if args.include_candidates else "WHERE status = 'active'"
         employees = [dict(row) for row in conn.execute(f"SELECT * FROM employees {where} ORDER BY id").fetchall()]
-    rows_out = [attendance_classify_employee(emp, args.stale_minutes) for emp in employees]
+    rows_out = [attendance_classify_employee(emp, args.stale_minutes, probe_replies=args.probe_replies, reply_timeout=args.reply_timeout) for emp in employees]
     counts = {status: 0 for status in ATTENDANCE_STATUSES}
     for row in rows_out:
         counts[row["status"]] = counts.get(row["status"], 0) + 1
@@ -604,7 +665,7 @@ def cmd_attendance_sweep(args: argparse.Namespace) -> int:
         "source_agent": args.source,
         "counts": counts,
         "employees": rows_out,
-        "evidence_rule": "online requires non-empty runtime session evidence and clear ingress spool; employee_directory.status is reported but never sufficient",
+        "evidence_rule": "online requires clear ingress spool plus exact agent reply when reply probing is enabled; employee_directory.status is reported but never sufficient",
     }
     report_dir = STATE_DIR / "attendance"
     report_dir.mkdir(parents=True, exist_ok=True)
@@ -4155,6 +4216,8 @@ def build_parser() -> argparse.ArgumentParser:
     attendance_sweep.add_argument("--sweep-id", default="")
     attendance_sweep.add_argument("--include-candidates", action="store_true")
     attendance_sweep.add_argument("--stale-minutes", type=int, default=15)
+    attendance_sweep.add_argument("--probe-replies", action=argparse.BooleanOptionalAction, default=True, help="ask each supported runtime to reply <agent_id> 在岗")
+    attendance_sweep.add_argument("--reply-timeout", type=int, default=120)
     attendance_sweep.set_defaults(func=cmd_attendance_sweep)
 
     task = sub.add_parser("task")
