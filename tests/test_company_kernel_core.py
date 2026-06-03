@@ -495,6 +495,24 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertIn("--reply-to", calls[0])
         self.assertIn("current", calls[0])
 
+    def test_api_can_pause_and_resume_employee_communication(self) -> None:
+        status, paused = api_gateway.route_post("/v1/employees/nestcar/communication", {"enabled": False})
+        self.assertEqual(200, status, paused)
+        self.assertTrue(paused["communication_paused"])
+
+        decision = companyctl.communication_policy_decision("main", "nestcar", "message.send")
+        self.assertFalse(decision["allowed"])
+        self.assertEqual("target communication paused", decision["reason"])
+
+        reverse_decision = companyctl.communication_policy_decision("nestcar", "main", "message.send")
+        self.assertFalse(reverse_decision["allowed"])
+        self.assertEqual("source communication paused", reverse_decision["reason"])
+
+        status, resumed = api_gateway.route_post("/v1/employees/nestcar/communication", {"enabled": True})
+        self.assertEqual(200, status, resumed)
+        self.assertTrue(resumed["communication_enabled"])
+        self.assertTrue(companyctl.communication_policy_decision("main", "nestcar", "message.send")["allowed"])
+
     def test_followup_request_and_reply_resume_direct_delivery(self) -> None:
         code, created = run_cli("employee", "create", "--id", "main", "--name", "main", "--role", "operator", "--runtime", "openclaw", "--workspace", str(self.root / "workspace" / "main"))
         self.assertEqual(0, code, created)
