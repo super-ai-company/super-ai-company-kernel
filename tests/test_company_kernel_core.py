@@ -1287,6 +1287,24 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual(["task-api-project"], [task["id"] for task in shown["tasks"]])
         self.assertEqual(["plan-api-project"], [item["id"] for item in shown["plan_items"]])
 
+    def test_api_gateway_exposes_locks(self) -> None:
+        status, acquired = api_gateway.route_post("/v1/locks/acquire", {"agent": "codex", "resource": "task:api-lock", "lease_seconds": "60"})
+        self.assertEqual(201, status, acquired)
+        self.assertEqual("task:api-lock", acquired["lock"]["resource_key"])
+        self.assertEqual("codex", acquired["lock"]["owner_agent"])
+        status, locks = api_gateway.route_get("/v1/locks", {"agent": ["codex"]})
+        self.assertEqual(200, status, locks)
+        self.assertIn("task:api-lock", [lock["resource_key"] for lock in locks["locks"]])
+        status, released = api_gateway.route_post("/v1/locks/release", {"agent": "codex", "resource": "task:api-lock"})
+        self.assertEqual(200, status, released)
+        self.assertTrue(released["released"])
+
+        status, stale_lock = api_gateway.route_post("/v1/locks/acquire", {"agent": "codex", "resource": "task:api-stale-lock", "lease_seconds": "0"})
+        self.assertEqual(201, status, stale_lock)
+        status, unlocked = api_gateway.route_post("/v1/locks/unlock-stale", {})
+        self.assertEqual(200, status, unlocked)
+        self.assertIn("task:api-stale-lock", [lock["resource_key"] for lock in unlocked["unlocked"]])
+
     def test_sandboxing_wraps_codex_and_hermes_commands_without_executing_container(self) -> None:
         workspace = self.root / "workspace" / "codex"
         profile_config = {

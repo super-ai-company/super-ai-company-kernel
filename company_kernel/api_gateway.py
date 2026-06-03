@@ -22,6 +22,7 @@ API_CAPABILITIES = [
     "heartbeats",
     "adapter_runs",
     "projects",
+    "locks",
 ]
 API_ENDPOINTS = [
     {"method": "GET", "path": "/v1/health", "summary": "Company Kernel health summary"},
@@ -55,6 +56,10 @@ API_ENDPOINTS = [
     {"method": "POST", "path": "/v1/projects/{project_id}/status", "summary": "Update project status", "body": {"status": "active/paused/completed/blocked"}},
     {"method": "GET", "path": "/v1/projects/{project_id}/review", "summary": "Review project readiness"},
     {"method": "POST", "path": "/v1/projects/{project_id}/accept", "summary": "Accept project completion", "body": {"by": "employee id", "summary": "string", "force": "bool optional"}},
+    {"method": "GET", "path": "/v1/locks", "summary": "List locks", "query": {"agent": "employee id optional"}},
+    {"method": "POST", "path": "/v1/locks/acquire", "summary": "Acquire lock", "body": {"agent": "employee id", "resource": "resource key", "lease_seconds": "integer optional"}},
+    {"method": "POST", "path": "/v1/locks/release", "summary": "Release lock", "body": {"agent": "employee id", "resource": "resource key", "force": "bool optional"}},
+    {"method": "POST", "path": "/v1/locks/unlock-stale", "summary": "Unlock stale locks"},
     {"method": "GET", "path": "/v1/adapter-runs", "summary": "List adapter runs", "query": {"agent": "employee id optional", "status": "ok/failed optional", "unacknowledged_only": "bool optional", "limit": "integer optional"}},
     {"method": "GET", "path": "/v1/adapter-runs/{run_id}", "summary": "Show adapter run", "query": {"summary": "bool optional"}},
     {"method": "POST", "path": "/v1/adapter-runs/{run_id}/ack", "summary": "Acknowledge adapter failure", "body": {"by": "employee id", "reason": "string"}},
@@ -214,6 +219,13 @@ def route_get(path: str, query: dict[str, list[str]]) -> tuple[int, dict]:
         project_id = path.removeprefix("/v1/projects/").removesuffix("/review").strip("/")
         code, payload = run_companyctl(["project", "review", "--project-id", project_id])
         return (HTTPStatus.OK if code == 0 else HTTPStatus.BAD_REQUEST), {"exit_code": code, **payload}
+    if path == "/v1/locks":
+        argv = ["lock", "list"]
+        agent = query_value(query, "agent")
+        if agent:
+            argv.extend(["--agent", agent])
+        code, payload = run_companyctl(argv)
+        return (HTTPStatus.OK if code == 0 else HTTPStatus.BAD_REQUEST), {"exit_code": code, **payload}
     if path.startswith("/v1/projects/"):
         project_id = path.removeprefix("/v1/projects/").strip("/")
         code, payload = run_companyctl(["project", "show", "--project-id", project_id])
@@ -339,6 +351,21 @@ def route_post(path: str, body: dict) -> tuple[int, dict]:
     if path == "/v1/heartbeats":
         code, payload = run_companyctl(["heartbeat", "--agent", str(body.get("agent", ""))])
         return (HTTPStatus.CREATED if code == 0 else HTTPStatus.BAD_REQUEST), {"exit_code": code, **payload}
+    if path == "/v1/locks/acquire":
+        argv = ["lock", "acquire", "--agent", str(body.get("agent", "")), "--resource", str(body.get("resource", ""))]
+        if body.get("lease_seconds"):
+            argv.extend(["--lease-seconds", str(body["lease_seconds"])])
+        code, payload = run_companyctl(argv)
+        return (HTTPStatus.CREATED if code == 0 else HTTPStatus.BAD_REQUEST), {"exit_code": code, **payload}
+    if path == "/v1/locks/release":
+        argv = ["lock", "release", "--agent", str(body.get("agent", "")), "--resource", str(body.get("resource", ""))]
+        if body.get("force") in {True, "1", "true", "yes"}:
+            argv.append("--force")
+        code, payload = run_companyctl(argv)
+        return (HTTPStatus.OK if code == 0 else HTTPStatus.BAD_REQUEST), {"exit_code": code, **payload}
+    if path == "/v1/locks/unlock-stale":
+        code, payload = run_companyctl(["lock", "unlock-stale"])
+        return (HTTPStatus.OK if code == 0 else HTTPStatus.BAD_REQUEST), {"exit_code": code, **payload}
     if path == "/v1/projects":
         argv = [
             "project",
