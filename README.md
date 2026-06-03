@@ -24,6 +24,14 @@ python3 -m company_kernel.companyctl runtime verify-adapters --agents hermes,cod
 python3 -m unittest discover -s tests -v
 ```
 
+## Local Usability Smoke
+
+```bash
+bin/company-local-smoke --json-only
+```
+
+这条本机验收会一次检查 REST/RPC service smoke、重新生成 dashboard、跑 attendance sweep，并对 `nestcar,chindahotpot,codex` 做真实 direct message；报告固定写到 `state/local-smoke/latest.json`。
+
 ## Commands
 
 ```bash
@@ -297,6 +305,7 @@ bin/companyctl runtime ack-adapter-run --run-id <adapter-run-id> --by openclaw-m
 bin/companyctl runtime retry-adapter-run --run-id <adapter-run-id> --by openclaw-main --reason "修复后重试"
 bin/company-trace --task-id <task-id>
 bin/company-service-smoke --json-only
+bin/company-local-smoke --json-only
 ```
 
 `adapter_runs.task_id` 会记录本次 adapter 处理的任务，旧记录会从 `result_json` 自动回填；`retry-adapter-run` 默认用该字段恢复任务，仍缺失时可补 `--task-id`。
