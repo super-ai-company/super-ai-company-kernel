@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>ai.openclaw.company-kernel.api</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Users/shift/openclaw/company-kernel/bin/company-api-gateway</string>
+    <string>--host</string>
+    <string>127.0.0.1</string>
+    <string>--port</string>
+    <string>8765</string>
+    <string>--quiet</string>
+  </array>
+  <key>KeepAlive</key>
+  <true/>
+  <key>WorkingDirectory</key>
+  <string>/Users/shift/openclaw/company-kernel</string>
+  <key>StandardOutPath</key>
+  <string>/Users/shift/openclaw/company-kernel/logs/company-api.launchd.out.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/shift/openclaw/company-kernel/logs/company-api.launchd.err.log</string>
+  <key>RunAtLoad</key>
+  <true/>
+</dict>
+</plist>

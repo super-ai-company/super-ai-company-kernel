@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+set -euo pipefail
+LABELS=(
+  "ai.openclaw.company-kernel.dashboard"
+  "ai.openclaw.company-kernel.api"
+  "ai.openclaw.company-kernel.daemon"
+)
+for LABEL in "${LABELS[@]}"; do
+  DST="$HOME/Library/LaunchAgents/${LABEL}.plist"
+  launchctl bootout "gui/$(id -u)" "$DST" >/dev/null 2>&1 || true
+  rm -f "$DST"
+done

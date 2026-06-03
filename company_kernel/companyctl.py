@@ -1900,7 +1900,8 @@ def cmd_message_direct(args: argparse.Namespace) -> int:
     target_employee = dict(target_row)
     require_communication_allowed(source, target, "message.direct")
     runtime = str(target_employee.get("runtime") or "")
-    session_key = args.session_key or f"agent:{target}:{source}"
+    runtime_agent_id = attendance_agent_runtime_id(target, runtime)
+    session_key = args.session_key or f"agent:{runtime_agent_id}:{source}"
     defaults = direct_reply_defaults(source, target)
     args.deliver = bool(args.deliver or defaults["deliver"])
     if not args.reply_channel:

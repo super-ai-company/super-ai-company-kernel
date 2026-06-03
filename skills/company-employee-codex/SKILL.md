@@ -24,6 +24,13 @@ Codex is a developer employee. It should work from a canonical repo, produce evi
    - `bin/companyctl message direct --from main --to codex --body "只回复：codex_DIRECT_OK"`
    - `bin/company-codex-adapter --agent codex`
 
+## Message Semantics
+
+- Inbox messages to `employees/codex/inbox/*.message.json` are records, not proof that Codex has read or answered.
+- For a required ACK, call `bin/companyctl message direct --from <source> --to codex --body "只回复：CODEX_ACK"` or use `POST /v1/messages/direct`.
+- The Codex direct path runs `company-codex-adapter --direct-message` and returns an immediate adapter reply.
+- If OpenClaw sends with record-only `message send`, the expected state is pending inbox until a daemon/adapter/human explicitly processes it.
+
 ## Execution Rules
 
 - Default adapter mode is dry-run: creates `codex-task-card.md` and report.

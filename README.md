@@ -303,6 +303,8 @@ daemon 会按 `run_retries` 和 worker `retry_policy` 对到期失败 adapter ru
 bin/company-daemon --once --summary
 bin/company-daemon --once --enable-worker codex --summary
 bin/company-daemon --iterations 10 --interval 30
+bash bin/company-services-install-launchd
+bash bin/company-services-uninstall-launchd
 bash bin/company-daemon-install-launchd
 bash bin/company-daemon-uninstall-launchd
 bin/companyctl doctor --summary
@@ -359,6 +361,7 @@ python3 -m venv .venv
 worker 状态：`state/daemon/workers/<agent>.json`  
 日志文件：`logs/daemon.log`
 launchd 模板：`config/launchd/ai.openclaw.company-kernel.daemon.plist`，默认 300 秒运行一次 daemon。
+服务模板：`config/launchd/ai.openclaw.company-kernel.api.plist` 负责 `127.0.0.1:8765`，`config/launchd/ai.openclaw.company-kernel.dashboard.plist` 负责 `127.0.0.1:8780`。
 dashboard 会显示 Runtime Health，包括 daemon last-run、launchd 安装状态和修复命令。
 
 ## API Gateway

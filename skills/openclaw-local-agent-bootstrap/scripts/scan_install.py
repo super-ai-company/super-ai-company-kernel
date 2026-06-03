@@ -93,16 +93,22 @@ def classify_employee(employee: dict, kernel_root: Path) -> dict:
         status = "blocked"
     else:
         status = "active"
+    runtime_agent_id = employee["id"]
+    if employee.get("runtime") == "hermes" and employee.get("id") == "hermes":
+        runtime_agent_id = "default"
+    inbox = kernel_root / "employees" / employee["id"] / "inbox"
+    pending_inbox_messages = len(list(inbox.glob("*.message.json"))) if inbox.exists() else 0
     return {
         "agent_id": employee["id"],
         "status": status,
-        "runtime": {"type": employee.get("runtime", ""), "workspace": employee.get("workspace", "")},
+        "runtime": {"type": employee.get("runtime", ""), "workspace": employee.get("workspace", ""), "runtime_agent_id": runtime_agent_id},
         "communication": {
             "default_reply_channel": "current-conversation",
             "default_reply_account": "",
             "default_reply_target": "",
-            "session_key": "",
+            "session_key": "" if is_human else f"agent:{runtime_agent_id}:<source>",
             "direct_status": "not-worker" if is_human else ("candidate" if status != "blocked" else "blocked"),
+            "pending_inbox_messages": pending_inbox_messages,
         },
         "routing": {"active": [], "candidate": [], "blocked": missing},
         "evidence": evidence,
