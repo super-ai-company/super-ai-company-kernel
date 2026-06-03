@@ -1953,6 +1953,18 @@ def direct_runtime_command(runtime: str, target: str, source: str, body: str, ti
             "--direct-session-key",
             session_key,
         ], target
+    if runtime == "antigravity":
+        return [
+            str(ROOT / "bin" / "company-antigravity-adapter"),
+            "--agent",
+            target,
+            "--direct-message",
+            body,
+            "--direct-source",
+            source,
+            "--direct-session-key",
+            session_key,
+        ], target
     raise ValueError(f"direct send unsupported runtime: {runtime}")
 
 

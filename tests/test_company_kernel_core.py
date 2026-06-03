@@ -780,6 +780,44 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual("acknowledged", report_payload["state"])
         self.assertEqual("main", report_payload["source"])
 
+    def test_message_direct_uses_antigravity_adapter_and_returns_receipt(self) -> None:
+        code, created = run_cli("employee", "create", "--id", "main", "--name", "main", "--role", "operator", "--runtime", "openclaw", "--workspace", str(self.root / "workspace" / "main"))
+        self.assertEqual(0, code, created)
+        code, created = run_cli("employee", "create", "--id", "antigravity", "--name", "Antigravity", "--role", "developer", "--runtime", "antigravity", "--workspace", str(self.root / "workspace" / "antigravity"))
+        self.assertEqual(0, code, created)
+        calls = []
+
+        def fake_run(cmd, cwd=None, text=None, capture_output=None, timeout=None):
+            calls.append(cmd)
+
+            class Result:
+                returncode = 0
+                stdout = json.dumps({"ok": True, "agent": "antigravity", "direct_message": True, "reply": "ANTIGRAVITY_DIRECT_OK"})
+                stderr = ""
+
+            return Result()
+
+        with mock.patch.object(companyctl.subprocess, "run", side_effect=fake_run):
+            code, sent = run_cli(
+                "message",
+                "direct",
+                "--from",
+                "main",
+                "--to",
+                "Antigravity",
+                "--body",
+                "请查看每个页面并给出前端优化。只回复 ANTIGRAVITY_DIRECT_OK",
+                "--message-id",
+                "msg-direct-antigravity",
+            )
+        self.assertEqual(0, code, sent)
+        self.assertEqual("ANTIGRAVITY_DIRECT_OK", sent["reply"])
+        self.assertEqual("agent:antigravity:main", sent["session_key"])
+        self.assertEqual("antigravity", sent["receipt"]["source_agent"])
+        self.assertEqual("main", sent["receipt"]["target_agent"])
+        self.assertTrue(Path(sent["receipt_file"]).exists())
+        self.assertIn("company-antigravity-adapter", calls[0][0])
+
     def test_dashboard_renders_conversations_and_pending_events(self) -> None:
         code, created = run_cli("employee", "create", "--id", "main", "--name", "main", "--role", "operator", "--runtime", "openclaw", "--workspace", str(self.root / "workspace" / "main"))
         self.assertEqual(code, 0, created)
@@ -2977,6 +3015,44 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual(code, 0, blocked_task)
         self.assertEqual("blocked", blocked_task["task"]["status"])
         self.assertEqual("GUI login required", blocked_task["task"]["blocker"])
+
+    def test_antigravity_adapter_direct_message_writes_gui_brief(self) -> None:
+        workspace = self.root / "workspace" / "antigravity"
+        code, employee = run_cli(
+            "employee",
+            "create",
+            "--id",
+            "antigravity",
+            "--name",
+            "Antigravity",
+            "--role",
+            "developer",
+            "--runtime",
+            "antigravity",
+            "--workspace",
+            str(workspace),
+        )
+        self.assertEqual(code, 0, employee)
+        captured = io.StringIO()
+        with contextlib.redirect_stdout(captured):
+            code = antigravity_adapter.main(
+                [
+                    "--agent",
+                    "antigravity",
+                    "--direct-source",
+                    "main",
+                    "--direct-session-key",
+                    "agent:antigravity:main",
+                    "--direct-message",
+                    "请查看每个页面并给出前端优化。只回复 ANTIGRAVITY_BRIEF_OK",
+                ]
+            )
+        result = json.loads(captured.getvalue())
+        self.assertEqual(0, code, result)
+        self.assertEqual("ANTIGRAVITY_BRIEF_OK", result["reply"])
+        self.assertTrue(Path(result["brief"]).exists())
+        self.assertTrue(Path(result["report"]).exists())
+        self.assertTrue(result["blocked_execution"])
 
     def test_attendance_sweep_uses_session_and_spool_evidence(self) -> None:
         for agent in ("main", "nestcar", "codex"):

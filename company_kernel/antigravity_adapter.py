@@ -63,6 +63,78 @@ def paths(agent: str, task_id: str) -> dict[str, Path]:
     }
 
 
+def direct_paths(agent: str) -> dict[str, Path]:
+    base = ROOT / "employees" / agent / "reports" / "direct"
+    base.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    return {
+        "base": base,
+        "brief": base / f"antigravity-direct-brief-{stamp}.md",
+        "report": base / f"antigravity-direct-report-{stamp}.json",
+    }
+
+
+def direct_reply_text(message: str) -> str:
+    if "只回复" in message:
+        marker = message.split("只回复", 1)[1].lstrip("：: ").strip().split()[0]
+        if marker:
+            return marker
+    if "frontend" in message.lower() or "前端" in message or "页面" in message:
+        return "ANTIGRAVITY_FRONTEND_BRIEF_READY"
+    return "ANTIGRAVITY_DIRECT_ACK"
+
+
+def write_direct_brief(agent: str, source: str, session_key: str, message: str, reply: str) -> dict[str, Path]:
+    artifact = direct_paths(agent)
+    artifact["brief"].write_text(
+        "\n".join(
+            [
+                "# Antigravity Direct GUI Brief",
+                "",
+                "Antigravity is a GUI/IDE employee. This direct request has been recorded and acknowledged, but implementation is not complete until Antigravity or a human GUI worker returns evidence.",
+                "",
+                "## Request",
+                "",
+                f"- source_agent: `{source}`",
+                f"- target_agent: `{agent}`",
+                f"- session_key: `{session_key}`",
+                f"- created_at: `{now()}`",
+                "",
+                "## Message",
+                "",
+                message,
+                "",
+                "## Required return",
+                "",
+                "- Review every dashboard page, not only docs.",
+                "- Return implemented changes on a branch or a blocker with missing GUI/runtime capability.",
+                "- Reply at least once to the sender; record-only inbox files are not enough.",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    artifact["report"].write_text(
+        json.dumps(
+            {
+                "ok": True,
+                "state": "brief_ready",
+                "agent": agent,
+                "source": source,
+                "session_key": session_key,
+                "reply": reply,
+                "brief": str(artifact["brief"]),
+                "created_at": now(),
+                "next_action": "Antigravity or a human GUI worker must implement or return blocker evidence.",
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    return artifact
+
+
 def build_brief(task: sqlite3.Row) -> str:
     return "\n".join(
         [
@@ -160,6 +232,26 @@ def process(args: argparse.Namespace) -> int:
     if emp["runtime"] != "antigravity":
         emit({"ok": False, "error": "employee runtime is not antigravity", "agent": args.agent, "runtime": emp["runtime"]})
         return 1
+    if args.direct_message:
+        run_companyctl(["heartbeat", "--agent", args.agent])
+        reply = direct_reply_text(args.direct_message)
+        artifact = write_direct_brief(args.agent, args.direct_source, args.direct_session_key, args.direct_message, reply)
+        emit(
+            {
+                "ok": True,
+                "processed": 0,
+                "agent": args.agent,
+                "direct_message": True,
+                "source": args.direct_source,
+                "session_key": args.direct_session_key,
+                "reply": reply,
+                "brief": str(artifact["brief"]),
+                "report": str(artifact["report"]),
+                "blocked_execution": True,
+                "blocker": "Antigravity direct channel can prepare GUI brief and ACK, but GUI implementation still requires Antigravity app/human evidence.",
+            }
+        )
+        return 0
     if args.complete or args.block:
         return return_result(args, emp)
     if not APP_PATH.exists():
@@ -199,6 +291,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--summary", default="", help="completion summary for --complete")
     parser.add_argument("--evidence", default="", help="evidence path for --complete")
     parser.add_argument("--blocker", default="", help="blocker text for --block")
+    parser.add_argument("--direct-message", default="", help="record and acknowledge a direct GUI request")
+    parser.add_argument("--direct-source", default="", help="source employee for direct GUI request")
+    parser.add_argument("--direct-session-key", default="", help="session key for direct GUI request")
     result = parser.add_mutually_exclusive_group()
     result.add_argument("--complete", action="store_true", help="return completed GUI result to Company Kernel")
     result.add_argument("--block", action="store_true", help="return blocked GUI result to Company Kernel")
