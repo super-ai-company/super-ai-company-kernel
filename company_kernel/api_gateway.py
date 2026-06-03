@@ -33,6 +33,7 @@ API_ENDPOINTS = [
     {"method": "POST", "path": "/v1/employees", "summary": "Create employee", "body": {"id": "employee id", "name": "display name", "role": "role", "runtime": "runtime id", "workspace": "path"}},
     {"method": "POST", "path": "/v1/employees/onboard", "summary": "Onboard employee with capabilities, permissions, communication, optional scaffold, and optional test task", "body": {"id": "employee id", "name": "display name", "role": "role", "runtime": "runtime id", "workspace": "path", "alias": "alias optional", "skills": "comma-separated optional", "tools": "comma-separated optional", "task_types": "comma-separated optional", "can_talk_to": "comma-separated optional", "can_assign_to": "comma-separated optional", "open_communication": "bool optional", "channel": "channel optional", "create_test_task": "bool optional"}},
     {"method": "GET", "path": "/v1/employees/{employee_id}", "summary": "Show employee profile, capabilities, permissions, heartbeat, and files"},
+    {"method": "POST", "path": "/v1/employees/{employee_id}/profile", "summary": "Update employee profile fields through companyctl", "body": {"name": "display name optional", "role": "role optional", "runtime": "runtime id optional", "workspace": "path optional", "status": "active/candidate/archived optional", "dry_run": "bool optional"}},
     {"method": "POST", "path": "/v1/employees/{employee_id}/offboard", "summary": "Offboard employee with dry-run, soft archive, or guarded hard delete", "body": {"hard_delete": "bool optional", "dry_run": "bool optional"}},
     {"method": "POST", "path": "/v1/employees/{employee_id}/capabilities", "summary": "Update employee capabilities", "body": {"set_skills": "comma-separated skills optional", "add_skill": "string/list optional", "set_tools": "comma-separated tools optional", "add_tool": "string/list optional", "set_task_types": "comma-separated task types optional"}},
     {"method": "POST", "path": "/v1/employees/{employee_id}/permissions", "summary": "Update employee permissions", "body": {"can_submit_tasks": "true/false/keep optional", "can_claim_tasks": "true/false/keep optional", "can_modify_kernel": "true/false/keep optional", "requires_approval_for": "comma-separated actions optional"}},
@@ -370,6 +371,22 @@ def route_post(path: str, body: dict) -> tuple[int, dict]:
         argv = ["employee", "offboard", "--id", employee_id]
         if truthy(body.get("hard_delete")):
             argv.append("--hard-delete")
+        if truthy(body.get("dry_run")):
+            argv.append("--dry-run")
+        code, payload = run_companyctl(argv)
+        return (HTTPStatus.OK if code == 0 else HTTPStatus.BAD_REQUEST), {"exit_code": code, **payload}
+    if path.startswith("/v1/employees/") and path.endswith("/profile"):
+        employee_id = path.removeprefix("/v1/employees/").removesuffix("/profile").strip("/")
+        argv = ["employee", "update", "--id", employee_id]
+        for key, flag in [
+            ("name", "--name"),
+            ("role", "--role"),
+            ("runtime", "--runtime"),
+            ("workspace", "--workspace"),
+            ("status", "--status"),
+        ]:
+            if body.get(key) not in {None, ""}:
+                argv.extend([flag, str(body[key])])
         if truthy(body.get("dry_run")):
             argv.append("--dry-run")
         code, payload = run_companyctl(argv)
