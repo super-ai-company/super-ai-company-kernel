@@ -24,6 +24,7 @@ API_CAPABILITIES = [
     "adapter_runs",
     "projects",
     "locks",
+    "followups",
     "employees",
     "runtimes",
 ]
@@ -57,6 +58,10 @@ API_ENDPOINTS = [
     {"method": "GET", "path": "/v1/messages", "summary": "List messages", "query": {"agent": "employee id required"}},
     {"method": "POST", "path": "/v1/messages", "summary": "Send message", "body": {"from": "employee id", "to": "employee id", "body": "string", "message_id": "string optional"}},
     {"method": "POST", "path": "/v1/messages/direct", "summary": "Directly invoke target employee runtime and record message evidence", "body": {"from": "employee id", "to": "employee id", "body": "string", "message_id": "string optional", "session_key": "string optional", "timeout": "integer optional", "deliver": "bool optional", "reply_channel": "string optional", "reply_to": "string optional", "reply_account": "string optional"}},
+    {"method": "GET", "path": "/v1/followups", "summary": "List followups", "query": {"status": "pending/answered/cancelled/all optional"}},
+    {"method": "POST", "path": "/v1/followups", "summary": "Create followup question", "body": {"from": "employee id", "to": "employee id", "question": "string", "context": "string optional", "followup_id": "string optional", "deliver": "bool optional", "reply_channel": "string optional", "reply_account": "string optional", "reply_to": "string optional"}},
+    {"method": "GET", "path": "/v1/followups/{followup_id}", "summary": "Show followup"},
+    {"method": "POST", "path": "/v1/followups/{followup_id}/reply", "summary": "Reply to followup and continue agent delivery", "body": {"by": "employee id", "answer": "string", "message_id": "string optional"}},
     {"method": "GET", "path": "/v1/conversations", "summary": "List conversations for an agent", "query": {"agent": "employee id required"}},
     {"method": "POST", "path": "/v1/conversations", "summary": "Start conversation", "body": {"from": "employee id", "participants": "comma-separated employee ids", "title": "string", "body": "string", "conversation_id": "string optional", "evidence": "path optional"}},
     {"method": "GET", "path": "/v1/conversations/{conversation_id}", "summary": "Show conversation"},
@@ -233,6 +238,17 @@ def route_get(path: str, query: dict[str, list[str]]) -> tuple[int, dict]:
         if not agent:
             return HTTPStatus.BAD_REQUEST, {"ok": False, "error": "missing query: agent"}
         code, payload = run_companyctl(["message", "list", "--agent", agent])
+        return (HTTPStatus.OK if code == 0 else HTTPStatus.BAD_REQUEST), {"exit_code": code, **payload}
+    if path == "/v1/followups":
+        argv = ["followup", "list"]
+        status = query_value(query, "status")
+        if status:
+            argv.extend(["--status", status])
+        code, payload = run_companyctl(argv)
+        return (HTTPStatus.OK if code == 0 else HTTPStatus.BAD_REQUEST), {"exit_code": code, **payload}
+    if path.startswith("/v1/followups/"):
+        followup_id = path.removeprefix("/v1/followups/").strip("/")
+        code, payload = run_companyctl(["followup", "show", "--followup-id", followup_id])
         return (HTTPStatus.OK if code == 0 else HTTPStatus.BAD_REQUEST), {"exit_code": code, **payload}
     if path == "/v1/conversations":
         agent = query_value(query, "agent")
@@ -565,6 +581,22 @@ def route_post(path: str, body: dict) -> tuple[int, dict]:
             argv.append("--deliver")
         code, payload = run_companyctl(argv)
         return (HTTPStatus.CREATED if code == 0 else HTTPStatus.BAD_REQUEST), {"exit_code": code, **payload}
+    if path == "/v1/followups":
+        argv = ["followup", "request", "--from", str(body.get("from", "")), "--to", str(body.get("to", "")), "--question", str(body.get("question", ""))]
+        for key, flag in [("context", "--context"), ("followup_id", "--followup-id"), ("message_id", "--message-id"), ("session_key", "--session-key"), ("timeout", "--timeout"), ("reply_channel", "--reply-channel"), ("reply_account", "--reply-account"), ("reply_to", "--reply-to")]:
+            if body.get(key) not in {None, ""}:
+                argv.extend([flag, str(body[key])])
+        if truthy(body.get("deliver")):
+            argv.append("--deliver")
+        code, payload = run_companyctl(argv)
+        return (HTTPStatus.CREATED if code == 0 else HTTPStatus.BAD_REQUEST), {"exit_code": code, **payload}
+    if path.startswith("/v1/followups/") and path.endswith("/reply"):
+        followup_id = path.removeprefix("/v1/followups/").removesuffix("/reply").strip("/")
+        argv = ["followup", "reply", "--followup-id", followup_id, "--by", str(body.get("by", "")), "--answer", str(body.get("answer", ""))]
+        if body.get("message_id"):
+            argv.extend(["--message-id", str(body["message_id"])])
+        code, payload = run_companyctl(argv)
+        return (HTTPStatus.OK if code == 0 else HTTPStatus.BAD_REQUEST), {"exit_code": code, **payload}
     if path == "/v1/messages":
         argv = ["message", "send", "--from", str(body.get("from", "")), "--to", str(body.get("to", "")), "--body", str(body.get("body", ""))]
         if body.get("message_id"):
