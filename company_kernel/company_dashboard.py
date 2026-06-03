@@ -1015,6 +1015,93 @@ def inject_advanced_dashboard(template: str, summary: dict, *, db_path: Path, ap
             """      <div class=\"section-card\">\n        <h2><i class=\"fa-solid fa-circle-question\"></i> Followups</h2>\n        <div class=\"table-container\">\n          <table>\n            <thead>\n              <tr>\n                <th>Followup ID</th>\n                <th>Status</th>\n                <th>Source</th>\n                <th>Target</th>\n                <th>Question</th>\n                <th>Answer</th>\n                <th>Answered</th>\n              </tr>\n            </thead>\n            <tbody id=\"followups-tbody\">\n              <!-- Populated by JS -->\n            </tbody>\n          </table>\n        </div>\n      </div>\n\n      <!-- Events Tab -->""",
             1,
         )
+    if ".employee-card-actions" not in html_text:
+        html_text = html_text.replace(
+            """    .employee-card-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+    }""",
+            """    .employee-card-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      gap: 12px;
+    }
+
+    .employee-card-header > div:last-child {
+      flex: 0 0 auto;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+      max-width: 42%;
+    }
+
+    .employee-card-actions {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 8px;
+      margin-top: auto;
+      padding-top: 12px;
+      border-top: 1px solid rgba(255,255,255,0.06);
+    }
+
+    .employee-action-btn {
+      min-height: 28px;
+      min-width: 0;
+      border-radius: 6px;
+      padding: 0 8px;
+      border: 1px solid rgba(129, 140, 248, 0.28);
+      background: rgba(99, 102, 241, 0.12);
+      color: #c7d2fe;
+      font-size: 10px;
+      font-weight: 700;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 5px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .employee-action-btn.direct {
+      background: rgba(16, 185, 129, 0.15);
+      border-color: rgba(16, 185, 129, 0.35);
+      color: #86efac;
+    }
+
+    .employee-action-btn.pause {
+      background: rgba(245, 158, 11, 0.14);
+      border-color: rgba(245, 158, 11, 0.3);
+      color: #fbbf24;
+    }
+
+    .employee-action-btn.resume {
+      background: rgba(16, 185, 129, 0.15);
+      border-color: rgba(16, 185, 129, 0.35);
+      color: #86efac;
+    }
+
+    .employee-action-btn.edit {
+      background: rgba(59, 130, 246, 0.15);
+      border-color: rgba(59, 130, 246, 0.3);
+      color: #93c5fd;
+    }
+
+    .employee-action-btn.fire {
+      background: rgba(239, 68, 68, 0.15);
+      border-color: rgba(239, 68, 68, 0.3);
+      color: #f87171;
+    }
+
+    @media (max-width: 720px) {
+      .employee-card-actions {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+    }""",
+            1,
+        )
     html_text = html_text.replace(
         "if (isSimulationMode) {\n      if (mode === 'hard') {",
         "if (!isSimulationMode) {\n      return realOffboardEmployee(employeeToFire, mode === 'hard');\n    }\n\n    if (isSimulationMode) {\n      if (mode === 'hard') {",
@@ -1022,16 +1109,38 @@ def inject_advanced_dashboard(template: str, summary: dict, *, db_path: Path, ap
     html_text = html_text.replace(
         "<span class=\"badge ${hbStatus}\">${hbStatus}</span>",
         """<span class="badge ${hbStatus}">${hbStatus}</span>
-              <span class="badge ${commPaused ? 'blocked' : 'completed'}" style="font-size: 9px;">${commPaused ? 'Comm Paused' : 'Comm On'}</span>
-              <button class="chat-send-btn" style="padding: 2px 6px; font-size: 10px; background: rgba(16, 185, 129, 0.15); border: 1px solid rgba(16, 185, 129, 0.35); color: #86efac;" onclick="event.stopPropagation(); openDirectEmployeeMessage('${escapeHtml(emp.id)}')">
-                <i class="fa-solid fa-paper-plane"></i> Direct
+              <span class="badge ${commPaused ? 'blocked' : 'completed'}" style="font-size: 9px;">${commPaused ? 'Comm Paused' : 'Comm On'}</span>""",
+    )
+    html_text = re.sub(
+        r"\s*\$\{emp\.id !== 'openclaw-main' && emp\.id !== 'video-ops' \? `\s*<button class=\"chat-send-btn\"[^>]*openFireEmployeeModal\('\$\{escapeHtml\(emp\.id\)\}', '\$\{escapeHtml\(emp\.runtime\)\}', '\$\{escapeHtml\(emp\.workspace\)\}'\)[\s\S]*?</button>\s*` : ''\}",
+        "",
+        html_text,
+        count=1,
+    )
+    html_text = html_text.replace(
+        """          <div style="display: flex; flex-wrap: wrap; gap: 4px; margin-top: 10px; border-top: 1px solid rgba(255,255,255,0.05); padding-top: 8px;">
+            ${skillsPills}
+          </div>""",
+        """          <div style="display: flex; flex-wrap: wrap; gap: 4px; margin-top: 10px; border-top: 1px solid rgba(255,255,255,0.05); padding-top: 8px;">
+            ${skillsPills}
+          </div>
+          <div class="employee-card-actions">
+            <button class="employee-action-btn direct" onclick="event.stopPropagation(); openDirectEmployeeMessage('${escapeHtml(emp.id)}')" title="Direct message">
+              <i class="fa-solid fa-paper-plane"></i> Direct
+            </button>
+            <button class="employee-action-btn ${commPaused ? 'resume' : 'pause'}" onclick="event.stopPropagation(); toggleEmployeeCommunication('${escapeHtml(emp.id)}', ${commPaused ? 'true' : 'false'})" title="${commPaused ? 'Resume communication' : 'Pause communication'}">
+              <i class="fa-solid ${commPaused ? 'fa-play' : 'fa-pause'}"></i> ${commPaused ? 'Resume' : 'Pause'}
+            </button>
+            <button class="employee-action-btn edit" onclick="event.stopPropagation(); openEditEmployeeProfile('${escapeHtml(emp.id)}', '${escapeHtml(emp.name)}', '${escapeHtml(emp.role)}', '${escapeHtml(emp.runtime)}', '${escapeHtml(emp.status || 'active')}')" title="Edit employee">
+              <i class="fa-solid fa-pen-to-square"></i> Edit
+            </button>
+            ${emp.id !== 'openclaw-main' && emp.id !== 'video-ops' ? `
+              <button class="employee-action-btn fire" onclick="event.stopPropagation(); openFireEmployeeModal('${escapeHtml(emp.id)}', '${escapeHtml(emp.runtime)}', '${escapeHtml(emp.workspace)}')" title="Offboard employee">
+                <i class="fa-solid fa-user-minus"></i> Fire
               </button>
-              <button class="chat-send-btn" style="padding: 2px 6px; font-size: 10px; background: ${commPaused ? 'rgba(16, 185, 129, 0.15)' : 'rgba(245, 158, 11, 0.14)'}; border: 1px solid ${commPaused ? 'rgba(16, 185, 129, 0.35)' : 'rgba(245, 158, 11, 0.3)'}; color: ${commPaused ? '#86efac' : '#fbbf24'};" onclick="event.stopPropagation(); toggleEmployeeCommunication('${escapeHtml(emp.id)}', ${commPaused ? 'true' : 'false'})">
-                <i class="fa-solid ${commPaused ? 'fa-play' : 'fa-pause'}"></i> ${commPaused ? 'Resume' : 'Pause'}
-              </button>
-              <button class="chat-send-btn" style="padding: 2px 6px; font-size: 10px; background: rgba(59, 130, 246, 0.15); border: 1px solid rgba(59, 130, 246, 0.3); color: #93c5fd;" onclick="event.stopPropagation(); openEditEmployeeProfile('${escapeHtml(emp.id)}', '${escapeHtml(emp.name)}', '${escapeHtml(emp.role)}', '${escapeHtml(emp.runtime)}', '${escapeHtml(emp.status || 'active')}')">
-                <i class="fa-solid fa-pen-to-square"></i> Edit
-              </button>""",
+            ` : ''}
+          </div>""",
+        1,
     )
     html_text = html_text.replace(
         "      const skills = emp.skills || '';\n      const skillsPills = skills ? skills.split(',').map(s => `<span class=\"capability-tag\" style=\"font-size: 9px; padding: 2px 5px; margin-top: 4px;\">${escapeHtml(s.trim())}</span>`).join(' ') : '';",
