@@ -17,6 +17,7 @@ from company_kernel import api_gateway
 from company_kernel import api_grpc
 from company_kernel import api_rpc
 from company_kernel import company_daemon
+from company_kernel import company_local_smoke
 from company_kernel import company_dashboard
 from company_kernel import company_service_smoke
 from company_kernel import company_trace
@@ -54,7 +55,7 @@ class CompanyKernelCoreTest(unittest.TestCase):
             (root / "company_kernel" / source_file.name).write_text(source_file.read_text(encoding="utf-8"), encoding="utf-8")
         (root / "company_kernel" / "schema.sql").write_text(companyctl.SCHEMA.read_text(encoding="utf-8"), encoding="utf-8")
         (root / "bin").mkdir()
-        for executable in ["companyctl", "company-adapter-worker", "company-codex-adapter", "company-openclaw-adapter", "company-trace", "company-api-rpc", "company-api-grpc", "company-service-smoke"]:
+        for executable in ["companyctl", "company-adapter-worker", "company-codex-adapter", "company-openclaw-adapter", "company-trace", "company-api-rpc", "company-api-grpc", "company-service-smoke", "company-local-smoke"]:
             target = root / "bin" / executable
             target.write_text((Path(__file__).resolve().parents[1] / "bin" / executable).read_text(encoding="utf-8"), encoding="utf-8")
             target.chmod(0o755)
@@ -164,6 +165,22 @@ class CompanyKernelCoreTest(unittest.TestCase):
             mock.patch.object(company_dashboard, "DB_PATH", root / "company.sqlite"),
             mock.patch.object(company_dashboard, "SCHEMA", root / "company_kernel" / "schema.sql"),
             mock.patch.object(company_dashboard, "DEFAULT_OUTPUT", root / "state" / "dashboard.html"),
+            mock.patch.object(company_local_smoke, "ROOT", root),
+            mock.patch.object(company_local_smoke, "STATE_DIR", root / "state" / "local-smoke"),
+            mock.patch.object(company_local_smoke.company_service_smoke.api_gateway.companyctl, "ROOT", root),
+            mock.patch.object(company_local_smoke.company_service_smoke.api_gateway.companyctl, "DB_PATH", root / "company.sqlite"),
+            mock.patch.object(company_local_smoke.company_service_smoke.api_gateway.companyctl, "EMPLOYEES_DIR", root / "employees"),
+            mock.patch.object(company_local_smoke.company_service_smoke.api_gateway.companyctl, "STATE_DIR", root / "state"),
+            mock.patch.object(company_local_smoke.company_service_smoke.api_gateway.companyctl, "RFC_DIR", root / "rfcs"),
+            mock.patch.object(company_local_smoke.company_service_smoke.api_gateway.companyctl, "CONFIG_DIR", root / "config"),
+            mock.patch.object(company_local_smoke.company_service_smoke.api_gateway.companyctl, "WORKFLOW_DIR", root / "config" / "workflows"),
+            mock.patch.object(company_local_smoke.company_service_smoke.api_gateway.companyctl, "LAUNCHD_TEMPLATE", root / "config" / "launchd" / "ai.openclaw.company-kernel.daemon.plist"),
+            mock.patch.object(company_local_smoke.company_service_smoke.api_gateway.companyctl, "HOOKS_PATH", root / "config" / "hooks.json"),
+            mock.patch.object(company_local_smoke.company_service_smoke.api_gateway.companyctl, "COMMUNICATIONS_PATH", root / "config" / "company_communications.json"),
+            mock.patch.object(company_local_smoke.company_service_smoke.api_gateway.companyctl, "POLICY_PATH", root / "config" / "policy.json"),
+            mock.patch.object(company_local_smoke.company_service_smoke.api_gateway.companyctl, "PROTECTED_PATHS_CONFIG", root / "config" / "protected_paths.json"),
+            mock.patch.object(company_local_smoke.company_service_smoke.api_gateway.companyctl, "APPROVAL_STATE_DIR", root / "state" / "approvals"),
+            mock.patch.object(company_local_smoke.company_service_smoke.api_gateway.companyctl, "SCHEMA", root / "company_kernel" / "schema.sql"),
             mock.patch.object(company_trace, "ROOT", root),
             mock.patch.object(company_trace, "DB_PATH", root / "company.sqlite"),
             mock.patch.object(company_trace, "SCHEMA", root / "company_kernel" / "schema.sql"),
@@ -1446,6 +1463,51 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertTrue(payload["ok"])
         self.assertEqual(trace_id, payload["trace_id"])
         self.assertGreaterEqual(len(payload["timeline"]), 3)
+
+    def test_local_smoke_generates_usability_report(self) -> None:
+        for employee_id, runtime in [("main", "openclaw"), ("nestcar", "openclaw"), ("codex", "codex")]:
+            code, created = run_cli("employee", "create", "--id", employee_id, "--name", employee_id, "--role", "agent", "--runtime", runtime, "--workspace", str(self.root / "workspace" / employee_id))
+            self.assertEqual(0, code, created)
+        calls = []
+
+        def fake_run(cmd, cwd=None, text=None, capture_output=None, timeout=None):
+            calls.append(cmd)
+
+            class Result:
+                returncode = 0
+                stderr = ""
+
+            result = Result()
+            if "company-dashboard" in cmd[0]:
+                output_path = Path(cmd[cmd.index("--output") + 1])
+                output_path.parent.mkdir(parents=True, exist_ok=True)
+                output_path.write_text("<html>/v1/messages/direct</html>", encoding="utf-8")
+                result.stdout = json.dumps({"ok": True, "output": str(output_path)})
+            elif "attendance" in cmd:
+                result.stdout = json.dumps({
+                    "ok": True,
+                    "counts": {"online": 2, "session_missing": 0, "worker_stalled": 0, "heartbeat_disabled": 0, "no_reply": 0},
+                    "employees": [
+                        {"agent": "nestcar", "status": "online"},
+                        {"agent": "codex", "status": "online"},
+                    ],
+                    "evidence": {"json": str(self.root / "state" / "attendance" / "smoke.json")},
+                })
+            elif "direct" in cmd:
+                target = cmd[cmd.index("--to") + 1]
+                result.stdout = json.dumps({"ok": True, "target": target, "session_key": f"agent:{target}:main", "reply": f"{target}_OK", "file": str(self.root / "employees" / target / "inbox" / "smoke.json")})
+            else:
+                result.stdout = json.dumps({"ok": True})
+            return result
+
+        with mock.patch.object(company_local_smoke.company_service_smoke, "run_smoke", return_value={"ok": True}), mock.patch.object(company_local_smoke.subprocess, "run", side_effect=fake_run):
+            report = company_local_smoke.run_local_smoke("nestcar,codex", "main", "nestcar,codex", 10)
+        self.assertTrue(report["ok"], report)
+        self.assertEqual(["nestcar", "codex"], [item["agent_id"] for item in report["direct_matrix"]])
+        self.assertTrue(Path(report["evidence"]["latest"]).exists())
+        self.assertTrue((self.root / "state" / "dashboard.html").exists())
+        self.assertTrue(any("attendance" in cmd for cmd in calls))
+        self.assertTrue(any("direct" in cmd for cmd in calls))
 
     def test_api_gateway_exposes_health_tasks_messages_and_heartbeats(self) -> None:
         status, descriptor = api_gateway.route_get("/v1", {})
