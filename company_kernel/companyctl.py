@@ -211,6 +211,16 @@ def notification_settings() -> dict:
             "updated_at": str(account.get("updated_at", "") or ""),
         }
     employee_notifications = notification.get("employee_notifications", {}) if isinstance(notification.get("employee_notifications"), dict) else {}
+    routes = notification.get("routes", {}) if isinstance(notification.get("routes"), dict) else {}
+    sanitized_routes = {}
+    for route_id, route in routes.items():
+        if not isinstance(route, dict):
+            continue
+        sanitized_routes[str(route_id)] = {
+            "enabled": bool(route.get("enabled", True)),
+            "account": str(route.get("account", employee_notifications.get("account", "")) or ""),
+            "target": str(route.get("target", employee_notifications.get("target", "")) or ""),
+        }
     return {
         "ok": True,
         "file": str(COMMUNICATIONS_PATH),
@@ -220,6 +230,7 @@ def notification_settings() -> dict:
             "account": str(employee_notifications.get("account", "") or ""),
             "target": str(employee_notifications.get("target", "") or ""),
         },
+        "routes": sanitized_routes,
         "telegram_accounts": sanitized_accounts,
     }
 
@@ -253,6 +264,10 @@ def update_notification_settings(payload: dict) -> dict:
         "target": target,
         "updated_at": now(),
     }
+    routes = notification.setdefault("routes", {})
+    for route_id in ("approval", "error"):
+        route = routes.setdefault(route_id, {})
+        route.update({"enabled": enabled, "account": account_id, "target": target, "updated_at": now()})
     write_communication_config(config)
     return notification_settings()
 
@@ -290,15 +305,18 @@ def send_telegram_notification(*, token: str, chat_id: str, text: str, timeout: 
     }
 
 
-def notification_send_result(*, message: str, target: str = "", account_id: str = "", subject: str = "", dry_run: bool = False) -> dict:
+def notification_send_result(*, message: str, target: str = "", account_id: str = "", subject: str = "", kind: str = "general", dry_run: bool = False) -> dict:
     settings = notification_settings()
     notifications = settings["employee_notifications"]
-    account_id = account_id or notifications.get("account", "")
+    route = settings.get("routes", {}).get(kind, {}) if isinstance(settings.get("routes"), dict) else {}
+    if route and not route.get("enabled", True):
+        return {"ok": True, "skipped": True, "reason": "notification route disabled", "kind": kind}
+    account_id = account_id or route.get("account", "") or notifications.get("account", "")
     accounts = settings["telegram_accounts"]
     account = accounts.get(account_id)
     if not account:
         return {"ok": False, "error": "notification account is not configured", "account": account_id}
-    target = target or notifications.get("target", "") or account.get("default_target", "")
+    target = target or route.get("target", "") or notifications.get("target", "") or account.get("default_target", "")
     try:
         platform, chat_id = resolve_notification_target(target)
     except ValueError as exc:
@@ -312,6 +330,7 @@ def notification_send_result(*, message: str, target: str = "", account_id: str 
         "ok": True,
         "dry_run": dry_run,
         "platform": platform,
+        "kind": kind,
         "account": account_id,
         "target": f"telegram:{chat_id}",
         "token_env": token_env,
@@ -2491,6 +2510,7 @@ def cmd_notification_send(args: argparse.Namespace) -> int:
         target=args.target,
         account_id=args.account,
         subject=args.subject,
+        kind=args.kind,
         dry_run=args.dry_run,
     )
     emit(result)
@@ -3527,7 +3547,12 @@ def create_approval_internal(
     approval = normalize_approval(row)
     path = write_approval_state(approval)
     audit(conn, source, "approval.request", aid, approval)
-    return {"approval": approval, "file": path}
+    notification = notification_send_result(
+        kind="approval",
+        subject=f"Company Kernel approval required: {aid}",
+        message=f"source={source}\naction={action}\nrisk={risk or '-'}\ntarget={detail['target'] or '-'}\nreason={reason}\nevidence={evidence or '-'}",
+    )
+    return {"approval": approval, "file": path, "notification": notification}
 
 
 def cmd_approval_list(args: argparse.Namespace) -> int:
@@ -5334,6 +5359,7 @@ def build_parser() -> argparse.ArgumentParser:
     notification_send.add_argument("--target", default="")
     notification_send.add_argument("--account", default="")
     notification_send.add_argument("--subject", default="")
+    notification_send.add_argument("--kind", choices=["general", "approval", "error"], default="general")
     notification_send.add_argument("--dry-run", action="store_true")
     notification_send.set_defaults(func=cmd_notification_send)
 

@@ -46,6 +46,7 @@ API_ENDPOINTS = [
     {"method": "POST", "path": "/v1/employees/match", "summary": "Rank employees by capabilities for routing", "body": {"skills": "comma-separated skills optional", "tools": "comma-separated tools optional", "task_type": "string optional", "runtime": "runtime optional", "role": "role optional", "limit": "integer optional", "include_unavailable": "bool optional"}},
     {"method": "GET", "path": "/v1/settings/notification", "summary": "Read sanitized notification settings without secrets"},
     {"method": "POST", "path": "/v1/settings/notification", "summary": "Configure employee notification account without storing tokens", "body": {"telegram_account": "account id", "telegram_bot_token_env": "environment variable name containing token", "telegram_default_target": "chat/user target optional", "employee_notifications_enabled": "bool optional"}},
+    {"method": "POST", "path": "/v1/notifications/send", "summary": "Send configured operator notification without exposing secrets", "body": {"message": "string required", "kind": "general/approval/error optional", "subject": "string optional", "target": "telegram target optional", "account": "account optional", "dry_run": "bool optional"}},
     {"method": "GET", "path": "/v1/runtimes", "summary": "List runtimes"},
     {"method": "POST", "path": "/v1/runtimes", "summary": "Register runtime", "body": {"runtime": "runtime id", "command": "command optional", "status": "registered/disabled optional", "notes": "string optional"}},
     {"method": "GET", "path": "/v1/tasks", "summary": "List tasks", "query": {"agent": "employee id optional", "status": "task status optional"}},
@@ -404,6 +405,16 @@ def route_post(path: str, body: dict) -> tuple[int, dict]:
     if path == "/v1/settings/notification":
         payload = companyctl.update_notification_settings(body)
         return (HTTPStatus.OK if payload.get("ok") else HTTPStatus.BAD_REQUEST), payload
+    if path == "/v1/notifications/send":
+        result = companyctl.notification_send_result(
+            message=str(body.get("message", "")),
+            kind=str(body.get("kind", "general") or "general"),
+            subject=str(body.get("subject", "") or ""),
+            target=str(body.get("target", "") or ""),
+            account_id=str(body.get("account", "") or ""),
+            dry_run=truthy(body.get("dry_run")),
+        )
+        return (HTTPStatus.OK if result.get("ok") else HTTPStatus.BAD_REQUEST), result
     if path == "/v1/employees/onboard":
         argv = [
             "employee",

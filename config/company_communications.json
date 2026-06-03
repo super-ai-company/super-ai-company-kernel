@@ -661,6 +661,20 @@
       "account": "employee-notify",
       "target": "telegram:6066269036",
       "updated_at": "2026-06-04T01:22:08+07:00"
+    },
+    "routes": {
+      "approval": {
+        "enabled": true,
+        "account": "employee-notify",
+        "target": "telegram:6066269036",
+        "updated_at": "2026-06-04T01:38:00+07:00"
+      },
+      "error": {
+        "enabled": true,
+        "account": "employee-notify",
+        "target": "telegram:6066269036",
+        "updated_at": "2026-06-04T01:38:00+07:00"
+      }
     }
   }
 }

@@ -691,13 +691,60 @@ class CompanyKernelCoreTest(unittest.TestCase):
             return FakeResponse()
 
         with mock.patch.dict("os.environ", {"COMPANY_EMPLOYEE_TELEGRAM_BOT_TOKEN": "123456:secret"}), mock.patch.object(companyctl.urllib.request, "urlopen", side_effect=fake_urlopen):
-            code, sent = run_cli("notification", "send", "--message", "notify smoke")
+            code, sent = run_cli("notification", "send", "--kind", "error", "--message", "notify smoke")
         self.assertEqual(0, code, sent)
         self.assertEqual("115", str(sent["message_id"]))
+        self.assertEqual("error", sent["kind"])
         self.assertEqual("telegram:6066269036", sent["target"])
         self.assertNotIn("123456:secret", json.dumps(sent, ensure_ascii=False))
         self.assertIn("123456:secret", requests[0].full_url)
         self.assertNotIn("123456:secret", (self.root / "config" / "company_communications.json").read_text(encoding="utf-8"))
+
+    def test_notification_send_api_supports_error_dry_run(self) -> None:
+        status, saved = api_gateway.route_post(
+            "/v1/settings/notification",
+            {
+                "telegram_account": "employee-notify",
+                "telegram_bot_token_env": "COMPANY_EMPLOYEE_TELEGRAM_BOT_TOKEN",
+                "telegram_default_target": "telegram:6066269036",
+                "employee_notifications_enabled": "true",
+            },
+        )
+        self.assertEqual(HTTPStatus.OK, status, saved)
+        status, sent = api_gateway.route_post("/v1/notifications/send", {"kind": "error", "subject": "Smoke error", "message": "adapter failed", "dry_run": True})
+        self.assertEqual(HTTPStatus.OK, status, sent)
+        self.assertTrue(sent["dry_run"])
+        self.assertEqual("error", sent["kind"])
+        self.assertEqual("telegram:6066269036", sent["target"])
+
+    def test_approval_request_notifies_operator_route(self) -> None:
+        code, created = run_cli("employee", "create", "--id", "main", "--name", "main", "--role", "operator", "--runtime", "openclaw", "--workspace", str(self.root / "workspace" / "main"))
+        self.assertEqual(0, code, created)
+        api_gateway.route_post(
+            "/v1/settings/notification",
+            {
+                "telegram_account": "employee-notify",
+                "telegram_bot_token_env": "COMPANY_EMPLOYEE_TELEGRAM_BOT_TOKEN",
+                "telegram_default_target": "telegram:6066269036",
+                "employee_notifications_enabled": "true",
+            },
+        )
+
+        class FakeResponse:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def read(self):
+                return json.dumps({"ok": True, "result": {"message_id": 116, "chat": {"id": 6066269036}}}).encode("utf-8")
+
+        with mock.patch.dict("os.environ", {"COMPANY_EMPLOYEE_TELEGRAM_BOT_TOKEN": "123456:secret"}), mock.patch.object(companyctl.urllib.request, "urlopen", return_value=FakeResponse()):
+            code, approval = run_cli("approval", "request", "--from", "main", "--action", "external_send", "--reason", "publish requires human approval")
+        self.assertEqual(0, code, approval)
+        self.assertEqual("approval", approval["notification"]["kind"])
+        self.assertEqual("116", str(approval["notification"]["message_id"]))
 
     def test_human_owner_can_use_real_conversation_api_without_being_schedulable(self) -> None:
         code, codex = run_cli("employee", "create", "--id", "codex", "--name", "Codex", "--role", "developer", "--runtime", "codex", "--workspace", str(self.root / "workspace" / "codex"))
