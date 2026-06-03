@@ -8,6 +8,7 @@ import sqlite3
 import subprocess
 import tempfile
 import unittest
+from http import HTTPStatus
 from pathlib import Path
 from unittest import mock
 
@@ -1388,7 +1389,7 @@ class CompanyKernelCoreTest(unittest.TestCase):
         handler.send_header = lambda key, value: sent_headers.append((key, value))  # type: ignore[method-assign]
         handler.send_cors_headers()
         self.assertIn(("Access-Control-Allow-Origin", "*"), sent_headers)
-        self.assertIn(("Access-Control-Allow-Methods", "GET, POST, OPTIONS"), sent_headers)
+        self.assertIn(("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE, OPTIONS"), sent_headers)
 
         for agent in ["video-ops", "video-creator", "video-publisher", "codex", "openclaw-main", "hermes", "nestcar"]:
             status, heartbeat = api_gateway.route_post("/v1/heartbeats", {"agent": agent})
@@ -1695,6 +1696,9 @@ class CompanyKernelCoreTest(unittest.TestCase):
         )
         self.assertEqual(200, status, matched)
         self.assertEqual("cursor-dev", matched["matches"][0]["agent"])
+        status, match_get = api_gateway.route_get("/v1/employees/match", {})
+        self.assertEqual(HTTPStatus.METHOD_NOT_ALLOWED, status)
+        self.assertEqual("use POST", match_get["error"])
 
         status, routed = api_gateway.route_post(
             "/v1/tasks/route",
@@ -1748,6 +1752,14 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual("Cursor Reviewer", shown_profile["employee"]["name"])
         self.assertEqual("candidate", shown_profile["employee"]["status"])
 
+        status, patched = api_gateway.route_patch(
+            "/v1/employees/cursor-dev",
+            {"name": "Cursor API Employee", "role": "developer", "status": "active"},
+        )
+        self.assertEqual(200, status, patched)
+        self.assertEqual("Cursor API Employee", patched["employee"]["name"])
+        self.assertEqual("active", patched["employee"]["status"])
+
         managed_workspace = self.root / "employees" / "api-reviewer"
         status, onboarded = api_gateway.route_post(
             "/v1/employees/onboard",
@@ -1772,7 +1784,7 @@ class CompanyKernelCoreTest(unittest.TestCase):
         status, offboard_dry = api_gateway.route_post("/v1/employees/api-review/offboard", {"dry_run": "true"})
         self.assertEqual(200, status, offboard_dry)
         self.assertTrue(offboard_dry["dry_run"])
-        status, offboarded = api_gateway.route_post("/v1/employees/api-review/offboard", {})
+        status, offboarded = api_gateway.route_delete("/v1/employees/api-review", {})
         self.assertEqual(200, status, offboarded)
         self.assertEqual("soft-delete", offboarded["action"])
 

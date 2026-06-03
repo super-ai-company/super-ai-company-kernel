@@ -34,6 +34,8 @@ API_ENDPOINTS = [
     {"method": "POST", "path": "/v1/employees", "summary": "Create employee", "body": {"id": "employee id", "name": "display name", "role": "role", "runtime": "runtime id", "workspace": "path"}},
     {"method": "POST", "path": "/v1/employees/onboard", "summary": "Onboard employee with capabilities, permissions, communication, optional scaffold, and optional test task", "body": {"id": "employee id", "name": "display name", "role": "role", "runtime": "runtime id", "workspace": "path", "alias": "alias optional", "skills": "comma-separated optional", "tools": "comma-separated optional", "task_types": "comma-separated optional", "can_talk_to": "comma-separated optional", "can_assign_to": "comma-separated optional", "open_communication": "bool optional", "channel": "channel optional", "create_test_task": "bool optional"}},
     {"method": "GET", "path": "/v1/employees/{employee_id}", "summary": "Show employee profile, capabilities, permissions, heartbeat, and files"},
+    {"method": "PATCH", "path": "/v1/employees/{employee_id}", "summary": "Update employee profile fields through companyctl", "body": {"name": "display name optional", "role": "role optional", "runtime": "runtime id optional", "workspace": "path optional", "status": "active/candidate/archived optional", "dry_run": "bool optional"}},
+    {"method": "DELETE", "path": "/v1/employees/{employee_id}", "summary": "Offboard employee with dry-run, soft archive, or guarded hard delete", "body": {"hard_delete": "bool optional", "dry_run": "bool optional"}},
     {"method": "POST", "path": "/v1/employees/{employee_id}/profile", "summary": "Update employee profile fields through companyctl", "body": {"name": "display name optional", "role": "role optional", "runtime": "runtime id optional", "workspace": "path optional", "status": "active/candidate/archived optional", "dry_run": "bool optional"}},
     {"method": "POST", "path": "/v1/employees/{employee_id}/offboard", "summary": "Offboard employee with dry-run, soft archive, or guarded hard delete", "body": {"hard_delete": "bool optional", "dry_run": "bool optional"}},
     {"method": "POST", "path": "/v1/employees/{employee_id}/capabilities", "summary": "Update employee capabilities", "body": {"set_skills": "comma-separated skills optional", "add_skill": "string/list optional", "set_tools": "comma-separated tools optional", "add_tool": "string/list optional", "set_task_types": "comma-separated task types optional"}},
@@ -197,6 +199,8 @@ def route_get(path: str, query: dict[str, list[str]]) -> tuple[int, dict]:
     if path == "/v1/employees":
         code, payload = run_companyctl(["employee", "list"])
         return (HTTPStatus.OK if code == 0 else HTTPStatus.BAD_REQUEST), {"exit_code": code, **payload}
+    if path == "/v1/employees/match":
+        return HTTPStatus.METHOD_NOT_ALLOWED, {"ok": False, "error": "use POST", "path": path}
     if path.startswith("/v1/employees/"):
         employee_id = path.removeprefix("/v1/employees/").strip("/")
         code, payload = run_companyctl(["employee", "show", "--id", employee_id])
@@ -204,8 +208,6 @@ def route_get(path: str, query: dict[str, list[str]]) -> tuple[int, dict]:
     if path == "/v1/runtimes":
         code, payload = run_companyctl(["runtime", "list"])
         return (HTTPStatus.OK if code == 0 else HTTPStatus.BAD_REQUEST), {"exit_code": code, **payload}
-    if path == "/v1/employees/match":
-        return HTTPStatus.METHOD_NOT_ALLOWED, {"ok": False, "error": "use POST", "path": path}
     if path == "/v1/tasks":
         argv = ["task", "list"]
         agent = query_value(query, "agent")
@@ -307,6 +309,51 @@ def route_get(path: str, query: dict[str, list[str]]) -> tuple[int, dict]:
     return HTTPStatus.NOT_FOUND, {"ok": False, "error": "not found", "path": path}
 
 
+def employee_offboard_response(employee_id: str, body: dict) -> tuple[int, dict]:
+    argv = ["employee", "offboard", "--id", employee_id]
+    if truthy(body.get("hard_delete")):
+        argv.append("--hard-delete")
+    if truthy(body.get("dry_run")):
+        argv.append("--dry-run")
+    code, payload = run_companyctl(argv)
+    return (HTTPStatus.OK if code == 0 else HTTPStatus.BAD_REQUEST), {"exit_code": code, **payload}
+
+
+def employee_profile_response(employee_id: str, body: dict) -> tuple[int, dict]:
+    argv = ["employee", "update", "--id", employee_id]
+    for key, flag in [
+        ("name", "--name"),
+        ("role", "--role"),
+        ("runtime", "--runtime"),
+        ("workspace", "--workspace"),
+        ("status", "--status"),
+    ]:
+        if body.get(key) not in {None, ""}:
+            argv.extend([flag, str(body[key])])
+    if truthy(body.get("dry_run")):
+        argv.append("--dry-run")
+    code, payload = run_companyctl(argv)
+    return (HTTPStatus.OK if code == 0 else HTTPStatus.BAD_REQUEST), {"exit_code": code, **payload}
+
+
+def route_patch(path: str, body: dict) -> tuple[int, dict]:
+    if path.startswith("/v1/employees/"):
+        employee_id = path.removeprefix("/v1/employees/").strip("/")
+        if not employee_id or "/" in employee_id:
+            return HTTPStatus.NOT_FOUND, {"ok": False, "error": "not found", "path": path}
+        return employee_profile_response(employee_id, body)
+    return HTTPStatus.NOT_FOUND, {"ok": False, "error": "not found", "path": path}
+
+
+def route_delete(path: str, body: dict) -> tuple[int, dict]:
+    if path.startswith("/v1/employees/"):
+        employee_id = path.removeprefix("/v1/employees/").strip("/")
+        if not employee_id or "/" in employee_id:
+            return HTTPStatus.NOT_FOUND, {"ok": False, "error": "not found", "path": path}
+        return employee_offboard_response(employee_id, body)
+    return HTTPStatus.NOT_FOUND, {"ok": False, "error": "not found", "path": path}
+
+
 def route_post(path: str, body: dict) -> tuple[int, dict]:
     if path == "/v1/employees/onboard":
         argv = [
@@ -370,29 +417,10 @@ def route_post(path: str, body: dict) -> tuple[int, dict]:
         return (HTTPStatus.CREATED if code == 0 else HTTPStatus.BAD_REQUEST), {"exit_code": code, **payload}
     if path.startswith("/v1/employees/") and path.endswith("/offboard"):
         employee_id = path.removeprefix("/v1/employees/").removesuffix("/offboard").strip("/")
-        argv = ["employee", "offboard", "--id", employee_id]
-        if truthy(body.get("hard_delete")):
-            argv.append("--hard-delete")
-        if truthy(body.get("dry_run")):
-            argv.append("--dry-run")
-        code, payload = run_companyctl(argv)
-        return (HTTPStatus.OK if code == 0 else HTTPStatus.BAD_REQUEST), {"exit_code": code, **payload}
+        return employee_offboard_response(employee_id, body)
     if path.startswith("/v1/employees/") and path.endswith("/profile"):
         employee_id = path.removeprefix("/v1/employees/").removesuffix("/profile").strip("/")
-        argv = ["employee", "update", "--id", employee_id]
-        for key, flag in [
-            ("name", "--name"),
-            ("role", "--role"),
-            ("runtime", "--runtime"),
-            ("workspace", "--workspace"),
-            ("status", "--status"),
-        ]:
-            if body.get(key) not in {None, ""}:
-                argv.extend([flag, str(body[key])])
-        if truthy(body.get("dry_run")):
-            argv.append("--dry-run")
-        code, payload = run_companyctl(argv)
-        return (HTTPStatus.OK if code == 0 else HTTPStatus.BAD_REQUEST), {"exit_code": code, **payload}
+        return employee_profile_response(employee_id, body)
     if path == "/v1/runtimes":
         argv = ["runtime", "register", "--runtime", str(body.get("runtime", ""))]
         for key, flag in [("command", "--command"), ("status", "--status"), ("notes", "--notes")]:
@@ -690,7 +718,7 @@ class ApiHandler(BaseHTTPRequestHandler):
 
     def send_cors_headers(self) -> None:
         self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE, OPTIONS")
         self.send_header("Access-Control-Allow-Headers", "Content-Type")
 
     def send_json(self, code: int, payload: dict) -> None:
@@ -743,6 +771,26 @@ class ApiHandler(BaseHTTPRequestHandler):
             return
         parsed = urlparse(self.path)
         status, payload = route_post(parsed.path, body)
+        self.send_json(status, payload)
+
+    def do_PATCH(self) -> None:
+        try:
+            body = self.read_json()
+        except ValueError as exc:
+            self.send_json(HTTPStatus.BAD_REQUEST, {"ok": False, "error": str(exc)})
+            return
+        parsed = urlparse(self.path)
+        status, payload = route_patch(parsed.path, body)
+        self.send_json(status, payload)
+
+    def do_DELETE(self) -> None:
+        try:
+            body = self.read_json()
+        except ValueError as exc:
+            self.send_json(HTTPStatus.BAD_REQUEST, {"ok": False, "error": str(exc)})
+            return
+        parsed = urlparse(self.path)
+        status, payload = route_delete(parsed.path, body)
         self.send_json(status, payload)
 
     def log_message(self, format: str, *args: object) -> None:
