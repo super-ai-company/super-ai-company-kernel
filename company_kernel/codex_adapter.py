@@ -145,6 +145,31 @@ def write_workspace_progress(workspace: Path, *, state: str, project: str, actio
     return path
 
 
+def status_reply_text(*, status: str, current_action: str, changed_files: str = "-", verification_run: str = "-", blocker: str = "-", eta: str = "-") -> str:
+    return "\n".join(
+        [
+            f"status: {status}",
+            f"current_action: {current_action}",
+            f"changed_files: {changed_files}",
+            f"verification_run: {verification_run}",
+            f"blocker: {blocker}",
+            f"eta: {eta}",
+        ]
+    )
+
+
+def send_source_progress(agent: str, source: str, body: str) -> dict:
+    if not source:
+        return {"ok": False, "skipped": True, "reason": "missing direct source"}
+    message_id = f"msg-{agent}-progress-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
+    code, out, err = run_companyctl(["message", "send", "--from", agent, "--to", source, "--body", body, "--message-id", message_id])
+    try:
+        payload = json.loads(out or "{}")
+    except json.JSONDecodeError:
+        payload = {}
+    return {"ok": code == 0, "exit_code": code, "message_id": message_id, "payload": payload, "stderr": err[-1000:]}
+
+
 def build_task_card(task: sqlite3.Row, workspace: Path, sandbox: str) -> str:
     return "\n".join(
         [
@@ -402,6 +427,22 @@ def process(args: argparse.Namespace) -> int:
             action=f"received direct task from {args.direct_source or 'unknown'}",
             checking=f"task card {artifact['task_card']}",
         )
+        in_progress = write_workspace_progress(
+            workspace,
+            state="in_progress",
+            project=workspace.name,
+            action="started direct Codex execution",
+            checking=f"running codex exec for {args.direct_source or 'unknown'}",
+        )
+        working_reply = status_reply_text(
+            status="working",
+            current_action="Codex adapter started direct execution",
+            changed_files="-",
+            verification_run=f"in progress report {in_progress}",
+            blocker="-",
+            eta="running",
+        )
+        working_delivery = send_source_progress(args.agent, args.direct_source, working_reply)
         run_code, cmd = run_codex(artifact["task_card"], workspace, artifact["last_message"], artifact["events"], "workspace-write", args.model, args.isolation, args.sandbox_profile)
         if run_code == 0:
             workspace_report = write_workspace_progress(
@@ -444,7 +485,9 @@ def process(args: argparse.Namespace) -> int:
             "adapter_report": str(artifact["report"]),
             "progress_report": str(report),
             "workspace_acknowledged_report": str(acknowledged),
+            "workspace_in_progress_report": str(in_progress),
             "workspace_progress_report": str(workspace_report),
+            "working_delivery": working_delivery,
             "companyctl_stdout": hb_out,
             "companyctl_stderr": hb_err,
         })
