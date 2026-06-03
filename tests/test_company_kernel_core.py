@@ -1305,6 +1305,31 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual(200, status, unlocked)
         self.assertIn("task:api-stale-lock", [lock["resource_key"] for lock in unlocked["unlocked"]])
 
+    def test_api_gateway_exposes_employee_and_runtime_management(self) -> None:
+        status, runtime = api_gateway.route_post("/v1/runtimes", {"runtime": "cursor", "command": "cursor-agent", "notes": "Cursor adapter placeholder"})
+        self.assertEqual(201, status, runtime)
+        self.assertEqual("cursor", runtime["runtime"]["runtime"])
+        status, runtimes = api_gateway.route_get("/v1/runtimes", {})
+        self.assertEqual(200, status, runtimes)
+        self.assertIn("cursor", [item["runtime"] for item in runtimes["runtimes"]])
+
+        workspace = self.root / "workspace" / "cursor-dev"
+        status, employee = api_gateway.route_post(
+            "/v1/employees",
+            {"id": "cursor-dev", "name": "Cursor Dev", "role": "developer", "runtime": "cursor", "workspace": str(workspace)},
+        )
+        self.assertEqual(201, status, employee)
+        self.assertEqual("cursor-dev", employee["employee"]["id"])
+        status, employees = api_gateway.route_get("/v1/employees", {})
+        self.assertEqual(200, status, employees)
+        self.assertIn("cursor-dev", [item["id"] for item in employees["employees"]])
+        status, shown = api_gateway.route_get("/v1/employees/cursor-dev", {})
+        self.assertEqual(200, status, shown)
+        self.assertEqual("cursor", shown["employee"]["runtime"])
+        self.assertTrue(Path(shown["files"]["profile"]).exists())
+        self.assertTrue(Path(shown["files"]["capabilities"]).exists())
+        self.assertFalse(shown["permissions"]["can_modify_kernel"])
+
     def test_sandboxing_wraps_codex_and_hermes_commands_without_executing_container(self) -> None:
         workspace = self.root / "workspace" / "codex"
         profile_config = {

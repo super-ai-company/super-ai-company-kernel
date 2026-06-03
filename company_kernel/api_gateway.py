@@ -23,10 +23,17 @@ API_CAPABILITIES = [
     "adapter_runs",
     "projects",
     "locks",
+    "employees",
+    "runtimes",
 ]
 API_ENDPOINTS = [
     {"method": "GET", "path": "/v1/health", "summary": "Company Kernel health summary"},
     {"method": "GET", "path": "/v1/doctor", "summary": "Doctor summary", "query": {"strict_launchd": "bool optional"}},
+    {"method": "GET", "path": "/v1/employees", "summary": "List employees"},
+    {"method": "POST", "path": "/v1/employees", "summary": "Create employee", "body": {"id": "employee id", "name": "display name", "role": "role", "runtime": "runtime id", "workspace": "path"}},
+    {"method": "GET", "path": "/v1/employees/{employee_id}", "summary": "Show employee profile, capabilities, permissions, heartbeat, and files"},
+    {"method": "GET", "path": "/v1/runtimes", "summary": "List runtimes"},
+    {"method": "POST", "path": "/v1/runtimes", "summary": "Register runtime", "body": {"runtime": "runtime id", "command": "command optional", "status": "registered/disabled optional", "notes": "string optional"}},
     {"method": "GET", "path": "/v1/tasks", "summary": "List tasks", "query": {"agent": "employee id optional", "status": "task status optional"}},
     {"method": "POST", "path": "/v1/tasks", "summary": "Submit task", "body": {"from": "employee id", "to": "employee id", "title": "string", "description": "string optional", "task_id": "string optional", "priority": "P0/P1/P2/P3 optional", "requires_approval": "action optional", "approval_id": "string optional"}},
     {"method": "GET", "path": "/v1/tasks/{task_id}", "summary": "Show task"},
@@ -158,6 +165,16 @@ def route_get(path: str, query: dict[str, list[str]]) -> tuple[int, dict]:
             argv.append("--strict-launchd")
         code, payload = run_companyctl(argv)
         return (HTTPStatus.OK if code == 0 else HTTPStatus.BAD_REQUEST), {"exit_code": code, **payload}
+    if path == "/v1/employees":
+        code, payload = run_companyctl(["employee", "list"])
+        return (HTTPStatus.OK if code == 0 else HTTPStatus.BAD_REQUEST), {"exit_code": code, **payload}
+    if path.startswith("/v1/employees/"):
+        employee_id = path.removeprefix("/v1/employees/").strip("/")
+        code, payload = run_companyctl(["employee", "show", "--id", employee_id])
+        return (HTTPStatus.OK if code == 0 else HTTPStatus.BAD_REQUEST), {"exit_code": code, **payload}
+    if path == "/v1/runtimes":
+        code, payload = run_companyctl(["runtime", "list"])
+        return (HTTPStatus.OK if code == 0 else HTTPStatus.BAD_REQUEST), {"exit_code": code, **payload}
     if path == "/v1/tasks":
         argv = ["task", "list"]
         agent = query_value(query, "agent")
@@ -256,6 +273,31 @@ def route_get(path: str, query: dict[str, list[str]]) -> tuple[int, dict]:
 
 
 def route_post(path: str, body: dict) -> tuple[int, dict]:
+    if path == "/v1/employees":
+        code, payload = run_companyctl(
+            [
+                "employee",
+                "create",
+                "--id",
+                str(body.get("id", "")),
+                "--name",
+                str(body.get("name", "")),
+                "--role",
+                str(body.get("role", "")),
+                "--runtime",
+                str(body.get("runtime", "")),
+                "--workspace",
+                str(body.get("workspace", "")),
+            ]
+        )
+        return (HTTPStatus.CREATED if code == 0 else HTTPStatus.BAD_REQUEST), {"exit_code": code, **payload}
+    if path == "/v1/runtimes":
+        argv = ["runtime", "register", "--runtime", str(body.get("runtime", ""))]
+        for key, flag in [("command", "--command"), ("status", "--status"), ("notes", "--notes")]:
+            if body.get(key):
+                argv.extend([flag, str(body[key])])
+        code, payload = run_companyctl(argv)
+        return (HTTPStatus.CREATED if code == 0 else HTTPStatus.BAD_REQUEST), {"exit_code": code, **payload}
     if path == "/v1/tasks":
         argv = [
             "task",

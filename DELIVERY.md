@@ -24,6 +24,7 @@ Implemented and verified:
 - API Gateway project governance endpoints now expose project creation, listing, task linking, plan item updates, and project status changes.
 - API Gateway project review and acceptance endpoints now expose readiness checks and completion acceptance records.
 - API Gateway lock endpoints now expose acquire/list/release/unlock-stale for distributed worker coordination.
+- API Gateway employee and runtime endpoints now expose employee creation, employee inspection, runtime registration, and runtime listing.
 - Sandbox isolation foundation: Codex/Hermes adapters can wrap execution commands with Docker or Firejail profiles without changing task protocol.
 - Static dashboard with runtime health, evidence health, employees, capabilities, projects, recent tasks, long-task delegation, conversations, approvals, RFCs, events, adapter runs, and locks.
 - Daemon loop with heartbeat refresh, scheduler run, repair pass, compact summary output, adapter run recording, launchd template and install/uninstall scripts.
@@ -46,7 +47,7 @@ python3 /Users/owner/openclaw/workspace-xmanx/scripts/heartbeat_summary_router.p
 
 ## Latest Verified Result
 
-- Unit tests: 36/36 passing.
+- Unit tests: 37/37 passing.
 - Daemon worker smoke: verified in automated tests; manual command path documented in README.
 - Doctor: `ok=true`, `issues=[]`.
 - Heartbeats: 14 active employee heartbeats, missing=0, stale=0.
