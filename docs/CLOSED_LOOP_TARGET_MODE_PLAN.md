@@ -2,13 +2,14 @@
 
 ## 强制规则
 
-任何员工通信都必须按这个闭环验收：
+任何员工通信都必须按“发起入口 -> 协作员工 -> 发起入口 -> 最终操作员”的轮回验收。当前必须支持两条标准流程：
 
 ```text
-人类 -> OpenClaw -> Codex -> OpenClaw -> 人类
+human -> main -> codex -> main -> human/main
+human -> hermes -> codex -> hermes -> main
 ```
 
-只看到 `message direct ok`、adapter stdout、inbox 文件、dashboard 显示 API ONLINE，都不算闭环成功。必须证明发起人最终收到明确回执。
+只看到 `message direct ok`、adapter stdout、inbox 文件、dashboard 显示 API ONLINE，都不算闭环成功。必须证明发起入口收到协作员工回执，并且最终操作员收到明确结果。
 
 ## 最近已实现
 
@@ -37,7 +38,7 @@
 - Codex 双向通信:
   - 以前只返回 adapter stdout，不等于 `Codex -> OpenClaw` 真回执。
   - 已开始补：Codex direct 写 repo-local progress report，Company Kernel 记录 `codex -> source` receipt message。
-  - 但还没完整跑真实链路：`人类 -> OpenClaw -> Codex -> OpenClaw -> 人类`。
+  - 但还没完整跑真实链路：`human -> main -> codex -> main -> human/main` 和 `human -> hermes -> codex -> hermes -> main`。
 - Hermes -> Telegram:
   - `main -> Hermes` direct 能返回 `ok`，并带 `deliver=true telegram/default/current`。
   - 但没有用可观测证据确认 Telegram 上人类真实收到 Hermes 消息。
@@ -54,7 +55,8 @@
 目标：逐项验证 Company Kernel 的真实闭环通信，不允许把 stdout、inbox 文件、API ONLINE 当作最终成功。仓库：/Users/owner/openclaw/company-kernel，分支：codex/dashboard-real-conversations。不要覆盖 main，不要重置用户改动。
 
 强制验收链路：
-人类 -> OpenClaw -> Codex -> OpenClaw -> 人类
+1. human -> main -> codex -> main -> human/main
+2. human -> hermes -> codex -> hermes -> main
 
 步骤：
 1. 先确认状态：
@@ -75,17 +77,19 @@
    - message list 中必须能看到双向两条消息。
    - 不能只看 company-codex-adapter stdout。
 
-4. 验证完整闭环：
-   - 从人类当前 Telegram 或等价 human-facing channel 触发 OpenClaw。
-   - OpenClaw 发给 Codex。
-   - Codex 回执给 OpenClaw。
-   - OpenClaw 把结果发回人类。
-   - 最终证据必须包括：Telegram/人类可见消息、OpenClaw 入站/出站记录、Company Kernel 双向 message/receipt、Codex progress report。
+4. 验证 main 入口闭环：
+   - 从 human 当前 Telegram 或等价 human-facing channel 触发 main。
+   - main 发给 codex。
+   - codex 回执给 main。
+   - main 把结果回给 human，或至少写入 main 的 human-facing 操作队列并可见。
+   - 最终证据必须包括：human 可见消息/队列、main 入站/出站记录、Company Kernel 双向 message/receipt、Codex progress report。
 
-5. 验证 Hermes -> 人类：
-   - 通过 main/openclaw-main 发给 Hermes。
-   - Hermes 必须回当前 Telegram。
-   - 不能只看 deliver=true，必须确认人类可见或有发送平台 evidence。
+5. 验证 Hermes 入口闭环：
+   - 从 human 触发 hermes，或用等价测试消息模拟 human -> hermes。
+   - hermes 发给 codex。
+   - codex 回执给 hermes。
+   - hermes 把结果转给 main。
+   - 最终证据必须包括：hermes 入站/出站记录、Company Kernel 双向 message/receipt、Codex progress report、main 收到 hermes 结果。
 
 6. 验证失败闭环：
    - 对不存在员工发消息。
@@ -111,8 +115,8 @@
    - 浏览器打开 http://127.0.0.1:8780/dashboard.html 实测
 
 完成标准：
-- 人类 -> OpenClaw -> Codex -> OpenClaw -> 人类 有真实证据。
-- Hermes -> Telegram 有真实人类可见证据。
+- human -> main -> codex -> main -> human/main 有真实证据。
+- human -> hermes -> codex -> hermes -> main 有真实证据。
 - 员工 name/id/alias 路由不串人。
 - 失败会回传发起人，不静默。
 - GitHub 分支推送成功，只推 codex/dashboard-real-conversations，不合并 main。
