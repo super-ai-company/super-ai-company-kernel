@@ -32,11 +32,11 @@ API_ENDPOINTS = [
     {"method": "GET", "path": "/v1/doctor", "summary": "Doctor summary", "query": {"strict_launchd": "bool optional", "strict_openclaw": "bool optional"}},
     {"method": "GET", "path": "/v1/employees", "summary": "List employees"},
     {"method": "POST", "path": "/v1/employees", "summary": "Create employee", "body": {"id": "employee id", "name": "display name", "role": "role", "runtime": "runtime id", "workspace": "path"}},
-    {"method": "POST", "path": "/v1/employees/onboard", "summary": "Onboard employee with capabilities, permissions, communication, optional scaffold, and optional test task", "body": {"id": "employee id", "name": "display name", "role": "role", "runtime": "runtime id", "workspace": "path", "alias": "alias optional", "skills": "comma-separated optional", "tools": "comma-separated optional", "task_types": "comma-separated optional", "can_talk_to": "comma-separated optional", "can_assign_to": "comma-separated optional", "open_communication": "bool optional", "channel": "channel optional", "create_test_task": "bool optional"}},
+    {"method": "POST", "path": "/v1/employees/onboard", "summary": "Onboard employee with capabilities, permissions, communication, optional scaffold, and optional test task", "body": {"id": "employee id", "name": "display name", "role": "role", "runtime": "runtime id", "workspace": "path", "alias": "alias optional", "skills": "comma-separated optional", "tools": "comma-separated optional", "task_types": "comma-separated optional", "can_talk_to": "comma-separated optional", "can_assign_to": "comma-separated optional", "open_communication": "bool optional", "channel": "channel optional", "default_user_reply_channel": "string optional", "default_user_reply_account": "string optional", "default_user_reply_to": "string optional", "default_user_reply_deliver": "bool optional", "create_test_task": "bool optional"}},
     {"method": "GET", "path": "/v1/employees/{employee_id}", "summary": "Show employee profile, capabilities, permissions, heartbeat, and files"},
-    {"method": "PATCH", "path": "/v1/employees/{employee_id}", "summary": "Update employee profile fields through companyctl", "body": {"name": "display name optional", "role": "role optional", "runtime": "runtime id optional", "workspace": "path optional", "status": "active/candidate/archived optional", "dry_run": "bool optional"}},
+    {"method": "PATCH", "path": "/v1/employees/{employee_id}", "summary": "Update employee profile fields through companyctl", "body": {"name": "display name optional", "role": "role optional", "runtime": "runtime id optional", "workspace": "path optional", "status": "active/candidate/archived optional", "default_user_reply_channel": "string optional", "default_user_reply_account": "string optional", "default_user_reply_to": "string optional", "default_user_reply_deliver": "bool optional", "dry_run": "bool optional"}},
     {"method": "DELETE", "path": "/v1/employees/{employee_id}", "summary": "Offboard employee with dry-run, soft archive, or guarded hard delete", "body": {"hard_delete": "bool optional", "dry_run": "bool optional"}},
-    {"method": "POST", "path": "/v1/employees/{employee_id}/profile", "summary": "Update employee profile fields through companyctl", "body": {"name": "display name optional", "role": "role optional", "runtime": "runtime id optional", "workspace": "path optional", "status": "active/candidate/archived optional", "dry_run": "bool optional"}},
+    {"method": "POST", "path": "/v1/employees/{employee_id}/profile", "summary": "Update employee profile fields through companyctl", "body": {"name": "display name optional", "role": "role optional", "runtime": "runtime id optional", "workspace": "path optional", "status": "active/candidate/archived optional", "default_user_reply_channel": "string optional", "default_user_reply_account": "string optional", "default_user_reply_to": "string optional", "default_user_reply_deliver": "bool optional", "dry_run": "bool optional"}},
     {"method": "POST", "path": "/v1/employees/{employee_id}/offboard", "summary": "Offboard employee with dry-run, soft archive, or guarded hard delete", "body": {"hard_delete": "bool optional", "dry_run": "bool optional"}},
     {"method": "POST", "path": "/v1/employees/{employee_id}/capabilities", "summary": "Update employee capabilities", "body": {"set_skills": "comma-separated skills optional", "add_skill": "string/list optional", "set_tools": "comma-separated tools optional", "add_tool": "string/list optional", "set_task_types": "comma-separated task types optional"}},
     {"method": "POST", "path": "/v1/employees/{employee_id}/permissions", "summary": "Update employee permissions", "body": {"can_submit_tasks": "true/false/keep optional", "can_claim_tasks": "true/false/keep optional", "can_modify_kernel": "true/false/keep optional", "requires_approval_for": "comma-separated actions optional"}},
@@ -338,9 +338,14 @@ def employee_profile_response(employee_id: str, body: dict) -> tuple[int, dict]:
         ("runtime", "--runtime"),
         ("workspace", "--workspace"),
         ("status", "--status"),
+        ("default_user_reply_channel", "--default-user-reply-channel"),
+        ("default_user_reply_account", "--default-user-reply-account"),
+        ("default_user_reply_to", "--default-user-reply-to"),
     ]:
         if body.get(key) not in {None, ""}:
             argv.extend([flag, str(body[key])])
+    if body.get("default_user_reply_deliver") is not None:
+        argv.append("--default-user-reply-deliver" if truthy(body.get("default_user_reply_deliver")) else "--no-default-user-reply-deliver")
     if truthy(body.get("dry_run")):
         argv.append("--dry-run")
     code, payload = run_companyctl(argv)
@@ -390,12 +395,17 @@ def route_post(path: str, body: dict) -> tuple[int, dict]:
             ("can_assign_to", "--can-assign-to"),
             ("channel", "--channel"),
             ("handoff_mode", "--handoff-mode"),
+            ("default_user_reply_channel", "--default-user-reply-channel"),
+            ("default_user_reply_account", "--default-user-reply-account"),
+            ("default_user_reply_to", "--default-user-reply-to"),
             ("requires_approval_for", "--requires-approval-for"),
             ("test_source", "--test-source"),
             ("test_task_id", "--test-task-id"),
         ]:
             if body.get(key):
                 argv.extend([flag, str(body[key])])
+        if truthy(body.get("default_user_reply_deliver")):
+            argv.append("--default-user-reply-deliver")
         for key, flag in [
             ("open_communication", "--open-communication"),
             ("no_submit_tasks", "--no-submit-tasks"),
