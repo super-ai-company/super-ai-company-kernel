@@ -746,6 +746,60 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual("approval", approval["notification"]["kind"])
         self.assertEqual("116", str(approval["notification"]["message_id"]))
 
+    def test_tool_policy_block_report_explains_no_popup_and_notifies_error_route(self) -> None:
+        code, created = run_cli("employee", "create", "--id", "openclaw-main", "--name", "OpenClaw Main", "--role", "operator", "--runtime", "openclaw", "--workspace", str(self.root / "workspace" / "main"))
+        self.assertEqual(0, code, created)
+        code, created = run_cli("employee", "create", "--id", "codex", "--name", "Codex", "--role", "developer", "--runtime", "codex", "--workspace", str(self.root / "workspace" / "codex"))
+        self.assertEqual(0, code, created)
+        api_gateway.route_post(
+            "/v1/settings/notification",
+            {
+                "telegram_account": "employee-notify",
+                "telegram_bot_token_env": "COMPANY_EMPLOYEE_TELEGRAM_BOT_TOKEN",
+                "telegram_default_target": "telegram:6066269036",
+                "employee_notifications_enabled": "true",
+            },
+        )
+        code, report = run_cli(
+            "policy",
+            "block-report",
+            "--source",
+            "openclaw-main",
+            "--target",
+            "codex",
+            "--tool",
+            "sessions_send",
+            "--operation",
+            "agent-to-agent-message",
+            "--error",
+            "Agent-to-agent messaging denied by tools.agentToAgent.allow.",
+            "--dry-run",
+        )
+        self.assertEqual(0, code, report)
+        self.assertFalse(report["ok"])
+        self.assertEqual("agent_to_agent_denied", report["classification"]["type"])
+        self.assertEqual("not_user_popup_approvable", report["classification"]["approval_semantics"])
+        self.assertIn("companyctl message direct", report["classification"]["replacement"])
+        self.assertTrue(report["notification"]["dry_run"])
+        self.assertEqual("error", report["notification"]["kind"])
+        self.assertTrue(Path(report["evidence"]).exists())
+
+    def test_policy_block_report_api_classifies_sessions_spawn_denial(self) -> None:
+        status, report = api_gateway.route_post(
+            "/v1/policy-blocks/report",
+            {
+                "source": "openclaw-main",
+                "target": "codex",
+                "tool": "sessions_spawn",
+                "operation": "spawn-agent-session",
+                "error": "agentId is not allowed for sessions_spawn (allowed: main)",
+                "dry_run": True,
+            },
+        )
+        self.assertEqual(HTTPStatus.OK, status, report)
+        self.assertEqual("session_spawn_denied", report["classification"]["type"])
+        self.assertEqual("not_user_popup_approvable", report["classification"]["approval_semantics"])
+
     def test_human_owner_can_use_real_conversation_api_without_being_schedulable(self) -> None:
         code, codex = run_cli("employee", "create", "--id", "codex", "--name", "Codex", "--role", "developer", "--runtime", "codex", "--workspace", str(self.root / "workspace" / "codex"))
         self.assertEqual(0, code, codex)

@@ -2517,6 +2517,74 @@ def cmd_notification_send(args: argparse.Namespace) -> int:
     return 0 if result.get("ok") else 1
 
 
+def classify_policy_block(error: str) -> dict:
+    text = str(error or "")
+    if "tools.agentToAgent.allow" in text or "Agent-to-agent messaging denied" in text:
+        return {
+            "type": "agent_to_agent_denied",
+            "approval_semantics": "not_user_popup_approvable",
+            "reason": "tool policy denies direct agent-to-agent messaging before any command approval can be requested",
+            "replacement": "Use Company Kernel direct messaging: bin/companyctl message direct --from <source> --to <target> --body '<message>'",
+        }
+    if "sessions_spawn" in text and "allowed: main" in text:
+        return {
+            "type": "session_spawn_denied",
+            "approval_semantics": "not_user_popup_approvable",
+            "reason": "current runtime only allows spawning main sessions, so specifying another agent is a policy error",
+            "replacement": "Route through main or Company Kernel task/direct-message APIs instead of sessions_spawn --agent <target>.",
+        }
+    return {
+        "type": "tool_policy_block",
+        "approval_semantics": "unknown_or_not_popup_approvable",
+        "reason": "external tool policy returned a blocker outside Company Kernel approval gates",
+        "replacement": "Report the blocker through Company Kernel, then use an approved task or direct-message route.",
+    }
+
+
+def cmd_policy_block_report(args: argparse.Namespace) -> int:
+    source = resolve_employee_alias(args.source) if args.source else ""
+    target = resolve_employee_alias(args.target) if args.target else ""
+    classification = classify_policy_block(args.error)
+    payload = {
+        "ok": False,
+        "source": source,
+        "target": target,
+        "tool": args.tool,
+        "operation": args.operation,
+        "error": args.error,
+        "classification": classification,
+        "created_at": now(),
+        "human_notice_required": True,
+        "note": "This is a policy blocker, not a macOS/sudo/Codex approval popup. The operator must be notified instead of waiting for a nonexistent prompt.",
+    }
+    evidence_dir = STATE_DIR / "tool-policy-blocks"
+    evidence_dir.mkdir(parents=True, exist_ok=True)
+    block_id = args.block_id or f"tool-policy-block-{datetime.now().strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:6]}"
+    evidence_path = evidence_dir / f"{slug(block_id)}.json"
+    payload["id"] = block_id
+    payload["evidence"] = str(evidence_path)
+    evidence_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    notification = notification_send_result(
+        kind="error",
+        subject=f"Company Kernel tool policy blocked: {classification['type']}",
+        message=(
+            f"source={source or '-'}\n"
+            f"target={target or '-'}\n"
+            f"tool={args.tool or '-'}\n"
+            f"operation={args.operation or '-'}\n"
+            f"error={args.error}\n"
+            f"reason={classification['reason']}\n"
+            f"replacement={classification['replacement']}\n"
+            f"evidence={evidence_path}"
+        ),
+        dry_run=args.dry_run,
+    )
+    payload["notification"] = notification
+    evidence_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    emit(payload)
+    return 0
+
+
 def cmd_policy_show(_args: argparse.Namespace) -> int:
     emit({"ok": True, "policy": load_policy_config(), "file": str(POLICY_PATH)})
     return 0
@@ -5367,6 +5435,15 @@ def build_parser() -> argparse.ArgumentParser:
     policy_sub = policy.add_subparsers(dest="policy_cmd", required=True)
     policy_show = policy_sub.add_parser("show")
     policy_show.set_defaults(func=cmd_policy_show)
+    policy_block = policy_sub.add_parser("block-report")
+    policy_block.add_argument("--source", default="")
+    policy_block.add_argument("--target", default="")
+    policy_block.add_argument("--tool", default="")
+    policy_block.add_argument("--operation", default="")
+    policy_block.add_argument("--error", required=True)
+    policy_block.add_argument("--block-id", default="")
+    policy_block.add_argument("--dry-run", action="store_true")
+    policy_block.set_defaults(func=cmd_policy_block_report)
 
     guard = sub.add_parser("guard")
     guard_sub = guard.add_subparsers(dest="guard_cmd", required=True)

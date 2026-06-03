@@ -48,6 +48,18 @@ After scan/apply, OpenClaw must run or output the 2-4 round handshake plan as th
 - Every received request must produce an ACK or blocker reply to the sender. If OpenClaw cannot execute, send status, blocker, evidence path, and next action back through Company Kernel.
 - For human-originated work, close the loop: human-facing channel -> OpenClaw employee -> target employee -> OpenClaw employee -> human-facing channel.
 - When blocked by route/config/service failure, ask whether to involve another active employee and list `@agent` options instead of silently stopping.
+- If `sessions_send` fails with `Agent-to-agent messaging denied by tools.agentToAgent.allow` or `sessions_spawn` fails with `agentId is not allowed ... (allowed: main)`, do not wait for a popup. This is a tool-policy blocker, not a macOS/sudo/user approval prompt. Immediately report it:
+
+```bash
+bin/companyctl policy block-report \
+  --source openclaw-main \
+  --target <target-agent> \
+  --tool sessions_send \
+  --operation agent-to-agent-message \
+  --error "<exact error text>"
+```
+
+Then use the returned replacement path, usually `bin/companyctl message direct --from <source> --to <target> --body "<message>"`, or create an explicit task/approval.
 
 ## Blocked Cases
 
