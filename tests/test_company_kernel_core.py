@@ -12,6 +12,7 @@ from pathlib import Path
 from unittest import mock
 
 from company_kernel import api_gateway
+from company_kernel import api_rpc
 from company_kernel import company_daemon
 from company_kernel import company_dashboard
 from company_kernel import company_trace
@@ -48,7 +49,7 @@ class CompanyKernelCoreTest(unittest.TestCase):
             (root / "company_kernel" / source_file.name).write_text(source_file.read_text(encoding="utf-8"), encoding="utf-8")
         (root / "company_kernel" / "schema.sql").write_text(companyctl.SCHEMA.read_text(encoding="utf-8"), encoding="utf-8")
         (root / "bin").mkdir()
-        for executable in ["companyctl", "company-adapter-worker", "company-codex-adapter", "company-openclaw-adapter", "company-trace"]:
+        for executable in ["companyctl", "company-adapter-worker", "company-codex-adapter", "company-openclaw-adapter", "company-trace", "company-api-rpc"]:
             target = root / "bin" / executable
             target.write_text((Path(__file__).resolve().parents[1] / "bin" / executable).read_text(encoding="utf-8"), encoding="utf-8")
             target.chmod(0o755)
@@ -1075,7 +1076,10 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual(200, status, descriptor)
         self.assertIn("conversations", descriptor["capabilities"])
         self.assertIn("approvals", descriptor["capabilities"])
-        self.assertFalse(descriptor["protocols"]["grpc"])
+        self.assertTrue(descriptor["protocols"]["rest"])
+        self.assertTrue(descriptor["protocols"]["json_rpc"])
+        self.assertEqual("contract-ready", descriptor["protocols"]["grpc"])
+        self.assertEqual("/rpc", descriptor["links"]["rpc"])
         self.assertFalse(descriptor["governance"]["direct_sqlite_writes"])
         self.assertTrue(descriptor["governance"]["high_risk_requires_approval"])
         status, openapi = api_gateway.route_get("/v1/openapi.json", {})
@@ -1352,6 +1356,35 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual(200, status, shown_updated)
         self.assertIn("engineering", shown_updated["capabilities"]["skills"])
         self.assertFalse(shown_updated["permissions"]["can_submit_tasks"])
+
+    def test_api_rpc_routes_rest_contract_without_direct_sqlite_access(self) -> None:
+        described = api_rpc.handle_rpc({"jsonrpc": "2.0", "id": "describe", "method": "company.describe", "params": {}})
+        self.assertEqual("describe", described["id"])
+        self.assertTrue(described["result"]["protocols"]["rest"])
+        self.assertTrue(described["result"]["protocols"]["json_rpc"])
+        self.assertEqual("contract-ready", described["result"]["protocols"]["grpc"])
+        self.assertEqual("companyctl", described["result"]["governance"]["state_writer"])
+
+        created = api_rpc.handle_rpc(
+            {
+                "jsonrpc": "2.0",
+                "id": "create-runtime",
+                "method": "company.post",
+                "params": {"path": "/v1/runtimes", "body": {"runtime": "remote-codex", "command": "ssh codex-worker", "notes": "remote worker"}},
+            }
+        )
+        self.assertEqual(201, created["result"]["status"], created)
+        self.assertEqual("remote-codex", created["result"]["body"]["runtime"]["runtime"])
+
+        listed = api_rpc.handle_rpc(
+            {"jsonrpc": "2.0", "id": "list-runtimes", "method": "company.get", "params": {"path": "/v1/runtimes", "query": {}}}
+        )
+        self.assertEqual(200, listed["result"]["status"], listed)
+        self.assertIn("remote-codex", [runtime["runtime"] for runtime in listed["result"]["body"]["runtimes"]])
+
+        with self.assertRaises(api_rpc.RpcError) as missing_path:
+            api_rpc.handle_rpc({"jsonrpc": "2.0", "id": "bad", "method": "company.post", "params": {"body": {}}})
+        self.assertEqual(-32602, missing_path.exception.code)
 
     def test_sandboxing_wraps_codex_and_hermes_commands_without_executing_container(self) -> None:
         workspace = self.root / "workspace" / "codex"

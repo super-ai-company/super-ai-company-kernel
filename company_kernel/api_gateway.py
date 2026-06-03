@@ -86,10 +86,13 @@ def service_descriptor() -> dict:
             "self": "/v1",
             "health": "/v1/health",
             "openapi": "/v1/openapi.json",
+            "rpc": "/rpc",
+            "grpc_proto": "docs/company_kernel.proto",
         },
         "protocols": {
             "rest": True,
-            "grpc": False,
+            "json_rpc": True,
+            "grpc": "contract-ready",
         },
         "endpoints": API_ENDPOINTS,
         "governance": {
