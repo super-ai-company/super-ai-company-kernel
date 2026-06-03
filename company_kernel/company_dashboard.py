@@ -556,9 +556,9 @@ def render(summary: dict) -> str:
         return false;
       }}
     }}
-    async function callCompanyApi(path, payload) {{
+    async function callCompanyApi(path, payload, method) {{
       const res = await fetch(apiBase() + path, {{
-        method: 'POST',
+        method: method || 'POST',
         headers: {{'Content-Type': 'application/json'}},
         body: JSON.stringify(payload || {{}})
       }});
@@ -612,7 +612,7 @@ def render(summary: dict) -> str:
       }}
       setEmployeeApiStatus(`Updating ${{id}}...`, false);
       try {{
-        await callCompanyApi(`/v1/employees/${{encodeURIComponent(id)}}/profile`, {{name, role, runtime, status}});
+        await callCompanyApi(`/v1/employees/${{encodeURIComponent(id)}}`, {{name, role, runtime, status}}, 'PATCH');
         setEmployeeApiStatus(`Updated ${{id}}. Reloading dashboard...`, false);
         setTimeout(() => location.reload(), 800);
       }} catch (err) {{
@@ -625,7 +625,7 @@ def render(summary: dict) -> str:
       if (!confirm(`${{action}} employee "${{id}}"?`)) return;
       setEmployeeApiStatus(`Offboarding ${{id}}...`, false);
       try {{
-        await callCompanyApi(`/v1/employees/${{encodeURIComponent(id)}}/offboard`, {{hard_delete: !!hardDelete}});
+        await callCompanyApi(`/v1/employees/${{encodeURIComponent(id)}}`, {{hard_delete: !!hardDelete}}, 'DELETE');
         setEmployeeApiStatus(`Offboarded ${{id}}. Reloading dashboard...`, false);
         setTimeout(() => location.reload(), 800);
       }} catch (err) {{
@@ -714,6 +714,14 @@ def inject_advanced_dashboard(template: str, summary: dict, *, db_path: Path, ap
       const data = await companyApiGet('/v1/health');
       const employees = data.counts ? data.counts.employees : 'unknown';
       companyApiLog('SYSTEM', `Company Kernel API online: ${{companyApiBase()}} employees=${{employees}}`, 'success');
+      try {{
+        const attendance = await companyApiGet('/v1/attendance/latest');
+        if (attendance.counts) {{
+          companyApiLog('SYSTEM', `Latest attendance: online=${{attendance.counts.online}} stalled=${{attendance.counts.worker_stalled}} no_reply=${{attendance.counts.no_reply}}`, 'success');
+        }}
+      }} catch (attendanceErr) {{
+        companyApiLog('SYSTEM', `No latest attendance report yet: ${{attendanceErr.message}}`, 'normal');
+      }}
       const label = document.getElementById('db-path-label');
       if (label && !isSimulationMode) label.innerText = companyApiBase();
       return true;
@@ -726,9 +734,9 @@ def inject_advanced_dashboard(template: str, summary: dict, *, db_path: Path, ap
       return false;
     }}
   }}
-  async function companyApiPost(path, payload) {{
+  async function companyApiRequest(path, payload, method) {{
     const res = await fetch(companyApiBase() + path, {{
-      method: 'POST',
+      method: method || 'POST',
       headers: {{'Content-Type': 'application/json'}},
       body: JSON.stringify(payload || {{}})
     }});
@@ -737,6 +745,9 @@ def inject_advanced_dashboard(template: str, summary: dict, *, db_path: Path, ap
       throw new Error(data.error || data.message || JSON.stringify(data));
     }}
     return data;
+  }}
+  async function companyApiPost(path, payload) {{
+    return companyApiRequest(path, payload, 'POST');
   }}
   async function realOnboardGeneratedEmployee() {{
     if (!generatedRecruitData) return;
@@ -763,7 +774,7 @@ def inject_advanced_dashboard(template: str, summary: dict, *, db_path: Path, ap
   async function realUpdateEmployeeProfile(id, payload) {{
     companyApiLog('SYSTEM', `Calling Company Kernel API to update '${{id}}'...`, 'normal');
     try {{
-      await companyApiPost(`/v1/employees/${{encodeURIComponent(id)}}/profile`, payload || {{}});
+      await companyApiRequest(`/v1/employees/${{encodeURIComponent(id)}}`, payload || {{}}, 'PATCH');
       companyApiLog('SYSTEM', `Updated '${{id}}'. Reloading live dashboard...`, 'success');
       setTimeout(() => location.reload(), 800);
     }} catch (err) {{
@@ -788,7 +799,7 @@ def inject_advanced_dashboard(template: str, summary: dict, *, db_path: Path, ap
   async function realOffboardEmployee(id, hardDelete) {{
     printTerminalLine({{tag: 'SYSTEM', text: `Calling Company Kernel API to offboard '${{id}}'...`, type: 'normal'}});
     try {{
-      await companyApiPost(`/v1/employees/${{encodeURIComponent(id)}}/offboard`, {{hard_delete: !!hardDelete}});
+      await companyApiRequest(`/v1/employees/${{encodeURIComponent(id)}}`, {{hard_delete: !!hardDelete}}, 'DELETE');
       printTerminalLine({{tag: 'SYSTEM', text: `Offboarded '${{id}}'. Reloading live dashboard...`, type: 'success'}});
       setTimeout(() => location.reload(), 800);
     }} catch (err) {{
