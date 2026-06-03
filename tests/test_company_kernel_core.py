@@ -1972,7 +1972,7 @@ class CompanyKernelCoreTest(unittest.TestCase):
 
         status, profile = api_gateway.route_post(
             "/v1/employees/cursor-dev/profile",
-            {"name": "Cursor Reviewer", "role": "reviewer", "status": "candidate"},
+            {"name": "Cursor Reviewer", "role": "reviewer", "status": "candidate", "default_user_reply_channel": "telegram", "default_user_reply_account": "default", "default_user_reply_to": "current", "default_user_reply_deliver": "true"},
         )
         self.assertEqual(200, status, profile)
         self.assertTrue(profile["changed"])
@@ -1984,6 +1984,10 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual(200, status, shown_profile)
         self.assertEqual("Cursor Reviewer", shown_profile["employee"]["name"])
         self.assertEqual("candidate", shown_profile["employee"]["status"])
+        self.assertEqual("telegram", shown_profile["profile"]["default_user_reply_channel"])
+        self.assertEqual("default", shown_profile["profile"]["default_user_reply_account"])
+        self.assertEqual("current", shown_profile["profile"]["default_user_reply_to"])
+        self.assertTrue(shown_profile["profile"]["default_user_reply_deliver"])
 
         status, patched = api_gateway.route_patch(
             "/v1/employees/cursor-dev",
@@ -2005,6 +2009,10 @@ class CompanyKernelCoreTest(unittest.TestCase):
                 "alias": "api-review",
                 "skills": "review,qa",
                 "can_talk_to": "codex",
+                "default_user_reply_deliver": "true",
+                "default_user_reply_channel": "telegram",
+                "default_user_reply_account": "default",
+                "default_user_reply_to": "current",
                 "create_test_task": "true",
             },
         )
@@ -2013,6 +2021,8 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertTrue((managed_workspace / "SOUL.md").exists())
         self.assertIn(str((managed_workspace / "SOUL.md").resolve()), onboarded["scaffolded_files"])
         self.assertEqual("task-onboard-api-reviewer", onboarded["test_task"]["id"])
+        self.assertTrue(onboarded["communication"]["default_user_reply_deliver"])
+        self.assertEqual("telegram", onboarded["communication"]["default_user_reply_channel"])
 
         status, offboard_dry = api_gateway.route_post("/v1/employees/api-review/offboard", {"dry_run": "true"})
         self.assertEqual(200, status, offboard_dry)
@@ -2771,6 +2781,13 @@ class CompanyKernelCoreTest(unittest.TestCase):
             "codex",
             "--channel",
             "engineering",
+            "--default-user-reply-deliver",
+            "--default-user-reply-channel",
+            "telegram",
+            "--default-user-reply-account",
+            "default",
+            "--default-user-reply-to",
+            "current",
             "--create-test-task",
         )
         self.assertEqual(code, 0, onboard)
@@ -2782,6 +2799,10 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual("reviewer", communication["aliases"]["rev"])
         self.assertEqual(["video-ops", "codex"], communication["employees"]["reviewer"]["can_talk_to"])
         self.assertIn("reviewer", communication["channels"]["engineering"]["participants"])
+        self.assertTrue(communication["employees"]["reviewer"]["default_user_reply_deliver"])
+        self.assertEqual("telegram", communication["employees"]["reviewer"]["default_user_reply_channel"])
+        self.assertEqual("default", communication["employees"]["reviewer"]["default_user_reply_account"])
+        self.assertEqual("current", communication["employees"]["reviewer"]["default_user_reply_to"])
 
         code, sent = run_cli("message", "send", "--from", "ops", "--to", "rev", "--body", "欢迎入职")
         self.assertEqual(code, 0, sent)

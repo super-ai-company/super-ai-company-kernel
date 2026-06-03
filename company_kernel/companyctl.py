@@ -886,6 +886,17 @@ def cmd_employee_update(args: argparse.Namespace) -> int:
         "created_at": current.get("created_at", ""),
         "updated_at": updated["updated_at"],
     }
+    current_profile = load_json_or_default(employee_paths(employee_id)["profile"], profile)
+    for field in ("default_user_reply_channel", "default_user_reply_account", "default_user_reply_to"):
+        value = getattr(args, field, None)
+        if value not in {None, ""}:
+            profile[field] = str(value)
+        elif field in current_profile:
+            profile[field] = current_profile[field]
+    if getattr(args, "default_user_reply_deliver", None) is not None:
+        profile["default_user_reply_deliver"] = bool(args.default_user_reply_deliver)
+    elif "default_user_reply_deliver" in current_profile:
+        profile["default_user_reply_deliver"] = bool(current_profile["default_user_reply_deliver"])
     files = write_employee_files(employee_id, profile, dry_run=False)
     conn.commit()
     audit(conn, "companyctl", "employee.update", employee_id, {"before": current, "after": updated, "files": files})
@@ -1142,6 +1153,10 @@ def update_employee_communication_profile(
     can_assign_to: list[str],
     channel: str,
     handoff_mode: str,
+    default_user_reply_channel: str,
+    default_user_reply_account: str,
+    default_user_reply_to: str,
+    default_user_reply_deliver: bool | None,
     dry_run: bool,
 ) -> dict:
     config = load_communication_config()
@@ -1161,6 +1176,14 @@ def update_employee_communication_profile(
             "handoff_mode": handoff_mode,
         }
     )
+    if default_user_reply_channel:
+        profile["default_user_reply_channel"] = default_user_reply_channel
+    if default_user_reply_account:
+        profile["default_user_reply_account"] = default_user_reply_account
+    if default_user_reply_to:
+        profile["default_user_reply_to"] = default_user_reply_to
+    if default_user_reply_deliver is not None:
+        profile["default_user_reply_deliver"] = bool(default_user_reply_deliver)
     if channel:
         channels = config.setdefault("channels", {})
         channel_obj = channels.setdefault(channel, {"participants": [], "max_rounds_without_task": 20, "on_task_done": "continue_workflow"})
@@ -1267,6 +1290,14 @@ def cmd_employee_onboard(args: argparse.Namespace) -> int:
         raise
     employee_id = resolve_employee_alias(args.id)
     result = upsert_employee(conn, employee_id, args.name, args.role, args.runtime, args.workspace, dry_run=args.dry_run)
+    if args.default_user_reply_channel:
+        result["employee"]["default_user_reply_channel"] = args.default_user_reply_channel
+    if args.default_user_reply_account:
+        result["employee"]["default_user_reply_account"] = args.default_user_reply_account
+    if args.default_user_reply_to:
+        result["employee"]["default_user_reply_to"] = args.default_user_reply_to
+    if args.default_user_reply_deliver:
+        result["employee"]["default_user_reply_deliver"] = True
     files = result["files"]
     capabilities = default_capabilities(result["employee"])
     if args.skills:
@@ -1302,6 +1333,10 @@ def cmd_employee_onboard(args: argparse.Namespace) -> int:
         can_assign_to=assign_targets,
         channel=args.channel,
         handoff_mode=args.handoff_mode,
+        default_user_reply_channel=args.default_user_reply_channel,
+        default_user_reply_account=args.default_user_reply_account,
+        default_user_reply_to=args.default_user_reply_to,
+        default_user_reply_deliver=True if args.default_user_reply_deliver else None,
         dry_run=args.dry_run,
     )
     test_task = {}
@@ -1346,6 +1381,10 @@ def cmd_employee_onboard(args: argparse.Namespace) -> int:
                 "can_assign_to": assign_targets,
                 "channel": args.channel,
                 "policy": config.get("policy", {}),
+                "default_user_reply_channel": args.default_user_reply_channel,
+                "default_user_reply_account": args.default_user_reply_account,
+                "default_user_reply_to": args.default_user_reply_to,
+                "default_user_reply_deliver": bool(args.default_user_reply_deliver),
             },
             "scaffolded_files": scaffolded_files,
             "test_task": test_task,
@@ -4299,6 +4338,10 @@ def build_parser() -> argparse.ArgumentParser:
     emp_update.add_argument("--runtime", default="")
     emp_update.add_argument("--workspace", default="")
     emp_update.add_argument("--status", choices=["active", "candidate", "archived"], default="")
+    emp_update.add_argument("--default-user-reply-channel", default="")
+    emp_update.add_argument("--default-user-reply-account", default="")
+    emp_update.add_argument("--default-user-reply-to", default="")
+    emp_update.add_argument("--default-user-reply-deliver", action=argparse.BooleanOptionalAction, default=None)
     emp_update.add_argument("--dry-run", action="store_true")
     emp_update.set_defaults(func=cmd_employee_update)
     emp_capabilities = emp_sub.add_parser("capabilities")
@@ -4344,6 +4387,10 @@ def build_parser() -> argparse.ArgumentParser:
     emp_onboard.add_argument("--open-communication", action="store_true", help="allow communication with all currently registered employees")
     emp_onboard.add_argument("--channel", default="")
     emp_onboard.add_argument("--handoff-mode", default="task_or_hook")
+    emp_onboard.add_argument("--default-user-reply-channel", default="")
+    emp_onboard.add_argument("--default-user-reply-account", default="")
+    emp_onboard.add_argument("--default-user-reply-to", default="")
+    emp_onboard.add_argument("--default-user-reply-deliver", action="store_true")
     emp_onboard.add_argument("--requires-approval-for", default="payment,compensation,salary,penalty,external_send")
     emp_onboard.add_argument("--no-submit-tasks", action="store_true")
     emp_onboard.add_argument("--no-claim-tasks", action="store_true")
