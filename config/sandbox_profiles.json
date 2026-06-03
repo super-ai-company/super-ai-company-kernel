@@ -1,0 +1,23 @@
+{
+  "version": 1,
+  "profiles": {
+    "codex": {
+      "default": {
+        "isolation": "none",
+        "image": "ghcr.io/openai/codex-cli:latest",
+        "network": "none",
+        "readonly_paths": [],
+        "writable_paths": []
+      }
+    },
+    "hermes": {
+      "default": {
+        "isolation": "none",
+        "image": "python:3.12-slim",
+        "network": "none",
+        "readonly_paths": [],
+        "writable_paths": []
+      }
+    }
+  }
+}

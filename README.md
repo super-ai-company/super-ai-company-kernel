@@ -295,6 +295,17 @@ curl http://127.0.0.1:8765/v1/tasks/<task-id>
 
 已覆盖的端点：`/v1/health`、`/v1/doctor`、`/v1/tasks`、`/v1/messages`、`/v1/heartbeats`、`/v1/adapter-runs`。
 
+## Sandbox Isolation
+
+`config/sandbox_profiles.json` 定义执行器沙箱策略。Codex/Hermes adapter 默认 `--isolation none`，显式传 `--isolation docker` 或 `--isolation firejail` 才会包装执行命令。
+
+```bash
+bin/company-codex-adapter --execute --sandbox workspace-write --isolation docker --sandbox-profile default
+bin/company-hermes-adapter --execute --isolation firejail --sandbox-profile default
+```
+
+当前已实现可测试的命令构造和 profile 加载；是否安装 Docker/Firejail、镜像内容和真实容器运行由部署环境决定。
+
 安全 dry-run worker 验证：
 
 ```bash
