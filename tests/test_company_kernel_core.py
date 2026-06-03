@@ -1105,6 +1105,83 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual(200, status, messages)
         self.assertIn("msg-api-gateway", [message["id"] for message in messages["messages"]])
 
+    def test_api_gateway_exposes_conversations_approvals_and_adapter_run_recovery(self) -> None:
+        status, started = api_gateway.route_post(
+            "/v1/conversations",
+            {
+                "from": "hermes",
+                "participants": "hermes,codex,openclaw-main",
+                "conversation_id": "conv-api-gateway",
+                "title": "API Gateway discussion",
+                "body": "please discuss",
+            },
+        )
+        self.assertEqual(201, status, started)
+        self.assertEqual("conv-api-gateway", started["conversation"]["id"])
+        status, replied = api_gateway.route_post("/v1/conversations/conv-api-gateway/reply", {"from": "codex", "body": "ack", "message_id": "msg-api-conv-reply"})
+        self.assertEqual(201, status, replied)
+        status, conversations = api_gateway.route_get("/v1/conversations", {"agent": ["openclaw-main"]})
+        self.assertEqual(200, status, conversations)
+        self.assertIn("conv-api-gateway", [conversation["id"] for conversation in conversations["conversations"]])
+        status, shown = api_gateway.route_get("/v1/conversations/conv-api-gateway", {})
+        self.assertEqual(200, status, shown)
+        self.assertEqual(["please discuss", "ack"], [message["body"] for message in shown["messages"]])
+
+        status, approval = api_gateway.route_post(
+            "/v1/approvals",
+            {
+                "from": "hermes",
+                "action": "external_send",
+                "reason": "customer send needs approval",
+                "target": "nestcar",
+                "risk": "P1",
+                "approval_id": "approval-api-gateway",
+                "task_id": "task-api-gateway-risk",
+            },
+        )
+        self.assertEqual(201, status, approval)
+        self.assertEqual("pending", approval["approval"]["status"])
+        status, listed = api_gateway.route_get("/v1/approvals", {"status": ["pending"], "agent": ["hermes"]})
+        self.assertEqual(200, status, listed)
+        self.assertIn("approval-api-gateway", [item["id"] for item in listed["approvals"]])
+        status, approved = api_gateway.route_post("/v1/approvals/approval-api-gateway/approve", {"by": "openclaw-main", "reason": "approved through API"})
+        self.assertEqual(200, status, approved)
+        self.assertEqual("approved", approved["approval"]["status"])
+        status, shown_approval = api_gateway.route_get("/v1/approvals/approval-api-gateway", {})
+        self.assertEqual(200, status, shown_approval)
+        self.assertEqual("approved", shown_approval["approval"]["status"])
+
+        code, submitted = run_cli("task", "submit", "--from", "openclaw-main", "--to", "codex", "--task-id", "task-api-adapter-retry", "--title", "adapter retry")
+        self.assertEqual(code, 0, submitted)
+        code, blocked = run_cli("task", "block", "--agent", "codex", "--task-id", "task-api-adapter-retry", "--blocker", "adapter failed")
+        self.assertEqual(code, 0, blocked)
+        conn = companyctl.connect()
+        try:
+            conn.execute(
+                """
+                INSERT INTO adapter_runs(id, trace_id, agent_id, task_id, command, ok, processed, attempt, next_retry_at, result_json, created_at)
+                VALUES ('adapter-run-api-retry', ?, 'codex', 'task-api-adapter-retry', 'company-codex-adapter', 0, 1, 1, '2000-01-01T00:00:00+00:00', '{}', ?)
+                """,
+                (submitted["task"]["metadata"]["trace_id"], companyctl.now()),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        status, run = api_gateway.route_get("/v1/adapter-runs/adapter-run-api-retry", {"summary": ["true"]})
+        self.assertEqual(200, status, run)
+        self.assertEqual("adapter-run-api-retry", run["adapter_run"]["id"])
+        status, retry = api_gateway.route_post("/v1/adapter-runs/adapter-run-api-retry/retry", {"by": "openclaw-main", "reason": "retry through API"})
+        self.assertEqual(200, status, retry)
+        self.assertEqual("task-api-adapter-retry", retry["task_id"])
+        self.assertEqual("submitted", retry["status"])
+        status, acked = api_gateway.route_post("/v1/adapter-runs/adapter-run-api-retry/ack", {"by": "openclaw-main", "reason": "ack through API"})
+        self.assertEqual(200, status, acked)
+        self.assertEqual("openclaw-main", acked["adapter_run"]["acknowledged_by"])
+        status, failed = api_gateway.route_get("/v1/adapter-runs", {"status": ["failed"], "unacknowledged_only": ["true"]})
+        self.assertEqual(200, status, failed)
+        self.assertNotIn("adapter-run-api-retry", [item["id"] for item in failed["adapter_runs"]])
+
     def test_sandboxing_wraps_codex_and_hermes_commands_without_executing_container(self) -> None:
         workspace = self.root / "workspace" / "codex"
         profile_config = {

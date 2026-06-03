@@ -293,9 +293,15 @@ curl -X POST http://127.0.0.1:8765/v1/tasks \
   -H 'Content-Type: application/json' \
   --data '{"from":"openclaw-main","to":"codex","title":"REST task","description":"created through API Gateway"}'
 curl http://127.0.0.1:8765/v1/tasks/<task-id>
+curl -X POST http://127.0.0.1:8765/v1/conversations \
+  -H 'Content-Type: application/json' \
+  --data '{"from":"hermes","participants":"hermes,codex,claude","title":"方案讨论","body":"请讨论下一步"}'
+curl -X POST http://127.0.0.1:8765/v1/approvals \
+  -H 'Content-Type: application/json' \
+  --data '{"from":"hermes","action":"external_send","reason":"需要外发审批","target":"nestcar","risk":"P1"}'
 ```
 
-已覆盖的端点：`/v1/health`、`/v1/doctor`、`/v1/tasks`、`/v1/messages`、`/v1/heartbeats`、`/v1/adapter-runs`。
+已覆盖的端点：`/v1/health`、`/v1/doctor`、`/v1/tasks`、`/v1/messages`、`/v1/conversations`、`/v1/approvals`、`/v1/heartbeats`、`/v1/adapter-runs`。
 
 ## Sandbox Isolation
 

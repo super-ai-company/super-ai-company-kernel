@@ -54,14 +54,56 @@ def route_get(path: str, query: dict[str, list[str]]) -> tuple[int, dict]:
             return HTTPStatus.BAD_REQUEST, {"ok": False, "error": "missing query: agent"}
         code, payload = run_companyctl(["message", "list", "--agent", agent])
         return (HTTPStatus.OK if code == 0 else HTTPStatus.BAD_REQUEST), {"exit_code": code, **payload}
+    if path == "/v1/conversations":
+        agent = query_value(query, "agent")
+        if not agent:
+            return HTTPStatus.BAD_REQUEST, {"ok": False, "error": "missing query: agent"}
+        code, payload = run_companyctl(["conversation", "list", "--agent", agent])
+        return (HTTPStatus.OK if code == 0 else HTTPStatus.BAD_REQUEST), {"exit_code": code, **payload}
+    if path.startswith("/v1/conversations/"):
+        conversation_id = path.removeprefix("/v1/conversations/").strip("/")
+        code, payload = run_companyctl(["conversation", "show", "--conversation-id", conversation_id])
+        return (HTTPStatus.OK if code == 0 else HTTPStatus.BAD_REQUEST), {"exit_code": code, **payload}
+    if path == "/v1/approvals":
+        argv = ["approval", "list"]
+        status = query_value(query, "status", "all")
+        agent = query_value(query, "agent")
+        action = query_value(query, "action")
+        limit = query_value(query, "limit")
+        if status:
+            argv.extend(["--status", status])
+        if agent:
+            argv.extend(["--agent", agent])
+        if action:
+            argv.extend(["--action", action])
+        if limit:
+            argv.extend(["--limit", limit])
+        code, payload = run_companyctl(argv)
+        return (HTTPStatus.OK if code == 0 else HTTPStatus.BAD_REQUEST), {"exit_code": code, **payload}
+    if path.startswith("/v1/approvals/"):
+        approval_id = path.removeprefix("/v1/approvals/").strip("/")
+        code, payload = run_companyctl(["approval", "show", "--approval-id", approval_id])
+        return (HTTPStatus.OK if code == 0 else HTTPStatus.BAD_REQUEST), {"exit_code": code, **payload}
     if path == "/v1/adapter-runs":
         argv = ["runtime", "adapter-runs"]
         agent = query_value(query, "agent")
         status = query_value(query, "status")
+        limit = query_value(query, "limit")
         if agent:
             argv.extend(["--agent", agent])
         if status:
             argv.extend(["--status", status])
+        if query_value(query, "unacknowledged_only") in {"1", "true", "yes"}:
+            argv.append("--unacknowledged-only")
+        if limit:
+            argv.extend(["--limit", limit])
+        code, payload = run_companyctl(argv)
+        return (HTTPStatus.OK if code == 0 else HTTPStatus.BAD_REQUEST), {"exit_code": code, **payload}
+    if path.startswith("/v1/adapter-runs/"):
+        run_id = path.removeprefix("/v1/adapter-runs/").strip("/")
+        argv = ["runtime", "adapter-run", "show", "--run-id", run_id]
+        if query_value(query, "summary") in {"1", "true", "yes"}:
+            argv.append("--summary")
         code, payload = run_companyctl(argv)
         return (HTTPStatus.OK if code == 0 else HTTPStatus.BAD_REQUEST), {"exit_code": code, **payload}
     return HTTPStatus.NOT_FOUND, {"ok": False, "error": "not found", "path": path}
@@ -97,9 +139,81 @@ def route_post(path: str, body: dict) -> tuple[int, dict]:
             argv.extend(["--message-id", str(body["message_id"])])
         code, payload = run_companyctl(argv)
         return (HTTPStatus.CREATED if code == 0 else HTTPStatus.BAD_REQUEST), {"exit_code": code, **payload}
+    if path == "/v1/conversations":
+        argv = [
+            "conversation",
+            "start",
+            "--from",
+            str(body.get("from", "")),
+            "--participants",
+            str(body.get("participants", "")),
+            "--title",
+            str(body.get("title", "")),
+            "--body",
+            str(body.get("body", "")),
+        ]
+        if body.get("evidence"):
+            argv.extend(["--evidence", str(body["evidence"])])
+        if body.get("conversation_id"):
+            argv.extend(["--conversation-id", str(body["conversation_id"])])
+        code, payload = run_companyctl(argv)
+        return (HTTPStatus.CREATED if code == 0 else HTTPStatus.BAD_REQUEST), {"exit_code": code, **payload}
+    if path.startswith("/v1/conversations/") and path.endswith("/reply"):
+        conversation_id = path.removeprefix("/v1/conversations/").removesuffix("/reply").strip("/")
+        argv = [
+            "conversation",
+            "reply",
+            "--from",
+            str(body.get("from", "")),
+            "--conversation-id",
+            conversation_id,
+            "--body",
+            str(body.get("body", "")),
+        ]
+        if body.get("evidence"):
+            argv.extend(["--evidence", str(body["evidence"])])
+        if body.get("message_id"):
+            argv.extend(["--message-id", str(body["message_id"])])
+        code, payload = run_companyctl(argv)
+        return (HTTPStatus.CREATED if code == 0 else HTTPStatus.BAD_REQUEST), {"exit_code": code, **payload}
     if path == "/v1/heartbeats":
         code, payload = run_companyctl(["heartbeat", "--agent", str(body.get("agent", ""))])
         return (HTTPStatus.CREATED if code == 0 else HTTPStatus.BAD_REQUEST), {"exit_code": code, **payload}
+    if path == "/v1/approvals":
+        argv = [
+            "approval",
+            "request",
+            "--from",
+            str(body.get("from", "")),
+            "--action",
+            str(body.get("action", "")),
+            "--reason",
+            str(body.get("reason", "")),
+        ]
+        for key, flag in [("target", "--target"), ("risk", "--risk"), ("evidence", "--evidence"), ("approval_id", "--approval-id"), ("task_id", "--task-id")]:
+            if body.get(key):
+                argv.extend([flag, str(body[key])])
+        code, payload = run_companyctl(argv)
+        return (HTTPStatus.CREATED if code == 0 else HTTPStatus.BAD_REQUEST), {"exit_code": code, **payload}
+    if path.startswith("/v1/approvals/") and path.endswith("/approve"):
+        approval_id = path.removeprefix("/v1/approvals/").removesuffix("/approve").strip("/")
+        code, payload = run_companyctl(["approval", "approve", "--approval-id", approval_id, "--by", str(body.get("by", "")), "--reason", str(body.get("reason", ""))])
+        return (HTTPStatus.OK if code == 0 else HTTPStatus.BAD_REQUEST), {"exit_code": code, **payload}
+    if path.startswith("/v1/approvals/") and path.endswith("/deny"):
+        approval_id = path.removeprefix("/v1/approvals/").removesuffix("/deny").strip("/")
+        code, payload = run_companyctl(["approval", "deny", "--approval-id", approval_id, "--by", str(body.get("by", "")), "--reason", str(body.get("reason", ""))])
+        return (HTTPStatus.OK if code == 0 else HTTPStatus.BAD_REQUEST), {"exit_code": code, **payload}
+    if path.startswith("/v1/adapter-runs/") and path.endswith("/ack"):
+        run_id = path.removeprefix("/v1/adapter-runs/").removesuffix("/ack").strip("/")
+        code, payload = run_companyctl(["runtime", "ack-adapter-run", "--run-id", run_id, "--by", str(body.get("by", "")), "--reason", str(body.get("reason", ""))])
+        return (HTTPStatus.OK if code == 0 else HTTPStatus.BAD_REQUEST), {"exit_code": code, **payload}
+    if path.startswith("/v1/adapter-runs/") and path.endswith("/retry"):
+        run_id = path.removeprefix("/v1/adapter-runs/").removesuffix("/retry").strip("/")
+        argv = ["runtime", "retry-adapter-run", "--run-id", run_id, "--by", str(body.get("by", "")), "--reason", str(body.get("reason", ""))]
+        if body.get("task_id"):
+            argv.extend(["--task-id", str(body["task_id"])])
+        code, payload = run_companyctl(argv)
+        return (HTTPStatus.OK if code == 0 else HTTPStatus.BAD_REQUEST), {"exit_code": code, **payload}
     return HTTPStatus.NOT_FOUND, {"ok": False, "error": "not found", "path": path}
 
 
