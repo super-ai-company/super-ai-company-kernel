@@ -6,6 +6,7 @@ import json
 import plistlib
 import sqlite3
 import subprocess
+import sys
 import tempfile
 import unittest
 from http import HTTPStatus
@@ -441,6 +442,46 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertIn("--session-key", calls[0])
         self.assertIn("agent:nestcar:main", calls[0])
         self.assertEqual("nestcar", sent["message"]["target_agent"])
+
+    def test_message_direct_maps_hermes_employee_to_default_runtime_session(self) -> None:
+        code, created = run_cli("employee", "create", "--id", "main", "--name", "main", "--role", "operator", "--runtime", "openclaw", "--workspace", str(self.root / "workspace" / "main"))
+        self.assertEqual(0, code, created)
+        code, created = run_cli("employee", "create", "--id", "hermes", "--name", "Hermes", "--role", "supervisor", "--runtime", "hermes", "--workspace", str(self.root / "workspace" / "hermes"))
+        self.assertEqual(0, code, created)
+        calls = []
+
+        def fake_run(cmd, cwd=None, text=None, capture_output=None, timeout=None):
+            calls.append(cmd)
+
+            class Result:
+                returncode = 0
+                stdout = json.dumps({"result": {"payloads": [{"text": "HERMES_DIRECT_OK"}]}})
+                stderr = ""
+
+            return Result()
+
+        with mock.patch.object(companyctl.subprocess, "run", side_effect=fake_run):
+            code, sent = run_cli(
+                "message",
+                "direct",
+                "--from",
+                "main",
+                "--to",
+                "hermes",
+                "--body",
+                "只回复 HERMES_DIRECT_OK",
+                "--message-id",
+                "msg-direct-hermes",
+            )
+        self.assertEqual(0, code, sent)
+        self.assertEqual("HERMES_DIRECT_OK", sent["reply"])
+        self.assertEqual("default", sent["agent_runtime_id"])
+        self.assertEqual("agent:default:main", sent["session_key"])
+        self.assertIn("--agent", calls[0])
+        self.assertIn("default", calls[0])
+        self.assertIn("agent:default:main", calls[0])
+        self.assertNotIn("agent:hermes:main", calls[0])
+        self.assertEqual("hermes", sent["message"]["target_agent"])
 
     def test_message_direct_uses_default_telegram_reply_bridge(self) -> None:
         code, created = run_cli("employee", "create", "--id", "main", "--name", "main", "--role", "operator", "--runtime", "openclaw", "--workspace", str(self.root / "workspace" / "main"))
@@ -3487,6 +3528,44 @@ class CompanyKernelCoreTest(unittest.TestCase):
             payload["ProgramArguments"],
         )
         self.assertTrue(payload["RunAtLoad"])
+
+    def test_launchd_service_plists_pin_api_and_dashboard_ports(self) -> None:
+        launchd_dir = Path(__file__).resolve().parents[1] / "config" / "launchd"
+        api = plistlib.loads((launchd_dir / "ai.openclaw.company-kernel.api.plist").read_bytes())
+        dashboard = plistlib.loads((launchd_dir / "ai.openclaw.company-kernel.dashboard.plist").read_bytes())
+        self.assertEqual("ai.openclaw.company-kernel.api", api["Label"])
+        self.assertEqual("ai.openclaw.company-kernel.dashboard", dashboard["Label"])
+        self.assertEqual(
+            ["/Users/owner/openclaw/company-kernel/bin/company-api-gateway", "--host", "127.0.0.1", "--port", "8765", "--quiet"],
+            api["ProgramArguments"],
+        )
+        self.assertEqual(["/Users/owner/openclaw/company-kernel/bin/company-dashboard-server"], dashboard["ProgramArguments"])
+        self.assertTrue(api["KeepAlive"])
+        self.assertTrue(dashboard["KeepAlive"])
+        self.assertTrue(api["RunAtLoad"])
+        self.assertTrue(dashboard["RunAtLoad"])
+
+    def test_openclaw_bootstrap_scanner_maps_hermes_to_default_runtime(self) -> None:
+        code, runtime = run_cli("runtime", "register", "--runtime", "human", "--command", "", "--status", "registered")
+        self.assertEqual(0, code, runtime)
+        code, owner = run_cli("employee", "create", "--id", "owner", "--name", "Shift", "--role", "owner", "--runtime", "human", "--workspace", str(self.root / "employees" / "owner"))
+        self.assertEqual(0, code, owner)
+        script = Path(__file__).resolve().parents[1] / "skills" / "openclaw-local-agent-bootstrap" / "scripts" / "scan_install.py"
+        cp = subprocess.run(
+            [sys.executable, str(script), "--kernel-root", str(self.root)],
+            cwd=str(self.root),
+            text=True,
+            capture_output=True,
+            check=True,
+        )
+        report = json.loads(cp.stdout)
+        hermes = next(item for item in report["employees"] if item["agent_id"] == "hermes")
+        owner = next(item for item in report["employees"] if item["agent_id"] == "owner")
+        self.assertEqual("default", hermes["runtime"]["runtime_agent_id"])
+        self.assertEqual("agent:default:<source>", hermes["communication"]["session_key"])
+        self.assertEqual(0, hermes["communication"]["pending_inbox_messages"])
+        self.assertEqual("human-owner", owner["status"])
+        self.assertEqual(["owner"], [item["agent_id"] for item in report["human_owners"]])
 
 
 if __name__ == "__main__":

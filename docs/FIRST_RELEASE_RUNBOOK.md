@@ -2,18 +2,28 @@
 
 第一版只看这几个动作。
 
-## 1. 启动 API
+## 1. 安装本机自启动服务
+
+这会安装 daemon、API Gateway `8765`、静态 dashboard `8780` 三个 launchd 服务。
 
 ```bash
 cd /Users/owner/openclaw/company-kernel
-bin/company-api-gateway --quiet
+bash bin/company-services-install-launchd
+curl http://127.0.0.1:8765/v1/health
+curl http://127.0.0.1:8780/dashboard.html
 ```
 
-## 2. 打开操作台
+卸载：
+
+```bash
+bash bin/company-services-uninstall-launchd
+```
+
+## 2. 重新生成并打开操作台
 
 ```bash
 bin/company-dashboard --variant advanced
-open /Users/owner/openclaw/company-kernel/state/dashboard.html
+open http://127.0.0.1:8780/dashboard.html
 ```
 
 ## 3. 直接叫员工说话

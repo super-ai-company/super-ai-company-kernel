@@ -41,6 +41,13 @@ python3 skills/openclaw-local-agent-bootstrap/scripts/scan_install.py --openclaw
 
 Use its output as a draft only. It cannot promote candidates or verify direct communication by itself.
 
+## Message Semantics
+
+- `message send` / `POST /v1/messages` records an inbox message and emits an event. It does not prove the runtime saw it or replied.
+- `message direct` / `POST /v1/messages/direct` invokes the target runtime adapter and can return a runtime reply.
+- If a user expects an ACK such as `HERMES_CONFIG_ACK`, use direct smoke or a conversation reply path, not a record-only inbox message.
+- Scanner `pending_inbox_messages` means messages are recorded but may still need an adapter, daemon worker, or human/runtime pickup.
+
 ## Hard Rules
 
 - Default reply surface is the current initiating conversation until a canonical business target is locked.
@@ -79,7 +86,8 @@ Return this compact structure per employee:
     "default_reply_account": "",
     "default_reply_target": "",
     "session_key": "",
-    "direct_status": "active|candidate|blocked"
+    "direct_status": "active|candidate|blocked",
+    "pending_inbox_messages": 0
   },
   "routing": {"active": [], "candidate": [], "blocked": []},
   "evidence": [],

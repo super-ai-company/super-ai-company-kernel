@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+set -euo pipefail
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
+LABELS=(
+  "ai.openclaw.company-kernel.daemon"
+  "ai.openclaw.company-kernel.api"
+  "ai.openclaw.company-kernel.dashboard"
+)
+mkdir -p "$HOME/Library/LaunchAgents" "$ROOT/logs"
+for LABEL in "${LABELS[@]}"; do
+  SRC="$ROOT/config/launchd/${LABEL}.plist"
+  DST="$HOME/Library/LaunchAgents/${LABEL}.plist"
+  cp "$SRC" "$DST"
+  launchctl bootout "gui/$(id -u)" "$DST" >/dev/null 2>&1 || true
+  launchctl bootstrap "gui/$(id -u)" "$DST"
+  launchctl kickstart -k "gui/$(id -u)/$LABEL"
+done
+"$ROOT/bin/companyctl" doctor --summary
+curl -fsS http://127.0.0.1:8765/v1/health >/dev/null
+curl -fsS http://127.0.0.1:8780/dashboard.html >/dev/null
