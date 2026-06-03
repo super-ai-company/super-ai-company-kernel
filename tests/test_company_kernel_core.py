@@ -2323,6 +2323,45 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual("blocked", blocked_task["task"]["status"])
         self.assertEqual("GUI login required", blocked_task["task"]["blocker"])
 
+    def test_attendance_sweep_uses_session_and_spool_evidence(self) -> None:
+        for agent in ("main", "nestcar", "codex"):
+            code, created = run_cli(
+                "employee",
+                "create",
+                "--id",
+                agent,
+                "--name",
+                agent,
+                "--role",
+                "agent",
+                "--runtime",
+                "openclaw" if agent in {"main", "nestcar"} else "codex",
+                "--workspace",
+                str(self.root / "workspace" / agent),
+            )
+            self.assertEqual(code, 0, created)
+
+        (self.root / "openclaw" / "agents" / "main" / "sessions").mkdir(parents=True)
+        (self.root / "openclaw" / "agents" / "nestcar" / "sessions").mkdir(parents=True)
+        (self.root / "openclaw" / "agents" / "codex" / "sessions").mkdir(parents=True)
+        (self.root / "openclaw" / "agents" / "main" / "sessions" / "sessions.json").write_text('{"s1": {}}', encoding="utf-8")
+        (self.root / "openclaw" / "agents" / "nestcar" / "sessions" / "sessions.json").write_text('{"s1": {}}', encoding="utf-8")
+        (self.root / "openclaw" / "agents" / "codex" / "sessions" / "sessions.json").write_text('{}', encoding="utf-8")
+        spool = self.root / "openclaw" / "telegram" / "ingress-spool-nestcar"
+        spool.mkdir(parents=True)
+        (spool / "0000000001.json.processing").write_text('{"update_id": 1}', encoding="utf-8")
+
+        code, swept = run_cli("attendance", "sweep", "--source", "main", "--agents", "main,nestcar,codex", "--sweep-id", "attendance-test")
+        self.assertEqual(code, 1, swept)
+        rows = {row["agent"]: row for row in swept["employees"]}
+        self.assertEqual("online", rows["main"]["status"])
+        self.assertEqual("main 报到", rows["main"]["reply"])
+        self.assertEqual("worker_stalled", rows["nestcar"]["status"])
+        self.assertEqual("session_missing", rows["codex"]["status"])
+        self.assertEqual(1, swept["counts"]["online"])
+        self.assertEqual(1, swept["counts"]["worker_stalled"])
+        self.assertTrue(Path(swept["evidence"]["json"]).exists())
+
     def test_employee_onboard_writes_config_and_creates_test_task(self) -> None:
         code, onboard = run_cli(
             "employee",

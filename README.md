@@ -296,6 +296,15 @@ bin/company-service-smoke --json-only
 Codex/Hermes/Claude/Trae 真实执行会把完整 stdout/stderr 写入员工 report 目录，并只把短输出摘要写进任务 summary/blocker。告警侧建议优先读取 `doctor --summary` 和 `adapter-run show --summary`，避免把完整 stdout/result_json 发给模型。
 `doctor --summary` 还会输出只读 `openclaw_guard`：检测外部 Telegram approval watcher 是否被重新启用、OpenClaw 原生 Telegram ingress spool 是否堆积。默认只展示；`--strict-openclaw` 会把这些问题作为失败 gate。该守门不会启动、停止或轮询 Telegram。
 
+全员点名使用 `attendance sweep`，不会把员工目录里的 `active/available` 直接当成在线，而是检查运行时 session、员工心跳文件和 OpenClaw ingress spool：
+
+```bash
+bin/companyctl attendance sweep --source main
+bin/companyctl attendance sweep --source main --agents main,nestcar,codex,hermes
+```
+
+状态包括 `online`、`session_missing`、`worker_stalled`、`heartbeat_disabled`、`no_reply`。如果 nestcar 这类员工 ingress spool 有 pending/processing，会被判为 `worker_stalled`。
+
 最小自动执行闭环：
 
 ```bash

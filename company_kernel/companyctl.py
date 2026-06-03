@@ -472,6 +472,149 @@ def openclaw_guard_health() -> dict:
     }
 
 
+ATTENDANCE_STATUSES = ("online", "session_missing", "worker_stalled", "heartbeat_disabled", "no_reply")
+
+
+def attendance_session_candidates(employee_id: str) -> list[Path]:
+    names = [employee_id, employee_id.replace("_", "-"), employee_id.replace("-", "_")]
+    if employee_id == "openclaw-main":
+        names.append("main")
+    if employee_id == "nestcar":
+        names.append("car-rental")
+    if employee_id in {"hermes", "default"}:
+        names.extend(["default", "hermes"])
+    result = []
+    seen = set()
+    for name in names:
+        path = openclaw_root() / "agents" / name / "sessions" / "sessions.json"
+        if path not in seen:
+            seen.add(path)
+            result.append(path)
+    return result
+
+
+def attendance_session_probe(employee_id: str) -> dict:
+    candidates = attendance_session_candidates(employee_id)
+    for path in candidates:
+        if not path.exists():
+            continue
+        payload = load_json_or_default(path, {})
+        count = len(payload) if isinstance(payload, (dict, list)) else 0
+        return {"path": str(path), "exists": True, "bytes": path.stat().st_size, "session_count": count}
+    return {"path": str(candidates[0]), "exists": False, "bytes": 0, "session_count": 0}
+
+
+def attendance_spool_candidates(employee_id: str) -> list[Path]:
+    names = [employee_id, employee_id.replace("-", "_"), employee_id.replace("_", "-")]
+    if employee_id in {"main", "openclaw-main"}:
+        names.append("default")
+    if employee_id in {"hermes", "default"}:
+        names.append("default")
+    result = []
+    seen = set()
+    for name in names:
+        path = openclaw_root() / "telegram" / f"ingress-spool-{name}"
+        if path not in seen:
+            seen.add(path)
+            result.append(path)
+    return result
+
+
+def attendance_spool_probe(employee_id: str, stale_minutes: int) -> dict:
+    cutoff = datetime.now(timezone.utc).astimezone() - timedelta(minutes=stale_minutes)
+    probe = {"paths": [], "pending": 0, "processing": 0, "stale_processing": 0, "files": []}
+    for spool in attendance_spool_candidates(employee_id):
+        if not spool.exists():
+            continue
+        probe["paths"].append(str(spool))
+        for path in sorted(spool.iterdir()):
+            if not path.is_file():
+                continue
+            if path.name.endswith(".json"):
+                probe["pending"] += 1
+                probe["files"].append(path.name)
+            elif path.name.endswith(".json.processing"):
+                probe["processing"] += 1
+                mtime = datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc).astimezone()
+                age_seconds = max(0, int((datetime.now(timezone.utc).astimezone() - mtime).total_seconds()))
+                if mtime < cutoff:
+                    probe["stale_processing"] += 1
+                probe["files"].append(f"{path.name}:age_seconds={age_seconds}")
+    return probe
+
+
+def attendance_classify_employee(employee: dict, stale_minutes: int) -> dict:
+    employee_id = employee["id"]
+    session = attendance_session_probe(employee_id)
+    spool = attendance_spool_probe(employee_id, stale_minutes)
+    heartbeat = load_json_or_default(employee_paths(employee_id)["heartbeat"], {})
+    reply = ""
+    if int(spool.get("pending", 0)) > 0 or int(spool.get("processing", 0)) > 0:
+        status = "worker_stalled"
+        reason = "telegram_ingress_spool_not_drained"
+    elif not session["exists"] and not heartbeat:
+        status = "heartbeat_disabled"
+        reason = "no_session_store_or_employee_heartbeat"
+    elif session["exists"] and int(session.get("session_count", 0)) <= 0:
+        status = "session_missing"
+        reason = "session_store_empty"
+    elif not session["exists"]:
+        status = "no_reply"
+        reason = "no_runtime_session_evidence"
+    else:
+        status = "online"
+        reason = "session_store_has_active_entries_and_spool_clear"
+        reply = f"{employee_id} 报到"
+    return {
+        "agent": employee_id,
+        "name": employee.get("name", ""),
+        "runtime": employee.get("runtime", ""),
+        "employee_status": employee.get("status", ""),
+        "status": status,
+        "reply": reply,
+        "reason": reason,
+        "session": session,
+        "spool": spool,
+        "heartbeat_file": str(employee_paths(employee_id)["heartbeat"]),
+        "heartbeat_file_exists": bool(heartbeat),
+    }
+
+
+def cmd_attendance_sweep(args: argparse.Namespace) -> int:
+    conn = connect_readonly()
+    requested = set(parse_csv(args.agents))
+    if requested:
+        placeholders = ",".join("?" for _ in requested)
+        query = f"SELECT * FROM employees WHERE id IN ({placeholders}) ORDER BY id"
+        employees = [dict(row) for row in conn.execute(query, tuple(sorted(requested))).fetchall()]
+        known = {row["id"] for row in employees}
+        for missing in sorted(requested - known):
+            employees.append({"id": missing, "name": missing, "runtime": "unknown", "status": "missing"})
+    else:
+        where = "" if args.include_candidates else "WHERE status = 'active'"
+        employees = [dict(row) for row in conn.execute(f"SELECT * FROM employees {where} ORDER BY id").fetchall()]
+    rows_out = [attendance_classify_employee(emp, args.stale_minutes) for emp in employees]
+    counts = {status: 0 for status in ATTENDANCE_STATUSES}
+    for row in rows_out:
+        counts[row["status"]] = counts.get(row["status"], 0) + 1
+    report = {
+        "ok": bool(rows_out) and all(row["status"] == "online" for row in rows_out),
+        "sweep_id": args.sweep_id or f"attendance-{datetime.now().strftime('%Y%m%d-%H%M%S')}",
+        "generated_at": now(),
+        "source_agent": args.source,
+        "counts": counts,
+        "employees": rows_out,
+        "evidence_rule": "online requires non-empty runtime session evidence and clear ingress spool; employee_directory.status is reported but never sufficient",
+    }
+    report_dir = STATE_DIR / "attendance"
+    report_dir.mkdir(parents=True, exist_ok=True)
+    report_path = report_dir / f"{report['sweep_id']}.json"
+    report["evidence"] = {"json": str(report_path)}
+    report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    emit(report)
+    return 0 if report["ok"] else 1
+
+
 def write_employee_capabilities(employee_id: str, profile: dict, *, dry_run: bool) -> str:
     path = employee_paths(employee_id)["capabilities"]
     if dry_run:
@@ -4003,6 +4146,16 @@ def build_parser() -> argparse.ArgumentParser:
     emp_offboard.add_argument("--hard-delete", action="store_true", help="delete only Company Kernel-managed employee files/workspace")
     emp_offboard.add_argument("--dry-run", action="store_true")
     emp_offboard.set_defaults(func=cmd_employee_offboard)
+
+    attendance = sub.add_parser("attendance")
+    attendance_sub = attendance.add_subparsers(dest="attendance_cmd", required=True)
+    attendance_sweep = attendance_sub.add_parser("sweep")
+    attendance_sweep.add_argument("--source", default="main")
+    attendance_sweep.add_argument("--agents", default="", help="comma-separated employee ids; default active employees")
+    attendance_sweep.add_argument("--sweep-id", default="")
+    attendance_sweep.add_argument("--include-candidates", action="store_true")
+    attendance_sweep.add_argument("--stale-minutes", type=int, default=15)
+    attendance_sweep.set_defaults(func=cmd_attendance_sweep)
 
     task = sub.add_parser("task")
     task_sub = task.add_subparsers(dest="task_cmd", required=True)
