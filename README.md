@@ -102,9 +102,12 @@ bin/companyctl employee permissions --id video-reviewer --can-modify-kernel fals
 bin/companyctl communication show --agent video-ops
 bin/companyctl communication check --from video-ops --to video-creator --action assign
 bin/companyctl communication check --from maker --to ops --action talk
+bin/companyctl employee offboard --id cursor --dry-run
+bin/companyctl employee offboard --id cursor
 ```
 
 每个员工目录会包含 `profile.json`、`capabilities.json`、`permissions.json`、`rules.md`、`heartbeat.json` 和 inbox/outbox/reports。
+`employee onboard` 只会在 Company Kernel 管理目录内自动写入员工工作区规则文件；外部 workspace 不会被自动改写。`employee offboard` 默认只软归档员工并清理通信映射，`--hard-delete` 也只删除 Company Kernel 管理范围内的员工文件/工作区。
 
 按能力自动选人和派工：
 
@@ -261,6 +264,7 @@ bin/companyctl runtime adapter-run show --run-id <adapter-run-id> --summary
 bin/companyctl runtime ack-adapter-run --run-id <adapter-run-id> --by openclaw-main --reason "已复核，可消警"
 bin/companyctl runtime retry-adapter-run --run-id <adapter-run-id> --by openclaw-main --reason "修复后重试"
 bin/company-trace --task-id <task-id>
+bin/company-service-smoke --json-only
 ```
 
 `adapter_runs.task_id` 会记录本次 adapter 处理的任务，旧记录会从 `result_json` 自动回填；`retry-adapter-run` 默认用该字段恢复任务，仍缺失时可补 `--task-id`。
@@ -277,6 +281,7 @@ bin/companyctl runtime adapter-runs --agent codex --status ok --limit 3
 
 这条 smoke 会证明 daemon 能临时启用 `codex` worker，自动领取任务、写 evidence、完成任务、写 heartbeat，并把本次执行写入 `adapter_runs` 供 dashboard/doctor/告警读取。
 上线验收可使用 `doctor --summary --strict-launchd`，把 launchd 未安装或安装文件与模板不一致作为失败 gate。
+服务层验收可使用 `bin/company-service-smoke --json-only`，它会启动本机随机端口 REST/RPC 服务并验证 health/describe/get，gRPC 依赖缺失时返回 `grpcio_not_installed`。
 
 配置文件：`config/daemon.json`  
 状态文件：`state/daemon/last-run.json`  

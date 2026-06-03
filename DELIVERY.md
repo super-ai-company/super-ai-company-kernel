@@ -8,6 +8,7 @@ Implemented and verified:
 
 - SQLite-backed company kernel schema for employees, runtimes, messages, tasks, locks, heartbeats, approvals, audit logs, events, conversations, RFCs, projects, adapter runs, and task relations.
 - `companyctl` command interface for employee onboarding, runtime registration, communication, task routing, task execution, approvals, recovery, heartbeats, project governance, scheduler, adapter run recovery, and doctor checks.
+- Employee onboarding can scaffold managed workspaces with runtime-specific rules, and offboarding supports dry-run, soft archive, and guarded hard delete.
 - Runtime adapters for OpenClaw, Hermes, Codex, Claude, Trae, and Antigravity.
 - Antigravity GUI adapter can now return completed or blocked GUI results back into Company Kernel with evidence/blocker.
 - OpenClaw adapter bridge tests cover dry-run payload/evidence generation and `--execute` approval gating before legacy bus submit.
@@ -29,6 +30,7 @@ Implemented and verified:
 - API Gateway employee and runtime endpoints now expose employee creation, employee inspection, runtime registration, and runtime listing.
 - API Gateway employee governance endpoints now expose capability and permission updates.
 - RPC Gateway now exposes the same governed service layer through JSON-RPC plus an optional grpcio generic gRPC server contract.
+- Service smoke now starts REST/RPC on random local ports and validates remote health/describe/get without direct SQLite access.
 - Sandbox isolation foundation: Codex/Hermes adapters can wrap execution commands with Docker or Firejail profiles without changing task protocol.
 - Static dashboard with runtime health, evidence health, employees, capabilities, projects, recent tasks, long-task delegation, conversations, approvals, RFCs, events, adapter runs, and locks.
 - Daemon loop with heartbeat refresh, scheduler run, repair pass, compact summary output, adapter run recording, launchd template and install/uninstall scripts.
