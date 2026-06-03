@@ -48,6 +48,8 @@ API_ENDPOINTS = [
     {"method": "POST", "path": "/v1/tasks/{task_id}/block", "summary": "Block task", "body": {"agent": "employee id", "blocker": "string"}},
     {"method": "POST", "path": "/v1/tasks/{task_id}/reopen", "summary": "Reopen blocked/interrupted task", "body": {"by": "employee id", "reason": "string", "status": "submitted/claimed optional"}},
     {"method": "POST", "path": "/v1/tasks/{task_id}/reassign", "summary": "Reassign task to another employee", "body": {"by": "employee id", "to": "employee id", "reason": "string"}},
+    {"method": "GET", "path": "/v1/tasks/{task_id}/conversations", "summary": "List task-bound conversations"},
+    {"method": "POST", "path": "/v1/tasks/{task_id}/conversations", "summary": "Start task-bound conversation", "body": {"from": "employee id optional", "participants": "comma-separated extra participants optional", "title": "string optional", "body": "string optional", "conversation_id": "string optional", "evidence": "path optional"}},
     {"method": "GET", "path": "/v1/messages", "summary": "List messages", "query": {"agent": "employee id required"}},
     {"method": "POST", "path": "/v1/messages", "summary": "Send message", "body": {"from": "employee id", "to": "employee id", "body": "string", "message_id": "string optional"}},
     {"method": "GET", "path": "/v1/conversations", "summary": "List conversations for an agent", "query": {"agent": "employee id required"}},
@@ -210,6 +212,10 @@ def route_get(path: str, query: dict[str, list[str]]) -> tuple[int, dict]:
         if status:
             argv.extend(["--status", status])
         code, payload = run_companyctl(argv)
+        return (HTTPStatus.OK if code == 0 else HTTPStatus.BAD_REQUEST), {"exit_code": code, **payload}
+    if path.startswith("/v1/tasks/") and path.endswith("/conversations"):
+        task_id = path.removeprefix("/v1/tasks/").removesuffix("/conversations").strip("/")
+        code, payload = run_companyctl(["task", "conversations", "--task-id", task_id])
         return (HTTPStatus.OK if code == 0 else HTTPStatus.BAD_REQUEST), {"exit_code": code, **payload}
     if path.startswith("/v1/tasks/"):
         task_id = path.removeprefix("/v1/tasks/").strip("/")
@@ -479,6 +485,14 @@ def route_post(path: str, body: dict) -> tuple[int, dict]:
         argv = ["message", "send", "--from", str(body.get("from", "")), "--to", str(body.get("to", "")), "--body", str(body.get("body", ""))]
         if body.get("message_id"):
             argv.extend(["--message-id", str(body["message_id"])])
+        code, payload = run_companyctl(argv)
+        return (HTTPStatus.CREATED if code == 0 else HTTPStatus.BAD_REQUEST), {"exit_code": code, **payload}
+    if path.startswith("/v1/tasks/") and path.endswith("/conversations"):
+        task_id = path.removeprefix("/v1/tasks/").removesuffix("/conversations").strip("/")
+        argv = ["task", "discuss", "--task-id", task_id]
+        for key, flag in [("from", "--from"), ("participants", "--participants"), ("title", "--title"), ("body", "--body"), ("conversation_id", "--conversation-id"), ("evidence", "--evidence")]:
+            if body.get(key) not in {None, ""}:
+                argv.extend([flag, str(body[key])])
         code, payload = run_companyctl(argv)
         return (HTTPStatus.CREATED if code == 0 else HTTPStatus.BAD_REQUEST), {"exit_code": code, **payload}
     if path.startswith("/v1/tasks/") and path.endswith("/claim"):

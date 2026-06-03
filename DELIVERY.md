@@ -15,6 +15,7 @@ Implemented and verified:
 - Codex adapter tests cover task-card/evidence generation, mocked `codex exec` success completion, and failed execution blocking with report.
 - CLI-backed adapters compact runtime stdout/stderr into task summaries/blockers while keeping full output as evidence files for low-token monitoring.
 - Custom runtime registration via `companyctl runtime register`, so future tools such as Cursor or Devin can be added without code changes.
+- Task-bound conversations let employees open multi-agent discussions around a task and persist the conversation ids in task metadata for audit and follow-up.
 - End-to-end daemon worker smoke for automatic task execution: daemon can enable configured workers or temporary generic dry-run workers for any active employee, claim a task, write evidence, complete it, heartbeat, and record `adapter_runs`.
 - Trace ID telemetry foundation: task metadata, company events, adapter runs, and dashboard now carry the same trace id.
 - Trace telemetry export: `bin/company-trace` writes per-trace JSON and HTML timeline files for dispatch, hook, and adapter latency inspection.
@@ -62,7 +63,7 @@ openclaw gateway probe
 
 ## Latest Verified Result
 
-- Unit tests: 45/45 passing.
+- Unit tests: 46/46 passing.
 - Service smoke: REST OK, RPC OK, gRPC ready when `grpcio` is installed.
 - Daemon worker smoke: verified in automated tests, including temporary generic workers for active employees not preconfigured in daemon.json; manual command path documented in README.
 - Strict doctor: `ok=true`, `issues=[]`.
