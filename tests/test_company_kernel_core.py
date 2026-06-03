@@ -2716,7 +2716,7 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual(0, summary["counts"]["steps"])
         self.assertNotIn("results", summary)
 
-    def test_daemon_enable_worker_can_create_temporary_generic_worker(self) -> None:
+    def test_daemon_enable_worker_creates_runtime_specific_temporary_worker(self) -> None:
         config_path = self.root / "config" / "daemon-worker-temporary.json"
         config_path.write_text(
             json.dumps(
@@ -2745,13 +2745,44 @@ class CompanyKernelCoreTest(unittest.TestCase):
         workers = {worker["agent"]: worker for worker in seen_configs[0]["adapter_workers"]}
         self.assertTrue(workers["hermes"]["enabled"])
         self.assertTrue(workers["hermes"]["temporary"])
-        self.assertEqual("company-adapter-worker", workers["hermes"]["command"])
-        self.assertEqual(["--dry-run"], workers["hermes"]["args"])
+        self.assertEqual("company-hermes-adapter", workers["hermes"]["command"])
+        self.assertEqual([], workers["hermes"]["args"])
+        self.assertEqual("hermes", workers["hermes"]["runtime"])
         saved = json.loads(config_path.read_text(encoding="utf-8"))
         self.assertEqual(["codex"], [worker["agent"] for worker in saved["adapter_workers"]])
 
         with self.assertRaisesRegex(SystemExit, "unknown or inactive worker"):
             company_daemon.main(["--config", str(config_path), "--once", "--enable-worker", "missing-agent"])
+
+    def test_daemon_enable_worker_falls_back_to_generic_worker_for_local_runtime(self) -> None:
+        config_path = self.root / "config" / "daemon-worker-local.json"
+        config_path.write_text(
+            json.dumps(
+                {
+                    "version": 1,
+                    "run_repair": False,
+                    "run_scheduler": False,
+                    "heartbeat_agents": [],
+                    "adapter_workers": [],
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        seen_configs = []
+
+        def fake_tick(config: dict) -> dict:
+            seen_configs.append(config)
+            return {"ok": True, "at": "2026-06-03T04:41:30+07:00", "results": []}
+
+        with contextlib.redirect_stdout(io.StringIO()), mock.patch.object(company_daemon, "tick", fake_tick):
+            code = company_daemon.main(["--config", str(config_path), "--once", "--enable-worker", "video-ops"])
+        self.assertEqual(0, code)
+        worker = seen_configs[0]["adapter_workers"][0]
+        self.assertEqual("video-ops", worker["agent"])
+        self.assertEqual("local", worker["runtime"])
+        self.assertEqual("company-adapter-worker", worker["command"])
+        self.assertEqual(["--dry-run"], worker["args"])
 
     def test_daemon_summary_omits_raw_command_output(self) -> None:
         state = {
