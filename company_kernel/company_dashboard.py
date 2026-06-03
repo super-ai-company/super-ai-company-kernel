@@ -885,6 +885,13 @@ def inject_advanced_dashboard(template: str, summary: dict, *, db_path: Path, ap
         flags=re.DOTALL,
     )
     html_text = re.sub(
+        r"\n\s*// Chat messaging functions\s*window\.sendChatMessage\s*=\s*function\(\)\s*\{.*?\n\s*// Terminal Command Interpreter",
+        "\n  // Terminal Command Interpreter",
+        html_text,
+        count=1,
+        flags=re.DOTALL,
+    )
+    html_text = re.sub(
         r"function formatDate\(isoStr\) \{\s*if \(!isoStr\) return '';\s*try \{\s*const d = new Date\(isoStr\);\s*return d\.toLocaleTimeString\(\) \+ ' ' \+ d\.toLocaleDateString\(\);\s*\} catch\(e\) \{\s*return isoStr;\s*\}\s*\}",
         """function formatDate(isoStr) {
     if (!isoStr) return '';
@@ -2129,9 +2136,6 @@ def inject_advanced_dashboard(template: str, summary: dict, *, db_path: Path, ap
       event.preventDefault();
       refreshChatHub();
     }});
-    if (typeof simulateAgentResponse === 'function') {{
-      window.simulateAgentResponse = function() {{}};
-    }}
     if (typeof window.renderChatMessages === 'function') {{
       window.renderChatMessages = renderRealChatMessages;
     }}

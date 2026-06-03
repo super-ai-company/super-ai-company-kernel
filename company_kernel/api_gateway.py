@@ -201,7 +201,7 @@ def route_get(path: str, query: dict[str, list[str]]) -> tuple[int, dict]:
         return HTTPStatus.OK, openapi_descriptor()
     if path in {"/health", "/v1/health"}:
         code, payload = run_companyctl(["doctor", "--summary"])
-        return (HTTPStatus.OK if code == 0 else HTTPStatus.BAD_REQUEST), {"exit_code": code, **payload}
+        return HTTPStatus.OK, {"exit_code": code, **payload}
     if path in {"/v1/doctor", "/doctor"}:
         argv = ["doctor", "--summary"]
         if query_value(query, "strict_launchd") in {"1", "true", "yes"}:

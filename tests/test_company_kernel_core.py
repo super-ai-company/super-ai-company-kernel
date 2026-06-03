@@ -2340,6 +2340,22 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual(200, status, health)
         self.assertTrue(health["ok"])
 
+        status, approval = api_gateway.route_post(
+            "/v1/approvals",
+            {
+                "from": "openclaw-main",
+                "action": "kernel_change",
+                "reason": "health endpoint should stay reachable while approvals are pending",
+                "approval_id": "approval-api-health-pending",
+            },
+        )
+        self.assertEqual(201, status, approval)
+        status, health_with_pending = api_gateway.route_get("/v1/health", {})
+        self.assertEqual(200, status, health_with_pending)
+        self.assertFalse(health_with_pending["ok"])
+        self.assertEqual(1, health_with_pending["exit_code"])
+        self.assertIn("pending_approvals", health_with_pending["issues"])
+
         status, submitted = api_gateway.route_post(
             "/v1/tasks",
             {
