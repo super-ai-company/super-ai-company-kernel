@@ -3,24 +3,25 @@
   "runtime": "hermes",
   "role": "supervisor",
   "skills": [
-    "local-automation",
-    "browser-automation",
-    "model-routing",
-    "tool-orchestration"
+    "supervision",
+    "automation",
+    "browser",
+    "tooling"
   ],
   "tools": [
-    "hermes -z",
-    "local tools"
+    "hermes",
+    "browser",
+    "mcp"
   ],
   "preferred_task_types": [
     "automation",
-    "research",
-    "ops-support"
+    "supervision",
+    "ops"
   ],
   "handoff": {
     "can_receive_tasks": true,
     "can_send_messages": true,
     "requires_adapter": true
   },
-  "updated_at": "2026-06-03T02:46:05+07:00"
+  "updated_at": "2026-06-03T15:26:46+07:00"
 }

@@ -1,0 +1,11 @@
+{
+  "id": "owner-shift",
+  "name": "Shift Shen",
+  "role": "owner",
+  "runtime": "local",
+  "workspace": "/Users/shift/openclaw/company-kernel/employees/owner-shift",
+  "created_at": "2026-06-03T15:26:47+07:00",
+  "status": "active",
+  "onboarding_status": "human_approval_endpoint",
+  "telegram_approval": true
+}

@@ -8,11 +8,12 @@
     "code-understanding"
   ],
   "tools": [
-    "claude -p"
+    "claude",
+    "docs"
   ],
   "preferred_task_types": [
     "analysis",
-    "documentation",
+    "docs",
     "review"
   ],
   "handoff": {
@@ -20,5 +21,5 @@
     "can_send_messages": true,
     "requires_adapter": true
   },
-  "updated_at": "2026-06-03T02:46:05+07:00"
+  "updated_at": "2026-06-03T15:26:46+07:00"
 }

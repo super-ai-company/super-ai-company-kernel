@@ -3,23 +3,24 @@
   "runtime": "openclaw",
   "role": "operator",
   "skills": [
-    "business-ops",
-    "agent-bus",
-    "workspace-operations"
+    "operations",
+    "owner-routing",
+    "telegram-intake"
   ],
   "tools": [
     "openclaw",
-    "oc bus"
+    "telegram",
+    "agent-bus"
   ],
   "preferred_task_types": [
-    "business-agent-task",
-    "line-ops",
-    "workspace-task"
+    "ops",
+    "approval",
+    "routing"
   ],
   "handoff": {
     "can_receive_tasks": true,
     "can_send_messages": true,
     "requires_adapter": true
   },
-  "updated_at": "2026-06-03T02:46:05+07:00"
+  "updated_at": "2026-06-03T15:26:47+07:00"
 }

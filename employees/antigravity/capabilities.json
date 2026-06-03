@@ -3,20 +3,25 @@
   "runtime": "antigravity",
   "role": "developer",
   "skills": [
-    "multi-agent-ide",
-    "browser-workflow"
+    "multi-agent",
+    "ide",
+    "browser",
+    "gui"
   ],
   "tools": [
-    "Antigravity app"
+    "antigravity",
+    "browser",
+    "ide"
   ],
   "preferred_task_types": [
-    "gui-assisted-development",
-    "browser-workflow"
+    "gui",
+    "code",
+    "automation"
   ],
   "handoff": {
     "can_receive_tasks": true,
     "can_send_messages": true,
     "requires_adapter": true
   },
-  "updated_at": "2026-06-03T02:46:05+07:00"
+  "updated_at": "2026-06-03T15:26:46+07:00"
 }

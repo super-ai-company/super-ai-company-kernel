@@ -1,0 +1,11 @@
+{
+  "id": "github-copilot",
+  "name": "GitHub Copilot",
+  "role": "developer",
+  "runtime": "local",
+  "workspace": "/Users/shift/openclaw/company-kernel/employees/github-copilot",
+  "created_at": "2026-06-03T15:26:46+07:00",
+  "status": "candidate",
+  "onboarding_status": "not_onboarded",
+  "activation_required": "Install or connect the runtime on this machine, then run employee onboard again."
+}
