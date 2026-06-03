@@ -258,6 +258,17 @@ bin/companyctl runtime retry-adapter-run --run-id <adapter-run-id> --by openclaw
 
 `adapter_runs.task_id` 会记录本次 adapter 处理的任务，旧记录会从 `result_json` 自动回填；`retry-adapter-run` 默认用该字段恢复任务，仍缺失时可补 `--task-id`。
 告警侧建议优先读取 `doctor --summary` 和 `adapter-run show --summary`，避免把完整 stdout/result_json 发给模型。
+
+最小自动执行闭环：
+
+```bash
+bin/companyctl task submit --from openclaw-main --to codex --task-id task-daemon-worker-smoke --title "daemon worker smoke"
+bin/company-daemon --once --enable-worker codex --summary
+bin/companyctl task show --task-id task-daemon-worker-smoke
+bin/companyctl runtime adapter-runs --agent codex --status ok --limit 3
+```
+
+这条 smoke 会证明 daemon 能临时启用 `codex` worker，自动领取任务、写 evidence、完成任务、写 heartbeat，并把本次执行写入 `adapter_runs` 供 dashboard/doctor/告警读取。
 上线验收可使用 `doctor --summary --strict-launchd`，把 launchd 未安装或安装文件与模板不一致作为失败 gate。
 
 配置文件：`config/daemon.json`  

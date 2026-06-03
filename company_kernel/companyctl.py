@@ -4,6 +4,7 @@ import argparse
 import filecmp
 import fnmatch
 import json
+import os
 import shutil
 import sqlite3
 import subprocess
@@ -14,7 +15,7 @@ from pathlib import Path
 
 from .schema_migrations import ensure_schema_migrations
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(os.environ.get("OPENCLAW_COMPANY_KERNEL_ROOT", Path(__file__).resolve().parents[1])).resolve()
 DB_PATH = ROOT / "company.sqlite"
 EMPLOYEES_DIR = ROOT / "employees"
 STATE_DIR = ROOT / "state"

@@ -37,7 +37,15 @@ class CompanyKernelCoreTest(unittest.TestCase):
         root = Path(self.tmp.name)
         self.root = root
         (root / "company_kernel").mkdir()
+        source_pkg = Path(__file__).resolve().parents[1] / "company_kernel"
+        for source_file in source_pkg.glob("*.py"):
+            (root / "company_kernel" / source_file.name).write_text(source_file.read_text(encoding="utf-8"), encoding="utf-8")
         (root / "company_kernel" / "schema.sql").write_text(companyctl.SCHEMA.read_text(encoding="utf-8"), encoding="utf-8")
+        (root / "bin").mkdir()
+        for executable in ["companyctl", "company-adapter-worker"]:
+            target = root / "bin" / executable
+            target.write_text((Path(__file__).resolve().parents[1] / "bin" / executable).read_text(encoding="utf-8"), encoding="utf-8")
+            target.chmod(0o755)
         (root / "config").mkdir()
         (root / "config" / "launchd").mkdir()
         (root / "config" / "launchd" / "ai.openclaw.company-kernel.daemon.plist").write_text(
@@ -158,7 +166,7 @@ class CompanyKernelCoreTest(unittest.TestCase):
             mock.patch.object(companyctl, "PROTECTED_PATHS_CONFIG", root / "config" / "protected_paths.json"),
             mock.patch.object(companyctl, "APPROVAL_STATE_DIR", root / "state" / "approvals"),
             mock.patch.object(companyctl, "SCHEMA", root / "company_kernel" / "schema.sql"),
-            mock.patch.dict("os.environ", {"HOME": str(root / "home")}),
+            mock.patch.dict("os.environ", {"HOME": str(root / "home"), "OPENCLAW_COMPANY_KERNEL_ROOT": str(root)}),
         ]
         for patcher in self.patchers:
             patcher.start()
@@ -1249,6 +1257,61 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertIn("task-adapter-run-dashboard", html)
         self.assertIn("company-codex-adapter", html)
         self.assertIn(str(self.root / "state" / "daemon" / "workers" / "codex.json"), html)
+
+    def test_daemon_worker_processes_task_end_to_end(self) -> None:
+        code, submitted = run_cli(
+            "task",
+            "submit",
+            "--from",
+            "openclaw-main",
+            "--to",
+            "codex",
+            "--task-id",
+            "task-daemon-worker-e2e",
+            "--title",
+            "daemon worker e2e",
+            "--description",
+            "daemon should claim, write evidence, complete, heartbeat, and record adapter run",
+        )
+        self.assertEqual(code, 0, submitted)
+
+        config = {
+            "version": 1,
+            "run_repair": False,
+            "run_scheduler": False,
+            "heartbeat_agents": [],
+            "adapter_workers": [
+                {
+                    "agent": "codex",
+                    "enabled": True,
+                    "command": "company-adapter-worker",
+                    "args": ["--dry-run"],
+                    "max_tasks_per_tick": 1,
+                }
+            ],
+        }
+        state = company_daemon.tick(config)
+
+        self.assertTrue(state["ok"], state)
+        adapter_steps = [item for item in state["results"] if item["step"] == "adapter.codex"]
+        self.assertEqual(1, len(adapter_steps), state)
+        parsed = json.loads(adapter_steps[0]["result"]["stdout"])
+        self.assertEqual(1, parsed["processed"])
+        self.assertEqual("task-daemon-worker-e2e", parsed["runs"][0]["parsed_stdout"]["task_id"])
+
+        code, task = run_cli("task", "show", "--task-id", "task-daemon-worker-e2e")
+        self.assertEqual(code, 0, task)
+        self.assertEqual("completed", task["task"]["status"])
+        self.assertEqual("codex", task["task"]["claimed_by"])
+        evidence = Path(task["task"]["evidence_path"])
+        self.assertTrue(evidence.exists(), task)
+        self.assertIn("Dry-run adapter acknowledged runtime", evidence.read_text(encoding="utf-8"))
+
+        code, runs = run_cli("runtime", "adapter-runs", "--agent", "codex", "--status", "ok")
+        self.assertEqual(code, 0, runs)
+        self.assertEqual(["task-daemon-worker-e2e"], [run["task_id"] for run in runs["adapter_runs"]])
+        self.assertTrue((self.root / "employees" / "codex" / "heartbeat.json").exists())
+        self.assertTrue((self.root / "state" / "daemon" / "workers" / "codex.json").exists())
 
     def test_daemon_enable_worker_temporarily_overrides_config(self) -> None:
         config_path = self.root / "config" / "daemon-worker-enable.json"
