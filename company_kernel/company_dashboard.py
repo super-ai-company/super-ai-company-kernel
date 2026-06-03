@@ -1106,6 +1106,87 @@ def inject_advanced_dashboard(template: str, summary: dict, *, db_path: Path, ap
       display: flex;
       flex-direction: column;
       height: 100%;
+    }
+
+    .dashboard-layout-fix .main-panel {
+      min-width: 0;
+    }
+
+    .dashboard-layout-fix .content-area {
+      box-sizing: border-box;
+      min-height: calc(100vh - 80px);
+      overflow: visible;
+    }
+
+    .dashboard-layout-fix .tab-pane.active {
+      display: flex;
+      flex-direction: column;
+      gap: 24px;
+      min-height: 1px;
+    }
+
+    .dashboard-layout-fix .chat-layout {
+      min-height: 460px;
+    }
+
+    .dashboard-layout-fix .traces-list-container {
+      display: grid;
+      gap: 14px;
+      min-height: 120px;
+    }
+
+    .dashboard-layout-fix .trace-item-card {
+      cursor: pointer;
+    }
+
+    .detail-summary {
+      display: grid;
+      gap: 8px;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    .detail-row {
+      display: grid;
+      grid-template-columns: minmax(110px, 180px) minmax(0, 1fr);
+      gap: 10px;
+      padding: 8px 0;
+      border-bottom: 1px solid rgba(148, 163, 184, 0.16);
+    }
+
+    .detail-key {
+      color: var(--text-secondary);
+      font-size: 11px;
+      font-weight: 800;
+      text-transform: uppercase;
+    }
+
+    .detail-value {
+      min-width: 0;
+      white-space: normal;
+      overflow-wrap: anywhere;
+      color: var(--text-primary);
+    }
+
+    .detail-json,
+    .detail-raw pre {
+      max-height: 260px;
+      overflow: auto;
+      white-space: pre-wrap;
+      background: rgba(2, 6, 23, 0.55);
+      border: 1px solid rgba(148, 163, 184, 0.16);
+      border-radius: 8px;
+      padding: 10px;
+    }
+
+    .detail-list {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+
+    .detail-raw {
+      margin-top: 12px;
+      color: var(--text-secondary);
     }""",
             1,
         )
@@ -1405,6 +1486,94 @@ def inject_advanced_dashboard(template: str, summary: dict, *, db_path: Path, ap
     return options
       ? `是否需要其他员工协助？可选：${{options}}。输入 @ 选择员工，发送后会创建/复用多人会话。`
       : '当前没有可协助的 active 员工。先完成员工验证或启动 API。';
+  }}
+  function parseMaybeJson(value, fallback) {{
+    if (value === null || value === undefined || value === '') return fallback;
+    if (typeof value === 'object') return value;
+    try {{
+      return JSON.parse(String(value));
+    }} catch (err) {{
+      return fallback;
+    }}
+  }}
+  function shortText(value, maxLength) {{
+    const raw = value === null || value === undefined ? '' : String(value);
+    const oneLine = raw.replace(/\\s+/g, ' ').trim();
+    if (!oneLine) return '-';
+    return oneLine.length > maxLength ? oneLine.slice(0, maxLength - 1) + '…' : oneLine;
+  }}
+  function approvalDetail(approval) {{
+    const detail = parseMaybeJson(approval && approval.reason, {{}});
+    return detail && typeof detail === 'object' && !Array.isArray(detail) ? detail : {{}};
+  }}
+  function approvalSummary(approval) {{
+    const detail = approvalDetail(approval);
+    return {{
+      request_reason: detail.request_reason || approval.reason || '',
+      target: detail.target || approval.target || '',
+      risk: detail.risk || approval.risk || '',
+      evidence: detail.evidence || '',
+      task_id: detail.metadata && detail.metadata.task_id ? detail.metadata.task_id : ''
+    }};
+  }}
+  function renderDetailValue(value) {{
+    if (value === null || value === undefined || value === '') return '<span style="color: var(--text-muted);">-</span>';
+    if (Array.isArray(value)) return `<div class="detail-list">${{value.map(item => `<span>${{escapeHtml(typeof item === 'object' ? JSON.stringify(item) : item)}}</span>`).join('')}}</div>`;
+    if (typeof value === 'object') return `<pre class="detail-json">${{escapeHtml(JSON.stringify(value, null, 2))}}</pre>`;
+    return escapeHtml(value);
+  }}
+  function renderDetails(title, rows, raw) {{
+    const html = `
+      <div class="detail-summary">
+        ${{rows.map(row => `
+          <div class="detail-row">
+            <div class="detail-key">${{escapeHtml(row[0])}}</div>
+            <div class="detail-value">${{renderDetailValue(row[1])}}</div>
+          </div>
+        `).join('')}}
+      </div>
+      <details class="detail-raw">
+        <summary>Raw JSON</summary>
+        <pre>${{escapeHtml(JSON.stringify(raw, null, 2))}}</pre>
+      </details>
+    `;
+    const modalTitle = document.getElementById('modal-title');
+    const code = document.getElementById('modal-code');
+    if (modalTitle) modalTitle.innerText = title;
+    if (code) {{
+      code.innerHTML = html;
+      code.style.whiteSpace = 'normal';
+    }}
+    const modal = document.getElementById('details-modal');
+    if (modal) modal.style.display = 'flex';
+  }}
+  function showApprovalDetails(approval) {{
+    const detail = approvalDetail(approval);
+    const summary = approvalSummary(approval);
+    renderDetails(`Approval: ${{approval.id || ''}}`, [
+      ['Status', approval.status || ''],
+      ['Action', approval.action || ''],
+      ['Source', approval.source_agent || ''],
+      ['Target', summary.target || '-'],
+      ['Risk', summary.risk || '-'],
+      ['Task ID', summary.task_id || '-'],
+      ['Reason', summary.request_reason || '-'],
+      ['Evidence', summary.evidence || '-'],
+      ['Updated', formatDate(approval.updated_at || '')],
+      ['Decision By', detail.decided_by || detail.decision_by || '-'],
+      ['Decision Reason', detail.decision_reason || '-']
+    ], approval);
+  }}
+  function showTraceDetails(trace) {{
+    renderDetails(`Trace: ${{trace.trace_id || ''}}`, [
+      ['Title', trace.title || ''],
+      ['Span Count', (trace.spans || []).length],
+      ['Duration', `${{trace.duration_ms || 0}} ms`],
+      ['Started', formatDate(trace.started_at || '')],
+      ['Updated', formatDate(trace.updated_at || '')],
+      ['Services', [...new Set((trace.spans || []).map(span => span.service || 'unknown'))].join(', ')],
+      ['Spans', (trace.spans || []).map(span => `${{span.service || '-'}} / ${{span.name || '-'}} / ${{span.task_id || '-'}}`)]
+    ], trace);
   }}
   function guideCollaborationAfterFailure(prefix) {{
     companyApiLog('SYSTEM', `${{prefix}} ${{collaborationHelpText()}}`, 'normal');
@@ -1790,6 +1959,7 @@ def inject_advanced_dashboard(template: str, summary: dict, *, db_path: Path, ap
         <button type="button" onclick="saveNotificationSettings()" style="flex:1;border:0;border-radius:6px;padding:7px;background:#4f46e5;color:white;font-weight:700;">Save</button>
         <button type="button" onclick="loadNotificationSettings()" style="flex:1;border:1px solid rgba(129,140,248,.35);border-radius:6px;padding:7px;background:transparent;color:#c7d2fe;font-weight:700;">Load</button>
       </div>
+      <div id="notify-route-status" style="margin-top:7px;color:#94a3b8;line-height:1.45;">Routes: loading...</div>
       <div style="margin-top:7px;color:#94a3b8;">不要粘贴 token，只保存环境变量名。</div>
     `;
     sidebar.appendChild(panel);
@@ -1809,7 +1979,12 @@ def inject_advanced_dashboard(template: str, summary: dict, *, db_path: Path, ap
       if (tokenInput) tokenInput.value = telegram.bot_token_env || 'COMPANY_EMPLOYEE_TELEGRAM_BOT_TOKEN';
       if (targetInput) targetInput.value = cfg.target || telegram.default_target || '';
       if (enabledInput) enabledInput.value = cfg.enabled ? 'true' : 'false';
-      companyApiLog('SYSTEM', `Notification loaded. token_configured=${{telegram.token_configured ? 'yes' : 'no'}}`, 'success');
+      const routes = data.routes || {{}};
+      const routeStatus = document.getElementById('notify-route-status');
+      if (routeStatus) {{
+        routeStatus.innerHTML = `Routes: approval -> ${{escapeHtml((routes.approval || {{}}).target || '-')}}<br>error -> ${{escapeHtml((routes.error || {{}}).target || '-')}}<br>token_configured=${{telegram.token_configured ? 'yes' : 'no'}}`;
+      }}
+      companyApiLog('SYSTEM', `Notification loaded. approval/error routes ready. token_configured=${{telegram.token_configured ? 'yes' : 'no'}}`, 'success');
     }} catch (err) {{
       companyApiLog('ERROR', `Notification load failed: ${{err.message}}`, 'error');
     }}
@@ -1832,6 +2007,93 @@ def inject_advanced_dashboard(template: str, summary: dict, *, db_path: Path, ap
       companyApiLog('ERROR', `Notification save failed: ${{err.message}}`, 'error');
     }}
   }}
+  function refreshGovernanceTables() {{
+    const summary = getDashboardSummary();
+    const approvalsTbody = document.getElementById('approvals-tbody');
+    if (approvalsTbody) {{
+      const approvals = summary.approvals || [];
+      approvalsTbody.innerHTML = approvals.length ? approvals.map((app, index) => {{
+        const detail = approvalSummary(app);
+        return `
+          <tr data-approval-index="${{index}}">
+            <td style="font-family: monospace; max-width: 260px;">${{escapeHtml(app.id || '')}}</td>
+            <td>${{escapeHtml(app.source_agent || '-')}}</td>
+            <td><span class="badge claimed">${{escapeHtml(app.action || '-')}}</span></td>
+            <td><span class="badge ${{escapeHtml(app.status || '')}}">${{escapeHtml(app.status || '')}}</span></td>
+            <td>
+              <div style="font-weight:700;color:var(--text-primary);">${{escapeHtml(shortText(detail.request_reason, 120))}}</div>
+              <div style="margin-top:4px;color:var(--text-muted);font-size:11px;">
+                target=${{escapeHtml(detail.target || '-')}} · risk=${{escapeHtml(detail.risk || '-')}}${{detail.task_id ? ` · task=${{escapeHtml(detail.task_id)}}` : ''}}
+              </div>
+            </td>
+            <td>${{formatDate(app.updated_at || '')}}</td>
+          </tr>
+        `;
+      }}).join('') : '<tr><td colspan="6" style="color:var(--text-muted);text-align:center;padding:24px;">No approvals.</td></tr>';
+      approvalsTbody.querySelectorAll('tr[data-approval-index]').forEach(row => {{
+        row.addEventListener('click', () => showApprovalDetails(approvals[Number(row.dataset.approvalIndex)]));
+      }});
+    }}
+  }}
+  function refreshTraceTelemetry() {{
+    const summary = getDashboardSummary();
+    const container = document.getElementById('traces-list-container');
+    if (!container) return;
+    const traces = summary.traces || [];
+    if (!traces.length) {{
+      container.innerHTML = `
+        <div style="color: var(--text-muted); font-size: 13px; text-align: center; padding: 30px;">
+          No trace spans yet. Submit/claim/done tasks or run adapters to generate trace_id-linked events.
+        </div>`;
+      return;
+    }}
+    const q = document.getElementById('trace-search') ? document.getElementById('trace-search').value.toLowerCase() : '';
+    container.innerHTML = traces.map((trace, traceIndex) => {{
+      const spans = trace.spans || [];
+      const services = [...new Set(spans.map(span => span.service || 'unknown'))];
+      const match = !q || trace.trace_id.toLowerCase().includes(q) || String(trace.title || '').toLowerCase().includes(q) || services.join(' ').toLowerCase().includes(q) || spans.some(span => String(span.name || '').toLowerCase().includes(q));
+      if (!match) return '';
+      const duration = Math.max(Number(trace.duration_ms || 1), 1);
+      const spansHtml = spans.map((span, spanIndex) => {{
+        const widthPct = Math.max(4, Math.min(100, (Number(span.duration_ms || 1) / duration) * 100));
+        const leftPct = Math.max(0, Math.min(96, (Number(span.start_ms || 0) / duration) * 100));
+        const serviceClass = ['gateway', 'sandbox', 'video-creator', 'codex', 'hermes', 'main'].includes(String(span.service || '').toLowerCase()) ? `span-${{String(span.service || '').toLowerCase()}}` : 'span-unknown';
+        return `
+          <div class="flamegraph-row" data-trace-index="${{traceIndex}}" data-span-index="${{spanIndex}}">
+            <div class="flamegraph-span ${{serviceClass}}" style="width:${{widthPct}}%;left:${{leftPct}}%;">
+              ${{escapeHtml(shortText(`${{span.service || '-'}}: ${{span.name || '-'}}`, 80))}} · ${{Math.round(Number(span.duration_ms || 0))}}ms
+            </div>
+          </div>`;
+      }}).join('');
+      return `
+        <div class="trace-item-card" id="trace-card-${{escapeHtml(trace.trace_id || '')}}" data-trace-index="${{traceIndex}}">
+          <div class="trace-card-header">
+            <span class="trace-card-title"><i class="fa-solid fa-code-merge"></i> ${{escapeHtml(trace.title || trace.trace_id || '')}}</span>
+            <div class="trace-card-meta">
+              <span><strong>${{spans.length}}</strong> spans</span>
+              <span>${{escapeHtml(services.join(' -> ') || 'unknown')}}</span>
+              <span>Total: <strong class="trace-duration">${{Math.round(duration)}}ms</strong></span>
+            </div>
+          </div>
+          <div class="flamegraph-container">${{spansHtml}}</div>
+        </div>`;
+    }}).join('');
+    container.querySelectorAll('.trace-item-card[data-trace-index]').forEach(card => {{
+      card.addEventListener('click', () => showTraceDetails(traces[Number(card.dataset.traceIndex)]));
+    }});
+    container.querySelectorAll('.flamegraph-row[data-trace-index][data-span-index]').forEach(row => {{
+      row.addEventListener('click', event => {{
+        event.stopPropagation();
+        const trace = traces[Number(row.dataset.traceIndex)] || {{}};
+        const span = (trace.spans || [])[Number(row.dataset.spanIndex)];
+        showDetails('Telemetry Span details', span || {{}});
+      }});
+    }});
+  }}
+  function refreshDashboardPresentation() {{
+    refreshGovernanceTables();
+    refreshTraceTelemetry();
+  }}
   function populateFollowups() {{
     const summary = window.summaryData || window.kernelSummary || {{followups: []}};
     const tbody = document.getElementById('followups-tbody');
@@ -1850,6 +2112,7 @@ def inject_advanced_dashboard(template: str, summary: dict, *, db_path: Path, ap
     `).join('');
   }}
   document.addEventListener('DOMContentLoaded', () => {{
+    document.body.classList.add('dashboard-layout-fix');
     window.sendChatMessage = realSendChatMessage;
     installNotificationSettingsPanel();
     bindChatControlButtons();
@@ -1872,6 +2135,9 @@ def inject_advanced_dashboard(template: str, summary: dict, *, db_path: Path, ap
     if (typeof window.renderChatMessages === 'function') {{
       window.renderChatMessages = renderRealChatMessages;
     }}
+    window.populateTraces = refreshTraceTelemetry;
+    window.filterTraces = refreshTraceTelemetry;
+    setTimeout(refreshDashboardPresentation, 250);
   }});
   document.addEventListener('DOMContentLoaded', () => setTimeout(populateFollowups, 200));
   window.addEventListener('DOMContentLoaded', checkCompanyApi);
