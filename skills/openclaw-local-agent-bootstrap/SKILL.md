@@ -17,7 +17,7 @@ When triggered, do this without waiting for the user to name every employee:
 4. Create an onboarding plan with active/candidate/blocked classification.
 5. If the user asked to configure automatically, run the scanner with `--apply` so new discoveries become `candidate`, not `active`.
 6. Generate direct smoke commands for each candidate.
-7. Promote only after direct smoke and owner/routing evidence pass.
+7. Promote only after 2-4 verified direct communication rounds pass. Heartbeat, app existence, generated briefs, or inbox files are not enough.
 8. After configuration, always output the full employee directory and each rename command.
 9. Run a 2-4 round employee handshake through the local validation admin. On this Mac, the default validation and approval-flow admin is Hermes.
 
@@ -29,6 +29,15 @@ When triggered, do this without waiting for the user to name every employee:
 - If a name/alias is ambiguous, block and ask the user to choose a concrete employee id.
 - Users can rename employees with `bin/companyctl employee update --id <id-or-name> --name <new-name>`.
 - After every install/apply/repair, print `employee_directory.all` so the user can see all employees, names, statuses, runtimes, and rename commands.
+
+## Runtime Skill Taxonomy
+
+- CLI employees and GUI employees must use separate skill folders and separate activation rules.
+- CLI employee skill names should follow `company-employee-cli-<runtime>` when the runtime has a direct command surface, for example Codex or Hermes.
+- GUI employee skill names should follow `company-employee-gui-<app>` when the runtime depends on an app or human GUI evidence, for example Antigravity.
+- OpenClaw workspace employees should follow `company-employee-openclaw-workspace`.
+- Do not register an unsupported runtime as `active`. Discovery creates `candidate`; activation requires `bin/companyctl employee verify-direct --id <agent> --from main --rounds 3 --activate`.
+- GUI brief generation is not activation evidence. A GUI employee can be a candidate with a brief channel, but not active until a real reply path and completion/blocker evidence path are verified.
 
 ## Fast Path
 
@@ -54,6 +63,7 @@ When triggered, do this without waiting for the user to name every employee:
    - `bin/companyctl doctor --summary`
    - `bin/companyctl employee list`
    - `bin/companyctl message direct --from main --to <agent> --body "只回复：<agent>_DIRECT_OK"`
+   - `bin/companyctl employee verify-direct --id <agent> --from main --rounds 3 --activate`
    - API equivalent: `POST /v1/messages/direct`.
 
 For a read-only first pass, run the bundled scanner. It discovers existing employees plus likely new employees such as Hermes, Codex, Claude, Trae, Antigravity, OpenClaw workspaces, local models, Cursor, Devin, and Copilot:
@@ -76,6 +86,9 @@ Use scanner output as a draft until direct smoke passes. `--apply` must not prom
 - `message direct` / `POST /v1/messages/direct` invokes the target runtime adapter and can return a runtime reply.
 - If a user expects an ACK such as `HERMES_CONFIG_ACK`, use direct smoke or a conversation reply path, not a record-only inbox message.
 - Scanner `pending_inbox_messages` means messages are recorded but may still need an adapter, daemon worker, or human/runtime pickup.
+- `status=active` means verified direct communication, not merely online heartbeat.
+- `status=candidate` means discovered, installed, or partially reachable but not yet verified enough to receive autonomous work.
+- `status=archived` means not visible in active roster and not schedulable.
 
 ## Closed-Loop Coordination
 

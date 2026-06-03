@@ -21,11 +21,15 @@ Then run or output the 2-4 round handshake plan with `--installer-agent hermes -
 1. Locate Hermes:
    - `command -v hermes`, `/Users/owner/.local/bin/hermes`, `/Users/owner/.hermes`, or `/Users/owner/hermes`.
    - If Hermes is reached through OpenClaw runtime, discover its canonical runtime agent id before sending. The Company Kernel employee id may be `hermes` while the runtime agent id is `default`.
+   - Company Kernel DB source of truth is `<kernel-root>/company.sqlite`, not `state/company.db`.
+   - `employees/*/profile.json` files are secondary evidence and must not override `company.sqlite` for active/candidate/human-owner state.
+   - Human owner `owner` is not an AI employee and must not be included in active employee verification.
 2. Register/update:
    - `bin/companyctl employee create --id hermes --name Hermes --role supervisor --runtime hermes --workspace <hermes-home>`
 3. Smoke:
    - `bin/companyctl heartbeat --agent hermes`
    - `bin/companyctl message direct --from main --to hermes --body "只回复：hermes_DIRECT_OK"`
+   - `bin/companyctl employee verify-direct --id hermes --from main --rounds 3 --activate`
    - `bin/company-hermes-adapter --agent hermes`
 
 ## Runtime Identity Rule

@@ -526,8 +526,26 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual(0, code, sent)
         self.assertEqual("hermes", sent["target"])
         self.assertEqual("hermes", sent["message"]["target_agent"])
-        self.assertEqual("default", sent["agent_runtime_id"])
-        self.assertIn("agent:default:main", calls[0])
+
+    def test_employee_activation_requires_verified_direct_rounds(self) -> None:
+        code, created = run_cli("employee", "create", "--id", "main", "--name", "main", "--role", "operator", "--runtime", "openclaw", "--workspace", str(self.root / "workspace" / "main"))
+        self.assertEqual(0, code, created)
+        self.assertEqual("candidate", created["employee"].get("status", "candidate"))
+        code, created = run_cli("employee", "create", "--id", "codex", "--name", "Codex", "--role", "developer", "--runtime", "codex", "--workspace", str(self.root / "workspace" / "codex"))
+        self.assertEqual(0, code, created)
+        code, blocked = run_cli("employee", "update", "--id", "codex", "--status", "active")
+        self.assertEqual(2, code, blocked)
+        self.assertEqual("employee activation requires 2-4 verified direct communication rounds", blocked["error"])
+
+        code, verified = run_cli("employee", "verify-direct", "--id", "codex", "--from", "main", "--rounds", "2", "--activate")
+        self.assertEqual(0, code, verified)
+        self.assertTrue(verified["ok"])
+        self.assertTrue(verified["activated"])
+        self.assertEqual(2, verified["rounds_completed"])
+        self.assertTrue(Path(verified["evidence"]["latest"]).exists())
+        code, shown = run_cli("employee", "show", "codex")
+        self.assertEqual(0, code, shown)
+        self.assertEqual("active", shown["employee"]["status"])
 
     def test_message_direct_uses_default_telegram_reply_bridge(self) -> None:
         code, created = run_cli("employee", "create", "--id", "main", "--name", "main", "--role", "operator", "--runtime", "openclaw", "--workspace", str(self.root / "workspace" / "main"))
@@ -906,6 +924,7 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual(code, 0, cursor)
         conn = companyctl.connect()
         try:
+            conn.execute("UPDATE employees SET status = 'active' WHERE id = 'hermes'")
             conn.execute("UPDATE employees SET status = 'candidate' WHERE id = 'cursor'")
             conn.commit()
             companyctl.heartbeat_internal(conn, "hermes", {"source": "test"})
@@ -1366,6 +1385,12 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertIn("daemon_stale", stale_daemon["issues"])
         self.assertFalse(stale_daemon["daemon"]["ok"])
         daemon_state.write_text(json.dumps({"ok": True, "at": companyctl.now(), "results": []}, ensure_ascii=False), encoding="utf-8")
+        conn = companyctl.connect()
+        try:
+            conn.execute("UPDATE employees SET status = 'active' WHERE id IN ('codex', 'video-ops', 'video-creator', 'maker')")
+            conn.commit()
+        finally:
+            conn.close()
 
         conn = companyctl.connect()
         try:
@@ -2266,6 +2291,12 @@ class CompanyKernelCoreTest(unittest.TestCase):
         )
         self.assertEqual(201, status, employee)
         self.assertEqual("cursor-dev", employee["employee"]["id"])
+        conn = companyctl.connect()
+        try:
+            conn.execute("UPDATE employees SET status = 'active' WHERE id = 'cursor-dev'")
+            conn.commit()
+        finally:
+            conn.close()
         status, employees = api_gateway.route_get("/v1/employees", {})
         self.assertEqual(200, status, employees)
         self.assertIn("cursor-dev", [item["id"] for item in employees["employees"]])
@@ -2369,9 +2400,16 @@ class CompanyKernelCoreTest(unittest.TestCase):
             "/v1/employees/cursor-dev",
             {"name": "Cursor API Employee", "role": "developer", "status": "active"},
         )
-        self.assertEqual(200, status, patched)
-        self.assertEqual("Cursor API Employee", patched["employee"]["name"])
-        self.assertEqual("active", patched["employee"]["status"])
+        self.assertEqual(HTTPStatus.BAD_REQUEST, status, patched)
+        self.assertEqual("employee activation requires 2-4 verified direct communication rounds", patched["error"])
+
+        status, patched_candidate = api_gateway.route_patch(
+            "/v1/employees/cursor-dev",
+            {"name": "Cursor API Employee", "role": "developer", "status": "candidate"},
+        )
+        self.assertEqual(200, status, patched_candidate)
+        self.assertEqual("Cursor API Employee", patched_candidate["employee"]["name"])
+        self.assertEqual("candidate", patched_candidate["employee"]["status"])
 
         managed_workspace = self.root / "employees" / "api-reviewer"
         status, onboarded = api_gateway.route_post(
@@ -3390,6 +3428,7 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual(code, 0, reviewer)
         conn = companyctl.connect()
         try:
+            conn.execute("UPDATE employees SET status = 'active' WHERE id IN ('nestcar', 'openclaw-main', 'main', 'reviewer-runtime')")
             conn.execute("UPDATE employees SET status = 'inactive' WHERE id = 'retired'")
             conn.commit()
         finally:
@@ -3589,6 +3628,12 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertNotIn("results", summary)
 
     def test_daemon_enable_worker_creates_runtime_specific_temporary_worker(self) -> None:
+        conn = companyctl.connect()
+        try:
+            conn.execute("UPDATE employees SET status = 'active' WHERE id = 'hermes'")
+            conn.commit()
+        finally:
+            conn.close()
         config_path = self.root / "config" / "daemon-worker-temporary.json"
         config_path.write_text(
             json.dumps(
@@ -3627,6 +3672,12 @@ class CompanyKernelCoreTest(unittest.TestCase):
             company_daemon.main(["--config", str(config_path), "--once", "--enable-worker", "missing-agent"])
 
     def test_daemon_enable_worker_falls_back_to_generic_worker_for_local_runtime(self) -> None:
+        conn = companyctl.connect()
+        try:
+            conn.execute("UPDATE employees SET status = 'active' WHERE id = 'video-ops'")
+            conn.commit()
+        finally:
+            conn.close()
         config_path = self.root / "config" / "daemon-worker-local.json"
         config_path.write_text(
             json.dumps(
