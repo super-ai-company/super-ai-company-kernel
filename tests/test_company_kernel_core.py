@@ -1113,6 +1113,33 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual(200, status, shown)
         self.assertEqual("task-api-gateway", shown["task"]["id"])
 
+        evidence = self.root / "evidence" / "api-task-done.md"
+        evidence.parent.mkdir(exist_ok=True)
+        evidence.write_text("api task done evidence", encoding="utf-8")
+        status, claimed = api_gateway.route_post("/v1/tasks/task-api-gateway/claim", {"agent": "codex", "lease_seconds": "60"})
+        self.assertEqual(200, status, claimed)
+        self.assertEqual("claimed", claimed["task"]["status"])
+        status, done = api_gateway.route_post("/v1/tasks/task-api-gateway/done", {"agent": "codex", "summary": "completed through REST", "evidence": str(evidence)})
+        self.assertEqual(200, status, done)
+        self.assertEqual("completed", done["status"])
+
+        status, submitted_block = api_gateway.route_post(
+            "/v1/tasks",
+            {
+                "from": "openclaw-main",
+                "to": "codex",
+                "task_id": "task-api-gateway-block",
+                "title": "API Gateway block task",
+                "description": "blocked through REST",
+            },
+        )
+        self.assertEqual(201, status, submitted_block)
+        status, claimed_block = api_gateway.route_post("/v1/tasks/task-api-gateway-block/claim", {"agent": "codex"})
+        self.assertEqual(200, status, claimed_block)
+        status, blocked = api_gateway.route_post("/v1/tasks/task-api-gateway-block/block", {"agent": "codex", "blocker": "blocked through REST"})
+        self.assertEqual(200, status, blocked)
+        self.assertEqual("blocked", blocked["status"])
+
         status, sent = api_gateway.route_post("/v1/messages", {"from": "hermes", "to": "codex", "body": "REST ping", "message_id": "msg-api-gateway"})
         self.assertEqual(201, status, sent)
         status, messages = api_gateway.route_get("/v1/messages", {"agent": ["codex"]})
