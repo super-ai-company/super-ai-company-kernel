@@ -66,6 +66,7 @@ API_ENDPOINTS = [
     {"method": "POST", "path": "/v1/approvals/{approval_id}/approve", "summary": "Approve request", "body": {"by": "employee id", "reason": "string"}},
     {"method": "POST", "path": "/v1/approvals/{approval_id}/deny", "summary": "Deny request", "body": {"by": "employee id", "reason": "string"}},
     {"method": "POST", "path": "/v1/heartbeats", "summary": "Write employee heartbeat", "body": {"agent": "employee id"}},
+    {"method": "GET", "path": "/v1/attendance/latest", "summary": "Read latest persisted attendance sweep report"},
     {"method": "POST", "path": "/v1/attendance/sweep", "summary": "Run attendance sweep with optional exact agent reply probes", "body": {"source": "source employee optional", "agents": "comma-separated employees optional", "sweep_id": "string optional", "include_candidates": "bool optional", "stale_minutes": "integer optional", "probe_replies": "bool optional", "reply_timeout": "integer optional"}},
     {"method": "GET", "path": "/v1/projects", "summary": "List projects", "query": {"status": "active/paused/completed/blocked/all optional"}},
     {"method": "POST", "path": "/v1/projects", "summary": "Create project", "body": {"project_id": "string optional", "title": "string", "goal": "string optional", "owner": "employee id", "status": "active/paused/completed/blocked optional", "acceptance": "semicolon-separated criteria optional"}},
@@ -262,6 +263,15 @@ def route_get(path: str, query: dict[str, list[str]]) -> tuple[int, dict]:
         approval_id = path.removeprefix("/v1/approvals/").strip("/")
         code, payload = run_companyctl(["approval", "show", "--approval-id", approval_id])
         return (HTTPStatus.OK if code == 0 else HTTPStatus.BAD_REQUEST), {"exit_code": code, **payload}
+    if path == "/v1/attendance/latest":
+        latest_path = companyctl.STATE_DIR / "attendance" / "latest.json"
+        if not latest_path.exists():
+            return HTTPStatus.NOT_FOUND, {"ok": False, "error": "attendance latest report not found", "path": str(latest_path)}
+        try:
+            payload = json.loads(latest_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as exc:
+            return HTTPStatus.BAD_REQUEST, {"ok": False, "error": f"invalid attendance latest report: {exc}", "path": str(latest_path)}
+        return HTTPStatus.OK, {"exit_code": 0, **payload}
     if path == "/v1/projects":
         argv = ["project", "list"]
         status = query_value(query, "status")

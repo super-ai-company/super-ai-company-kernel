@@ -452,7 +452,9 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertIn("/v1/health", html)
         self.assertIn("API offline", html)
         self.assertIn("editEmployee", html)
-        self.assertIn("/profile", html)
+        self.assertIn("'PATCH'", html)
+        self.assertIn("'DELETE'", html)
+        self.assertIn("/v1/employees/${encodeURIComponent(id)}", html)
 
     def test_dashboard_advanced_template_uses_live_summary_and_real_employee_api(self) -> None:
         template = self.root / "gemini-dashboard-template.html"
@@ -498,10 +500,13 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertIn("checkCompanyApi", html)
         self.assertIn("/v1/health", html)
         self.assertIn("API OFFLINE", html)
+        self.assertIn("/v1/attendance/latest", html)
         self.assertIn("realOnboardGeneratedEmployee", html)
         self.assertIn("realOffboardEmployee", html)
         self.assertIn("openEditEmployeeProfile", html)
         self.assertIn("realUpdateEmployeeProfile", html)
+        self.assertIn("'PATCH'", html)
+        self.assertIn("'DELETE'", html)
 
     def test_dashboard_renders_task_evidence_blocker_and_approval_counts(self) -> None:
         code, submitted = run_cli("task", "submit", "--from", "ops", "--to", "maker", "--task-id", "task-dashboard-blocked", "--title", "blocked task")
@@ -1795,6 +1800,9 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual(202, status, attendance)
         self.assertEqual("api-attendance", attendance["sweep_id"])
         self.assertIn(attendance["employees"][0]["status"], {"heartbeat_disabled", "no_reply"})
+        status, attendance_latest = api_gateway.route_get("/v1/attendance/latest", {})
+        self.assertEqual(200, status, attendance_latest)
+        self.assertEqual("api-attendance", attendance_latest["sweep_id"])
 
     def test_api_rpc_routes_rest_contract_without_direct_sqlite_access(self) -> None:
         described = api_rpc.handle_rpc({"jsonrpc": "2.0", "id": "describe", "method": "company.describe", "params": {}})
