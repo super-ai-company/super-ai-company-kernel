@@ -333,9 +333,15 @@ curl -X POST http://127.0.0.1:8765/v1/runtimes \
 curl -X POST http://127.0.0.1:8765/v1/employees \
   -H 'Content-Type: application/json' \
   --data '{"id":"cursor-dev","name":"Cursor Dev","role":"developer","runtime":"cursor","workspace":"/Users/owner/openclaw/workspace-cursor"}'
+curl -X POST http://127.0.0.1:8765/v1/employees/cursor-dev/capabilities \
+  -H 'Content-Type: application/json' \
+  --data '{"set_skills":"engineering,review","add_tool":["cursor","git"],"set_task_types":"code,review"}'
+curl -X POST http://127.0.0.1:8765/v1/employees/cursor-dev/permissions \
+  -H 'Content-Type: application/json' \
+  --data '{"can_submit_tasks":"false","requires_approval_for":"external_send,payment"}'
 ```
 
-`/v1` 返回服务发现、能力列表、治理约束和端点清单；`/v1/openapi.json` 返回机器可读 OpenAPI 3.1 契约。已覆盖的端点：`/v1/health`、`/v1/doctor`、`/v1/employees`、`/v1/runtimes`、`/v1/tasks`、`/v1/tasks/<id>/claim|done|block|reopen|reassign`、`/v1/messages`、`/v1/conversations`、`/v1/approvals`、`/v1/projects`、`/v1/projects/<id>/review|accept`、`/v1/locks`、`/v1/heartbeats`、`/v1/adapter-runs`。
+`/v1` 返回服务发现、能力列表、治理约束和端点清单；`/v1/openapi.json` 返回机器可读 OpenAPI 3.1 契约。已覆盖的端点：`/v1/health`、`/v1/doctor`、`/v1/employees`、`/v1/employees/<id>/capabilities|permissions`、`/v1/runtimes`、`/v1/tasks`、`/v1/tasks/<id>/claim|done|block|reopen|reassign`、`/v1/messages`、`/v1/conversations`、`/v1/approvals`、`/v1/projects`、`/v1/projects/<id>/review|accept`、`/v1/locks`、`/v1/heartbeats`、`/v1/adapter-runs`。
 
 ## Sandbox Isolation
 
