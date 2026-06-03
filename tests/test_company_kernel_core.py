@@ -17,6 +17,7 @@ from company_kernel import api_grpc
 from company_kernel import api_rpc
 from company_kernel import company_daemon
 from company_kernel import company_dashboard
+from company_kernel import company_service_smoke
 from company_kernel import company_trace
 from company_kernel import companyctl
 from company_kernel import codex_adapter
@@ -51,7 +52,7 @@ class CompanyKernelCoreTest(unittest.TestCase):
             (root / "company_kernel" / source_file.name).write_text(source_file.read_text(encoding="utf-8"), encoding="utf-8")
         (root / "company_kernel" / "schema.sql").write_text(companyctl.SCHEMA.read_text(encoding="utf-8"), encoding="utf-8")
         (root / "bin").mkdir()
-        for executable in ["companyctl", "company-adapter-worker", "company-codex-adapter", "company-openclaw-adapter", "company-trace", "company-api-rpc", "company-api-grpc"]:
+        for executable in ["companyctl", "company-adapter-worker", "company-codex-adapter", "company-openclaw-adapter", "company-trace", "company-api-rpc", "company-api-grpc", "company-service-smoke"]:
             target = root / "bin" / executable
             target.write_text((Path(__file__).resolve().parents[1] / "bin" / executable).read_text(encoding="utf-8"), encoding="utf-8")
             target.chmod(0o755)
@@ -165,6 +166,20 @@ class CompanyKernelCoreTest(unittest.TestCase):
             mock.patch.object(company_trace, "DB_PATH", root / "company.sqlite"),
             mock.patch.object(company_trace, "SCHEMA", root / "company_kernel" / "schema.sql"),
             mock.patch.object(company_trace, "DEFAULT_OUTPUT_DIR", root / "state" / "traces"),
+            mock.patch.object(company_service_smoke.api_gateway.companyctl, "ROOT", root),
+            mock.patch.object(company_service_smoke.api_gateway.companyctl, "DB_PATH", root / "company.sqlite"),
+            mock.patch.object(company_service_smoke.api_gateway.companyctl, "EMPLOYEES_DIR", root / "employees"),
+            mock.patch.object(company_service_smoke.api_gateway.companyctl, "STATE_DIR", root / "state"),
+            mock.patch.object(company_service_smoke.api_gateway.companyctl, "RFC_DIR", root / "rfcs"),
+            mock.patch.object(company_service_smoke.api_gateway.companyctl, "CONFIG_DIR", root / "config"),
+            mock.patch.object(company_service_smoke.api_gateway.companyctl, "WORKFLOW_DIR", root / "config" / "workflows"),
+            mock.patch.object(company_service_smoke.api_gateway.companyctl, "LAUNCHD_TEMPLATE", root / "config" / "launchd" / "ai.openclaw.company-kernel.daemon.plist"),
+            mock.patch.object(company_service_smoke.api_gateway.companyctl, "HOOKS_PATH", root / "config" / "hooks.json"),
+            mock.patch.object(company_service_smoke.api_gateway.companyctl, "COMMUNICATIONS_PATH", root / "config" / "company_communications.json"),
+            mock.patch.object(company_service_smoke.api_gateway.companyctl, "POLICY_PATH", root / "config" / "policy.json"),
+            mock.patch.object(company_service_smoke.api_gateway.companyctl, "PROTECTED_PATHS_CONFIG", root / "config" / "protected_paths.json"),
+            mock.patch.object(company_service_smoke.api_gateway.companyctl, "APPROVAL_STATE_DIR", root / "state" / "approvals"),
+            mock.patch.object(company_service_smoke.api_gateway.companyctl, "SCHEMA", root / "company_kernel" / "schema.sql"),
             mock.patch.object(codex_adapter, "ROOT", root),
             mock.patch.object(codex_adapter, "DB_PATH", root / "company.sqlite"),
             mock.patch.object(codex_adapter, "DEFAULT_WORKSPACE", root / "workspace" / "codex"),
@@ -1443,6 +1458,26 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual(201, response["status"])
         self.assertEqual("generic-grpc", json.loads(response["body_json"])["runtime"]["runtime"])
 
+    def test_service_smoke_starts_rest_and_rpc_ports(self) -> None:
+        for agent in ["video-ops", "video-creator", "video-publisher", "codex", "openclaw-main", "hermes", "nestcar"]:
+            code, heartbeat = run_cli("heartbeat", "--agent", agent)
+            self.assertEqual(code, 0, heartbeat)
+        daemon_state = self.root / "state" / "daemon" / "last-run.json"
+        daemon_state.parent.mkdir(parents=True, exist_ok=True)
+        daemon_state.write_text(json.dumps({"ok": True, "at": companyctl.now(), "results": []}, ensure_ascii=False), encoding="utf-8")
+
+        with mock.patch.object(company_service_smoke, "free_port", side_effect=[41001, 41002]), mock.patch.object(company_service_smoke, "start_thread"), mock.patch.object(
+            company_service_smoke,
+            "get_json",
+            side_effect=[{"ok": True, "issues": []}, {"ok": True}],
+        ), mock.patch.object(company_service_smoke, "post_json", return_value={"result": {"status": 200}}):
+            result = company_service_smoke.run_smoke()
+        self.assertTrue(result["ok"], result)
+        self.assertTrue(result["rest"]["ok"])
+        self.assertTrue(result["rpc"]["describe_ok"])
+        self.assertEqual(200, result["rpc"]["health_status"])
+        self.assertIn(result["grpc"]["check"], {"ready", "grpcio_not_installed"})
+
     def test_sandboxing_wraps_codex_and_hermes_commands_without_executing_container(self) -> None:
         workspace = self.root / "workspace" / "codex"
         profile_config = {
@@ -1952,6 +1987,84 @@ class CompanyKernelCoreTest(unittest.TestCase):
         code, claimed = run_cli("task", "claim", "--agent", "rev", "--task-id", "task-onboard-reviewer")
         self.assertEqual(code, 0, claimed)
         self.assertEqual("reviewer", claimed["task"]["claimed_by"])
+
+    def test_employee_onboard_scaffolds_managed_workspace_and_offboards_safely(self) -> None:
+        workspace = self.root / "employees" / "reviewer-scaffold"
+        code, onboard = run_cli(
+            "employee",
+            "onboard",
+            "--id",
+            "reviewer-scaffold",
+            "--name",
+            "Scaffold Reviewer",
+            "--role",
+            "code-reviewer",
+            "--runtime",
+            "hermes",
+            "--workspace",
+            str(workspace),
+            "--alias",
+            "scaffold-reviewer",
+        )
+        self.assertEqual(code, 0, onboard)
+        self.assertTrue((workspace / "SOUL.md").exists())
+        self.assertTrue((workspace / "AGENTS.md").exists())
+        self.assertIn("Scaffold Reviewer", (workspace / "SOUL.md").read_text(encoding="utf-8"))
+        self.assertIn(str((workspace / "SOUL.md").resolve()), onboard["scaffolded_files"])
+
+        code, dry = run_cli("employee", "offboard", "--id", "scaffold-reviewer", "--dry-run")
+        self.assertEqual(code, 0, dry)
+        self.assertTrue(dry["dry_run"])
+        self.assertEqual("soft-delete", dry["action"])
+
+        code, soft = run_cli("employee", "offboard", "--id", "scaffold-reviewer")
+        self.assertEqual(code, 0, soft)
+        self.assertEqual("soft-delete", soft["action"])
+        conn = companyctl.connect()
+        try:
+            row = conn.execute("SELECT status FROM employees WHERE id = 'reviewer-scaffold'").fetchone()
+            self.assertEqual("archived", row["status"])
+        finally:
+            conn.close()
+        self.assertTrue(workspace.exists())
+        config = json.loads((self.root / "config" / "company_communications.json").read_text(encoding="utf-8"))
+        self.assertNotIn("scaffold-reviewer", config["aliases"])
+        self.assertNotIn("reviewer-scaffold", config["employees"])
+
+        code, hard_dry = run_cli("employee", "offboard", "--id", "reviewer-scaffold", "--hard-delete", "--dry-run")
+        self.assertEqual(code, 0, hard_dry)
+        self.assertIn(str(workspace), hard_dry["deleted_paths"])
+
+        code, hard = run_cli("employee", "offboard", "--id", "reviewer-scaffold", "--hard-delete")
+        self.assertEqual(code, 0, hard)
+        self.assertEqual("hard-delete", hard["action"])
+        self.assertFalse(workspace.exists())
+        conn = companyctl.connect()
+        try:
+            row = conn.execute("SELECT * FROM employees WHERE id = 'reviewer-scaffold'").fetchone()
+            self.assertIsNone(row)
+        finally:
+            conn.close()
+
+    def test_employee_onboard_does_not_scaffold_external_workspace(self) -> None:
+        external = Path("/private/tmp/company-kernel-external-agent")
+        code, onboard = run_cli(
+            "employee",
+            "onboard",
+            "--id",
+            "external-agent",
+            "--name",
+            "External Agent",
+            "--role",
+            "external",
+            "--runtime",
+            "local",
+            "--workspace",
+            str(external),
+        )
+        self.assertEqual(code, 0, onboard)
+        self.assertEqual([], onboard["scaffolded_files"])
+        self.assertFalse((external / "AGENTS.md").exists())
 
     def test_daemon_resolves_runtime_heartbeat_agents_without_duplicates(self) -> None:
         for employee_id in ["main", "nestcar"]:

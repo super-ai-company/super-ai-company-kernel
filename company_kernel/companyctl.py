@@ -780,6 +780,91 @@ def update_employee_communication_profile(
     return config
 
 
+def workspace_is_managed(path: Path) -> bool:
+    resolved = path.expanduser().resolve()
+    root = ROOT.resolve()
+    if resolved == root:
+        return False
+    try:
+        resolved.relative_to(root)
+        return True
+    except ValueError:
+        return False
+
+
+def scaffold_employee_workspace(employee_id: str, name: str, role: str, runtime: str, workspace: str) -> list[str]:
+    workspace_path = Path(workspace).expanduser().resolve()
+    if not workspace_is_managed(workspace_path):
+        return []
+    workspace_path.mkdir(parents=True, exist_ok=True)
+    written: list[str] = []
+    if runtime == "hermes":
+        files = {
+            "SOUL.md": "\n".join(
+                [
+                    f"# {name} Persona",
+                    "",
+                    f"You are {name}, acting as `{role}` in the Super AI Company.",
+                    "Use Company Kernel for task state, evidence, approvals, and communication.",
+                    "",
+                ]
+            ),
+            "AGENTS.md": "\n".join(
+                [
+                    f"# {name} Collaboration Rules",
+                    "",
+                    "- Communicate through `companyctl message` and `companyctl conversation`.",
+                    "- Complete work with evidence or return a blocker.",
+                    "- Request approval before high-risk external, payment, salary, penalty, or compensation actions.",
+                    "",
+                ]
+            ),
+        }
+    elif runtime in {"codex", "local", "cursor"}:
+        files = {
+            "AGENTS.md": "\n".join(
+                [
+                    f"# {name} Execution Rules",
+                    "",
+                    "- Treat Company Kernel as the source of truth for tasks and evidence.",
+                    "- Do not modify protected Company Kernel internals unless the task explicitly includes approval/RFC context.",
+                    "- Run focused verification before marking tasks done.",
+                    "",
+                ]
+            )
+        }
+    elif runtime == "openclaw":
+        files = {
+            "AGENTS.md": "\n".join(
+                [
+                    f"# {name} OpenClaw Employee Rules",
+                    "",
+                    "- Keep business state in the assigned OpenClaw workspace.",
+                    "- Bridge work through Company Kernel tasks, messages, approvals, and evidence.",
+                    "- Do not bypass high-risk approval gates.",
+                    "",
+                ]
+            )
+        }
+    else:
+        files = {
+            "AGENTS.md": "\n".join(
+                [
+                    f"# {name} Employee Rules",
+                    "",
+                    "- Use Company Kernel for task state, messages, approvals, and evidence.",
+                    "",
+                ]
+            )
+        }
+    for filename, content in files.items():
+        target = workspace_path / filename
+        if not target.exists():
+            target.write_text(content, encoding="utf-8")
+            written.append(str(target))
+    return written
+
+
 def cmd_employee_onboard(args: argparse.Namespace) -> int:
     conn = connect()
     try:
@@ -799,6 +884,7 @@ def cmd_employee_onboard(args: argparse.Namespace) -> int:
         capabilities["preferred_task_types"] = parse_csv(args.task_types)
     if not args.dry_run:
         Path(files["capabilities"]).write_text(json.dumps(capabilities, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    scaffolded_files = [] if args.dry_run else scaffold_employee_workspace(employee_id, args.name, args.role, args.runtime, args.workspace)
     permissions = {
         "can_submit_tasks": not args.no_submit_tasks,
         "can_claim_tasks": not args.no_claim_tasks,
@@ -849,6 +935,7 @@ def cmd_employee_onboard(args: argparse.Namespace) -> int:
                 "permissions": permissions,
                 "communication_file": str(COMMUNICATIONS_PATH),
                 "test_task": test_task,
+                "scaffolded_files": scaffolded_files,
             },
         )
     emit(
@@ -867,9 +954,61 @@ def cmd_employee_onboard(args: argparse.Namespace) -> int:
                 "channel": args.channel,
                 "policy": config.get("policy", {}),
             },
+            "scaffolded_files": scaffolded_files,
             "test_task": test_task,
         }
     )
+    return 0
+
+
+def cmd_employee_offboard(args: argparse.Namespace) -> int:
+    conn = connect()
+    employee_id = resolve_employee_alias(args.id)
+    row = conn.execute("SELECT * FROM employees WHERE id = ?", (employee_id,)).fetchone()
+    if not row:
+        conn.close()
+        emit({"ok": False, "error": "unknown employee", "employee_id": employee_id})
+        return 1
+    employee = dict(row)
+    managed_paths: list[Path] = []
+    workspace = str(employee.get("workspace") or "")
+    if workspace:
+        workspace_path = Path(workspace).expanduser().resolve()
+        if workspace_is_managed(workspace_path) and workspace_path.exists():
+            managed_paths.append(workspace_path)
+    employee_dir = EMPLOYEES_DIR / employee_id
+    if employee_dir.exists():
+        managed_paths.append(employee_dir)
+    deleted_paths = sorted({str(path) for path in managed_paths})
+    if args.dry_run:
+        conn.close()
+        emit({"ok": True, "dry_run": True, "action": "hard-delete" if args.hard_delete else "soft-delete", "employee": employee, "deleted_paths": deleted_paths})
+        return 0
+    ts = now()
+    if args.hard_delete:
+        import shutil
+
+        for path in managed_paths:
+            if path.is_dir() and not path.is_symlink():
+                shutil.rmtree(path)
+            elif path.exists():
+                path.unlink()
+        conn.execute("DELETE FROM employees WHERE id = ?", (employee_id,))
+        conn.execute("DELETE FROM heartbeats WHERE agent_id = ?", (employee_id,))
+        action = "hard-delete"
+    else:
+        conn.execute("UPDATE employees SET status = 'archived', updated_at = ? WHERE id = ?", (ts, employee_id))
+        action = "soft-delete"
+    config = load_communication_config()
+    config.get("employees", {}).pop(employee_id, None)
+    for alias, target in list(config.get("aliases", {}).items()):
+        if target == employee_id:
+            config["aliases"].pop(alias, None)
+    write_communication_config(config)
+    conn.commit()
+    audit(conn, "companyctl", "employee.offboard", employee_id, {"action": action, "employee": employee, "deleted_paths": deleted_paths})
+    conn.close()
+    emit({"ok": True, "action": action, "employee": employee, "deleted_paths": deleted_paths})
     return 0
 
 
@@ -3595,6 +3734,11 @@ def build_parser() -> argparse.ArgumentParser:
     emp_onboard.add_argument("--test-task-id", default="")
     emp_onboard.add_argument("--dry-run", action="store_true")
     emp_onboard.set_defaults(func=cmd_employee_onboard)
+    emp_offboard = emp_sub.add_parser("offboard")
+    emp_offboard.add_argument("--id", required=True)
+    emp_offboard.add_argument("--hard-delete", action="store_true", help="delete only Company Kernel-managed employee files/workspace")
+    emp_offboard.add_argument("--dry-run", action="store_true")
+    emp_offboard.set_defaults(func=cmd_employee_offboard)
 
     task = sub.add_parser("task")
     task_sub = task.add_subparsers(dest="task_cmd", required=True)
