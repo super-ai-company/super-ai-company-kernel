@@ -696,6 +696,12 @@ def inject_advanced_dashboard(template: str, summary: dict, *, db_path: Path, ap
         "summaryData.employees.push(generatedRecruitData);\n    summaryData.counts.employees = summaryData.employees.length;",
         "return realOnboardGeneratedEmployee();",
     )
+    if 'id="followups-tbody"' not in html_text:
+        html_text = html_text.replace(
+            "      <!-- Events Tab -->",
+            """      <div class=\"section-card\">\n        <h2><i class=\"fa-solid fa-circle-question\"></i> Followups</h2>\n        <div class=\"table-container\">\n          <table>\n            <thead>\n              <tr>\n                <th>Followup ID</th>\n                <th>Status</th>\n                <th>Source</th>\n                <th>Target</th>\n                <th>Question</th>\n                <th>Answer</th>\n                <th>Answered</th>\n              </tr>\n            </thead>\n            <tbody id=\"followups-tbody\">\n              <!-- Populated by JS -->\n            </tbody>\n          </table>\n        </div>\n      </div>\n\n      <!-- Events Tab -->""",
+            1,
+        )
     html_text = html_text.replace(
         "if (isSimulationMode) {\n      if (mode === 'hard') {",
         "if (!isSimulationMode) {\n      return realOffboardEmployee(employeeToFire, mode === 'hard');\n    }\n\n    if (isSimulationMode) {\n      if (mode === 'hard') {",
@@ -845,6 +851,24 @@ def inject_advanced_dashboard(template: str, summary: dict, *, db_path: Path, ap
       printTerminalLine({{tag: 'ERROR', text: `Offboard failed: ${{err.message}}`, type: 'error'}});
     }}
   }}
+  function populateFollowups() {{
+    const summary = summaryData;
+    const tbody = document.getElementById('followups-tbody');
+    if (!tbody) return;
+    const followups = summary.followups || [];
+    tbody.innerHTML = followups.map(item => `
+      <tr onclick="showDetails('Followup: ' + '${{escapeHtml(item.id)}}', ${{JSON.stringify(item).replace(/'/g, "\\'")}})">
+        <td style="font-family: monospace;">${{escapeHtml(item.id)}}</td>
+        <td><span class="badge ${{escapeHtml(item.status || 'submitted')}}">${{escapeHtml(item.status || '')}}</span></td>
+        <td>${{escapeHtml(item.source_agent || '-')}}</td>
+        <td>${{escapeHtml(item.target_agent || '-')}}</td>
+        <td>${{escapeHtml(item.question || '-')}}</td>
+        <td>${{escapeHtml(item.answer || '-')}}</td>
+        <td>${{formatDate(item.answered_at || '')}}</td>
+      </tr>
+    `).join('');
+  }}
+  document.addEventListener('DOMContentLoaded', () => setTimeout(populateFollowups, 200));
   window.addEventListener('DOMContentLoaded', checkCompanyApi);
 </script>
 """
