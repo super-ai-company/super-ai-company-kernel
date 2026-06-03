@@ -1530,6 +1530,12 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual(201, response["status"])
         self.assertEqual("generic-grpc", json.loads(response["body_json"])["runtime"]["runtime"])
 
+        raw_describe = server.handlers[0]["handlers"]["Describe"]["handler"](b"{}", object())
+        described = json.loads(raw_describe.decode("utf-8"))
+        described_body = json.loads(described["body_json"])
+        self.assertEqual(200, described["status"])
+        self.assertEqual("Company Kernel API Gateway", described_body["name"])
+
     def test_service_smoke_starts_rest_and_rpc_ports(self) -> None:
         for agent in ["video-ops", "video-creator", "video-publisher", "codex", "openclaw-main", "hermes", "nestcar"]:
             code, heartbeat = run_cli("heartbeat", "--agent", agent)
