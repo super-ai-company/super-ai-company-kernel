@@ -10,6 +10,7 @@ Implemented and verified:
 - `companyctl` command interface for employee onboarding, runtime registration, communication, task routing, task execution, approvals, recovery, heartbeats, project governance, scheduler, adapter run recovery, and doctor checks.
 - Runtime adapters for OpenClaw, Hermes, Codex, Claude, Trae, and Antigravity.
 - Custom runtime registration via `companyctl runtime register`, so future tools such as Cursor or Devin can be added without code changes.
+- End-to-end daemon worker smoke for automatic task execution: daemon can enable a worker, claim a task, write evidence, complete it, heartbeat, and record `adapter_runs`.
 - Static dashboard with runtime health, evidence health, employees, capabilities, projects, recent tasks, long-task delegation, conversations, approvals, RFCs, events, adapter runs, and locks.
 - Daemon loop with heartbeat refresh, scheduler run, repair pass, compact summary output, adapter run recording, launchd template and install/uninstall scripts.
 - OpenClaw alert integration in `/Users/shift/openclaw/workspace-xmanx/scripts`, including Company Kernel heartbeat, daemon, launchd, capability, and evidence health fields.
@@ -19,6 +20,9 @@ Implemented and verified:
 ```bash
 PYTHONWARNINGS=error::ResourceWarning python3 -B -m unittest discover -s tests -v
 bin/company-daemon --once --summary
+bin/companyctl task submit --from openclaw-main --to codex --task-id task-daemon-worker-smoke --title "daemon worker smoke"
+bin/company-daemon --once --enable-worker codex --summary
+bin/companyctl task show --task-id task-daemon-worker-smoke
 bin/companyctl doctor --summary
 bin/company-dashboard
 python3 /Users/shift/openclaw/workspace-xmanx/scripts/company_runtime_alert.py --json-only
@@ -29,6 +33,7 @@ python3 /Users/shift/openclaw/workspace-xmanx/scripts/heartbeat_summary_router.p
 ## Latest Verified Result
 
 - Unit tests: 22/22 passing.
+- Daemon worker smoke: verified in automated tests; manual command path documented in README.
 - Doctor: `ok=true`, `issues=[]`.
 - Heartbeats: 14 active employee heartbeats, missing=0, stale=0.
 - Evidence health: 0 issues.

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import subprocess
 import time
 import uuid
@@ -11,7 +12,7 @@ from pathlib import Path
 from company_kernel import companyctl
 
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(os.environ.get("OPENCLAW_COMPANY_KERNEL_ROOT", Path(__file__).resolve().parents[1])).resolve()
 CONFIG_PATH = ROOT / "config" / "daemon.json"
 STATE_DIR = ROOT / "state" / "daemon"
 LOG_PATH = ROOT / "logs" / "daemon.log"
@@ -32,7 +33,8 @@ def load_config(path: Path) -> dict:
 
 
 def run_cmd(args: list[str]) -> dict:
-    cp = subprocess.run(args, cwd=str(ROOT), text=True, capture_output=True)
+    env = {**os.environ, "OPENCLAW_COMPANY_KERNEL_ROOT": str(ROOT)}
+    cp = subprocess.run(args, cwd=str(ROOT), text=True, capture_output=True, env=env)
     result = {
         "command": args,
         "returncode": cp.returncode,

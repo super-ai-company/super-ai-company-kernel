@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sqlite3
 import subprocess
 from datetime import datetime, timezone
@@ -10,7 +11,7 @@ from pathlib import Path
 from company_kernel import companyctl
 
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(os.environ.get("OPENCLAW_COMPANY_KERNEL_ROOT", Path(__file__).resolve().parents[1])).resolve()
 DB_PATH = ROOT / "company.sqlite"
 
 
@@ -139,4 +140,3 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
