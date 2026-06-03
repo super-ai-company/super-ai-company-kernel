@@ -1742,6 +1742,66 @@ def cmd_message_send(args: argparse.Namespace) -> int:
     return 0
 
 
+def parse_openclaw_payload_text(stdout: str) -> str:
+    payload = parse_json_output(stdout)
+    result = payload.get("result") if isinstance(payload, dict) else {}
+    payloads = result.get("payloads") if isinstance(result, dict) else []
+    if isinstance(payloads, list):
+        texts = [str(item.get("text", "")) for item in payloads if isinstance(item, dict) and item.get("text")]
+        if texts:
+            return "\n".join(texts)
+    return str(payload.get("summary") or "")
+
+
+def cmd_message_direct(args: argparse.Namespace) -> int:
+    conn = connect()
+    source = resolve_employee_alias(args.source)
+    target = resolve_employee_alias(args.target)
+    require_employee(conn, source)
+    target_row = conn.execute("SELECT * FROM employees WHERE id = ?", (target,)).fetchone()
+    if not target_row:
+        raise SystemExit(f"unknown employee: {target}")
+    target_employee = dict(target_row)
+    require_communication_allowed(source, target, "message.direct")
+    runtime = str(target_employee.get("runtime") or "")
+    if runtime not in {"openclaw", "hermes"}:
+        emit({"ok": False, "error": "direct send unsupported runtime", "target": target, "runtime": runtime})
+        return 2
+    session_key = args.session_key or f"agent:{target}:{source}"
+    agent_runtime_id = attendance_agent_runtime_id(target, runtime)
+    cmd = ["openclaw", "agent", "--agent", agent_runtime_id, "--session-key", session_key, "--message", args.body, "--timeout", str(args.timeout), "--json"]
+    if args.deliver:
+        cmd.append("--deliver")
+    if args.reply_channel:
+        cmd.extend(["--reply-channel", args.reply_channel])
+    if args.reply_to:
+        cmd.extend(["--reply-to", args.reply_to])
+    if args.reply_account:
+        cmd.extend(["--reply-account", args.reply_account])
+    try:
+        cp = subprocess.run(cmd, cwd=str(ROOT), text=True, capture_output=True, timeout=args.timeout + 10)
+    except Exception as exc:
+        emit({"ok": False, "error": str(exc), "target": target, "runtime": runtime, "session_key": session_key, "command": cmd})
+        return 1
+    reply = parse_openclaw_payload_text(cp.stdout)
+    message_record = send_message_internal(conn, source=source, target=target, body=args.body, message_id=args.message_id)
+    result = {
+        "ok": cp.returncode == 0,
+        "source": source,
+        "target": target,
+        "runtime": runtime,
+        "agent_runtime_id": agent_runtime_id,
+        "session_key": session_key,
+        "reply": reply,
+        "exit_code": cp.returncode,
+        "message": message_record["message"],
+        "file": message_record["file"],
+        "stderr": cp.stderr[-2000:],
+    }
+    emit(result)
+    return 0 if cp.returncode == 0 else 1
+
+
 def cmd_message_list(args: argparse.Namespace) -> int:
     conn = connect()
     agent = resolve_employee_alias(args.agent)
@@ -4412,6 +4472,18 @@ def build_parser() -> argparse.ArgumentParser:
     message_send.add_argument("--body", required=True)
     message_send.add_argument("--message-id", default="")
     message_send.set_defaults(func=cmd_message_send)
+    message_direct = message_sub.add_parser("direct")
+    message_direct.add_argument("--from", dest="source", required=True)
+    message_direct.add_argument("--to", dest="target", required=True)
+    message_direct.add_argument("--body", required=True)
+    message_direct.add_argument("--message-id", default="")
+    message_direct.add_argument("--session-key", default="")
+    message_direct.add_argument("--timeout", type=int, default=120)
+    message_direct.add_argument("--deliver", action="store_true")
+    message_direct.add_argument("--reply-channel", default="")
+    message_direct.add_argument("--reply-to", default="")
+    message_direct.add_argument("--reply-account", default="")
+    message_direct.set_defaults(func=cmd_message_direct)
     message_list = message_sub.add_parser("list")
     message_list.add_argument("--agent", required=True)
     message_list.set_defaults(func=cmd_message_list)
