@@ -238,6 +238,7 @@ def render_employee_table(items: list[dict]) -> str:
         cells = "".join(f"<td>{e(item.get(field, ''))}</td>" for field in fields)
         actions = (
             "<td>"
+            f"<button type='button' onclick=\"directMessageEmployee('{employee_id}')\">Direct</button> "
             f"<button type='button' onclick=\"editEmployee('{employee_id}')\">Edit</button> "
             f"<button class='danger-button' type='button' onclick=\"offboardEmployee('{employee_id}', false)\">Archive</button>"
             "</td>"
@@ -592,6 +593,20 @@ def render(summary: dict) -> str:
         setEmployeeApiStatus(`Onboard failed: ${{err.message}}`, true);
       }}
     }}
+    async function directMessageEmployee(id) {{
+      if (!id) return;
+      const source = prompt(`Source employee for direct message to ${{id}}`, 'main');
+      if (source === null) return;
+      const body = prompt(`Message to ${{id}}`, `只回复：${{id}}_DIRECT_OK`);
+      if (body === null) return;
+      setEmployeeApiStatus(`Direct messaging ${{id}}...`, false);
+      try {{
+        const result = await callCompanyApi('/v1/messages/direct', {{from: source || 'main', to: id, body}}, 'POST');
+        setEmployeeApiStatus(`Direct reply from ${{id}}: ${{result.reply || '(empty)'}}; evidence=${{result.file || 'n/a'}}`, false);
+      }} catch (err) {{
+        setEmployeeApiStatus(`Direct failed: ${{err.message}}`, true);
+      }}
+    }}
     async function editEmployee(id) {{
       if (!id) return;
       const row = Array.from(document.querySelectorAll('tbody tr')).find((candidate) => candidate.firstElementChild && candidate.firstElementChild.textContent === id);
@@ -685,6 +700,9 @@ def inject_advanced_dashboard(template: str, summary: dict, *, db_path: Path, ap
     html_text = html_text.replace(
         "<span class=\"badge ${hbStatus}\">${hbStatus}</span>",
         """<span class="badge ${hbStatus}">${hbStatus}</span>
+              <button class="chat-send-btn" style="padding: 2px 6px; font-size: 10px; background: rgba(16, 185, 129, 0.15); border: 1px solid rgba(16, 185, 129, 0.35); color: #86efac;" onclick="event.stopPropagation(); openDirectEmployeeMessage('${escapeHtml(emp.id)}')">
+                <i class="fa-solid fa-paper-plane"></i> Direct
+              </button>
               <button class="chat-send-btn" style="padding: 2px 6px; font-size: 10px; background: rgba(59, 130, 246, 0.15); border: 1px solid rgba(59, 130, 246, 0.3); color: #93c5fd;" onclick="event.stopPropagation(); openEditEmployeeProfile('${escapeHtml(emp.id)}', '${escapeHtml(emp.name)}', '${escapeHtml(emp.role)}', '${escapeHtml(emp.runtime)}', '${escapeHtml(emp.status || 'active')}')">
                 <i class="fa-solid fa-pen-to-square"></i> Edit
               </button>""",
@@ -770,6 +788,24 @@ def inject_advanced_dashboard(template: str, summary: dict, *, db_path: Path, ap
     }} catch (err) {{
       printTerminalLine({{tag: 'ERROR', text: `Onboard failed: ${{err.message}}`, type: 'error'}});
     }}
+  }}
+  async function realDirectEmployeeMessage(id, source, body) {{
+    companyApiLog('SYSTEM', `Calling Company Kernel API direct message '${{source}}' -> '${{id}}'...`, 'normal');
+    try {{
+      const result = await companyApiPost('/v1/messages/direct', {{from: source || 'main', to: id, body}});
+      companyApiLog('SYSTEM', `Direct reply from '${{id}}': ${{result.reply || '(empty)'}}; evidence=${{result.file || 'n/a'}}`, 'success');
+      return result;
+    }} catch (err) {{
+      companyApiLog('ERROR', `Direct message failed: ${{err.message}}`, 'error');
+      return null;
+    }}
+  }}
+  function openDirectEmployeeMessage(id) {{
+    const source = prompt(`Source employee for direct message to ${{id}}`, 'main');
+    if (source === null) return;
+    const body = prompt(`Message to ${{id}}`, `只回复：${{id}}_DIRECT_OK`);
+    if (body === null) return;
+    return realDirectEmployeeMessage(id, source, body);
   }}
   async function realUpdateEmployeeProfile(id, payload) {{
     companyApiLog('SYSTEM', `Calling Company Kernel API to update '${{id}}'...`, 'normal');
