@@ -267,7 +267,7 @@ bin/companyctl task conversations --task-id task-video-project-001
 
 `bin/company-daemon` 是本机巡检循环，默认只运行 repair、scheduler 和 heartbeat，不启动真实外部工具。
 `config/daemon.json` 里的 `heartbeat_agents` 是固定员工心跳，`heartbeat_runtimes` 会动态覆盖指定 runtime 下所有 active 员工；设为 `["*"]` 时覆盖所有 active 员工，新增员工后不用手改心跳列表。
-`config/daemon.json` 里的 `adapter_workers` 可以启用员工 worker，让 daemon 每轮自动领取任务、执行 adapter、写 evidence、回传状态。`company-daemon --enable-worker <agent>` 可临时启用任意 active 员工；若该员工未在 daemon config 里预配置，会自动使用 `company-adapter-worker --dry-run`，不启动真实外部工具，也不修改 config 文件。
+`config/daemon.json` 里的 `adapter_workers` 可以启用员工 worker，让 daemon 每轮自动领取任务、执行 adapter、写 evidence、回传状态。`company-daemon --enable-worker <agent>` 可临时启用任意 active 员工；若该员工未在 daemon config 里预配置，会按员工 runtime 自动选择 `company-codex-adapter`、`company-hermes-adapter`、`company-claude-adapter`、`company-trae-adapter`、`company-antigravity-adapter` 或 `company-openclaw-adapter`。没有专用 adapter 的 local/custom runtime 才回退到 `company-adapter-worker --dry-run`，不启动真实外部工具，也不修改 config 文件。
 每个 worker 支持 `max_tasks_per_tick`，独立状态写到 `state/daemon/workers/<agent>.json`，汇总运行历史写入 SQLite `adapter_runs` 并显示在 dashboard；未确认的失败 adapter run 会让 `companyctl doctor` 报 `adapter_failures`。
 任务提交会生成 `trace_id`，并贯穿 task metadata、`company_events`、`adapter_runs` 和 dashboard，用来追踪派发、hook、adapter 执行链路。
 `bin/company-trace --task-id <task-id>` 会导出同一条链路的 JSON 和 HTML 时间线到 `state/traces/<trace_id>.html`，用于查看派发、hook、adapter run 的火焰图式耗时视图。

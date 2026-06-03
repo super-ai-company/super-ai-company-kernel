@@ -219,6 +219,30 @@ def employee_exists(agent: str) -> bool:
         conn.close()
 
 
+def employee_runtime(agent: str) -> str:
+    conn = companyctl.connect()
+    try:
+        row = conn.execute("SELECT runtime FROM employees WHERE id = ? AND status = 'active'", (agent,)).fetchone()
+        return str(row["runtime"]) if row else ""
+    finally:
+        conn.close()
+
+
+def default_adapter_worker(agent: str) -> dict:
+    runtime = employee_runtime(agent)
+    command = companyctl.ADAPTER_COMMANDS.get(runtime, "company-adapter-worker")
+    args = ["--dry-run"] if command == "company-adapter-worker" else []
+    return {
+        "agent": agent,
+        "enabled": True,
+        "command": command,
+        "args": args,
+        "max_tasks_per_tick": 1,
+        "temporary": True,
+        "runtime": runtime,
+    }
+
+
 def ensure_enabled_workers(config: dict, agents: list[str]) -> None:
     if not agents:
         return
@@ -230,16 +254,7 @@ def ensure_enabled_workers(config: dict, agents: list[str]) -> None:
             continue
         if not employee_exists(agent):
             raise SystemExit(f"cannot enable unknown or inactive worker: {agent}")
-        workers.append(
-            {
-                "agent": agent,
-                "enabled": True,
-                "command": "company-adapter-worker",
-                "args": ["--dry-run"],
-                "max_tasks_per_tick": 1,
-                "temporary": True,
-            }
-        )
+        workers.append(default_adapter_worker(agent))
 
 
 def write_state(state: dict) -> Path:
