@@ -1287,10 +1287,11 @@ def complete_task_internal(
     if cur.rowcount == 0:
         raise SystemExit(f"task not found or not owned by agent: {task_id}")
     conn.execute("DELETE FROM locks WHERE resource_key = ?", (f"task:{task_id}",))
+    synced_plan_items = sync_project_plan_for_task(conn, task_id=task_id, task_status="completed", actor=agent)
     conn.commit()
     event = record_event(conn, "task.done", agent, task_id=task_id, payload={"summary": summary, "evidence": evidence})
     audit(conn, agent, "task.done", task_id, {"summary": summary, "evidence": evidence, "event_id": event["id"]})
-    return {"task_id": task_id, "status": "completed", "evidence": evidence, "event_id": event["id"]}
+    return {"task_id": task_id, "status": "completed", "evidence": evidence, "event_id": event["id"], "synced_plan_items": synced_plan_items}
 
 
 def write_task_inbox_file(task: dict) -> str:
@@ -1339,6 +1340,26 @@ def update_task_metadata(conn: sqlite3.Connection, task_id: str, patch: dict) ->
         (task_id, json.dumps(metadata, ensure_ascii=False), now()),
     )
     return metadata
+
+
+def sync_project_plan_for_task(conn: sqlite3.Connection, *, task_id: str, task_status: str, actor: str) -> list[dict]:
+    plan_status = {"completed": "done", "blocked": "blocked"}.get(task_status)
+    if not plan_status:
+        return []
+    ts = now()
+    plan_items = rows(conn, "SELECT * FROM project_plan_items WHERE task_id = ? ORDER BY created_at ASC", (task_id,))
+    updated = []
+    for item in plan_items:
+        if item["status"] in {"done", "completed", "cancelled"} and plan_status == "done":
+            continue
+        if item["status"] == plan_status:
+            continue
+        conn.execute("UPDATE project_plan_items SET status = ?, updated_at = ? WHERE id = ?", (plan_status, ts, item["id"]))
+        conn.execute("UPDATE projects SET updated_at = ? WHERE id = ?", (ts, item["project_id"]))
+        updated.append({**item, "status": plan_status, "updated_at": ts})
+    if updated:
+        audit(conn, actor, "project.plan_sync", task_id, {"task_status": task_status, "plan_status": plan_status, "plan_items": [item["id"] for item in updated]})
+    return updated
 
 
 def guard_task_claim(conn: sqlite3.Connection, task: sqlite3.Row, agent: str) -> dict:
@@ -2734,9 +2755,10 @@ def cmd_task_block(args: argparse.Namespace) -> int:
         emit({"ok": False, "error": "task not found or not owned by agent", "task_id": args.task_id})
         return 1
     conn.execute("DELETE FROM locks WHERE resource_key = ?", (f"task:{args.task_id}",))
+    synced_plan_items = sync_project_plan_for_task(conn, task_id=args.task_id, task_status="blocked", actor=agent)
     conn.commit()
     audit(conn, agent, "task.block", args.task_id, {"blocker": args.blocker})
-    emit({"ok": True, "task_id": args.task_id, "status": "blocked", "blocker": args.blocker})
+    emit({"ok": True, "task_id": args.task_id, "status": "blocked", "blocker": args.blocker, "synced_plan_items": synced_plan_items})
     return 0
 
 

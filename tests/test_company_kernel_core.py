@@ -621,6 +621,66 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertIn("done:Ship dashboard governance view [task-project-dashboard/completed]; done:Retrospective captured", html)
         self.assertIn("<td>ready</td><td>done:Ship dashboard governance view [task-project-dashboard/completed]; done:Retrospective captured</td><td>0</td>", html)
 
+    def test_project_plan_items_sync_from_task_status(self) -> None:
+        code, project = run_cli("project", "create", "--project-id", "project-plan-sync", "--title", "Plan Sync", "--owner", "ops")
+        self.assertEqual(code, 0, project)
+
+        code, submitted_done = run_cli("task", "submit", "--from", "ops", "--to", "maker", "--task-id", "task-plan-sync-done", "--title", "done task")
+        self.assertEqual(code, 0, submitted_done)
+        code, plan_done = run_cli(
+            "project",
+            "plan-add",
+            "--project-id",
+            "project-plan-sync",
+            "--title",
+            "Done task plan",
+            "--status",
+            "planned",
+            "--owner",
+            "maker",
+            "--task-id",
+            "task-plan-sync-done",
+            "--plan-id",
+            "plan-sync-done",
+        )
+        self.assertEqual(code, 0, plan_done)
+        evidence = self.root / "plan-sync-evidence.md"
+        evidence.write_text("done\n", encoding="utf-8")
+        code, done = run_cli("task", "done", "--agent", "maker", "--task-id", "task-plan-sync-done", "--summary", "done", "--evidence", str(evidence))
+        self.assertEqual(code, 0, done)
+        self.assertEqual(["plan-sync-done"], [item["id"] for item in done["synced_plan_items"]])
+        self.assertEqual(["done"], [item["status"] for item in done["synced_plan_items"]])
+
+        code, submitted_blocked = run_cli("task", "submit", "--from", "ops", "--to", "maker", "--task-id", "task-plan-sync-blocked", "--title", "blocked task")
+        self.assertEqual(code, 0, submitted_blocked)
+        code, plan_blocked = run_cli(
+            "project",
+            "plan-add",
+            "--project-id",
+            "project-plan-sync",
+            "--title",
+            "Blocked task plan",
+            "--status",
+            "in_progress",
+            "--owner",
+            "maker",
+            "--task-id",
+            "task-plan-sync-blocked",
+            "--plan-id",
+            "plan-sync-blocked",
+        )
+        self.assertEqual(code, 0, plan_blocked)
+        code, blocked = run_cli("task", "block", "--agent", "maker", "--task-id", "task-plan-sync-blocked", "--blocker", "waiting")
+        self.assertEqual(code, 0, blocked)
+        self.assertEqual(["plan-sync-blocked"], [item["id"] for item in blocked["synced_plan_items"]])
+        self.assertEqual(["blocked"], [item["status"] for item in blocked["synced_plan_items"]])
+
+        code, plan_list = run_cli("project", "plan-list", "--project-id", "project-plan-sync")
+        self.assertEqual(code, 0, plan_list)
+        statuses = {item["id"]: item["status"] for item in plan_list["plan_items"]}
+        self.assertEqual("done", statuses["plan-sync-done"])
+        self.assertEqual("blocked", statuses["plan-sync-blocked"])
+
     def test_doctor_reports_health_issues(self) -> None:
         for agent in ["video-ops", "video-creator", "video-publisher", "codex", "openclaw-main", "hermes", "nestcar"]:
             code, heartbeat = run_cli("heartbeat", "--agent", agent)
