@@ -30,8 +30,10 @@ Implemented and verified:
 - API Gateway employee and runtime endpoints now expose employee creation, employee inspection, runtime registration, and runtime listing.
 - API Gateway employee governance endpoints now expose capability and permission updates.
 - API Gateway employee lifecycle endpoints now expose onboard/offboard without direct SQLite access.
-- RPC Gateway now exposes the same governed service layer through JSON-RPC plus an optional grpcio generic gRPC server contract.
-- Service smoke now starts REST/RPC on random local ports and validates remote health/describe/get without direct SQLite access.
+- API Gateway routing endpoints now expose employee capability matching and governed automatic task routing through REST.
+- RPC Gateway now exposes the same governed service layer through JSON-RPC plus a generic gRPC server contract.
+- Optional `requirements-optional.txt` pins `grpcio` for deployments that need real gRPC network service validation.
+- Service smoke now starts REST/RPC on random local ports and validates remote health/describe/get without direct SQLite access; with optional dependencies installed it also reports gRPC `ready`.
 - Sandbox isolation foundation: Codex/Hermes adapters can wrap execution commands with Docker or Firejail profiles without changing task protocol.
 - Static dashboard with runtime health, evidence health, employees, capabilities, projects, recent tasks, long-task delegation, conversations, approvals, RFCs, events, adapter runs, and locks.
 - Daemon loop with heartbeat refresh, scheduler run, repair pass, compact summary output, adapter run recording, launchd template and install/uninstall scripts.
@@ -41,11 +43,14 @@ Implemented and verified:
 
 ```bash
 PYTHONWARNINGS=error::ResourceWarning python3 -B -m unittest discover -s tests -v
+python3 -m venv .venv
+.venv/bin/python -m pip install -r requirements-optional.txt
+.venv/bin/python -m company_kernel.company_service_smoke --json-only
 bin/company-daemon --once --summary
 bin/companyctl task submit --from openclaw-main --to codex --task-id task-daemon-worker-smoke --title "daemon worker smoke"
 bin/company-daemon --once --enable-worker codex --summary
 bin/companyctl task show --task-id task-daemon-worker-smoke
-bin/companyctl doctor --summary
+bin/companyctl doctor --summary --strict-launchd
 bin/company-dashboard
 python3 /Users/shift/openclaw/workspace-xmanx/scripts/company_runtime_alert.py --json-only
 python3 /Users/shift/openclaw/workspace-xmanx/scripts/supervisor_heartbeat.py --json-only
@@ -54,9 +59,11 @@ python3 /Users/shift/openclaw/workspace-xmanx/scripts/heartbeat_summary_router.p
 
 ## Latest Verified Result
 
-- Unit tests: 37/37 passing.
+- Unit tests: 44/44 passing.
+- Service smoke: REST OK, RPC OK, gRPC ready when `grpcio` is installed.
 - Daemon worker smoke: verified in automated tests; manual command path documented in README.
-- Doctor: `ok=true`, `issues=[]`.
+- Strict doctor: `ok=true`, `issues=[]`.
+- Launchd: installed=true, matches_template=true.
 - Heartbeats: 14 active employee heartbeats, missing=0, stale=0.
 - Evidence health: 0 issues.
 - Capability health: 0 issues.
@@ -64,7 +71,7 @@ python3 /Users/shift/openclaw/workspace-xmanx/scripts/heartbeat_summary_router.p
 
 ## Runtime Note
 
-The launchd service is prepared but not installed in this delivery because installing it requires macOS launchctl/user-agent changes. Manual verification uses `bin/company-daemon --once --summary`.
+The launchd service has been installed on the local Mac and verified with `bin/companyctl doctor --summary --strict-launchd`. For another Mac, run `bash bin/company-daemon-install-launchd` and verify with the same strict doctor command.
 
 ## Repository Scope
 

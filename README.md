@@ -282,6 +282,13 @@ bin/companyctl runtime adapter-runs --agent codex --status ok --limit 3
 这条 smoke 会证明 daemon 能临时启用 `codex` worker，自动领取任务、写 evidence、完成任务、写 heartbeat，并把本次执行写入 `adapter_runs` 供 dashboard/doctor/告警读取。
 上线验收可使用 `doctor --summary --strict-launchd`，把 launchd 未安装或安装文件与模板不一致作为失败 gate。
 服务层验收可使用 `bin/company-service-smoke --json-only`，它会启动本机随机端口 REST/RPC 服务并验证 health/describe/get，gRPC 依赖缺失时返回 `grpcio_not_installed`。
+如需把 gRPC 真实端口也纳入验收，先在部署环境安装可选依赖：
+
+```bash
+python3 -m venv .venv
+.venv/bin/python -m pip install -r requirements-optional.txt
+.venv/bin/python -m company_kernel.company_service_smoke --json-only
+```
 
 配置文件：`config/daemon.json`  
 状态文件：`state/daemon/last-run.json`  
@@ -357,7 +364,7 @@ curl -X POST http://127.0.0.1:8765/v1/employees/cursor-dev/permissions \
 
 `/v1` 返回服务发现、能力列表、治理约束和端点清单；`/v1/openapi.json` 返回机器可读 OpenAPI 3.1 契约。已覆盖的端点：`/v1/health`、`/v1/doctor`、`/v1/employees`、`/v1/employees/onboard`、`/v1/employees/<id>/offboard|capabilities|permissions`、`/v1/runtimes`、`/v1/tasks`、`/v1/tasks/<id>/claim|done|block|reopen|reassign`、`/v1/messages`、`/v1/conversations`、`/v1/approvals`、`/v1/projects`、`/v1/projects/<id>/review|accept`、`/v1/locks`、`/v1/heartbeats`、`/v1/adapter-runs`。
 
-`bin/company-api-rpc` 提供同一套治理路由的 JSON-RPC 2.0 服务层，默认端口 `8766`，用于非 HTTP path 风格的远端员工接入。`bin/company-api-grpc` 提供同一组 `Describe/Get/Post` gRPC 服务逻辑，默认端口 `8767`；运行真实网络 gRPC server 需要安装 `grpcio`。当前 server 使用 generic gRPC handler，payload 为 JSON bytes，语义与 `docs/company_kernel.proto` 的 `path/query/body_json/status/body_json` 字段对齐。
+`bin/company-api-rpc` 提供同一套治理路由的 JSON-RPC 2.0 服务层，默认端口 `8766`，用于非 HTTP path 风格的远端员工接入。`bin/company-api-grpc` 提供同一组 `Describe/Get/Post` gRPC 服务逻辑，默认端口 `8767`；运行真实网络 gRPC server 需要安装 `requirements-optional.txt` 中的 `grpcio`。当前 server 使用 generic gRPC handler，payload 为 JSON bytes，语义与 `docs/company_kernel.proto` 的 `path/query/body_json/status/body_json` 字段对齐。
 
 ```bash
 curl -s http://127.0.0.1:8766/rpc
@@ -369,6 +376,8 @@ curl -s -X POST http://127.0.0.1:8766/rpc \
   --data '{"jsonrpc":"2.0","id":"task","method":"company.post","params":{"path":"/v1/tasks","body":{"from":"openclaw-main","to":"codex","title":"RPC task","description":"remote dispatch"}}}'
 bin/company-api-grpc --check
 bin/company-api-grpc --host 127.0.0.1 --port 8767
+.venv/bin/python -m company_kernel.api_grpc --check
+.venv/bin/python -m company_kernel.company_service_smoke --json-only
 ```
 
 ## Sandbox Isolation
