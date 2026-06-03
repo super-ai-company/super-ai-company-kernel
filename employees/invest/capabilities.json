@@ -3,23 +3,21 @@
   "runtime": "openclaw",
   "role": "business-agent",
   "skills": [
-    "business-ops",
-    "agent-bus",
-    "workspace-operations"
+    "investment-research",
+    "market-analysis"
   ],
   "tools": [
     "openclaw",
-    "oc bus"
+    "market-data"
   ],
   "preferred_task_types": [
-    "business-agent-task",
-    "line-ops",
-    "workspace-task"
+    "research",
+    "analysis"
   ],
   "handoff": {
     "can_receive_tasks": true,
     "can_send_messages": true,
     "requires_adapter": true
   },
-  "updated_at": "2026-06-03T02:46:05+07:00"
+  "updated_at": "2026-06-03T15:26:46+07:00"
 }

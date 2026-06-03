@@ -77,7 +77,8 @@ Hook action 可用 `requires_approval` 标记高风险动作；未批准时 `sch
 通信策略默认是 `policy.mode=open`：任意已注册员工都能互发消息和派任务，除非配置了 `blocked_talk_to` / `blocked_assign_to`。
 如果切到 `policy.mode=strict`，则必须显式配置 `can_talk_to` / `can_assign_to`，否则会被 `companyctl` 拦截。
 
-添加员工只需要命令创建，再按需配置通信：
+添加员工只需要命令创建，再按需配置通信。
+本机未安装、未登录或没有可调用执行入口的工具只能登记为 `candidate`，不能算正式员工，也不能进入心跳和自动调度；等真实 runtime 接通后再重新 `employee onboard` 激活。当前 `cursor`、`devin`、`github-copilot`、`local-model-agent` 属于候选员工，`owner` 是人类审批端点。
 
 ```bash
 bin/companyctl runtime register --runtime cursor --notes "Cursor IDE adapter placeholder"
@@ -205,6 +206,22 @@ bin/companyctl approval approve --approval-id <id> --by openclaw-main --reason "
 bin/companyctl approval deny --approval-id <id> --by openclaw-main --reason "证据不足"
 bin/companyctl approval show --approval-id <id>
 ```
+
+本机已接入 OpenClaw Telegram 按钮审批，用于 owner 离开电脑后的项目内审批：
+
+- 审批请求由 OpenClaw `ops_bus_worker.py` 发送到 Telegram。
+- Telegram 按钮值为 `oc_approve:<task_id>` / `oc_deny:<task_id>`。
+- 按钮回调由 `/Users/owner/openclaw/scripts/ops_telegram_approval_watcher.py` 轮询并调用 `/Users/owner/openclaw/scripts/ops_approval_center.py apply-callback`。
+- 该 watcher 已验证可用，但默认不启用 launchd；它会和 OpenClaw 默认 Telegram bot 的 `getUpdates` 长轮询冲突。正式上线应改为 OpenClaw 原生回调/插件处理，不能独立抢同一个 bot offset。
+
+验证：
+
+```bash
+openclaw gateway probe
+ls /Users/owner/openclaw/ops/approvals/approved
+```
+
+注意：这是项目/业务审批链路，不能替代 Codex Desktop 自身的系统级命令授权弹窗。Codex 宿主弹窗只能在本机批准或在弹窗里选择“以后同类命令不再询问”。
 
 ## Recovery
 

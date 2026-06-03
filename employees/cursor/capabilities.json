@@ -1,25 +1,25 @@
 {
-  "agent_id": "trae",
-  "runtime": "trae",
+  "agent_id": "cursor",
+  "runtime": "local",
   "role": "developer",
   "skills": [
-    "ide",
     "engineering",
-    "code"
+    "review",
+    "ide"
   ],
   "tools": [
-    "trae",
-    "ide",
+    "cursor",
     "git"
   ],
   "preferred_task_types": [
     "code",
+    "review",
     "ide"
   ],
   "handoff": {
     "can_receive_tasks": true,
     "can_send_messages": true,
-    "requires_adapter": true
+    "requires_adapter": false
   },
-  "updated_at": "2026-06-03T15:26:47+07:00"
+  "updated_at": "2026-06-03T15:26:46+07:00"
 }

@@ -34,6 +34,8 @@ Implemented and verified:
 - RPC Gateway now exposes the same governed service layer through JSON-RPC plus a generic gRPC server contract.
 - Optional `requirements-optional.txt` pins `grpcio` for deployments that need real gRPC network service validation.
 - Service smoke now starts REST/RPC on random local ports and validates remote health/describe/get without direct SQLite access; with optional dependencies installed it also reports gRPC `ready`.
+- Owner `owner` is registered as a human approval endpoint. Telegram button approval was verified through `/Users/owner/openclaw/scripts/ops_telegram_approval_watcher.py`, but that direct watcher is disabled by default because it conflicts with OpenClaw's own Telegram `getUpdates` loop; production should use an OpenClaw-native callback/plugin bridge.
+- Tools that are not installed or connected on this Mac, such as Cursor, Devin, GitHub Copilot, and local-model-agent, are tracked as `candidate` employees instead of active employees; they are excluded from heartbeat and routing until activated.
 - Sandbox isolation foundation: Codex/Hermes adapters can wrap execution commands with Docker or Firejail profiles without changing task protocol.
 - Static dashboard with runtime health, evidence health, employees, capabilities, projects, recent tasks, long-task delegation, conversations, approvals, RFCs, events, adapter runs, and locks.
 - Daemon loop with heartbeat refresh, scheduler run, repair pass, compact summary output, adapter run recording, launchd template and install/uninstall scripts.
@@ -55,6 +57,7 @@ bin/company-dashboard
 python3 /Users/owner/openclaw/workspace-xmanx/scripts/company_runtime_alert.py --json-only
 python3 /Users/owner/openclaw/workspace-xmanx/scripts/supervisor_heartbeat.py --json-only
 python3 /Users/owner/openclaw/workspace-xmanx/scripts/heartbeat_summary_router.py --print-only
+openclaw gateway probe
 ```
 
 ## Latest Verified Result
@@ -64,7 +67,8 @@ python3 /Users/owner/openclaw/workspace-xmanx/scripts/heartbeat_summary_router.p
 - Daemon worker smoke: verified in automated tests; manual command path documented in README.
 - Strict doctor: `ok=true`, `issues=[]`.
 - Launchd: installed=true, matches_template=true.
-- Heartbeats: 14 active employee heartbeats, missing=0, stale=0.
+- Heartbeats: 15 active employee heartbeats, missing=0, stale=0.
+- Telegram approval button: real click moved `company-kernel-telegram-real-button-click-smoke` from pending to approved; direct watcher launchd is disabled to keep OpenClaw/Hermes stable.
 - Evidence health: 0 issues.
 - Capability health: 0 issues.
 - OpenClaw runtime alert: `severity=ok`.
