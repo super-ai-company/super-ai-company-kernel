@@ -4,12 +4,11 @@
   "role": "supervisor",
   "runtime": "hermes",
   "workspace": "/Users/owner/.hermes",
-  "status": "candidate",
+  "status": "active",
   "created_at": "2026-06-03T01:31:21+07:00",
-  "updated_at": "2026-06-04T01:09:58+07:00",
+  "updated_at": "2026-06-04T01:36:10+07:00",
   "default_user_reply_channel": "telegram",
   "default_user_reply_account": "default",
-  "default_user_reply_to": "current",
-  "default_user_reply_deliver": true,
-  "unavailable_reason": "Telegram delivery failed. Reconfigure the employee notification bot/target and rerun 2-4 round direct verification before activation."
+  "default_user_reply_to": "6066269036",
+  "default_user_reply_deliver": true
 }

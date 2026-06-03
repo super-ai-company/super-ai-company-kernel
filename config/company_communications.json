@@ -367,9 +367,7 @@
         "video-ops",
         "video-publisher"
       ],
-      "handoff_mode": "task_or_hook",
-      "communication_paused": true,
-      "communication_paused_at": "2026-06-04T01:09:58+07:00"
+      "handoff_mode": "task_or_hook"
     },
     "invest": {
       "display_name": "invest",
@@ -653,7 +651,7 @@
       "employee-notify": {
         "channel": "telegram",
         "bot_token_env": "COMPANY_EMPLOYEE_TELEGRAM_BOT_TOKEN",
-        "default_target": "telegram:shift",
+        "default_target": "telegram:6066269036",
         "updated_at": "2026-06-04T01:22:08+07:00"
       }
     },
@@ -661,7 +659,7 @@
       "enabled": true,
       "channel": "telegram",
       "account": "employee-notify",
-      "target": "telegram:shift",
+      "target": "telegram:6066269036",
       "updated_at": "2026-06-04T01:22:08+07:00"
     }
   }

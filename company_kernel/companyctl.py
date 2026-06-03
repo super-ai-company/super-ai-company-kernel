@@ -11,6 +11,9 @@ import shutil
 import sqlite3
 import subprocess
 import sys
+import urllib.error
+import urllib.parse
+import urllib.request
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -252,6 +255,77 @@ def update_notification_settings(payload: dict) -> dict:
     }
     write_communication_config(config)
     return notification_settings()
+
+
+def resolve_notification_target(target: str) -> tuple[str, str]:
+    raw = str(target or "").strip()
+    if raw.startswith("telegram:"):
+        chat_id = raw.split(":", 1)[1].strip()
+        if not chat_id:
+            raise ValueError("telegram target chat id is required")
+        return "telegram", chat_id
+    if raw:
+        return "telegram", raw
+    raise ValueError("notification target is required")
+
+
+def send_telegram_notification(*, token: str, chat_id: str, text: str, timeout: int = 20) -> dict:
+    if not token:
+        raise ValueError("telegram bot token is not configured")
+    if not chat_id:
+        raise ValueError("telegram chat id is required")
+    payload = urllib.parse.urlencode({"chat_id": chat_id, "text": text}).encode("utf-8")
+    request = urllib.request.Request(f"https://api.telegram.org/bot{token}/sendMessage", data=payload, method="POST")
+    request.add_header("Content-Type", "application/x-www-form-urlencoded")
+    with urllib.request.urlopen(request, timeout=timeout) as response:
+        data = json.loads(response.read().decode("utf-8"))
+    if not data.get("ok"):
+        raise ValueError(str(data.get("description") or "telegram send failed"))
+    result = data.get("result", {}) if isinstance(data.get("result"), dict) else {}
+    return {
+        "ok": True,
+        "platform": "telegram",
+        "chat_id": str(result.get("chat", {}).get("id", chat_id) if isinstance(result.get("chat"), dict) else chat_id),
+        "message_id": result.get("message_id", ""),
+    }
+
+
+def notification_send_result(*, message: str, target: str = "", account_id: str = "", subject: str = "", dry_run: bool = False) -> dict:
+    settings = notification_settings()
+    notifications = settings["employee_notifications"]
+    account_id = account_id or notifications.get("account", "")
+    accounts = settings["telegram_accounts"]
+    account = accounts.get(account_id)
+    if not account:
+        return {"ok": False, "error": "notification account is not configured", "account": account_id}
+    target = target or notifications.get("target", "") or account.get("default_target", "")
+    try:
+        platform, chat_id = resolve_notification_target(target)
+    except ValueError as exc:
+        return {"ok": False, "error": str(exc), "account": account_id, "target": target}
+    if platform != "telegram":
+        return {"ok": False, "error": f"unsupported notification platform: {platform}"}
+    token_env = str(account.get("bot_token_env", "") or "")
+    token = os.environ.get(token_env, "")
+    text = f"{subject}\n{message}".strip() if subject else message
+    result = {
+        "ok": True,
+        "dry_run": dry_run,
+        "platform": platform,
+        "account": account_id,
+        "target": f"telegram:{chat_id}",
+        "token_env": token_env,
+        "token_configured": bool(token),
+    }
+    if dry_run:
+        return result
+    if not token:
+        return {**result, "ok": False, "error": "telegram bot token environment variable is not set"}
+    try:
+        sent = send_telegram_notification(token=token, chat_id=chat_id, text=text)
+    except (ValueError, urllib.error.URLError, TimeoutError) as exc:
+        return {**result, "ok": False, "error": str(exc)}
+    return {**result, **sent}
 
 
 def normalize_employee_lookup(value: str) -> str:
@@ -896,21 +970,24 @@ def write_employee_files(employee_id: str, profile: dict, *, dry_run: bool) -> d
         "- Always return evidence_path or blocker.\n",
         encoding="utf-8",
     )
-    paths["permissions"].write_text(
-        json.dumps(
-            {
-                "can_submit_tasks": True,
-                "can_claim_tasks": True,
-                "can_modify_kernel": False,
-                "requires_approval_for": ["payment", "compensation", "salary", "penalty", "external_send"],
-            },
-            ensure_ascii=False,
-            indent=2,
+    if not paths["permissions"].exists():
+        paths["permissions"].write_text(
+            json.dumps(
+                {
+                    "can_submit_tasks": True,
+                    "can_claim_tasks": True,
+                    "can_modify_kernel": False,
+                    "requires_approval_for": ["payment", "compensation", "salary", "penalty", "external_send"],
+                    "updated_at": now(),
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
+            + "\n",
+            encoding="utf-8",
         )
-        + "\n",
-        encoding="utf-8",
-    )
-    paths["heartbeat"].write_text(json.dumps({"agent_id": employee_id, "status": "created", "updated_at": now()}, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    if not paths["heartbeat"].exists():
+        paths["heartbeat"].write_text(json.dumps({"agent_id": employee_id, "status": "created", "updated_at": now()}, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     return result
 
 
@@ -1369,6 +1446,10 @@ def cmd_employee_verify_direct(args: argparse.Namespace) -> int:
         ts = now()
         conn.execute("UPDATE employees SET status = 'active', updated_at = ? WHERE id = ?", (ts, employee_id))
         conn.commit()
+        profile_path = employee_paths(employee_id)["profile"]
+        profile = load_json_or_default(profile_path, {})
+        profile.update({"status": "active", "updated_at": ts})
+        profile_path.write_text(json.dumps(profile, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
         report["activated"] = True
     else:
         report["activated"] = False
@@ -2397,6 +2478,23 @@ def cmd_communication_check(args: argparse.Namespace) -> int:
     decision = communication_policy_decision(source, target, action)
     emit({"ok": decision["allowed"], "decision": decision})
     return 0 if decision["allowed"] else 1
+
+
+def cmd_notification_settings(_args: argparse.Namespace) -> int:
+    emit(notification_settings())
+    return 0
+
+
+def cmd_notification_send(args: argparse.Namespace) -> int:
+    result = notification_send_result(
+        message=args.message,
+        target=args.target,
+        account_id=args.account,
+        subject=args.subject,
+        dry_run=args.dry_run,
+    )
+    emit(result)
+    return 0 if result.get("ok") else 1
 
 
 def cmd_policy_show(_args: argparse.Namespace) -> int:
@@ -5226,6 +5324,18 @@ def build_parser() -> argparse.ArgumentParser:
     communication_check.add_argument("--to", dest="target", required=True)
     communication_check.add_argument("--action", choices=["talk", "assign"], default="talk")
     communication_check.set_defaults(func=cmd_communication_check)
+
+    notification = sub.add_parser("notification")
+    notification_sub = notification.add_subparsers(dest="notification_cmd", required=True)
+    notification_settings_cmd = notification_sub.add_parser("settings")
+    notification_settings_cmd.set_defaults(func=cmd_notification_settings)
+    notification_send = notification_sub.add_parser("send")
+    notification_send.add_argument("--message", required=True)
+    notification_send.add_argument("--target", default="")
+    notification_send.add_argument("--account", default="")
+    notification_send.add_argument("--subject", default="")
+    notification_send.add_argument("--dry-run", action="store_true")
+    notification_send.set_defaults(func=cmd_notification_send)
 
     policy = sub.add_parser("policy")
     policy_sub = policy.add_subparsers(dest="policy_cmd", required=True)

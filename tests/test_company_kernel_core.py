@@ -556,6 +556,7 @@ class CompanyKernelCoreTest(unittest.TestCase):
         code, shown = run_cli("employee", "show", "new-codex")
         self.assertEqual(0, code, shown)
         self.assertEqual("active", shown["employee"]["status"])
+        self.assertEqual("active", shown["profile"]["status"])
 
     def test_message_direct_uses_default_telegram_reply_bridge(self) -> None:
         code, created = run_cli("employee", "create", "--id", "main", "--name", "main", "--role", "operator", "--runtime", "openclaw", "--workspace", str(self.root / "workspace" / "main"))
@@ -661,6 +662,42 @@ class CompanyKernelCoreTest(unittest.TestCase):
         config_text = (self.root / "config" / "company_communications.json").read_text(encoding="utf-8")
         self.assertIn("COMPANY_EMPLOYEE_TELEGRAM_BOT_TOKEN", config_text)
         self.assertNotIn("123456:secret", config_text)
+
+    def test_notification_send_uses_env_token_and_returns_message_id(self) -> None:
+        status, saved = api_gateway.route_post(
+            "/v1/settings/notification",
+            {
+                "telegram_account": "employee-notify",
+                "telegram_bot_token_env": "COMPANY_EMPLOYEE_TELEGRAM_BOT_TOKEN",
+                "telegram_default_target": "telegram:6066269036",
+                "employee_notifications_enabled": "true",
+            },
+        )
+        self.assertEqual(HTTPStatus.OK, status, saved)
+        requests = []
+
+        class FakeResponse:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def read(self):
+                return json.dumps({"ok": True, "result": {"message_id": 115, "chat": {"id": 6066269036}}}).encode("utf-8")
+
+        def fake_urlopen(request, timeout=None):
+            requests.append(request)
+            return FakeResponse()
+
+        with mock.patch.dict("os.environ", {"COMPANY_EMPLOYEE_TELEGRAM_BOT_TOKEN": "123456:secret"}), mock.patch.object(companyctl.urllib.request, "urlopen", side_effect=fake_urlopen):
+            code, sent = run_cli("notification", "send", "--message", "notify smoke")
+        self.assertEqual(0, code, sent)
+        self.assertEqual("115", str(sent["message_id"]))
+        self.assertEqual("telegram:6066269036", sent["target"])
+        self.assertNotIn("123456:secret", json.dumps(sent, ensure_ascii=False))
+        self.assertIn("123456:secret", requests[0].full_url)
+        self.assertNotIn("123456:secret", (self.root / "config" / "company_communications.json").read_text(encoding="utf-8"))
 
     def test_human_owner_can_use_real_conversation_api_without_being_schedulable(self) -> None:
         code, codex = run_cli("employee", "create", "--id", "codex", "--name", "Codex", "--role", "developer", "--runtime", "codex", "--workspace", str(self.root / "workspace" / "codex"))
