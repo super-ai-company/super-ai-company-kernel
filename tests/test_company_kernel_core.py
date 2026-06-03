@@ -1571,6 +1571,37 @@ class CompanyKernelCoreTest(unittest.TestCase):
         status, messages = api_gateway.route_get("/v1/messages", {"agent": ["codex"]})
         self.assertEqual(200, status, messages)
         self.assertIn("msg-api-gateway", [message["id"] for message in messages["messages"]])
+        direct_calls = []
+
+        def fake_direct_run(cmd, cwd=None, text=None, capture_output=None, timeout=None):
+            direct_calls.append(cmd)
+
+            class Result:
+                returncode = 0
+                stdout = json.dumps({"ok": True, "agent": "codex", "direct_message": True, "reply": "API_CODEX_DIRECT_OK"})
+                stderr = ""
+
+            return Result()
+
+        with mock.patch.object(companyctl.subprocess, "run", side_effect=fake_direct_run):
+            status, direct = api_gateway.route_post(
+                "/v1/messages/direct",
+                {
+                    "from": "openclaw-main",
+                    "to": "codex",
+                    "body": "只回复：API_CODEX_DIRECT_OK",
+                    "message_id": "msg-api-direct-codex",
+                    "timeout": "60",
+                },
+            )
+        self.assertEqual(201, status, direct)
+        self.assertEqual("API_CODEX_DIRECT_OK", direct["reply"])
+        self.assertEqual("agent:codex:openclaw-main", direct["session_key"])
+        self.assertEqual("codex", direct["message"]["target_agent"])
+        self.assertIn("company-codex-adapter", direct_calls[0][0])
+        self.assertIn("--direct-message", direct_calls[0])
+        self.assertIn("--direct-source", direct_calls[0])
+        self.assertIn("--direct-session-key", direct_calls[0])
 
     def test_api_gateway_exposes_conversations_approvals_and_adapter_run_recovery(self) -> None:
         status, started = api_gateway.route_post(

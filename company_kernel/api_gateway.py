@@ -56,6 +56,7 @@ API_ENDPOINTS = [
     {"method": "POST", "path": "/v1/tasks/{task_id}/conversations", "summary": "Start task-bound conversation", "body": {"from": "employee id optional", "participants": "comma-separated extra participants optional", "title": "string optional", "body": "string optional", "conversation_id": "string optional", "evidence": "path optional"}},
     {"method": "GET", "path": "/v1/messages", "summary": "List messages", "query": {"agent": "employee id required"}},
     {"method": "POST", "path": "/v1/messages", "summary": "Send message", "body": {"from": "employee id", "to": "employee id", "body": "string", "message_id": "string optional"}},
+    {"method": "POST", "path": "/v1/messages/direct", "summary": "Directly invoke target employee runtime and record message evidence", "body": {"from": "employee id", "to": "employee id", "body": "string", "message_id": "string optional", "session_key": "string optional", "timeout": "integer optional", "deliver": "bool optional", "reply_channel": "string optional", "reply_to": "string optional", "reply_account": "string optional"}},
     {"method": "GET", "path": "/v1/conversations", "summary": "List conversations for an agent", "query": {"agent": "employee id required"}},
     {"method": "POST", "path": "/v1/conversations", "summary": "Start conversation", "body": {"from": "employee id", "participants": "comma-separated employee ids", "title": "string", "body": "string", "conversation_id": "string optional", "evidence": "path optional"}},
     {"method": "GET", "path": "/v1/conversations/{conversation_id}", "summary": "Show conversation"},
@@ -536,6 +537,22 @@ def route_post(path: str, body: dict) -> tuple[int, dict]:
             argv.extend(["--requires-approval", str(body["requires_approval"])])
         if body.get("approval_id"):
             argv.extend(["--approval-id", str(body["approval_id"])])
+        code, payload = run_companyctl(argv)
+        return (HTTPStatus.CREATED if code == 0 else HTTPStatus.BAD_REQUEST), {"exit_code": code, **payload}
+    if path == "/v1/messages/direct":
+        argv = ["message", "direct", "--from", str(body.get("from", "")), "--to", str(body.get("to", "")), "--body", str(body.get("body", ""))]
+        for key, flag in [
+            ("message_id", "--message-id"),
+            ("session_key", "--session-key"),
+            ("timeout", "--timeout"),
+            ("reply_channel", "--reply-channel"),
+            ("reply_to", "--reply-to"),
+            ("reply_account", "--reply-account"),
+        ]:
+            if body.get(key) not in {None, ""}:
+                argv.extend([flag, str(body[key])])
+        if truthy(body.get("deliver")):
+            argv.append("--deliver")
         code, payload = run_companyctl(argv)
         return (HTTPStatus.CREATED if code == 0 else HTTPStatus.BAD_REQUEST), {"exit_code": code, **payload}
     if path == "/v1/messages":
