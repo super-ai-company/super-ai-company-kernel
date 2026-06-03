@@ -14,6 +14,8 @@ from unittest import mock
 from company_kernel import company_daemon
 from company_kernel import company_dashboard
 from company_kernel import companyctl
+from company_kernel import openclaw_adapter
+from company_kernel import policy_guard
 from company_kernel import schema_migrations
 
 
@@ -42,7 +44,7 @@ class CompanyKernelCoreTest(unittest.TestCase):
             (root / "company_kernel" / source_file.name).write_text(source_file.read_text(encoding="utf-8"), encoding="utf-8")
         (root / "company_kernel" / "schema.sql").write_text(companyctl.SCHEMA.read_text(encoding="utf-8"), encoding="utf-8")
         (root / "bin").mkdir()
-        for executable in ["companyctl", "company-adapter-worker"]:
+        for executable in ["companyctl", "company-adapter-worker", "company-openclaw-adapter"]:
             target = root / "bin" / executable
             target.write_text((Path(__file__).resolve().parents[1] / "bin" / executable).read_text(encoding="utf-8"), encoding="utf-8")
             target.chmod(0o755)
@@ -152,6 +154,13 @@ class CompanyKernelCoreTest(unittest.TestCase):
             mock.patch.object(company_dashboard, "DB_PATH", root / "company.sqlite"),
             mock.patch.object(company_dashboard, "SCHEMA", root / "company_kernel" / "schema.sql"),
             mock.patch.object(company_dashboard, "DEFAULT_OUTPUT", root / "state" / "dashboard.html"),
+            mock.patch.object(openclaw_adapter, "ROOT", root),
+            mock.patch.object(openclaw_adapter, "DB_PATH", root / "company.sqlite"),
+            mock.patch.object(openclaw_adapter, "OPENCLAW_ROOT", root / "openclaw"),
+            mock.patch.object(policy_guard, "ROOT", root),
+            mock.patch.object(policy_guard, "DB_PATH", root / "company.sqlite"),
+            mock.patch.object(policy_guard, "SCHEMA", root / "company_kernel" / "schema.sql"),
+            mock.patch.object(policy_guard, "APPROVAL_STATE_DIR", root / "state" / "approvals"),
             mock.patch.object(companyctl, "ROOT", root),
             mock.patch.object(companyctl, "DB_PATH", root / "company.sqlite"),
             mock.patch.object(companyctl, "EMPLOYEES_DIR", root / "employees"),
@@ -190,8 +199,9 @@ class CompanyKernelCoreTest(unittest.TestCase):
             ("codex", "developer"),
             ("openclaw-main", "supervisor"),
             ("hermes", "supervisor"),
+            ("nestcar", "business-agent"),
         ]:
-            runtime = "hermes" if employee_id == "hermes" else "local"
+            runtime = "hermes" if employee_id == "hermes" else "openclaw" if employee_id == "nestcar" else "local"
             code, obj = run_cli(
                 "employee",
                 "create",
@@ -543,7 +553,7 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertIn("<td>ready</td><td>done:Ship dashboard governance view [task-project-dashboard/completed]; done:Retrospective captured</td><td>0</td>", html)
 
     def test_doctor_reports_health_issues(self) -> None:
-        for agent in ["video-ops", "video-creator", "video-publisher", "codex", "openclaw-main", "hermes"]:
+        for agent in ["video-ops", "video-creator", "video-publisher", "codex", "openclaw-main", "hermes", "nestcar"]:
             code, heartbeat = run_cli("heartbeat", "--agent", agent)
             self.assertEqual(code, 0, heartbeat)
         daemon_state = self.root / "state" / "daemon" / "last-run.json"
@@ -574,7 +584,7 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual([], healthy_summary["issues"])
         self.assertEqual(0, healthy_summary["heartbeat"]["missing"])
         self.assertEqual(0, healthy_summary["heartbeat"]["stale"])
-        self.assertEqual(6, healthy_summary["counts"]["heartbeats"])
+        self.assertEqual(7, healthy_summary["counts"]["heartbeats"])
         self.assertEqual(0, healthy_summary["counts"]["capability_issues"])
         self.assertEqual(0, healthy_summary["counts"]["task_evidence_issues"])
         self.assertEqual(0, healthy_summary["capabilities"]["issues"])
@@ -1096,6 +1106,101 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual(1, verified["count"])
         self.assertTrue(verified["results"][0]["evidence_exists"])
         self.assertEqual("completed", verified["results"][0]["task_status"])
+
+    def test_openclaw_adapter_dry_run_writes_payload_and_evidence(self) -> None:
+        code, submitted = run_cli(
+            "task",
+            "submit",
+            "--from",
+            "openclaw-main",
+            "--to",
+            "nestcar",
+            "--task-id",
+            "task-openclaw-dry-run",
+            "--title",
+            "检查车辆任务",
+            "--description",
+            "请检查今天车辆任务",
+        )
+        self.assertEqual(code, 0, submitted)
+
+        captured = io.StringIO()
+        with contextlib.redirect_stdout(captured):
+            code = openclaw_adapter.main(["--agent", "nestcar"])
+        result = json.loads(captured.getvalue())
+        self.assertEqual(0, code, result)
+        self.assertTrue(result["ok"], result)
+        self.assertFalse(result["executed"])
+        self.assertTrue(Path(result["payload"]).exists())
+        self.assertTrue(Path(result["report"]).exists())
+
+        payload = json.loads(Path(result["payload"]).read_text(encoding="utf-8"))
+        self.assertEqual("task-openclaw-dry-run", payload["company_kernel_task_id"])
+        self.assertEqual("openclaw-main", payload["company_kernel_source_agent"])
+        self.assertEqual("检查车辆任务", payload["summary"])
+
+        code, task = run_cli("task", "show", "--task-id", "task-openclaw-dry-run")
+        self.assertEqual(code, 0, task)
+        self.assertEqual("completed", task["task"]["status"])
+        self.assertEqual(result["report"], task["task"]["evidence_path"])
+        self.assertTrue((self.root / "employees" / "nestcar" / "heartbeat.json").exists())
+
+    def test_openclaw_adapter_execute_requires_approval_then_submits_bus(self) -> None:
+        task_id = "task-openclaw-execute"
+        code, submitted = run_cli(
+            "task",
+            "submit",
+            "--from",
+            "openclaw-main",
+            "--to",
+            "nestcar",
+            "--task-id",
+            task_id,
+            "--title",
+            "提交旧 bus",
+            "--description",
+            "验证 Company Kernel 到 OpenClaw legacy bus",
+        )
+        self.assertEqual(code, 0, submitted)
+
+        blocked_out = io.StringIO()
+        with contextlib.redirect_stdout(blocked_out):
+            blocked_code = openclaw_adapter.main(["--agent", "nestcar", "--execute"])
+        blocked = json.loads(blocked_out.getvalue())
+        self.assertEqual(2, blocked_code, blocked)
+        self.assertFalse(blocked["ok"])
+        self.assertTrue(blocked["blocked_by_approval"])
+        approval_id = blocked["approval"]["id"]
+
+        code, task_after_block = run_cli("task", "show", "--task-id", task_id)
+        self.assertEqual(code, 0, task_after_block)
+        self.assertEqual("claimed", task_after_block["task"]["status"])
+        self.assertEqual("nestcar", task_after_block["task"]["claimed_by"])
+
+        code, approved = run_cli("approval", "approve", "--approval-id", approval_id, "--by", "openclaw-main", "--reason", "测试批准")
+        self.assertEqual(code, 0, approved)
+
+        calls: list[list[str]] = []
+
+        def fake_submit(source: str, target: str, priority: str, payload: dict) -> tuple[int, str, str]:
+            calls.append([source, target, priority, payload["company_kernel_task_id"]])
+            out = json.dumps({"ok": True, "file": str(self.root / "openclaw" / "ops" / "agent_bus" / f"{payload['company_kernel_task_id']}.json")}, ensure_ascii=False)
+            return 0, out, ""
+
+        executed_out = io.StringIO()
+        with mock.patch.object(openclaw_adapter, "submit_openclaw", fake_submit), contextlib.redirect_stdout(executed_out):
+            executed_code = openclaw_adapter.main(["--agent", "nestcar", "--execute", "--approval-id", approval_id])
+        executed = json.loads(executed_out.getvalue())
+        self.assertEqual(0, executed_code, executed)
+        self.assertTrue(executed["ok"], executed)
+        self.assertTrue(executed["executed"])
+        self.assertEqual([["main", "nestcar", "P2", task_id]], calls)
+
+        code, task = run_cli("task", "show", "--task-id", task_id)
+        self.assertEqual(code, 0, task)
+        self.assertEqual("completed", task["task"]["status"])
+        self.assertEqual(executed["report"], task["task"]["evidence_path"])
+        self.assertIn("Submitted Company Kernel task to OpenClaw legacy bus", Path(executed["report"]).read_text(encoding="utf-8"))
 
     def test_employee_onboard_writes_config_and_creates_test_task(self) -> None:
         code, onboard = run_cli(

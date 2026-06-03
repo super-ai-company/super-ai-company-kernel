@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sqlite3
 import subprocess
 from datetime import datetime, timezone
@@ -10,9 +11,9 @@ from pathlib import Path
 from company_kernel.policy_guard import require_approval
 
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(os.environ.get("OPENCLAW_COMPANY_KERNEL_ROOT", Path(__file__).resolve().parents[1])).resolve()
 DB_PATH = ROOT / "company.sqlite"
-OPENCLAW_ROOT = Path("/Users/shift/openclaw")
+OPENCLAW_ROOT = Path(os.environ.get("OPENCLAW_ROOT", "/Users/shift/openclaw")).resolve()
 OPENCLAW_BUS_AGENTS = {"main", "nestcar", "chindahotpot", "invest", "video-creator", "video-publisher", "video-ops", "krothong"}
 
 
@@ -33,27 +34,34 @@ def connect() -> sqlite3.Connection:
 
 
 def run_companyctl(args: list[str]) -> tuple[int, str, str]:
-    cp = subprocess.run([str(ROOT / "bin" / "companyctl"), *args], cwd=str(ROOT), text=True, capture_output=True)
+    env = {**os.environ, "OPENCLAW_COMPANY_KERNEL_ROOT": str(ROOT)}
+    cp = subprocess.run([str(ROOT / "bin" / "companyctl"), *args], cwd=str(ROOT), text=True, capture_output=True, env=env)
     return cp.returncode, cp.stdout, cp.stderr
 
 
 def employee(agent: str) -> sqlite3.Row | None:
     conn = connect()
-    return conn.execute("SELECT * FROM employees WHERE id = ?", (agent,)).fetchone()
+    try:
+        return conn.execute("SELECT * FROM employees WHERE id = ?", (agent,)).fetchone()
+    finally:
+        conn.close()
 
 
 def next_task(agent: str) -> sqlite3.Row | None:
     conn = connect()
-    claimed = conn.execute(
-        "SELECT * FROM tasks WHERE target_agent = ? AND claimed_by = ? AND status = 'claimed' ORDER BY updated_at LIMIT 1",
-        (agent, agent),
-    ).fetchone()
-    if claimed:
-        return claimed
-    return conn.execute(
-        "SELECT * FROM tasks WHERE target_agent = ? AND status = 'submitted' ORDER BY created_at LIMIT 1",
-        (agent,),
-    ).fetchone()
+    try:
+        claimed = conn.execute(
+            "SELECT * FROM tasks WHERE target_agent = ? AND claimed_by = ? AND status = 'claimed' ORDER BY updated_at LIMIT 1",
+            (agent, agent),
+        ).fetchone()
+        if claimed:
+            return claimed
+        return conn.execute(
+            "SELECT * FROM tasks WHERE target_agent = ? AND status = 'submitted' ORDER BY created_at LIMIT 1",
+            (agent,),
+        ).fetchone()
+    finally:
+        conn.close()
 
 
 def paths(agent: str, task_id: str) -> dict[str, Path]:
@@ -125,7 +133,8 @@ def submit_openclaw(source: str, target: str, priority: str, payload: dict) -> t
         "--rollback",
         "Company Kernel bridge task; rollback by closing or failing the generated OpenClaw bus task.",
     ]
-    cp = subprocess.run(cmd, cwd=str(OPENCLAW_ROOT), text=True, capture_output=True)
+    env = {**os.environ, "OPENCLAW_COMPANY_KERNEL_ROOT": str(ROOT), "OPENCLAW_ROOT": str(OPENCLAW_ROOT)}
+    cp = subprocess.run(cmd, cwd=str(OPENCLAW_ROOT), text=True, capture_output=True, env=env)
     return cp.returncode, cp.stdout, cp.stderr
 
 
