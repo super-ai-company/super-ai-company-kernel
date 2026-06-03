@@ -495,6 +495,54 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertIn("--reply-to", calls[0])
         self.assertIn("current", calls[0])
 
+    def test_followup_request_and_reply_resume_direct_delivery(self) -> None:
+        code, created = run_cli("employee", "create", "--id", "main", "--name", "main", "--role", "operator", "--runtime", "openclaw", "--workspace", str(self.root / "workspace" / "main"))
+        self.assertEqual(0, code, created)
+        code, created = run_cli("employee", "create", "--id", "nestcar", "--name", "NestCar", "--role", "business-agent", "--runtime", "openclaw", "--workspace", str(self.root / "workspace" / "nestcar"))
+        self.assertEqual(0, code, created)
+        calls = []
+
+        def fake_run(cmd, cwd=None, text=None, capture_output=None, timeout=None):
+            calls.append(cmd)
+
+            class Result:
+                returncode = 0
+                stdout = json.dumps({"result": {"payloads": [{"text": "FOLLOWUP_DELIVERED"}]}})
+                stderr = ""
+
+            return Result()
+
+        with mock.patch.object(companyctl.subprocess, "run", side_effect=fake_run):
+            code, requested = run_cli(
+                "followup",
+                "request",
+                "--from",
+                "nestcar",
+                "--to",
+                "main",
+                "--question",
+                "请补充车牌号",
+                "--followup-id",
+                "followup-nestcar-plate",
+            )
+            self.assertEqual(0, code, requested)
+            code, answered = run_cli(
+                "followup",
+                "reply",
+                "--followup-id",
+                "followup-nestcar-plate",
+                "--by",
+                "main",
+                "--answer",
+                "车牌号是 ABC-123",
+            )
+        self.assertEqual(0, code, answered)
+        self.assertEqual("answered", answered["followup"]["status"])
+        self.assertEqual("车牌号是 ABC-123", answered["followup"]["answer"])
+        self.assertEqual("nestcar", answered["delivery"]["target"])
+        self.assertTrue(Path(answered["file"]).exists())
+        self.assertIn("车牌号是 ABC-123", json.dumps(answered, ensure_ascii=False))
+
     def test_message_direct_uses_codex_adapter_without_claiming_tasks(self) -> None:
         code, created = run_cli("employee", "create", "--id", "main", "--name", "main", "--role", "operator", "--runtime", "openclaw", "--workspace", str(self.root / "workspace" / "main"))
         self.assertEqual(0, code, created)
@@ -1723,6 +1771,35 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertIn("--direct-message", direct_calls[0])
         self.assertIn("--direct-source", direct_calls[0])
         self.assertIn("--direct-session-key", direct_calls[0])
+
+        followup_calls = []
+
+        def fake_followup_run(cmd, cwd=None, text=None, capture_output=None, timeout=None):
+            followup_calls.append(cmd)
+
+            class Result:
+                returncode = 0
+                stdout = json.dumps({"result": {"payloads": [{"text": "FOLLOWUP_API_OK"}]}})
+                stderr = ""
+
+            return Result()
+
+        with mock.patch.object(companyctl.subprocess, "run", side_effect=fake_followup_run):
+            status, followup = api_gateway.route_post(
+                "/v1/followups",
+                {"from": "nestcar", "to": "openclaw-main", "question": "请提供还车里程", "followup_id": "followup-api-mileage"},
+            )
+            self.assertEqual(201, status, followup)
+            status, followup_shown = api_gateway.route_get("/v1/followups/followup-api-mileage", {})
+            self.assertEqual(200, status, followup_shown)
+            status, followup_answered = api_gateway.route_post(
+                "/v1/followups/followup-api-mileage/reply",
+                {"by": "openclaw-main", "answer": "里程是 10234"},
+            )
+        self.assertEqual(200, status, followup_answered)
+        self.assertEqual("answered", followup_answered["followup"]["status"])
+        self.assertEqual("nestcar", followup_answered["delivery"]["target"])
+        self.assertTrue(followup_calls)
 
     def test_api_gateway_exposes_conversations_approvals_and_adapter_run_recovery(self) -> None:
         status, started = api_gateway.route_post(

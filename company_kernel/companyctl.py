@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import filecmp
 import fnmatch
+import io
 import json
 import os
 import shutil
@@ -29,6 +31,7 @@ COMMUNICATIONS_PATH = CONFIG_DIR / "company_communications.json"
 POLICY_PATH = CONFIG_DIR / "policy.json"
 PROTECTED_PATHS_CONFIG = CONFIG_DIR / "protected_paths.json"
 APPROVAL_STATE_DIR = STATE_DIR / "approvals"
+FOLLOWUP_STATE_DIR = STATE_DIR / "followups"
 SCHEMA = ROOT / "company_kernel" / "schema.sql"
 
 KNOWN_RUNTIMES = {
@@ -1914,6 +1917,90 @@ def cmd_message_list(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_followup_request(args: argparse.Namespace) -> int:
+    source = resolve_employee_alias(args.source)
+    target = resolve_employee_alias(args.target)
+    followup_id = args.followup_id or f"followup-{datetime.now().strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:6]}"
+    followup = {
+        "id": followup_id,
+        "source_agent": source,
+        "target_agent": target,
+        "question": args.question,
+        "context": args.context,
+        "deliver": bool(args.deliver),
+        "reply_channel": args.reply_channel,
+        "reply_account": args.reply_account,
+        "reply_to": args.reply_to,
+        "created_at": now(),
+        "answered_at": "",
+        "answer": "",
+        "response_message_id": "",
+    }
+    path = save_followup(followup, "pending")
+    if args.deliver:
+        reply_args = argparse.Namespace(
+            source=source,
+            target=target,
+            body=args.question,
+            message_id=args.message_id or f"msg-{followup_id}",
+            session_key=args.session_key,
+            timeout=args.timeout,
+            deliver=True,
+            reply_channel=args.reply_channel,
+            reply_account=args.reply_account,
+            reply_to=args.reply_to,
+        )
+        cmd_message_direct(reply_args)
+    emit({"ok": True, "followup": followup, "file": str(path)})
+    return 0
+
+
+def cmd_followup_reply(args: argparse.Namespace) -> int:
+    followup, status, path = load_followup(args.followup_id)
+    if status != "pending":
+        emit({"ok": False, "error": f"followup is {status}", "followup": followup, "file": str(path)})
+        return 1
+    reply_args = argparse.Namespace(
+        source=args.by,
+        target=followup["source_agent"],
+        body=args.answer,
+        message_id=args.message_id or f"msg-{args.followup_id}-answer",
+        session_key="",
+        timeout=args.timeout,
+        deliver=False,
+        reply_channel="",
+        reply_account="",
+        reply_to="",
+    )
+    result_buf = io.StringIO()
+    with contextlib.redirect_stdout(result_buf):
+        code = cmd_message_direct(reply_args)
+    result = json.loads(result_buf.getvalue()) if result_buf.getvalue().strip() else {}
+    if code != 0:
+        emit({"ok": False, "error": "followup reply delivery failed", "result": result, "followup": followup})
+        return code
+    followup["status"] = "answered"
+    followup["answered_at"] = now()
+    followup["answer"] = args.answer
+    followup["response_message_id"] = result.get("message", {}).get("id", "")
+    path.unlink(missing_ok=True)
+    answered_path = save_followup(followup, "answered")
+    emit({"ok": True, "followup": followup, "delivery": result, "file": str(answered_path)})
+    return 0
+
+
+def cmd_followup_show(args: argparse.Namespace) -> int:
+    followup, status, path = load_followup(args.followup_id)
+    followup["status"] = status
+    emit({"ok": True, "followup": followup, "file": str(path)})
+    return 0
+
+
+def cmd_followup_list(args: argparse.Namespace) -> int:
+    emit({"ok": True, "followups": list_followups(args.status)})
+    return 0
+
+
 def cmd_communication_show(args: argparse.Namespace) -> int:
     config = load_communication_config()
     employees = config.get("employees", {})
@@ -2202,6 +2289,42 @@ def load_json_file(path: Path) -> dict:
     if not path.exists():
         raise SystemExit(f"config not found: {path}")
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+def followup_paths(status: str = "pending") -> Path:
+    return FOLLOWUP_STATE_DIR / status
+
+
+def save_followup(followup: dict, status: str) -> Path:
+    target_dir = followup_paths(status)
+    target_dir.mkdir(parents=True, exist_ok=True)
+    path = target_dir / f"{followup['id']}.json"
+    path.write_text(json.dumps(followup, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    return path
+
+
+def load_followup(followup_id: str) -> tuple[dict, str, Path]:
+    for status in ("pending", "answered", "cancelled"):
+        path = followup_paths(status) / f"{followup_id}.json"
+        if path.exists():
+            return load_json_file(path), status, path
+    raise SystemExit(f"followup not found: {followup_id}")
+
+
+def list_followups(status_filter: str = "all") -> list[dict]:
+    items: list[dict] = []
+    statuses = [status_filter] if status_filter != "all" else ["pending", "answered", "cancelled"]
+    for status in statuses:
+        directory = followup_paths(status)
+        if not directory.exists():
+            continue
+        for path in sorted(directory.glob("*.json")):
+            item = load_json_file(path)
+            item["status"] = status
+            item["file"] = str(path)
+            items.append(item)
+    items.sort(key=lambda item: item.get("created_at", ""), reverse=True)
+    return items
 
 
 def resolve_workflow_path(name_or_path: str) -> Path:
@@ -4590,6 +4713,36 @@ def build_parser() -> argparse.ArgumentParser:
     message_list = message_sub.add_parser("list")
     message_list.add_argument("--agent", required=True)
     message_list.set_defaults(func=cmd_message_list)
+
+    followup = sub.add_parser("followup")
+    followup_sub = followup.add_subparsers(dest="followup_cmd", required=True)
+    followup_request = followup_sub.add_parser("request")
+    followup_request.add_argument("--from", dest="source", required=True)
+    followup_request.add_argument("--to", dest="target", required=True)
+    followup_request.add_argument("--question", required=True)
+    followup_request.add_argument("--context", default="")
+    followup_request.add_argument("--followup-id", default="")
+    followup_request.add_argument("--message-id", default="")
+    followup_request.add_argument("--session-key", default="")
+    followup_request.add_argument("--timeout", type=int, default=120)
+    followup_request.add_argument("--deliver", action="store_true")
+    followup_request.add_argument("--reply-channel", default="")
+    followup_request.add_argument("--reply-account", default="")
+    followup_request.add_argument("--reply-to", default="")
+    followup_request.set_defaults(func=cmd_followup_request)
+    followup_reply = followup_sub.add_parser("reply")
+    followup_reply.add_argument("--followup-id", required=True)
+    followup_reply.add_argument("--by", required=True)
+    followup_reply.add_argument("--answer", required=True)
+    followup_reply.add_argument("--message-id", default="")
+    followup_reply.add_argument("--timeout", type=int, default=120)
+    followup_reply.set_defaults(func=cmd_followup_reply)
+    followup_show = followup_sub.add_parser("show")
+    followup_show.add_argument("--followup-id", required=True)
+    followup_show.set_defaults(func=cmd_followup_show)
+    followup_list = followup_sub.add_parser("list")
+    followup_list.add_argument("--status", choices=["pending", "answered", "cancelled", "all"], default="all")
+    followup_list.set_defaults(func=cmd_followup_list)
 
     conversation = sub.add_parser("conversation")
     conversation_sub = conversation.add_subparsers(dest="conversation_cmd", required=True)

@@ -92,6 +92,13 @@ bin/companyctl message direct --from main --to nestcar --body "只回复：NESTC
 bin/companyctl message direct --from main --to codex --body "只回复：CODEX_OK"
 ```
 
+结构化缺参追问可以先通过 followup 状态落地，再由 owner 回复后自动继续 direct 回原员工：
+
+```bash
+bin/companyctl followup request --from nestcar --to main --question "请补充本次还车里程"
+bin/companyctl followup reply --followup-id <followup-id> --by main --answer "本次还车里程是 10234 km"
+```
+
 添加员工只需要命令创建，再按需配置通信。
 本机未安装、未登录或没有可调用执行入口的工具只能登记为 `candidate`，不能算正式员工，也不能进入心跳和自动调度；等真实 runtime 接通后再重新 `employee onboard` 激活。当前 `cursor`、`devin`、`github-copilot`、`local-model-agent` 属于候选员工，`owner-shift` 是人类审批端点。
 
