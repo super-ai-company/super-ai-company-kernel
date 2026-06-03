@@ -280,6 +280,21 @@ worker 状态：`state/daemon/workers/<agent>.json`
 launchd 模板：`config/launchd/ai.openclaw.company-kernel.daemon.plist`，默认 300 秒运行一次 daemon。
 dashboard 会显示 Runtime Health，包括 daemon last-run、launchd 安装状态和修复命令。
 
+## API Gateway
+
+`bin/company-api-gateway` 提供轻量 REST 服务层，当前复用 `companyctl` 的制度和状态写入逻辑，作为未来多机/分布式部署前的 API 边界。
+
+```bash
+bin/company-api-gateway --host 127.0.0.1 --port 8765
+curl http://127.0.0.1:8765/v1/health
+curl -X POST http://127.0.0.1:8765/v1/tasks \
+  -H 'Content-Type: application/json' \
+  --data '{"from":"openclaw-main","to":"codex","title":"REST task","description":"created through API Gateway"}'
+curl http://127.0.0.1:8765/v1/tasks/<task-id>
+```
+
+已覆盖的端点：`/v1/health`、`/v1/doctor`、`/v1/tasks`、`/v1/messages`、`/v1/heartbeats`、`/v1/adapter-runs`。
+
 安全 dry-run worker 验证：
 
 ```bash
