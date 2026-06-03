@@ -508,4 +508,6 @@ bin/company-antigravity-adapter
 
 ```bash
 bin/company-antigravity-adapter --execute
+bin/company-antigravity-adapter --complete --task-id <task-id> --summary "GUI 已完成" --evidence /path/evidence.md
+bin/company-antigravity-adapter --block --task-id <task-id> --blocker "GUI 登录失效"
 ```

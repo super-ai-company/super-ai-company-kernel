@@ -36,15 +36,21 @@ def run_companyctl(args: list[str]) -> tuple[int, str, str]:
 
 def employee(agent: str) -> sqlite3.Row | None:
     conn = connect()
-    return conn.execute("SELECT * FROM employees WHERE id = ?", (agent,)).fetchone()
+    try:
+        return conn.execute("SELECT * FROM employees WHERE id = ?", (agent,)).fetchone()
+    finally:
+        conn.close()
 
 
 def next_task(agent: str) -> sqlite3.Row | None:
     conn = connect()
-    return conn.execute(
-        "SELECT * FROM tasks WHERE target_agent = ? AND status = 'submitted' ORDER BY created_at LIMIT 1",
-        (agent,),
-    ).fetchone()
+    try:
+        return conn.execute(
+            "SELECT * FROM tasks WHERE target_agent = ? AND status = 'submitted' ORDER BY created_at LIMIT 1",
+            (agent,),
+        ).fetchone()
+    finally:
+        conn.close()
 
 
 def paths(agent: str, task_id: str) -> dict[str, Path]:
@@ -85,6 +91,14 @@ def build_brief(task: sqlite3.Row) -> str:
     )
 
 
+def task_by_id(task_id: str) -> sqlite3.Row | None:
+    conn = connect()
+    try:
+        return conn.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
+    finally:
+        conn.close()
+
+
 def write_report(path: Path, task: sqlite3.Row, *, executed: bool, status: str, detail: str, brief: Path) -> None:
     path.write_text(
         "\n".join(
@@ -107,6 +121,37 @@ def write_report(path: Path, task: sqlite3.Row, *, executed: bool, status: str, 
     )
 
 
+def return_result(args: argparse.Namespace, emp: sqlite3.Row) -> int:
+    if not args.task_id:
+        emit({"ok": False, "error": "task id is required for result return"})
+        return 2
+    task = task_by_id(args.task_id)
+    if not task:
+        emit({"ok": False, "error": "task not found", "task_id": args.task_id})
+        return 1
+    if task["target_agent"] != args.agent and task["claimed_by"] != args.agent:
+        emit({"ok": False, "error": "task not owned by agent", "task_id": args.task_id, "agent": args.agent})
+        return 1
+    artifact = paths(args.agent, task["id"])
+    if not artifact["brief"].exists():
+        artifact["brief"].write_text(build_brief(task), encoding="utf-8")
+    status = "completed" if args.complete else "blocked"
+    if args.complete and not args.evidence:
+        emit({"ok": False, "error": "evidence is required for completion", "task_id": args.task_id})
+        return 2
+    detail = args.summary if args.complete else args.blocker
+    if not detail:
+        detail = "Antigravity GUI result returned through Company Kernel adapter."
+    write_report(artifact["report"], task, executed=True, status=status, detail=detail, brief=artifact["brief"])
+    if args.complete:
+        code, out, err = run_companyctl(["task", "done", "--agent", args.agent, "--task-id", task["id"], "--summary", detail, "--evidence", args.evidence])
+    else:
+        code, out, err = run_companyctl(["task", "block", "--agent", args.agent, "--task-id", task["id"], "--blocker", detail])
+    run_companyctl(["heartbeat", "--agent", args.agent])
+    emit({"ok": code == 0, "processed": 1 if code == 0 else 0, "returned": True, "status": status, "task_id": task["id"], "agent": emp["id"], "brief": str(artifact["brief"]), "report": str(artifact["report"]), "evidence": args.evidence, "companyctl_stdout": out, "companyctl_stderr": err})
+    return code
+
+
 def process(args: argparse.Namespace) -> int:
     emp = employee(args.agent)
     if not emp:
@@ -115,6 +160,8 @@ def process(args: argparse.Namespace) -> int:
     if emp["runtime"] != "antigravity":
         emit({"ok": False, "error": "employee runtime is not antigravity", "agent": args.agent, "runtime": emp["runtime"]})
         return 1
+    if args.complete or args.block:
+        return return_result(args, emp)
     if not APP_PATH.exists():
         emit({"ok": False, "error": "Antigravity.app not found", "path": str(APP_PATH)})
         return 1
@@ -148,6 +195,13 @@ def process(args: argparse.Namespace) -> int:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Company Kernel Antigravity GUI adapter")
     parser.add_argument("--agent", default="antigravity")
+    parser.add_argument("--task-id", default="", help="task id for GUI result return")
+    parser.add_argument("--summary", default="", help="completion summary for --complete")
+    parser.add_argument("--evidence", default="", help="evidence path for --complete")
+    parser.add_argument("--blocker", default="", help="blocker text for --block")
+    result = parser.add_mutually_exclusive_group()
+    result.add_argument("--complete", action="store_true", help="return completed GUI result to Company Kernel")
+    result.add_argument("--block", action="store_true", help="return blocked GUI result to Company Kernel")
     parser.add_argument("--execute", action="store_true", help="open Antigravity.app; without this only writes brief and report")
     return parser
 
@@ -158,4 +212,3 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

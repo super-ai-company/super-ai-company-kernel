@@ -11,6 +11,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+from company_kernel import antigravity_adapter
 from company_kernel import api_gateway
 from company_kernel import api_rpc
 from company_kernel import company_daemon
@@ -169,6 +170,9 @@ class CompanyKernelCoreTest(unittest.TestCase):
             mock.patch.object(openclaw_adapter, "ROOT", root),
             mock.patch.object(openclaw_adapter, "DB_PATH", root / "company.sqlite"),
             mock.patch.object(openclaw_adapter, "OPENCLAW_ROOT", root / "openclaw"),
+            mock.patch.object(antigravity_adapter, "ROOT", root),
+            mock.patch.object(antigravity_adapter, "DB_PATH", root / "company.sqlite"),
+            mock.patch.object(antigravity_adapter, "APP_PATH", root / "Applications" / "Antigravity.app"),
             mock.patch.object(policy_guard, "ROOT", root),
             mock.patch.object(policy_guard, "DB_PATH", root / "company.sqlite"),
             mock.patch.object(policy_guard, "SCHEMA", root / "company_kernel" / "schema.sql"),
@@ -1791,6 +1795,62 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertIn("runtime execution failed exit_code=7", task["task"]["blocker"])
         self.assertIn("codex failed", task["task"]["blocker"])
         self.assertIn("Runtime output summary", Path(result["report"]).read_text(encoding="utf-8"))
+
+    def test_antigravity_adapter_can_return_gui_results(self) -> None:
+        workspace = self.root / "workspace" / "antigravity"
+        code, employee = run_cli(
+            "employee",
+            "create",
+            "--id",
+            "antigravity",
+            "--name",
+            "Antigravity",
+            "--role",
+            "ide-agent",
+            "--runtime",
+            "antigravity",
+            "--workspace",
+            str(workspace),
+        )
+        self.assertEqual(code, 0, employee)
+
+        task_id = "task-antigravity-return-ok"
+        code, submitted = run_cli("task", "submit", "--from", "openclaw-main", "--to", "antigravity", "--task-id", task_id, "--title", "GUI flow")
+        self.assertEqual(code, 0, submitted)
+        code, claimed = run_cli("task", "claim", "--agent", "antigravity", "--task-id", task_id)
+        self.assertEqual(code, 0, claimed)
+
+        evidence = self.root / "antigravity-evidence.md"
+        evidence.write_text("GUI result evidence\n", encoding="utf-8")
+        captured = io.StringIO()
+        with contextlib.redirect_stdout(captured):
+            code = antigravity_adapter.main(["--agent", "antigravity", "--complete", "--task-id", task_id, "--summary", "GUI task finished", "--evidence", str(evidence)])
+        result = json.loads(captured.getvalue())
+        self.assertEqual(0, code, result)
+        self.assertTrue(result["ok"], result)
+        self.assertTrue(result["returned"])
+        self.assertTrue(Path(result["report"]).exists())
+
+        code, task = run_cli("task", "show", "--task-id", task_id)
+        self.assertEqual(code, 0, task)
+        self.assertEqual("completed", task["task"]["status"])
+        self.assertEqual("GUI task finished", task["task"]["summary"])
+        self.assertEqual(str(evidence), task["task"]["evidence_path"])
+
+        blocked_id = "task-antigravity-return-blocked"
+        code, submitted_blocked = run_cli("task", "submit", "--from", "openclaw-main", "--to", "antigravity", "--task-id", blocked_id, "--title", "GUI blocked")
+        self.assertEqual(code, 0, submitted_blocked)
+        captured = io.StringIO()
+        with contextlib.redirect_stdout(captured):
+            code = antigravity_adapter.main(["--agent", "antigravity", "--block", "--task-id", blocked_id, "--blocker", "GUI login required"])
+        blocked = json.loads(captured.getvalue())
+        self.assertEqual(0, code, blocked)
+        self.assertEqual("blocked", blocked["status"])
+
+        code, blocked_task = run_cli("task", "show", "--task-id", blocked_id)
+        self.assertEqual(code, 0, blocked_task)
+        self.assertEqual("blocked", blocked_task["task"]["status"])
+        self.assertEqual("GUI login required", blocked_task["task"]["blocker"])
 
     def test_employee_onboard_writes_config_and_creates_test_task(self) -> None:
         code, onboard = run_cli(
