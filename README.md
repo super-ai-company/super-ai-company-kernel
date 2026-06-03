@@ -211,13 +211,14 @@ bin/companyctl approval show --approval-id <id>
 
 - 审批请求由 OpenClaw `ops_bus_worker.py` 发送到 Telegram。
 - Telegram 按钮值为 `oc_approve:<task_id>` / `oc_deny:<task_id>`。
-- 按钮回调由 `/Users/owner/openclaw/scripts/ops_telegram_approval_watcher.py` 轮询并调用 `/Users/owner/openclaw/scripts/ops_approval_center.py apply-callback`。
-- 该 watcher 已验证可用，但默认不启用 launchd；它会和 OpenClaw 默认 Telegram bot 的 `getUpdates` 长轮询冲突。正式上线应改为 OpenClaw 原生回调/插件处理，不能独立抢同一个 bot offset。
+- 生产必须接入 OpenClaw 原生回调/插件桥接，再调用 `/Users/owner/openclaw/scripts/ops_approval_center.py apply-callback`。
+- `/Users/owner/openclaw/scripts/ops_telegram_approval_watcher.py` 是禁用的遗留 smoke 工具；不要启动它，它会和 OpenClaw 默认 Telegram bot 的 `getUpdates` 长轮询冲突，导致 NestCar 等独立 agent 已读不回。
 
 验证：
 
 ```bash
 openclaw gateway probe
+bin/companyctl doctor --summary --strict-openclaw
 ls /Users/owner/openclaw/ops/approvals/approved
 ```
 

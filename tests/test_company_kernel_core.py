@@ -1135,6 +1135,12 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertIn("/v1/tasks", openapi["paths"])
         self.assertIn("/v1/conversations/{conversation_id}/reply", openapi["paths"])
         self.assertIn("/v1/approvals/{approval_id}/approve", openapi["paths"])
+        doctor_query_names = {
+            parameter["name"]
+            for parameter in openapi["paths"]["/v1/doctor"]["get"]["parameters"]
+        }
+        self.assertIn("strict_launchd", doctor_query_names)
+        self.assertIn("strict_openclaw", doctor_query_names)
 
         for agent in ["video-ops", "video-creator", "video-publisher", "codex", "openclaw-main", "hermes", "nestcar"]:
             status, heartbeat = api_gateway.route_post("/v1/heartbeats", {"agent": agent})
@@ -1142,6 +1148,21 @@ class CompanyKernelCoreTest(unittest.TestCase):
         daemon_state = self.root / "state" / "daemon" / "last-run.json"
         daemon_state.parent.mkdir(parents=True, exist_ok=True)
         daemon_state.write_text(json.dumps({"ok": True, "at": companyctl.now(), "results": []}, ensure_ascii=False), encoding="utf-8")
+
+        openclaw_root = self.root / "openclaw"
+        nestcar_spool = openclaw_root / "telegram" / "ingress-spool-nestcar"
+        nestcar_spool.mkdir(parents=True, exist_ok=True)
+        (nestcar_spool / "0000000784356111.json").write_text('{"updateId":784356111}', encoding="utf-8")
+        status, non_strict_doctor = api_gateway.route_get("/v1/doctor", {})
+        self.assertEqual(200, status, non_strict_doctor)
+        self.assertEqual(0, non_strict_doctor["exit_code"])
+        self.assertFalse(non_strict_doctor["openclaw_guard"]["ok"])
+        status, strict_openclaw_doctor = api_gateway.route_get("/v1/doctor", {"strict_openclaw": ["true"]})
+        self.assertEqual(400, status, strict_openclaw_doctor)
+        self.assertEqual(1, strict_openclaw_doctor["exit_code"])
+        self.assertIn("telegram_ingress_spool_backlog", strict_openclaw_doctor["issues"])
+        (nestcar_spool / "0000000784356111.json").unlink()
+
         status, health = api_gateway.route_get("/v1/health", {})
         self.assertEqual(200, status, health)
         self.assertTrue(health["ok"])
