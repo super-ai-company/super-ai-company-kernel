@@ -120,4 +120,4 @@ bundle id: com.google.antigravity
 - `bin/company-antigravity-adapter` 已支持从 Company Kernel 领取 Antigravity 任务。
 - 默认生成 GUI task brief 和 evidence，不打开 App。
 - 加 `--execute` 后只执行 `open -a Antigravity`。
-- 当前没有发现独立 `antigravity` CLI；真实任务完成仍需要未来 GUI worker 或人工回传 evidence。
+- 当前没有发现独立 `antigravity` CLI；GUI worker 或人工脚本可通过 `--complete --task-id <id> --summary ... --evidence ...` 或 `--block --task-id <id> --blocker ...` 把结果回传 Company Kernel。

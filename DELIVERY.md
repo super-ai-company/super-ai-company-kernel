@@ -9,6 +9,7 @@ Implemented and verified:
 - SQLite-backed company kernel schema for employees, runtimes, messages, tasks, locks, heartbeats, approvals, audit logs, events, conversations, RFCs, projects, adapter runs, and task relations.
 - `companyctl` command interface for employee onboarding, runtime registration, communication, task routing, task execution, approvals, recovery, heartbeats, project governance, scheduler, adapter run recovery, and doctor checks.
 - Runtime adapters for OpenClaw, Hermes, Codex, Claude, Trae, and Antigravity.
+- Antigravity GUI adapter can now return completed or blocked GUI results back into Company Kernel with evidence/blocker.
 - OpenClaw adapter bridge tests cover dry-run payload/evidence generation and `--execute` approval gating before legacy bus submit.
 - Codex adapter tests cover task-card/evidence generation, mocked `codex exec` success completion, and failed execution blocking with report.
 - CLI-backed adapters compact runtime stdout/stderr into task summaries/blockers while keeping full output as evidence files for low-token monitoring.
