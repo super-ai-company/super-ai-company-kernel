@@ -198,6 +198,30 @@ def communication_list(config: dict, employee_id: str, key: str) -> list[str]:
     return [resolve_employee_alias(str(item)) for item in employee.get(key, [])]
 
 
+def direct_reply_defaults(source: str, target: str) -> dict:
+    config = load_communication_config()
+    employee_defaults = config.get("employees", {}).get(target, {})
+    source_defaults = config.get("employees", {}).get(source, {})
+    profile_defaults = load_json_or_default(employee_paths(target)["profile"], {})
+
+    merged: dict[str, object] = {}
+    for candidate in (source_defaults, employee_defaults, profile_defaults):
+        if not isinstance(candidate, dict):
+            continue
+        for key in ("default_user_reply_channel", "default_user_reply_account", "default_user_reply_to"):
+            value = str(candidate.get(key, "") or "").strip()
+            if value:
+                merged[key] = value
+        if candidate.get("default_user_reply_deliver") is not None:
+            merged["default_user_reply_deliver"] = bool(candidate.get("default_user_reply_deliver"))
+    return {
+        "deliver": bool(merged.get("default_user_reply_deliver", False)),
+        "reply_channel": str(merged.get("default_user_reply_channel", "") or ""),
+        "reply_account": str(merged.get("default_user_reply_account", "") or ""),
+        "reply_to": str(merged.get("default_user_reply_to", "") or ""),
+    }
+
+
 def communication_policy_decision(source: str, target: str, action: str) -> dict:
     config = load_communication_config()
     source = resolve_employee_alias(source)
@@ -1793,6 +1817,14 @@ def cmd_message_direct(args: argparse.Namespace) -> int:
     require_communication_allowed(source, target, "message.direct")
     runtime = str(target_employee.get("runtime") or "")
     session_key = args.session_key or f"agent:{target}:{source}"
+    defaults = direct_reply_defaults(source, target)
+    args.deliver = bool(args.deliver or defaults["deliver"])
+    if not args.reply_channel:
+        args.reply_channel = str(defaults["reply_channel"])
+    if not args.reply_account:
+        args.reply_account = str(defaults["reply_account"])
+    if not args.reply_to:
+        args.reply_to = str(defaults["reply_to"])
     try:
         cmd, agent_runtime_id = direct_runtime_command(runtime, target, source, args.body, args.timeout, session_key, args)
     except ValueError:
@@ -1812,6 +1844,10 @@ def cmd_message_direct(args: argparse.Namespace) -> int:
         "runtime": runtime,
         "agent_runtime_id": agent_runtime_id,
         "session_key": session_key,
+        "deliver": bool(args.deliver),
+        "reply_channel": args.reply_channel,
+        "reply_account": args.reply_account,
+        "reply_to": args.reply_to,
         "reply": reply,
         "exit_code": cp.returncode,
         "message": message_record["message"],

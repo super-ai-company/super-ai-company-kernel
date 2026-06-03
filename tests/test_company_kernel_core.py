@@ -442,6 +442,59 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertIn("agent:nestcar:main", calls[0])
         self.assertEqual("nestcar", sent["message"]["target_agent"])
 
+    def test_message_direct_uses_default_telegram_reply_bridge(self) -> None:
+        code, created = run_cli("employee", "create", "--id", "main", "--name", "main", "--role", "operator", "--runtime", "openclaw", "--workspace", str(self.root / "workspace" / "main"))
+        self.assertEqual(0, code, created)
+        code, created = run_cli("employee", "create", "--id", "nestcar", "--name", "NestCar", "--role", "business-agent", "--runtime", "openclaw", "--workspace", str(self.root / "workspace" / "nestcar"))
+        self.assertEqual(0, code, created)
+        config = json.loads((self.root / "config" / "company_communications.json").read_text(encoding="utf-8"))
+        config.setdefault("employees", {}).setdefault("nestcar", {}).update(
+            {
+                "default_user_reply_deliver": True,
+                "default_user_reply_channel": "telegram",
+                "default_user_reply_account": "default",
+                "default_user_reply_to": "current",
+            }
+        )
+        (self.root / "config" / "company_communications.json").write_text(json.dumps(config, ensure_ascii=False, indent=2), encoding="utf-8")
+        calls = []
+
+        def fake_run(cmd, cwd=None, text=None, capture_output=None, timeout=None):
+            calls.append(cmd)
+
+            class Result:
+                returncode = 0
+                stdout = json.dumps({"result": {"payloads": [{"text": "NESTCAR_DEFAULT_BRIDGE_OK"}]}})
+                stderr = ""
+
+            return Result()
+
+        with mock.patch.object(companyctl.subprocess, "run", side_effect=fake_run):
+            code, sent = run_cli(
+                "message",
+                "direct",
+                "--from",
+                "main",
+                "--to",
+                "nestcar",
+                "--body",
+                "只回复 NESTCAR_DEFAULT_BRIDGE_OK",
+                "--message-id",
+                "msg-direct-nestcar-default-bridge",
+            )
+        self.assertEqual(0, code, sent)
+        self.assertTrue(sent["deliver"])
+        self.assertEqual("telegram", sent["reply_channel"])
+        self.assertEqual("default", sent["reply_account"])
+        self.assertEqual("current", sent["reply_to"])
+        self.assertIn("--deliver", calls[0])
+        self.assertIn("--reply-channel", calls[0])
+        self.assertIn("telegram", calls[0])
+        self.assertIn("--reply-account", calls[0])
+        self.assertIn("default", calls[0])
+        self.assertIn("--reply-to", calls[0])
+        self.assertIn("current", calls[0])
+
     def test_message_direct_uses_codex_adapter_without_claiming_tasks(self) -> None:
         code, created = run_cli("employee", "create", "--id", "main", "--name", "main", "--role", "operator", "--runtime", "openclaw", "--workspace", str(self.root / "workspace" / "main"))
         self.assertEqual(0, code, created)
@@ -2085,6 +2138,18 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertTrue(result["rpc"]["describe_ok"])
         self.assertEqual(200, result["rpc"]["health_status"])
         self.assertIn(result["grpc"]["check"], {"ready", "grpcio_not_installed"})
+
+    def test_service_smoke_handles_health_http_error_payload(self) -> None:
+        with mock.patch.object(company_service_smoke, "free_port", side_effect=[41011, 41012]), mock.patch.object(company_service_smoke, "start_thread"), mock.patch.object(
+            company_service_smoke,
+            "get_json",
+            side_effect=[{"ok": False, "issues": ["pending_events"], "http_status": 400}, {"ok": True}],
+        ), mock.patch.object(company_service_smoke, "post_json", return_value={"result": {"status": 200}}):
+            result = company_service_smoke.run_smoke()
+        self.assertTrue(result["ok"], result)
+        self.assertFalse(result["rest"]["ok"])
+        self.assertEqual(400, result["rest"]["http_status"])
+        self.assertEqual(["pending_events"], result["rest"]["issues"])
 
     def test_sandboxing_wraps_codex_and_hermes_commands_without_executing_container(self) -> None:
         workspace = self.root / "workspace" / "codex"
