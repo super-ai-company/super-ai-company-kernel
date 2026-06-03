@@ -1270,6 +1270,45 @@ class CompanyKernelCoreTest(unittest.TestCase):
         finally:
             conn.close()
 
+    def test_codex_adapter_attendance_probe_does_not_claim_task(self) -> None:
+        code, created = run_cli(
+            "employee",
+            "create",
+            "--id",
+            "codex",
+            "--name",
+            "Codex",
+            "--role",
+            "developer",
+            "--runtime",
+            "codex",
+            "--workspace",
+            str(self.root / "workspace" / "codex"),
+        )
+        self.assertEqual(code, 0, created)
+        code, created = run_cli(
+            "employee",
+            "create",
+            "--id",
+            "main",
+            "--name",
+            "main",
+            "--role",
+            "agent",
+            "--runtime",
+            "openclaw",
+            "--workspace",
+            str(self.root / "workspace" / "main"),
+        )
+        self.assertEqual(code, 0, created)
+        code, submitted = run_cli("task", "submit", "--from", "main", "--to", "codex", "--task-id", "task-codex-attendance-side-effect", "--title", "must stay submitted")
+        self.assertEqual(code, 0, submitted)
+        code = codex_adapter.main(["--agent", "codex", "--attendance-probe"])
+        self.assertEqual(0, code)
+        code, shown = run_cli("task", "show", "--task-id", "task-codex-attendance-side-effect")
+        self.assertEqual(code, 0, shown)
+        self.assertEqual("submitted", shown["task"]["status"])
+
     def test_company_trace_exports_trace_timeline(self) -> None:
         evidence = self.root / "evidence" / "trace-export.md"
         evidence.parent.mkdir(exist_ok=True)
@@ -2405,6 +2444,44 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual("main 在岗", row["reply"])
         self.assertEqual("agent_reply_matched", row["reason"])
         self.assertTrue(row["reply_probe"]["ok"])
+        self.assertTrue(Path(swept["evidence"]["latest"]).exists())
+        self.assertIn("no_reply", swept["classification_guide"])
+
+    def test_attendance_sweep_can_mark_codex_online_via_adapter(self) -> None:
+        code, created = run_cli(
+            "employee",
+            "create",
+            "--id",
+            "codex",
+            "--name",
+            "Codex",
+            "--role",
+            "developer",
+            "--runtime",
+            "codex",
+            "--workspace",
+            str(self.root / "workspace" / "codex"),
+        )
+        self.assertEqual(code, 0, created)
+        session_dir = self.root / "openclaw" / "agents" / "codex" / "sessions"
+        session_dir.mkdir(parents=True)
+        (session_dir / "sessions.json").write_text('{}', encoding="utf-8")
+
+        def fake_run(cmd, cwd=None, text=None, capture_output=None, timeout=None):
+            self.assertIn("--attendance-probe", cmd)
+            class Result:
+                returncode = 0
+                stdout = json.dumps({"ok": True, "processed": 0, "agent": "codex", "attendance_probe": True, "reply": "codex 在岗"})
+                stderr = ""
+            return Result()
+
+        with mock.patch.object(companyctl.subprocess, "run", side_effect=fake_run):
+            code, swept = run_cli("attendance", "sweep", "--source", "main", "--agents", "codex", "--sweep-id", "attendance-codex-test")
+        self.assertEqual(code, 0, swept)
+        row = swept["employees"][0]
+        self.assertEqual("online", row["status"])
+        self.assertEqual("codex 在岗", row["reply"])
+        self.assertEqual("adapter_heartbeat_matched", row["reply_probe"]["reason"])
 
     def test_employee_onboard_writes_config_and_creates_test_task(self) -> None:
         code, onboard = run_cli(

@@ -305,6 +305,8 @@ bin/companyctl attendance sweep --source main --agents main,nestcar,codex,hermes
 
 默认会对支持的 OpenClaw/Hermes 员工发起真实 reply probe，要求员工只回复 `<agent_id> 在岗`；通过后才算 `online`。如只想做 session/spool 快速巡检，可加 `--no-probe-replies`。
 
+每次点名会同时写入 `state/attendance/<sweep_id>.json` 和固定入口 `state/attendance/latest.json`，后续看最新结果直接读 `latest.json`。
+
 状态包括 `online`、`session_missing`、`worker_stalled`、`heartbeat_disabled`、`no_reply`。如果 nestcar 这类员工 ingress spool 有 pending/processing，会被判为 `worker_stalled`；如果没有稳定可投递 session 或 runtime 还没有真实 adapter，会判 `session_missing/no_reply`。
 
 最小自动执行闭环：
