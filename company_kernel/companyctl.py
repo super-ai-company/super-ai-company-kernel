@@ -2269,11 +2269,45 @@ def conversation_reply_internal(
     return {"conversation_id": conversation_id, "message": message, "files": files, "event_id": event["id"]}
 
 
+def conversation_join_internal(
+    conn: sqlite3.Connection,
+    *,
+    agent: str,
+    conversation_id: str,
+) -> dict:
+    agent = resolve_employee_alias(agent)
+    if agent == "owner-shift":
+        ensure_human_owner(conn, agent)
+    require_employee(conn, agent)
+    conv = conn.execute("SELECT * FROM conversations WHERE id = ?", (conversation_id,)).fetchone()
+    if not conv:
+        raise SystemExit(f"conversation not found: {conversation_id}")
+    participants = json.loads(conv["participants_json"])
+    joined = False
+    if agent not in participants:
+        participants.insert(0, agent) if agent == "owner-shift" else participants.append(agent)
+        conn.execute(
+            "UPDATE conversations SET participants_json = ?, updated_at = ? WHERE id = ?",
+            (json.dumps(participants, ensure_ascii=False), now(), conversation_id),
+        )
+        conn.commit()
+        joined = True
+    audit(conn, agent, "conversation.join", conversation_id, {"participants": participants, "joined": joined})
+    return {"conversation": {"id": conversation_id, "title": conv["title"], "participants": participants, "status": conv["status"]}, "joined": joined}
+
+
 def cmd_conversation_reply(args: argparse.Namespace) -> int:
     conn = connect()
     if resolve_employee_alias(args.source) == "owner-shift":
         ensure_human_owner(conn)
     result = conversation_reply_internal(conn, source=args.source, conversation_id=args.conversation_id, body=args.body, evidence=args.evidence, message_id=args.message_id)
+    emit({"ok": True, **result})
+    return 0
+
+
+def cmd_conversation_join(args: argparse.Namespace) -> int:
+    conn = connect()
+    result = conversation_join_internal(conn, agent=args.agent, conversation_id=args.conversation_id)
     emit({"ok": True, **result})
     return 0
 
@@ -4838,6 +4872,10 @@ def build_parser() -> argparse.ArgumentParser:
     conversation_reply.add_argument("--evidence", default="")
     conversation_reply.add_argument("--message-id", default="")
     conversation_reply.set_defaults(func=cmd_conversation_reply)
+    conversation_join = conversation_sub.add_parser("join")
+    conversation_join.add_argument("--agent", default="owner-shift")
+    conversation_join.add_argument("--conversation-id", required=True)
+    conversation_join.set_defaults(func=cmd_conversation_join)
     conversation_list = conversation_sub.add_parser("list")
     conversation_list.add_argument("--agent", required=True)
     conversation_list.set_defaults(func=cmd_conversation_list)
