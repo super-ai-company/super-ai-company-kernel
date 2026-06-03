@@ -14,6 +14,7 @@ from unittest import mock
 from company_kernel import api_gateway
 from company_kernel import company_daemon
 from company_kernel import company_dashboard
+from company_kernel import company_trace
 from company_kernel import companyctl
 from company_kernel import codex_adapter
 from company_kernel import openclaw_adapter
@@ -47,7 +48,7 @@ class CompanyKernelCoreTest(unittest.TestCase):
             (root / "company_kernel" / source_file.name).write_text(source_file.read_text(encoding="utf-8"), encoding="utf-8")
         (root / "company_kernel" / "schema.sql").write_text(companyctl.SCHEMA.read_text(encoding="utf-8"), encoding="utf-8")
         (root / "bin").mkdir()
-        for executable in ["companyctl", "company-adapter-worker", "company-codex-adapter", "company-openclaw-adapter"]:
+        for executable in ["companyctl", "company-adapter-worker", "company-codex-adapter", "company-openclaw-adapter", "company-trace"]:
             target = root / "bin" / executable
             target.write_text((Path(__file__).resolve().parents[1] / "bin" / executable).read_text(encoding="utf-8"), encoding="utf-8")
             target.chmod(0o755)
@@ -157,6 +158,10 @@ class CompanyKernelCoreTest(unittest.TestCase):
             mock.patch.object(company_dashboard, "DB_PATH", root / "company.sqlite"),
             mock.patch.object(company_dashboard, "SCHEMA", root / "company_kernel" / "schema.sql"),
             mock.patch.object(company_dashboard, "DEFAULT_OUTPUT", root / "state" / "dashboard.html"),
+            mock.patch.object(company_trace, "ROOT", root),
+            mock.patch.object(company_trace, "DB_PATH", root / "company.sqlite"),
+            mock.patch.object(company_trace, "SCHEMA", root / "company_kernel" / "schema.sql"),
+            mock.patch.object(company_trace, "DEFAULT_OUTPUT_DIR", root / "state" / "traces"),
             mock.patch.object(codex_adapter, "ROOT", root),
             mock.patch.object(codex_adapter, "DB_PATH", root / "company.sqlite"),
             mock.patch.object(codex_adapter, "DEFAULT_WORKSPACE", root / "workspace" / "codex"),
@@ -1014,6 +1019,56 @@ class CompanyKernelCoreTest(unittest.TestCase):
             self.assertEqual("task-trace-flow", row["task_id"])
         finally:
             conn.close()
+
+    def test_company_trace_exports_trace_timeline(self) -> None:
+        evidence = self.root / "evidence" / "trace-export.md"
+        evidence.parent.mkdir(exist_ok=True)
+        evidence.write_text("trace export evidence", encoding="utf-8")
+
+        code, submitted = run_cli("task", "submit", "--from", "openclaw-main", "--to", "codex", "--task-id", "task-trace-export", "--title", "trace export")
+        self.assertEqual(code, 0, submitted)
+        trace_id = submitted["task"]["metadata"]["trace_id"]
+        code, claimed = run_cli("task", "claim", "--agent", "codex", "--task-id", "task-trace-export")
+        self.assertEqual(code, 0, claimed)
+        code, done = run_cli("task", "done", "--agent", "codex", "--task-id", "task-trace-export", "--summary", "done", "--evidence", str(evidence))
+        self.assertEqual(code, 0, done)
+
+        conn = companyctl.connect()
+        try:
+            conn.execute(
+                """
+                INSERT INTO adapter_runs(id, trace_id, agent_id, task_id, command, ok, processed, attempt, next_retry_at, result_json, created_at)
+                VALUES ('adapter-run-trace-export', ?, 'codex', 'task-trace-export', 'company-codex-adapter', 1, 1, 1, '', '{}', ?)
+                """,
+                (trace_id, companyctl.now()),
+            )
+            conn.commit()
+            trace = company_trace.load_trace(conn, trace_id)
+            self.assertEqual(trace_id, trace["trace_id"])
+            self.assertEqual(["task-trace-export"], [task["id"] for task in trace["tasks"]])
+            self.assertEqual(["adapter-run-trace-export"], [run["id"] for run in trace["adapter_runs"]])
+            self.assertTrue(any(item["kind"] == "event" and item["label"] == "task.done" for item in trace["timeline"]))
+        finally:
+            conn.close()
+
+        files = company_trace.write_outputs(trace)
+        html = Path(files["html"])
+        json_file = Path(files["json"])
+        self.assertTrue(html.exists())
+        self.assertTrue(json_file.exists())
+        self.assertIn(trace_id, html.read_text(encoding="utf-8"))
+        self.assertIn("task-trace-export", html.read_text(encoding="utf-8"))
+        exported = json.loads(json_file.read_text(encoding="utf-8"))
+        self.assertEqual(trace_id, exported["trace_id"])
+
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            code = company_trace.main(["--task-id", "task-trace-export", "--json-only"])
+        self.assertEqual(code, 0)
+        payload = json.loads(buf.getvalue())
+        self.assertTrue(payload["ok"])
+        self.assertEqual(trace_id, payload["trace_id"])
+        self.assertGreaterEqual(len(payload["timeline"]), 3)
 
     def test_api_gateway_exposes_health_tasks_messages_and_heartbeats(self) -> None:
         for agent in ["video-ops", "video-creator", "video-publisher", "codex", "openclaw-main", "hermes", "nestcar"]:

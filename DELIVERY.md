@@ -14,6 +14,7 @@ Implemented and verified:
 - Custom runtime registration via `companyctl runtime register`, so future tools such as Cursor or Devin can be added without code changes.
 - End-to-end daemon worker smoke for automatic task execution: daemon can enable a worker, claim a task, write evidence, complete it, heartbeat, and record `adapter_runs`.
 - Trace ID telemetry foundation: task metadata, company events, adapter runs, and dashboard now carry the same trace id.
+- Trace telemetry export: `bin/company-trace` writes per-trace JSON and HTML timeline files for dispatch, hook, and adapter latency inspection.
 - Retry policy foundation: daemon records adapter attempts and `next_retry_at`, then automatically restores due failed adapter tasks through the existing recovery path.
 - API Gateway foundation: lightweight REST service exposes health, doctor, tasks, messages, heartbeats, and adapter runs while reusing `companyctl` governance.
 - Sandbox isolation foundation: Codex/Hermes adapters can wrap execution commands with Docker or Firejail profiles without changing task protocol.
@@ -38,7 +39,7 @@ python3 /Users/owner/openclaw/workspace-xmanx/scripts/heartbeat_summary_router.p
 
 ## Latest Verified Result
 
-- Unit tests: 32/32 passing.
+- Unit tests: 33/33 passing.
 - Daemon worker smoke: verified in automated tests; manual command path documented in README.
 - Doctor: `ok=true`, `issues=[]`.
 - Heartbeats: 14 active employee heartbeats, missing=0, stale=0.
