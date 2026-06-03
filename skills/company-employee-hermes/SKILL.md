@@ -11,6 +11,10 @@ Hermes is a supervisor/automation employee. It may coordinate and report, but mu
 
 “Onboard Hermes as a supervisor, verify direct reply, generate a Hermes oneshot prompt by default, and keep provider/proxy/tool changes blocked unless explicitly approved.”
 
+## Installer Responsibility
+
+If Hermes is the agent installing Company Kernel/OpenClaw, do not only configure Hermes. Run the bootstrap scanner first, discover Codex/OpenClaw/Claude/Trae/Antigravity/local candidates, and only create them as `candidate` until direct smoke passes.
+
 ## Required Checks
 
 1. Locate Hermes:

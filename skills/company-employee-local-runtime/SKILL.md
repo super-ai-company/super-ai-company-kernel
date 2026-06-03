@@ -11,6 +11,10 @@ Use this for Cursor, Devin, GitHub Copilot, local models, or any employee withou
 
 “Discover this local runtime, register it as candidate until direct smoke and routing evidence pass, then promote to active only with owner confirmation.”
 
+## Installer Responsibility
+
+If an unknown/local runtime is doing the install, it must still run the OpenClaw bootstrap scan and report all discovered employees. It should not create itself as active just because it is the installer.
+
 ## Required Checks
 
 1. Identify runtime command/app and workspace.
