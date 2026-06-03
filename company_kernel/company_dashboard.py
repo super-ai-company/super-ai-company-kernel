@@ -1680,8 +1680,7 @@ def inject_advanced_dashboard(template: str, summary: dict, *, db_path: Path, ap
   }}
   function joinCandidateEmployee(id) {{
     if (!id) return;
-    if (!confirm(`Join candidate "${{id}}" to the active team?`)) return;
-    return realUpdateEmployeeProfile(id, {{status: 'active'}});
+    companyApiLog('ERROR', `Candidate '${{id}}' cannot be joined directly. Run: bin/companyctl employee verify-direct --id ${{id}} --from main --rounds 3 --activate`, 'error');
   }}
   function openEditEmployeeProfile(id, currentName, currentRole, currentRuntime, currentStatus) {{
     const name = prompt(`Name for ${{id}}`, currentName || id);

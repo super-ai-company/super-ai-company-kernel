@@ -30,7 +30,10 @@
     "video-creator": "video-creator",
     "video-ops": "video-ops",
     "video-publisher": "video-publisher",
-    "Hermes": "hermes"
+    "Hermes": "hermes",
+    "Claude": "claude",
+    "Trae": "trae",
+    "Antigravity": "antigravity"
   },
   "employees": {
     "video-ops": {

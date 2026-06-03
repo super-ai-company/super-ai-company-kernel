@@ -1,7 +1,7 @@
 {
   "agent_id": "owner-shift",
-  "runtime": "local",
-  "role": "owner",
+  "runtime": "human",
+  "role": "human-owner",
   "skills": [
     "approval",
     "decision",

@@ -876,13 +876,13 @@ def cmd_employee_create(args: argparse.Namespace) -> int:
     conn.execute(
         """
         INSERT INTO employees(id, name, role, runtime, workspace, status, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, 'active', ?, ?)
+        VALUES (?, ?, ?, ?, ?, 'candidate', ?, ?)
         ON CONFLICT(id) DO UPDATE SET
           name = excluded.name,
           role = excluded.role,
           runtime = excluded.runtime,
           workspace = excluded.workspace,
-          status = 'active',
+          status = CASE WHEN employees.status = 'active' THEN employees.status ELSE 'candidate' END,
           updated_at = excluded.updated_at
         """,
         (args.id, args.name, args.role, args.runtime, args.workspace, ts, ts),
@@ -933,6 +933,18 @@ def cmd_employee_update(args: argparse.Namespace) -> int:
         "status": args.status or current["status"],
         "updated_at": now(),
     }
+    if args.status == "active" and not employee_has_verified_direct_evidence(employee_id):
+        conn.close()
+        emit(
+            {
+                "ok": False,
+                "error": "employee activation requires 2-4 verified direct communication rounds",
+                "employee_id": employee_id,
+                "status": current["status"],
+                "required_command": f"bin/companyctl employee verify-direct --id {employee_id} --from main --rounds 3 --activate",
+            }
+        )
+        return 2
     if args.dry_run:
         conn.close()
         emit({"ok": True, "dry_run": True, "changed": updated != current, "employee": updated})
@@ -1190,13 +1202,13 @@ def upsert_employee(conn: sqlite3.Connection, employee_id: str, name: str, role:
     conn.execute(
         """
         INSERT INTO employees(id, name, role, runtime, workspace, status, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, 'active', ?, ?)
+        VALUES (?, ?, ?, ?, ?, 'candidate', ?, ?)
         ON CONFLICT(id) DO UPDATE SET
           name = excluded.name,
           role = excluded.role,
           runtime = excluded.runtime,
           workspace = excluded.workspace,
-          status = 'active',
+          status = CASE WHEN employees.status = 'active' THEN employees.status ELSE 'candidate' END,
           updated_at = excluded.updated_at
         """,
         (employee_id, name, role, runtime, workspace, ts, ts),
@@ -1205,6 +1217,101 @@ def upsert_employee(conn: sqlite3.Connection, employee_id: str, name: str, role:
     conn.commit()
     audit(conn, "companyctl", "employee.upsert", employee_id, {**profile, "communication": communication})
     return {"employee": profile, "files": files, "communication": communication}
+
+
+def verified_direct_evidence_dir(employee_id: str) -> Path:
+    return STATE_DIR / "employee-verification" / slug(employee_id)
+
+
+def employee_has_verified_direct_evidence(employee_id: str) -> bool:
+    latest = verified_direct_evidence_dir(employee_id) / "latest.json"
+    if not latest.exists():
+        return False
+    try:
+        payload = json.loads(latest.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return False
+    return bool(payload.get("ok") and int(payload.get("rounds_completed", 0) or 0) >= 2)
+
+
+def direct_probe_body(agent_id: str, round_index: int) -> str:
+    return f"员工通信验证第{round_index}轮：请只回复 {agent_id}_VERIFY_ROUND_{round_index}_OK"
+
+
+def cmd_employee_verify_direct(args: argparse.Namespace) -> int:
+    conn = connect()
+    employee_id = resolve_employee_alias(args.id, strict=True)
+    row = conn.execute("SELECT * FROM employees WHERE id = ?", (employee_id,)).fetchone()
+    if not row:
+        conn.close()
+        emit({"ok": False, "error": "unknown employee", "employee_id": employee_id})
+        return 1
+    source = resolve_employee_alias(args.source, strict=True)
+    require_employee(conn, source)
+    rounds = int(args.rounds)
+    if rounds < 2 or rounds > 4:
+        conn.close()
+        emit({"ok": False, "error": "rounds must be between 2 and 4", "rounds": rounds})
+        return 2
+    results = []
+    ok = True
+    for index in range(1, rounds + 1):
+        expected = f"{employee_id}_VERIFY_ROUND_{index}_OK"
+        direct_args = argparse.Namespace(
+            source=source,
+            target=employee_id,
+            body=direct_probe_body(employee_id, index),
+            message_id=f"verify-{slug(employee_id)}-{datetime.now().strftime('%Y%m%d%H%M%S')}-r{index}",
+            timeout=args.timeout,
+            session_key="",
+            deliver=False,
+            reply_channel="",
+            reply_account="",
+            reply_to="",
+        )
+        captured = io.StringIO()
+        with contextlib.redirect_stdout(captured):
+            code = cmd_message_direct(direct_args)
+        try:
+            payload = json.loads(captured.getvalue())
+        except json.JSONDecodeError:
+            payload = {"ok": False, "error": "invalid direct response", "raw": captured.getvalue()}
+        reply = str(payload.get("reply") or "")
+        passed = code == 0 and payload.get("ok") is True and expected in reply and bool(payload.get("receipt"))
+        if not passed:
+            ok = False
+        results.append({"round": index, "expected": expected, "passed": passed, "response": payload})
+        if not passed and not args.continue_on_failure:
+            break
+    report = {
+        "ok": ok and len(results) == rounds,
+        "employee_id": employee_id,
+        "source": source,
+        "rounds_required": rounds,
+        "rounds_completed": sum(1 for item in results if item["passed"]),
+        "results": results,
+        "generated_at": now(),
+        "activation_allowed": ok and len(results) == rounds,
+        "rule": "active status requires 2-4 verified direct rounds with receipt; heartbeat or generated brief is not enough",
+    }
+    evidence_dir = verified_direct_evidence_dir(employee_id)
+    evidence_dir.mkdir(parents=True, exist_ok=True)
+    report_path = evidence_dir / f"verify-direct-{datetime.now().strftime('%Y%m%d-%H%M%S')}.json"
+    latest_path = evidence_dir / "latest.json"
+    report["evidence"] = {"json": str(report_path), "latest": str(latest_path)}
+    report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    latest_path.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    if args.activate and report["activation_allowed"]:
+        ts = now()
+        conn.execute("UPDATE employees SET status = 'active', updated_at = ? WHERE id = ?", (ts, employee_id))
+        conn.commit()
+        report["activated"] = True
+    else:
+        report["activated"] = False
+    audit(conn, "companyctl", "employee.verify_direct", employee_id, report)
+    conn.close()
+    emit(report)
+    return 0 if report["ok"] else 1
 
 
 def cmd_employee_import_openclaw(args: argparse.Namespace) -> int:
@@ -4671,6 +4778,14 @@ def build_parser() -> argparse.ArgumentParser:
     emp_update.add_argument("--default-user-reply-deliver", action=argparse.BooleanOptionalAction, default=None)
     emp_update.add_argument("--dry-run", action="store_true")
     emp_update.set_defaults(func=cmd_employee_update)
+    emp_verify_direct = emp_sub.add_parser("verify-direct")
+    emp_verify_direct.add_argument("--id", required=True)
+    emp_verify_direct.add_argument("--from", dest="source", default="main")
+    emp_verify_direct.add_argument("--rounds", type=int, default=3, choices=[2, 3, 4])
+    emp_verify_direct.add_argument("--timeout", type=int, default=120)
+    emp_verify_direct.add_argument("--activate", action="store_true")
+    emp_verify_direct.add_argument("--continue-on-failure", action="store_true")
+    emp_verify_direct.set_defaults(func=cmd_employee_verify_direct)
     emp_capabilities = emp_sub.add_parser("capabilities")
     emp_capabilities.add_argument("--id", required=True)
     emp_capabilities.add_argument("--set-skills", default="", help="comma-separated replacement list")
