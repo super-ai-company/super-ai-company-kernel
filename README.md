@@ -323,9 +323,13 @@ curl http://127.0.0.1:8765/v1/projects/project-rest/review
 curl -X POST http://127.0.0.1:8765/v1/projects/project-rest/accept \
   -H 'Content-Type: application/json' \
   --data '{"by":"openclaw-main","summary":"验收通过"}'
+curl -X POST http://127.0.0.1:8765/v1/locks/acquire \
+  -H 'Content-Type: application/json' \
+  --data '{"agent":"codex","resource":"task:<task-id>","lease_seconds":1800}'
+curl http://127.0.0.1:8765/v1/locks?agent=codex
 ```
 
-`/v1` 返回服务发现、能力列表、治理约束和端点清单；`/v1/openapi.json` 返回机器可读 OpenAPI 3.1 契约。已覆盖的端点：`/v1/health`、`/v1/doctor`、`/v1/tasks`、`/v1/tasks/<id>/claim|done|block|reopen|reassign`、`/v1/messages`、`/v1/conversations`、`/v1/approvals`、`/v1/projects`、`/v1/projects/<id>/review|accept`、`/v1/heartbeats`、`/v1/adapter-runs`。
+`/v1` 返回服务发现、能力列表、治理约束和端点清单；`/v1/openapi.json` 返回机器可读 OpenAPI 3.1 契约。已覆盖的端点：`/v1/health`、`/v1/doctor`、`/v1/tasks`、`/v1/tasks/<id>/claim|done|block|reopen|reassign`、`/v1/messages`、`/v1/conversations`、`/v1/approvals`、`/v1/projects`、`/v1/projects/<id>/review|accept`、`/v1/locks`、`/v1/heartbeats`、`/v1/adapter-runs`。
 
 ## Sandbox Isolation
 
