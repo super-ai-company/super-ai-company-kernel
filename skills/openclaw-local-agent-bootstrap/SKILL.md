@@ -66,6 +66,15 @@ Use scanner output as a draft until direct smoke passes. `--apply` must not prom
 - If a user expects an ACK such as `HERMES_CONFIG_ACK`, use direct smoke or a conversation reply path, not a record-only inbox message.
 - Scanner `pending_inbox_messages` means messages are recorded but may still need an adapter, daemon worker, or human/runtime pickup.
 
+## Closed-Loop Coordination
+
+- Every employee request must produce at least one reply/ACK to the sender. A saved inbox file is not an ACK.
+- If an employee is blocked, rejected, denied by policy, missing config, or unable to execute, it must reply with: current status, blocker reason, evidence path if any, and the next required action.
+- If the request came from a human-facing agent, the result must return to that agent so it can notify the human operator. Required loop: human -> requesting agent -> target employee -> requesting agent -> human.
+- When a service or route fails, ask whether another employee should assist and list active employee IDs as `@agent` options.
+- Use `@agent` mentions to create or reuse group conversations. Participants must include the human owner/requesting agent and all mentioned active employees.
+- Chat and mentions are coordination records only. Risky execution still requires an explicit task, approval, or adapter action.
+
 ## Hard Rules
 
 - Default reply surface is the current initiating conversation until a canonical business target is locked.
@@ -107,6 +116,8 @@ Return this compact structure per employee:
     "default_reply_target": "",
     "session_key": "",
     "direct_status": "active|candidate|blocked",
+    "ack_required": true,
+    "failure_feedback_required": true,
     "pending_inbox_messages": 0
   },
   "routing": {"active": [], "candidate": [], "blocked": []},

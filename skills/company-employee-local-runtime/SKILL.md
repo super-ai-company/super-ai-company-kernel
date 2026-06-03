@@ -34,6 +34,9 @@ If an unknown/local runtime is doing the install, it must still run the OpenClaw
 - Do not assume browser/IDE login state transfers into automation.
 - Do not invent adapter behavior. If no adapter exists, create a task brief and require manual completion evidence.
 - Communication can be enabled only after direct reply channel and routing are known.
+- Every received request must ACK or return a blocker to the sender with status, reason, evidence path if any, and next required action.
+- If route/config/service fails, ask whether another active employee should assist and list `@agent` options.
+- Human-originated requests must close the loop back to the human-facing requester; an inbox record alone is not enough.
 
 ## Blocked Cases
 

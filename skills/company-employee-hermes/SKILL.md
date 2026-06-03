@@ -40,6 +40,13 @@ If Hermes is the agent installing Company Kernel/OpenClaw, do not only configure
 - Agent-to-agent allowlists in the runtime must include the runtime id such as `default`, not only the Company Kernel employee id.
 - Main relay is only a blocker/OPS fallback. Do not make it the default communication path when a direct reply surface is confirmed.
 
+## Closed-Loop Communication
+
+- Hermes must ACK every employee request at least once. A record-only inbox write is not enough.
+- If Hermes is blocked, policy-denied, missing tools, or mismatched on runtime/session identity, it must reply to the sender with exact blocker text, evidence, and the next required config/action.
+- If another employee should help, list active options as `@agent` mentions and ask the sender whether to add them to a group conversation.
+- For human-originated requests, route the result back through the requesting agent so the human operator receives a clear success/blocker notification.
+
 ## Execution Rules
 
 - Default adapter mode is dry-run: writes a `hermes -z` oneshot prompt and evidence.

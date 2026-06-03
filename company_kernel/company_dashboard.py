@@ -994,6 +994,58 @@ def inject_advanced_dashboard(template: str, summary: dict, *, db_path: Path, ap
       gap: 16px;
     }
 
+    .chat-input-bar {
+      position: relative;
+    }
+
+    .agent-mention-suggestions {
+      display: none;
+      position: absolute;
+      left: 0;
+      right: 84px;
+      bottom: 44px;
+      z-index: 20;
+      max-height: 220px;
+      overflow-y: auto;
+      padding: 8px;
+      border: 1px solid rgba(129, 140, 248, 0.32);
+      border-radius: 8px;
+      background: rgba(12, 16, 34, 0.98);
+      box-shadow: 0 18px 42px rgba(0, 0, 0, 0.34);
+    }
+
+    .mention-option {
+      width: 100%;
+      min-height: 38px;
+      border: 0;
+      border-radius: 6px;
+      padding: 7px 9px;
+      background: transparent;
+      color: #e5e7eb;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      text-align: left;
+    }
+
+    .mention-option:hover,
+    .mention-option.active {
+      background: rgba(99, 102, 241, 0.18);
+    }
+
+    .mention-option span {
+      font-weight: 800;
+      color: #a5b4fc;
+    }
+
+    .mention-option small,
+    .mention-empty {
+      color: var(--text-secondary);
+      font-size: 11px;
+    }
+
     .chat-view {
       display: flex;
       flex-direction: column;
@@ -1239,6 +1291,7 @@ def inject_advanced_dashboard(template: str, summary: dict, *, db_path: Path, ap
       return true;
     }} catch (err) {{
       companyApiLog('ERROR', `Company Kernel API offline: ${{err.message}}. Start: bin/company-api-gateway --quiet`, 'error');
+      guideCollaborationAfterFailure('API 异常，先不要让人干等。');
       const badge = document.getElementById('top-status-badge');
       const text = document.getElementById('top-status-text');
       if (badge) badge.className = 'system-status attention';
@@ -1279,6 +1332,107 @@ def inject_advanced_dashboard(template: str, summary: dict, *, db_path: Path, ap
       if (activeIds.has(id) && !found.includes(id)) found.push(id);
     }}
     return found;
+  }}
+  function activeEmployeeOptions() {{
+    return (getDashboardSummary().employees || [])
+      .filter(isVerifiedEmployee)
+      .filter(emp => emp.id && emp.id !== HUMAN_OWNER_ID)
+      .map(emp => ({{
+        id: String(emp.id),
+        name: String(emp.name || emp.id),
+        role: String(emp.role || ''),
+        runtime: String(emp.runtime || '')
+      }}));
+  }}
+  function collaborationHelpText() {{
+    const options = activeEmployeeOptions().slice(0, 12).map(emp => `@${{emp.id}}`).join(' ');
+    return options
+      ? `是否需要其他员工协助？可选：${{options}}。输入 @ 选择员工，发送后会创建/复用多人会话。`
+      : '当前没有可协助的 active 员工。先完成员工验证或启动 API。';
+  }}
+  function guideCollaborationAfterFailure(prefix) {{
+    companyApiLog('SYSTEM', `${{prefix}} ${{collaborationHelpText()}}`, 'normal');
+  }}
+  function ensureMentionSuggestBox(input) {{
+    let box = document.getElementById('agent-mention-suggestions');
+    if (!box && input && input.parentElement) {{
+      box = document.createElement('div');
+      box.id = 'agent-mention-suggestions';
+      box.className = 'agent-mention-suggestions';
+      input.parentElement.appendChild(box);
+    }}
+    return box;
+  }}
+  function currentMentionQuery(text, position) {{
+    const left = String(text || '').slice(0, position);
+    const match = left.match(/(^|\\s)@([a-zA-Z0-9_-]*)$/);
+    return match ? match[2] : null;
+  }}
+  function renderMentionSuggestions(input) {{
+    const box = ensureMentionSuggestBox(input);
+    if (!box || !input) return;
+    const query = currentMentionQuery(input.value, input.selectionStart || input.value.length);
+    if (query === null) {{
+      box.style.display = 'none';
+      box.innerHTML = '';
+      return;
+    }}
+    const lower = query.toLowerCase();
+    const matches = activeEmployeeOptions()
+      .filter(emp => emp.id.toLowerCase().includes(lower) || emp.name.toLowerCase().includes(lower))
+      .slice(0, 8);
+    if (!matches.length) {{
+      box.innerHTML = `<div class="mention-empty">没有匹配员工。${{escapeHtml(collaborationHelpText())}}</div>`;
+      box.style.display = 'block';
+      return;
+    }}
+    box.innerHTML = matches.map((emp, index) => `
+      <button type="button" class="mention-option ${{index === 0 ? 'active' : ''}}" data-agent="${{escapeHtml(emp.id)}}">
+        <span>@${{escapeHtml(emp.id)}}</span>
+        <small>${{escapeHtml(emp.name)}} · ${{escapeHtml(emp.role || emp.runtime || 'agent')}}</small>
+      </button>
+    `).join('');
+    box.style.display = 'block';
+  }}
+  function insertMention(input, agentId) {{
+    const position = input.selectionStart || input.value.length;
+    const left = input.value.slice(0, position);
+    const right = input.value.slice(position);
+    const replaced = left.replace(/(^|\\s)@([a-zA-Z0-9_-]*)$/, `$1@${{agentId}} `);
+    input.value = replaced + right;
+    const nextPos = replaced.length;
+    input.focus();
+    input.setSelectionRange(nextPos, nextPos);
+    renderMentionSuggestions(input);
+  }}
+  function bindMentionAutocomplete() {{
+    if (window.agentMentionAutocompleteBound) return;
+    window.agentMentionAutocompleteBound = true;
+    const input = document.getElementById('chat-input-field');
+    if (!input) return;
+    ensureMentionSuggestBox(input);
+    input.addEventListener('input', () => renderMentionSuggestions(input));
+    input.addEventListener('keyup', () => renderMentionSuggestions(input));
+    input.addEventListener('blur', () => setTimeout(() => {{
+      const box = document.getElementById('agent-mention-suggestions');
+      if (box) box.style.display = 'none';
+    }}, 150));
+    input.addEventListener('keydown', (event) => {{
+      const box = document.getElementById('agent-mention-suggestions');
+      if (event.key === 'Tab' && box && box.style.display !== 'none') {{
+        const option = box.querySelector('.mention-option.active, .mention-option');
+        if (option) {{
+          event.preventDefault();
+          insertMention(input, option.dataset.agent || '');
+        }}
+      }}
+    }});
+    document.addEventListener('mousedown', (event) => {{
+      const option = event.target && event.target.closest ? event.target.closest('.mention-option') : null;
+      if (!option) return;
+      event.preventDefault();
+      insertMention(input, option.dataset.agent || '');
+    }});
   }}
   function getActiveConversationId() {{
     if (window.activeThreadId) return window.activeThreadId;
@@ -1419,9 +1573,10 @@ def inject_advanced_dashboard(template: str, summary: dict, *, db_path: Path, ap
         conversation = upsertConversationFromApi(result);
       }} else {{
       const currentThreadId = getActiveConversationId();
-      const current = (getDashboardSummary().conversations || []).find(item => item.id === currentThreadId) || {{id: currentThreadId, messages: []}};
+      const current = (getDashboardSummary().conversations || []).find(item => item.id === currentThreadId);
         if (!current) {{
           companyApiLog('ERROR', 'Please select a conversation thread first, or @ one or more active employees.', 'error');
+          guideCollaborationAfterFailure('请选择会话或 @ 员工。');
           return;
         }}
         const result = await companyApiPost(`/v1/conversations/${{encodeURIComponent(current.id)}}/reply`, {{
@@ -1441,6 +1596,7 @@ def inject_advanced_dashboard(template: str, summary: dict, *, db_path: Path, ap
       companyApiLog('SYSTEM', `Conversation message recorded: ${{conversation ? conversation.id : 'unknown'}}`, 'success');
     }} catch (err) {{
       companyApiLog('ERROR', `Conversation send failed: ${{err.message}}`, 'error');
+      guideCollaborationAfterFailure('发送失败，必须反馈给发起人并给出下一步。');
     }}
   }}
   window.sendChatMessage = realSendChatMessage;
@@ -1572,6 +1728,7 @@ def inject_advanced_dashboard(template: str, summary: dict, *, db_path: Path, ap
   document.addEventListener('DOMContentLoaded', () => {{
     window.sendChatMessage = realSendChatMessage;
     bindChatControlButtons();
+    bindMentionAutocomplete();
     document.getElementById('chat-join-btn')?.addEventListener('click', (event) => {{
       event.preventDefault();
       joinActiveConversation();

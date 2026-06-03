@@ -27,6 +27,9 @@ Claude is an analyst/review employee. Prefer bounded analysis, docs, and review 
 - `--execute` runs `claude -p <prompt> --no-session-persistence --output-format text`.
 - Default permission mode is `default`; require explicit `--permission-mode` for anything else.
 - Use Claude for analysis, docs, review, code understanding, and second opinions; code-changing tasks need scoped workspace and evidence.
+- Every employee request must get at least one ACK or blocker reply to the sender.
+- On failure, return status, blocker, evidence path, and next action; if collaboration helps, suggest active `@agent` options.
+- Human-facing requests must be routed back to the requesting agent so the human receives the result.
 
 ## Blocked Cases
 

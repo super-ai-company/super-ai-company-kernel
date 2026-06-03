@@ -241,7 +241,15 @@ def classify_employee(employee: dict, kernel_root: Path) -> dict:
             "default_reply_target": "",
             "session_key": "" if is_human else f"agent:{runtime_agent_id}:<source>",
             "direct_status": "not-worker" if is_human else ("candidate" if status != "blocked" else "blocked"),
+            "ack_required": True,
+            "failure_feedback_required": True,
             "pending_inbox_messages": pending_inbox_messages,
+        },
+        "coordination": {
+            "closed_loop_required": True,
+            "record_only_is_not_ack": True,
+            "human_notification_required": True,
+            "collaboration_trigger": "@agent",
         },
         "routing": {"active": [], "candidate": [], "blocked": missing},
         "evidence": evidence,
@@ -267,6 +275,14 @@ def main() -> int:
         "discovered_candidates": [],
         "apply_results": [],
         "blocked": [],
+        "coordination": {
+            "closed_loop_required": True,
+            "ack_required": True,
+            "failure_feedback_required": True,
+            "record_only_is_not_ack": True,
+            "human_notification_required": True,
+            "collaboration_trigger": "@agent",
+        },
     }
     roots = [root for root in [openclaw_root, kernel_root] if root]
     seen = set()

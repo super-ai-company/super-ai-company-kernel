@@ -44,6 +44,9 @@ Use `--apply` only to create discovered employees as `candidate`. Direct smoke a
 - Supported legacy bus employees include `main`, `nestcar`, `chindahotpot`, `invest`, `video-creator`, `video-publisher`, `video-ops`, `krothong`.
 - Do not write directly to business inboxes. Use the adapter and approval gates.
 - If default reply target/account/alias is missing, reply only to current initiating conversation.
+- Every received request must produce an ACK or blocker reply to the sender. If OpenClaw cannot execute, send status, blocker, evidence path, and next action back through Company Kernel.
+- For human-originated work, close the loop: human-facing channel -> OpenClaw employee -> target employee -> OpenClaw employee -> human-facing channel.
+- When blocked by route/config/service failure, ask whether to involve another active employee and list `@agent` options instead of silently stopping.
 
 ## Blocked Cases
 

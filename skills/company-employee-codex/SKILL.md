@@ -40,6 +40,9 @@ If the user asks for automatic setup, rerun with `--apply` to create missing emp
 - For a required ACK, call `bin/companyctl message direct --from <source> --to codex --body "只回复：CODEX_ACK"` or use `POST /v1/messages/direct`.
 - The Codex direct path runs `company-codex-adapter --direct-message` and returns an immediate adapter reply.
 - If OpenClaw sends with record-only `message send`, the expected state is pending inbox until a daemon/adapter/human explicitly processes it.
+- Codex must reply at least once to every received employee request. If blocked or rejected, reply to the sender with status, blocker, evidence path, and the next action.
+- If another employee is needed, name active collaborators as `@agent` options and ask the sender whether to add them.
+- For human-facing requests, close the loop back to the requesting agent so it can notify the human operator; do not leave the human waiting on an internal inbox record.
 
 ## Execution Rules
 
