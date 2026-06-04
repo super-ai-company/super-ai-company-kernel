@@ -1134,7 +1134,20 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual(0, code, created)
         code, created = run_cli("employee", "create", "--id", "antigravity", "--name", "Antigravity", "--role", "developer", "--runtime", "antigravity", "--workspace", str(self.root / "workspace" / "antigravity"))
         self.assertEqual(0, code, created)
-        code, verified = run_cli("employee", "verify-direct", "--id", "antigravity", "--from", "main", "--rounds", "2", "--activate")
+        calls = []
+
+        def fake_run(cmd, cwd=None, text=None, capture_output=None, timeout=None):
+            calls.append(cmd)
+
+            class Result:
+                returncode = 0
+                stdout = json.dumps({"ok": False, "agent": "antigravity", "direct_message": True, "reply": "ANTIGRAVITY_DIRECT_OK", "activation_eligible": False})
+                stderr = ""
+
+            return Result()
+
+        with mock.patch.object(companyctl.subprocess, "run", side_effect=fake_run):
+            code, verified = run_cli("employee", "verify-direct", "--id", "antigravity", "--from", "main", "--rounds", "2", "--activate")
         self.assertEqual(1, code, verified)
         self.assertFalse(verified["ok"])
         self.assertFalse(verified["activation_allowed"])
@@ -1142,6 +1155,35 @@ class CompanyKernelCoreTest(unittest.TestCase):
         code, shown = run_cli("employee", "show", "antigravity")
         self.assertEqual(0, code, shown)
         self.assertEqual("candidate", shown["employee"]["status"])
+
+    def test_antigravity_cli_direct_rounds_can_activate_employee(self) -> None:
+        code, created = run_cli("employee", "create", "--id", "main", "--name", "main", "--role", "operator", "--runtime", "openclaw", "--workspace", str(self.root / "workspace" / "main"))
+        self.assertEqual(0, code, created)
+        code, created = run_cli("employee", "create", "--id", "antigravity", "--name", "Antigravity", "--role", "developer", "--runtime", "antigravity", "--workspace", str(self.root / "workspace" / "antigravity"))
+        self.assertEqual(0, code, created)
+
+        def fake_run(cmd, cwd=None, text=None, capture_output=None, timeout=None):
+            expected = ""
+            if "--direct-message" in cmd:
+                body = cmd[cmd.index("--direct-message") + 1]
+                expected = body.rsplit(" ", 1)[-1]
+
+            class Result:
+                returncode = 0
+                stdout = json.dumps({"ok": True, "agent": "antigravity", "direct_message": True, "reply": expected, "activation_eligible": True})
+                stderr = ""
+
+            return Result()
+
+        with mock.patch.object(companyctl.subprocess, "run", side_effect=fake_run):
+            code, verified = run_cli("employee", "verify-direct", "--id", "antigravity", "--from", "main", "--rounds", "3", "--activate")
+        self.assertEqual(0, code, verified)
+        self.assertTrue(verified["ok"])
+        self.assertEqual(3, verified["rounds_completed"])
+        self.assertTrue(verified["activated"])
+        code, shown = run_cli("employee", "show", "antigravity")
+        self.assertEqual(0, code, shown)
+        self.assertEqual("active", shown["employee"]["status"])
 
     def test_task_submit_rejects_candidate_employee(self) -> None:
         code, created = run_cli("employee", "create", "--id", "main", "--name", "main", "--role", "operator", "--runtime", "openclaw", "--workspace", str(self.root / "workspace" / "main"))
@@ -3491,7 +3533,7 @@ class CompanyKernelCoreTest(unittest.TestCase):
         )
         self.assertEqual(code, 0, employee)
         captured = io.StringIO()
-        with contextlib.redirect_stdout(captured):
+        with mock.patch.object(antigravity_adapter, "run_agy_print", return_value=(127, "", "agy command not found")), contextlib.redirect_stdout(captured):
             code = antigravity_adapter.main(
                 [
                     "--agent",
@@ -3505,11 +3547,13 @@ class CompanyKernelCoreTest(unittest.TestCase):
                 ]
             )
         result = json.loads(captured.getvalue())
-        self.assertEqual(0, code, result)
+        self.assertEqual(1, code, result)
+        self.assertFalse(result["ok"])
         self.assertEqual("ANTIGRAVITY_BRIEF_OK", result["reply"])
         self.assertTrue(Path(result["brief"]).exists())
         self.assertTrue(Path(result["report"]).exists())
         self.assertTrue(result["blocked_execution"])
+        self.assertFalse(result["activation_eligible"])
         self.assertTrue(result["status_delivery"]["ok"], result)
         code, main_messages = run_cli("message", "list", "--agent", "main")
         self.assertEqual(0, code, main_messages)

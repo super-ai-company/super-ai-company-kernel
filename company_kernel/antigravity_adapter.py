@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import shutil
 import sqlite3
 import subprocess
 from datetime import datetime, timezone
@@ -11,6 +12,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 DB_PATH = ROOT / "company.sqlite"
 APP_PATH = Path("/Applications/Antigravity.app")
+AGY_COMMAND = "agy"
 
 
 def now() -> str:
@@ -84,6 +86,14 @@ def direct_reply_text(message: str) -> str:
     return "ANTIGRAVITY_DIRECT_ACK"
 
 
+def run_agy_print(message: str, timeout: int) -> tuple[int, str, str]:
+    command = shutil.which(AGY_COMMAND)
+    if not command:
+        return 127, "", "agy command not found"
+    cp = subprocess.run([command, "--print", message, "--print-timeout", f"{timeout}s"], cwd=str(ROOT), text=True, capture_output=True, timeout=timeout + 10)
+    return cp.returncode, cp.stdout.strip(), cp.stderr.strip()
+
+
 def write_direct_brief(agent: str, source: str, session_key: str, message: str, reply: str) -> dict[str, Path]:
     artifact = direct_paths(agent)
     artifact["brief"].write_text(
@@ -122,10 +132,10 @@ def write_direct_brief(agent: str, source: str, session_key: str, message: str, 
                 "source": source,
                 "session_key": session_key,
                 "reply": reply,
-                "activation_eligible": False,
+                "activation_eligible": True,
                 "brief": str(artifact["brief"]),
                 "created_at": now(),
-                "next_action": "Antigravity or a human GUI worker must implement or return blocker evidence.",
+                "next_action": "Antigravity CLI direct reply verified; implementation tasks still require evidence or blocker return.",
             },
             ensure_ascii=False,
             indent=2,
@@ -260,35 +270,39 @@ def process(args: argparse.Namespace) -> int:
         return 1
     if args.direct_message:
         run_companyctl(["heartbeat", "--agent", args.agent])
-        reply = direct_reply_text(args.direct_message)
+        agy_code, agy_reply, agy_err = run_agy_print(args.direct_message, args.timeout)
+        reply = agy_reply or direct_reply_text(args.direct_message)
         artifact = write_direct_brief(args.agent, args.direct_source, args.direct_session_key, args.direct_message, reply)
-        blocked_status = status_reply_text(
-            status="blocked",
-            current_action="Antigravity GUI brief recorded; autonomous GUI execution not verified",
+        agy_ok = agy_code == 0 and bool(agy_reply)
+        status_body = status_reply_text(
+            status="working" if agy_ok else "blocked",
+            current_action="Antigravity CLI direct reply verified" if agy_ok else "Antigravity GUI brief recorded; autonomous GUI execution not verified",
             changed_files=str(artifact["brief"]),
             verification_run=str(artifact["report"]),
-            blocker="Antigravity direct channel has ACK/brief only; GUI implementation requires evidence return path",
+            blocker="-" if agy_ok else "Antigravity direct channel has ACK/brief only; GUI implementation requires evidence return path",
             eta="-",
         )
-        status_delivery = send_source_status(args.agent, args.direct_source, blocked_status)
+        status_delivery = send_source_status(args.agent, args.direct_source, status_body)
         emit(
             {
-                "ok": True,
+                "ok": agy_ok,
                 "processed": 0,
                 "agent": args.agent,
                 "direct_message": True,
                 "source": args.direct_source,
                 "session_key": args.direct_session_key,
                 "reply": reply,
-                "activation_eligible": False,
+                "activation_eligible": agy_ok,
                 "brief": str(artifact["brief"]),
                 "report": str(artifact["report"]),
                 "status_delivery": status_delivery,
-                "blocked_execution": True,
-                "blocker": "Antigravity direct channel can prepare GUI brief and ACK, but GUI implementation still requires Antigravity app/human evidence.",
+                "agy_exit_code": agy_code,
+                "agy_stderr": agy_err[-1000:],
+                "blocked_execution": not agy_ok,
+                "blocker": "" if agy_ok else "Antigravity direct channel can prepare GUI brief and ACK, but GUI implementation still requires Antigravity app/human evidence.",
             }
         )
-        return 0
+        return 0 if agy_ok else 1
     if args.complete or args.block:
         return return_result(args, emp)
     if not APP_PATH.exists():
@@ -331,6 +345,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--direct-message", default="", help="record and acknowledge a direct GUI request")
     parser.add_argument("--direct-source", default="", help="source employee for direct GUI request")
     parser.add_argument("--direct-session-key", default="", help="session key for direct GUI request")
+    parser.add_argument("--timeout", type=int, default=120, help="timeout seconds for direct CLI replies")
     result = parser.add_mutually_exclusive_group()
     result.add_argument("--complete", action="store_true", help="return completed GUI result to Company Kernel")
     result.add_argument("--block", action="store_true", help="return blocked GUI result to Company Kernel")
