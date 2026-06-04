@@ -8,6 +8,8 @@
 
 第一版最短使用路径见：[docs/FIRST_RELEASE_RUNBOOK.md](docs/FIRST_RELEASE_RUNBOOK.md)
 
+本地环境、隐藏目录和 Skill 启用规范见：[docs/LOCAL_ENVIRONMENT_AND_SKILLS.md](docs/LOCAL_ENVIRONMENT_AND_SKILLS.md)
+
 ## Quick Start
 
 ```bash
