@@ -1382,6 +1382,35 @@ class CompanyKernelCoreTest(unittest.TestCase):
 <html><body>
 <div>API Gateway: <span id="db-path-label">https://gateway.company.internal</span></div>
 <select><option value="openclaw">OpenClaw Engine</option><option value="hermes">Hermes CLI Engine</option></select>
+<style>
+    .employee-card-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+    }
+    .chat-view {
+      display: flex;
+      flex-direction: column;
+      height: 100%;
+    }
+</style>
+<div class="employees-grid" id="employees-cards-container">
+  <!-- Populated by JS -->
+</div>
+<div class="chat-layout">
+  <div class="chat-sidebar">
+    <div class="chat-threads-title" data-i18n="chat_threads_title">Conversations</div>
+    <div id="chat-threads-list"></div>
+  </div>
+  <div class="chat-view">
+    <div class="chat-header">
+      <h3 id="chat-header-title">No Conversation Selected</h3>
+      <span class="chat-header-participants" id="chat-header-members">Participants: -</span>
+    </div>
+    <div id="chat-messages-container"></div>
+    <div class="chat-input-bar"><input id="chat-input-field"><button onclick="sendChatMessage()">Send</button></div>
+  </div>
+</div>
 <script>
   window.kernelSummary = {"counts":{"employees":1},"employees":[{"id":"old"}]};
   window.dbPath = "/Users/shift/Documents/anti/company.sqlite";
@@ -1402,6 +1431,22 @@ class CompanyKernelCoreTest(unittest.TestCase):
     } catch(e) {
       return isoStr;
     }
+  }
+  function populateEmployees(summary) {
+    return summary.employees.filter(emp => emp.status !== 'archived').map(emp => {
+      const skills = emp.skills || '';
+      const skillsPills = skills ? skills.split(',').map(s => `<span class="capability-tag" style="font-size: 9px; padding: 2px 5px; margin-top: 4px;">${escapeHtml(s.trim())}</span>`).join(' ') : '';
+      return `
+        <div class="employee-card">
+          <div class="employee-card-header">
+            <div class="employee-identity">${escapeHtml(emp.name || emp.id)}</div>
+            <div><span class="badge ${emp.heartbeat_status || ''}">${emp.heartbeat_status || ''}</span></div>
+          </div>
+          <div style="display: flex; flex-wrap: wrap; gap: 4px; margin-top: 10px; border-top: 1px solid rgba(255,255,255,0.05); padding-top: 8px;">
+            ${skillsPills}
+          </div>
+        </div>`;
+    }).join('');
   }
   document.getElementById('db-path-label').innerText = isSimulationMode ? 'simulation://gateway.company.internal' : 'https://gateway.company.internal';
 </script>
@@ -1445,6 +1490,18 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertIn("agent-mention-suggestions", html)
         self.assertIn("collaborationHelpText", html)
         self.assertIn("是否需要其他员工协助", html)
+        self.assertIn("kernel-form-modal", html)
+        self.assertIn("openKernelFormModal('direct'", html)
+        self.assertIn("openKernelFormModal('conversation'", html)
+        self.assertIn("employee-card-actions", html)
+        self.assertIn("employee-card-menu", html)
+        self.assertIn("toggleEmployeeActionMenu", html)
+        self.assertIn("Send Message", html)
+        self.assertIn("prefillChatMention", html)
+        self.assertIn("Chat Hub ready for @", html)
+        self.assertIn("grid-template-columns: minmax(0, 1fr) 34px", html)
+        self.assertNotIn("prompt('Participants, comma-separated", html)
+        self.assertNotIn("prompt(`Source employee for direct message", html)
         self.assertIn("dashboard-layout-fix", html)
         self.assertIn("showApprovalDetails", html)
         self.assertIn("refreshGovernanceTables", html)
