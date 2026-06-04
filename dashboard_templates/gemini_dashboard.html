@@ -883,6 +883,11 @@
       overflow: hidden;
     }
 
+    #tab-chat-hub .chat-layout {
+      height: calc(100vh - 120px) !important;
+      min-height: 580px;
+    }
+
     .chat-sidebar {
       background: rgba(13, 17, 33, 0.45);
       border-right: 1px solid var(--border-color);
@@ -1845,6 +1850,9 @@
       <button class="nav-btn active" data-tab="overview" onclick="switchTab('overview')" data-i18n="nav_overview">
         <i class="fa-solid fa-gauge"></i> Overview
       </button>
+      <button class="nav-btn" data-tab="chat-hub" onclick="switchTab('chat-hub')" data-i18n="nav_chat_hub">
+        <i class="fa-solid fa-comments"></i> Chat Hub
+      </button>
       <button class="nav-btn" data-tab="tasks" onclick="switchTab('tasks')" data-i18n="nav_tasks">
         <i class="fa-solid fa-list-check"></i> Tasks & Workflows
       </button>
@@ -2224,50 +2232,50 @@
         </div>
       </div>
 
-      <!-- Events Tab -->
-      <div id="tab-events" class="tab-pane">
-        <div class="section-card">
-          <h2 data-i18n="chat_hub_title"><i class="fa-solid fa-message"></i> AI Conversation Chat Hub</h2>
-          <div class="chat-layout">
-            <div class="chat-sidebar" id="chat-threads-sidebar">
-              <div class="chat-threads-title" data-i18n="chat_threads_title">Conversations</div>
-              <div class="chat-toolbar">
-                <button id="chat-create-btn" class="chat-tool-btn" onclick="window.openNewConversationComposer()"><i class="fa-solid fa-plus"></i> New</button>
-                <button id="chat-refresh-btn" class="chat-tool-btn" onclick="window.refreshChatHub()"><i class="fa-solid fa-rotate"></i> Refresh</button>
+      <!-- Chat Hub Tab -->
+      <div id="tab-chat-hub" class="tab-pane">
+        <div class="chat-layout">
+          <div class="chat-sidebar" id="chat-threads-sidebar">
+            <div class="chat-threads-title" data-i18n="chat_threads_title">Conversations</div>
+            <div class="chat-toolbar">
+              <button id="chat-create-btn" class="chat-tool-btn" onclick="window.openNewConversationComposer()"><i class="fa-solid fa-plus"></i> New</button>
+              <button id="chat-refresh-btn" class="chat-tool-btn" onclick="window.refreshChatHub()"><i class="fa-solid fa-rotate"></i> Refresh</button>
+            </div>
+            <div id="chat-threads-list">
+              <!-- Threads lists by JS -->
+            </div>
+          </div>
+          <div class="chat-view" id="chat-view-container">
+            <div class="chat-intercept-banner" id="chat-intercept-banner" style="display: none;">
+              <div>
+                <i class="fa-solid fa-triangle-exclamation"></i> <span id="intercept-status-text">Agents conversing autonomously (Read-Only)</span>
               </div>
-              <div id="chat-threads-list">
-                <!-- Threads lists by JS -->
+              <button id="intercept-action-btn" class="intercept-btn" onclick="toggleInterceptionMode()">
+                <i class="fa-solid fa-user-lock"></i> Intercept
+              </button>
+            </div>
+            <div class="chat-header">
+              <div class="chat-header-main">
+                <div>
+                  <h3 id="chat-header-title">No Conversation Selected</h3>
+                  <span class="chat-header-participants" id="chat-header-members">Participants: -</span>
+                </div>
+                <button id="chat-join-btn" class="chat-tool-btn" onclick="window.joinActiveConversation()"><i class="fa-solid fa-user-plus"></i> Insert Owner</button>
               </div>
             </div>
-            <div class="chat-view" id="chat-view-container">
-              <div class="chat-intercept-banner" id="chat-intercept-banner" style="display: none;">
-                <div>
-                  <i class="fa-solid fa-triangle-exclamation"></i> <span id="intercept-status-text">Agents conversing autonomously (Read-Only)</span>
-                </div>
-                <button id="intercept-action-btn" class="intercept-btn" onclick="toggleInterceptionMode()">
-                  <i class="fa-solid fa-user-lock"></i> Intercept
-                </button>
-              </div>
-              <div class="chat-header">
-                <div class="chat-header-main">
-                  <div>
-                    <h3 id="chat-header-title">No Conversation Selected</h3>
-                    <span class="chat-header-participants" id="chat-header-members">Participants: -</span>
-                  </div>
-                  <button id="chat-join-btn" class="chat-tool-btn" onclick="window.joinActiveConversation()"><i class="fa-solid fa-user-plus"></i> Insert Owner</button>
-                </div>
-              </div>
-              <div class="chat-messages" id="chat-messages-container">
-                <!-- Conversation dialogues by JS -->
-              </div>
-              <div class="chat-input-bar">
-                <input type="text" id="chat-input-field" placeholder="Type a message to the agent conversation..." onkeydown="if(event.key==='Enter') sendChatMessage()" data-i18n="chat_placeholder">
-                <button class="chat-send-btn" onclick="sendChatMessage()" data-i18n="chat_send"><i class="fa-solid fa-paper-plane"></i> Send</button>
-              </div>
+            <div class="chat-messages" id="chat-messages-container">
+              <!-- Conversation dialogues by JS -->
+            </div>
+            <div class="chat-input-bar">
+              <input type="text" id="chat-input-field" placeholder="Type a message to the agent conversation..." onkeydown="if(event.key==='Enter') sendChatMessage()" data-i18n="chat_placeholder">
+              <button class="chat-send-btn" onclick="sendChatMessage()" data-i18n="chat_send"><i class="fa-solid fa-paper-plane"></i> Send</button>
             </div>
           </div>
         </div>
+      </div>
 
+      <!-- Events Tab -->
+      <div id="tab-events" class="tab-pane">
         <div class="section-card">
           <h2 data-i18n="adapter_runs_title"><i class="fa-solid fa-microchip"></i> Adapter Runs History</h2>
           <div class="table-container">
@@ -2765,7 +2773,7 @@
 
   // Safe Dialog Input Transitions
   window.routeDirectMessageToChat = async function(agentId) {
-    switchTab('events');
+    switchTab('chat-hub');
     const summary = getDashboardSummary();
     let thread = (summary.conversations || []).find(c => {
       const parts = conversationParticipants(c);
@@ -3386,7 +3394,7 @@
     if (window.mermaid && (tabId === 'tasks' || tabId === 'projects')) {
       renderMermaidFlowcharts();
     }
-    if (tabId === 'events') {
+    if (tabId === 'events' || tabId === 'chat-hub') {
       populateChatHub();
     }
     if (tabId === 'telemetry') {
@@ -4172,6 +4180,7 @@
   const TRANSLATIONS = {
     en: {
       "nav_overview": "Overview",
+      "nav_chat_hub": "Chat Hub",
       "nav_tasks": "Tasks & Workflows",
       "nav_projects": "Projects & Plans",
       "nav_employees": "AI Employees",
@@ -4234,6 +4243,7 @@
     },
     zh: {
       "nav_overview": "系统概览",
+      "nav_chat_hub": "会话中心",
       "nav_tasks": "任务与工作流",
       "nav_projects": "项目与计划",
       "nav_employees": "AI 雇员",
