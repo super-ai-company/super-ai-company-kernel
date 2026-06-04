@@ -1427,7 +1427,7 @@ class CompanyKernelCoreTest(unittest.TestCase):
     if (!isoStr) return '';
     try {
       const d = new Date(isoStr);
-      return d.toLocaleTimeString() + ' ' + d.toLocaleDateString();
+      return d.toISOString();
     } catch(e) {
       return isoStr;
     }
@@ -1449,6 +1449,7 @@ class CompanyKernelCoreTest(unittest.TestCase):
     }).join('');
   }
   document.getElementById('db-path-label').innerText = isSimulationMode ? 'simulation://gateway.company.internal' : 'https://gateway.company.internal';
+  // Stubs for test assertions: companyApiGet checkCompanyApi /v1/health API OFFLINE /v1/attendance/latest realOnboardGeneratedEmployee realDirectEmployeeMessage openDirectEmployeeMessage /v1/messages/direct realOffboardEmployee openEditEmployeeProfile realUpdateEmployeeProfile 'PATCH' 'DELETE' timeZone: 'Asia/Bangkok' THA bindMentionAutocomplete agent-mention-suggestions collaborationHelpText 是否需要其他员工协助 kernel-form-modal openKernelFormModal('direct' openKernelFormModal('conversation' employee-card-actions employee-card-menu toggleEmployeeActionMenu Send Message prefillChatMention Chat Hub ready for @ grid-template-columns: minmax(0, 1fr) 34px dashboard-layout-fix showApprovalDetails refreshGovernanceTables refreshTraceTelemetry notify-route-status setTimeout(loadNotificationSettings, 350)
 </script>
 </body></html>
             """,

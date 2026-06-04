@@ -1,0 +1,4323 @@
+<!doctype html>
+<html lang="zh">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Company Kernel Operations Console</title>
+  <!-- Outfit & Inter & Fira Code Fonts -->
+  <link href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500&family=Inter:wght@300;400;500;600;700&family=Outfit:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <!-- FontAwesome Icons -->
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+  
+  <style>
+    :root {
+      --bg-primary: #070913;
+      --bg-secondary: rgba(13, 17, 33, 0.75);
+      --bg-card: rgba(22, 28, 54, 0.45);
+      --bg-card-hover: rgba(29, 37, 71, 0.65);
+      --border-color: rgba(99, 102, 241, 0.15);
+      --border-glow: rgba(99, 102, 241, 0.4);
+      --text-primary: #f3f4f6;
+      --text-secondary: #a5b4fc;
+      --text-muted: #64748b;
+      
+      --color-green: #10b981;
+      --color-green-glow: rgba(16, 185, 129, 0.15);
+      --color-amber: #f59e0b;
+      --color-amber-glow: rgba(245, 158, 11, 0.15);
+      --color-rose: #ef4444;
+      --color-rose-glow: rgba(239, 68, 68, 0.15);
+      --color-blue: #3b82f6;
+      --color-blue-glow: rgba(59, 130, 246, 0.15);
+      --color-indigo: #818cf8;
+      --color-indigo-glow: rgba(129, 140, 248, 0.2);
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    
+    body {
+      background: var(--bg-primary);
+      color: var(--text-primary);
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      min-height: 100vh;
+      overflow-x: hidden;
+      display: flex;
+    }
+
+    /* App container sidebar layout */
+    .app-container {
+      display: flex;
+      width: 100vw;
+      min-height: 100vh;
+    }
+
+    /* Sidebar Panel */
+    .sidebar {
+      width: 280px;
+      background: rgba(9, 11, 23, 0.95);
+      border-right: 1px solid var(--border-color);
+      display: flex;
+      flex-direction: column;
+      padding: 24px;
+      position: fixed;
+      height: 100vh;
+      z-index: 10;
+      backdrop-filter: blur(20px);
+    }
+
+    .logo-container {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 36px;
+      font-family: 'Outfit', sans-serif;
+    }
+
+    .logo-icon {
+      font-size: 26px;
+      background: linear-gradient(135deg, var(--color-indigo), var(--color-blue));
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      filter: drop-shadow(0 0 12px var(--color-indigo-glow));
+      animation: heartbeat 3s infinite;
+    }
+
+    .logo-text {
+      font-size: 19px;
+      font-weight: 800;
+      letter-spacing: 0.5px;
+      background: linear-gradient(to right, #ffffff, #818cf8);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+
+    .nav-menu {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      flex-grow: 1;
+    }
+
+    .nav-btn {
+      background: transparent;
+      border: 1px solid transparent;
+      color: var(--text-secondary);
+      padding: 12px 16px;
+      border-radius: 10px;
+      text-align: left;
+      font-size: 14px;
+      font-weight: 500;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      transition: all 0.2s ease-in-out;
+    }
+
+    .nav-btn i {
+      width: 20px;
+      font-size: 16px;
+      opacity: 0.8;
+    }
+
+    .nav-btn:hover {
+      background: rgba(129, 140, 248, 0.05);
+      color: #fff;
+      border-color: rgba(99, 102, 241, 0.1);
+    }
+
+    .nav-btn.active {
+      background: var(--bg-card);
+      color: #fff;
+      border-color: var(--border-glow);
+      box-shadow: 0 0 15px rgba(99, 102, 241, 0.15);
+      position: relative;
+    }
+
+    .nav-btn.active::before {
+      content: '';
+      position: absolute;
+      left: 0;
+      top: 25%;
+      height: 50%;
+      width: 3px;
+      background: var(--color-indigo);
+      border-radius: 0 4px 4px 0;
+      box-shadow: 0 0 10px var(--color-indigo);
+    }
+
+    .sidebar-footer {
+      border-top: 1px solid var(--border-color);
+      padding-top: 20px;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+
+    .auto-refresh-container {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      font-size: 12px;
+      color: var(--text-secondary);
+    }
+
+    .refresh-mode-btn {
+      background: linear-gradient(135deg, #4f46e5, #3b82f6);
+      border: none;
+      color: #fff;
+      padding: 10px;
+      border-radius: 8px;
+      cursor: pointer;
+      font-size: 13px;
+      font-weight: 600;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      box-shadow: 0 4px 12px rgba(79, 70, 229, 0.3);
+      transition: all 0.2s;
+    }
+
+    .refresh-mode-btn:hover {
+      transform: translateY(-1px);
+      box-shadow: 0 6px 16px rgba(79, 70, 229, 0.45);
+    }
+
+    /* Switch toggle styling */
+    .switch {
+      position: relative;
+      display: inline-block;
+      width: 38px;
+      height: 20px;
+    }
+
+    .switch input { opacity: 0; width: 0; height: 0; }
+
+    .slider {
+      position: absolute;
+      cursor: pointer;
+      top: 0; left: 0; right: 0; bottom: 0;
+      background-color: #374151;
+      transition: .3s;
+      border-radius: 20px;
+    }
+
+    .slider:before {
+      position: absolute;
+      content: "";
+      height: 14px;
+      width: 14px;
+      left: 3px;
+      bottom: 3px;
+      background-color: white;
+      transition: .3s;
+      border-radius: 50%;
+    }
+
+    input:checked + .slider {
+      background-color: var(--color-indigo);
+    }
+
+    input:checked + .slider:before {
+      transform: translateX(18px);
+    }
+
+    .reload-btn {
+      background: rgba(255, 255, 255, 0.04);
+      border: 1px solid var(--border-color);
+      color: #fff;
+      padding: 10px;
+      border-radius: 8px;
+      cursor: pointer;
+      font-size: 12px;
+      font-weight: 500;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      transition: all 0.2s;
+    }
+
+    .reload-btn:hover {
+      background: rgba(255, 255, 255, 0.08);
+      border-color: rgba(99, 102, 241, 0.3);
+    }
+
+    /* Main Console panel */
+    .main-panel {
+      margin-left: 280px;
+      flex-grow: 1;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      min-width: 0;
+    }
+
+    .top-bar {
+      height: 80px;
+      border-bottom: 1px solid var(--border-color);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 40px;
+      background: rgba(9, 12, 25, 0.7);
+      backdrop-filter: blur(16px);
+      position: sticky;
+      top: 0;
+      z-index: 5;
+    }
+
+    .page-title h1 {
+      font-family: 'Outfit', sans-serif;
+      font-size: 22px;
+      font-weight: 800;
+      color: #fff;
+      letter-spacing: 0.5px;
+    }
+
+    .page-title p {
+      font-size: 11px;
+      color: var(--text-secondary);
+      margin-top: 4px;
+    }
+
+    .system-status {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 6px 14px;
+      border-radius: 999px;
+      font-size: 12px;
+      font-weight: 600;
+      background: rgba(255, 255, 255, 0.02);
+      border: 1px solid var(--border-color);
+    }
+
+    .system-status.normal {
+      border-color: rgba(16, 185, 129, 0.3);
+      color: var(--color-green);
+      box-shadow: 0 0 10px rgba(16, 185, 129, 0.05);
+    }
+    .system-status.attention {
+      border-color: rgba(245, 158, 11, 0.3);
+      color: var(--color-amber);
+      box-shadow: 0 0 10px rgba(245, 158, 11, 0.05);
+    }
+
+    .status-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      display: inline-block;
+    }
+
+    .system-status.normal .status-dot {
+      background: var(--color-green);
+      box-shadow: 0 0 8px var(--color-green);
+      animation: pulse 2s infinite;
+    }
+
+    .system-status.attention .status-dot {
+      background: var(--color-amber);
+      box-shadow: 0 0 8px var(--color-amber);
+      animation: pulse 2s infinite;
+    }
+
+    @keyframes pulse {
+      0% { transform: scale(0.95); opacity: 0.5; }
+      50% { transform: scale(1.1); opacity: 1; }
+      100% { transform: scale(0.95); opacity: 0.5; }
+    }
+
+    /* Content Layout Container */
+    .content-area {
+      padding: 40px;
+      flex-grow: 1;
+      max-width: 1400px;
+      width: 100%;
+      margin: 0 auto;
+      box-sizing: border-box;
+      min-height: calc(100vh - 80px);
+      overflow: visible;
+    }
+
+    .tab-pane {
+      display: none;
+      animation: fadeIn 0.3s ease-out;
+    }
+
+    .tab-pane.active {
+      display: flex;
+      flex-direction: column;
+      gap: 24px;
+      min-height: 1px;
+    }
+
+    @keyframes fadeIn {
+      from { opacity: 0; transform: translateY(12px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    /* Metrics Cards */
+    .metrics-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+      gap: 20px;
+      margin-bottom: 6px;
+    }
+
+    .metric-card {
+      background: var(--bg-card);
+      border: 1px solid var(--border-color);
+      border-radius: 14px;
+      padding: 20px;
+      position: relative;
+      overflow: hidden;
+      transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+    }
+
+    .metric-card:hover {
+      background: var(--bg-card-hover);
+      border-color: var(--border-glow);
+      transform: translateY(-2px);
+    }
+
+    .metric-card h3 {
+      font-size: 13px;
+      font-weight: 500;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+
+    .metric-card .value {
+      font-family: 'Outfit', sans-serif;
+      font-size: 30px;
+      font-weight: 800;
+      color: #fff;
+      margin-top: 10px;
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+    }
+
+    .metric-card i {
+      font-size: 20px;
+      opacity: 0.2;
+      color: var(--color-indigo);
+    }
+
+    /* Canvas / Network Map area styling */
+    .collaboration-canvas-container {
+      position: relative;
+      background: rgba(5, 7, 16, 0.9);
+      border: 1px solid var(--border-color);
+      border-radius: 16px;
+      height: 480px;
+      overflow: hidden;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      box-shadow: inset 0 0 40px rgba(0,0,0,0.8);
+    }
+
+    /* Grid overlay on background */
+    .canvas-grid-bg {
+      position: absolute;
+      top: 0; left: 0; width: 100%; height: 100%;
+      background-size: 40px 40px;
+      background-image: 
+        linear-gradient(to right, rgba(99, 102, 241, 0.03) 1px, transparent 1px),
+        linear-gradient(to bottom, rgba(99, 102, 241, 0.03) 1px, transparent 1px);
+      z-index: 1;
+    }
+
+    #network-svg {
+      position: absolute;
+      top: 0; left: 0; width: 100%; height: 100%;
+      pointer-events: none;
+      z-index: 2;
+    }
+
+    /* Draggable Nodes style */
+    .agent-node {
+      position: absolute;
+      width: 170px;
+      background: rgba(15, 23, 42, 0.85);
+      border: 1px solid var(--border-color);
+      border-radius: 12px;
+      padding: 12px;
+      z-index: 3;
+      cursor: grab;
+      user-select: none;
+      box-shadow: 0 10px 25px -5px rgba(0,0,0,0.6);
+      transition: border-color 0.2s, box-shadow 0.2s;
+      backdrop-filter: blur(8px);
+    }
+
+    .agent-node:active {
+      cursor: grabbing;
+      border-color: var(--color-indigo);
+      box-shadow: 0 0 15px var(--color-indigo-glow);
+    }
+
+    .agent-node-header {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .agent-node-avatar {
+      width: 28px;
+      height: 28px;
+      border-radius: 6px;
+      background: rgba(99, 102, 241, 0.1);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: var(--color-indigo);
+      font-size: 13px;
+    }
+
+    .agent-node-name {
+      font-family: 'Outfit', sans-serif;
+      font-size: 13px;
+      font-weight: 700;
+      color: #fff;
+    }
+
+    .agent-node-role {
+      font-size: 10px;
+      color: var(--text-muted);
+      margin-top: 4px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .agent-node-status {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-top: 10px;
+      font-size: 10px;
+      color: var(--text-secondary);
+    }
+
+    .node-pulse-dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+    }
+
+    .node-pulse-dot.alive { background: var(--color-green); box-shadow: 0 0 6px var(--color-green); }
+    .node-pulse-dot.stale { background: var(--color-amber); box-shadow: 0 0 6px var(--color-amber); }
+    .node-pulse-dot.missing { background: var(--color-rose); box-shadow: 0 0 6px var(--color-rose); }
+
+    /* SVGLines and anim paths */
+    .network-path {
+      fill: none;
+      stroke-width: 1.5;
+      transition: stroke-width 0.2s;
+    }
+    
+    .network-path.task {
+      stroke: var(--color-indigo);
+    }
+
+    .network-path.discuss {
+      stroke: var(--color-indigo);
+      stroke-dasharray: 4, 4;
+    }
+
+    .network-path.deadlock {
+      stroke: var(--color-rose) !important;
+      stroke-width: 2px;
+    }
+    
+    .network-path.blocked {
+      stroke: var(--color-amber) !important;
+      stroke-dasharray: 6, 4;
+    }
+
+    /* Dual Column Layout */
+    .dashboard-layout {
+      display: grid;
+      grid-template-columns: 1.3fr 1fr;
+      gap: 30px;
+    }
+
+    .section-card {
+      background: var(--bg-card);
+      border: 1px solid var(--border-color);
+      border-radius: 16px;
+      padding: 24px;
+      backdrop-filter: blur(12px);
+      box-shadow: 0 4px 30px rgba(0, 0, 0, 0.4);
+    }
+
+    .section-card h2 {
+      font-family: 'Outfit', sans-serif;
+      font-size: 16px;
+      font-weight: 600;
+      color: #fff;
+      margin-bottom: 20px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+      padding-bottom: 12px;
+    }
+
+    .section-card h2 i {
+      color: var(--color-indigo);
+    }
+
+    /* Real-time agent console stdout terminal */
+    .terminal-console {
+      background: #05070d;
+      border: 1px solid var(--border-color);
+      border-radius: 10px;
+      padding: 16px;
+      font-family: 'Fira Code', monospace;
+      font-size: 11px;
+      height: 250px;
+      overflow-y: auto;
+      color: #38bdf8;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      box-shadow: inset 0 0 15px rgba(0,0,0,0.9);
+    }
+
+    .terminal-line {
+      display: flex;
+      gap: 8px;
+    }
+
+    .terminal-time { color: var(--text-muted); }
+    .terminal-tag { color: var(--color-indigo); font-weight: 600; }
+    .terminal-success { color: var(--color-green); }
+    .terminal-error { color: var(--color-rose); }
+    .terminal-warn { color: var(--color-amber); }
+
+    /* Health check lists */
+    .health-list {
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+    }
+
+    .health-item {
+      background: rgba(255, 255, 255, 0.015);
+      border: 1px solid var(--border-color);
+      border-radius: 10px;
+      padding: 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .health-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    .health-title {
+      font-weight: 600;
+      font-size: 14px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .health-badge {
+      font-size: 10px;
+      padding: 3px 8px;
+      border-radius: 12px;
+      font-weight: 600;
+    }
+
+    .health-badge.ok {
+      background: var(--color-green-glow);
+      color: var(--color-green);
+    }
+
+    .health-badge.fail {
+      background: var(--color-rose-glow);
+      color: var(--color-rose);
+    }
+
+    .health-meta {
+      font-size: 12px;
+      color: var(--text-muted);
+      line-height: 1.4;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+
+    /* Common table styles */
+    .table-container {
+      overflow-x: auto;
+      margin-top: 10px;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      text-align: left;
+    }
+
+    th, td {
+      padding: 12px 16px;
+      font-size: 13px;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+      vertical-align: middle;
+    }
+
+    th {
+      font-weight: 600;
+      color: var(--text-muted);
+      background: rgba(255, 255, 255, 0.01);
+      text-transform: uppercase;
+      font-size: 11px;
+      letter-spacing: 0.5px;
+    }
+
+    tbody tr {
+      transition: background 0.15s;
+    }
+
+    tbody tr:hover {
+      background: rgba(255, 255, 255, 0.02);
+      cursor: pointer;
+    }
+
+    /* Pill/Badge styles */
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 4px 10px;
+      border-radius: 999px;
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: capitalize;
+    }
+
+    .badge.submitted { background: var(--color-blue-glow); color: var(--color-blue); }
+    .badge.claimed { background: var(--color-indigo-glow); color: var(--color-indigo); }
+    .badge.blocked { background: var(--color-amber-glow); color: var(--color-amber); }
+    .badge.completed { background: var(--color-green-glow); color: var(--color-green); }
+    
+    .badge.active { background: var(--color-green-glow); color: var(--color-green); }
+    .badge.pending { background: var(--color-amber-glow); color: var(--color-amber); }
+    .badge.approved { background: var(--color-green-glow); color: var(--color-green); }
+    .badge.denied { background: var(--color-rose-glow); color: var(--color-rose); }
+    
+    .badge.alive { background: var(--color-green-glow); color: var(--color-green); }
+    .badge.stale { background: var(--color-amber-glow); color: var(--color-amber); }
+    .badge.missing { background: var(--color-rose-glow); color: var(--color-rose); }
+
+    /* Interactive Filters & Search */
+    .controls-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 20px;
+      margin-bottom: 20px;
+      flex-wrap: wrap;
+    }
+
+    .search-wrapper {
+      position: relative;
+      flex-grow: 1;
+      max-width: 400px;
+    }
+
+    .search-wrapper i {
+      position: absolute;
+      left: 14px;
+      top: 50%;
+      transform: translateY(-50%);
+      color: var(--text-muted);
+      font-size: 14px;
+    }
+
+    .search-input {
+      width: 100%;
+      background: rgba(255, 255, 255, 0.03);
+      border: 1px solid var(--border-color);
+      border-radius: 8px;
+      padding: 10px 16px 10px 40px;
+      color: #fff;
+      font-size: 13px;
+      outline: none;
+      transition: all 0.2s;
+    }
+
+    .search-input:focus {
+      border-color: var(--color-indigo);
+      box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.15);
+      background: rgba(255, 255, 255, 0.05);
+    }
+
+    .filter-tabs {
+      display: flex;
+      gap: 6px;
+      background: rgba(255, 255, 255, 0.015);
+      border: 1px solid var(--border-color);
+      padding: 4px;
+      border-radius: 8px;
+    }
+
+    .filter-tab {
+      background: transparent;
+      border: none;
+      color: var(--text-secondary);
+      padding: 6px 12px;
+      font-size: 12px;
+      font-weight: 500;
+      border-radius: 6px;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+
+    .filter-tab:hover {
+      color: #fff;
+    }
+
+    .filter-tab.active {
+      background: var(--color-indigo);
+      color: #fff;
+    }
+
+    /* Kanban layout for tasks */
+    .kanban-board {
+      display: none;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 20px;
+      margin-top: 10px;
+      animation: fadeIn 0.3s;
+    }
+
+    .kanban-board.active {
+      display: grid;
+    }
+
+    .kanban-col {
+      background: rgba(13, 17, 33, 0.4);
+      border: 1px solid var(--border-color);
+      border-radius: 12px;
+      padding: 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      min-height: 400px;
+    }
+
+    .kanban-col-header {
+      font-family: 'Outfit', sans-serif;
+      font-size: 13px;
+      font-weight: 700;
+      color: #fff;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      border-bottom: 1px solid rgba(255,255,255,0.05);
+      padding-bottom: 10px;
+      margin-bottom: 4px;
+    }
+
+    .kanban-col-count {
+      font-size: 11px;
+      background: rgba(255,255,255,0.06);
+      padding: 2px 6px;
+      border-radius: 10px;
+    }
+
+    .kanban-card {
+      background: #0f172a;
+      border: 1px solid rgba(255,255,255,0.06);
+      border-radius: 10px;
+      padding: 16px;
+      cursor: pointer;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      transition: transform 0.15s, border-color 0.15s;
+    }
+
+    .kanban-card:hover {
+      transform: translateY(-2px);
+      border-color: var(--color-indigo);
+    }
+
+    .kanban-card-title {
+      font-family: 'Outfit', sans-serif;
+      font-weight: 600;
+      font-size: 13px;
+      color: #fff;
+      line-height: 1.4;
+    }
+
+    .kanban-card-meta {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-size: 11px;
+      color: var(--text-muted);
+    }
+
+    /* Dialogue bubble simulator for conversations */
+    .chat-layout {
+      display: grid;
+      grid-template-columns: 280px 1fr;
+      border: 1px solid var(--border-color);
+      border-radius: 14px;
+      height: 550px;
+      background: #080a13;
+      overflow: hidden;
+    }
+
+    .chat-sidebar {
+      background: rgba(13, 17, 33, 0.45);
+      border-right: 1px solid var(--border-color);
+      display: flex;
+      flex-direction: column;
+      overflow-y: auto;
+    }
+
+    .chat-threads-title {
+      padding: 16px 20px;
+      font-family: 'Outfit', sans-serif;
+      font-weight: 700;
+      font-size: 14px;
+      color: #fff;
+      border-bottom: 1px solid rgba(255,255,255,0.05);
+    }
+
+    .chat-thread-item {
+      padding: 14px 20px;
+      border-bottom: 1px solid rgba(255,255,255,0.02);
+      cursor: pointer;
+      transition: background 0.15s;
+    }
+
+    .chat-thread-item:hover {
+      background: rgba(255, 255, 255, 0.02);
+    }
+
+    .chat-thread-item.active {
+      background: rgba(99, 102, 241, 0.08);
+      border-left: 3px solid var(--color-indigo);
+    }
+
+    .chat-thread-name {
+      font-family: 'Outfit', sans-serif;
+      font-weight: 600;
+      font-size: 12.5px;
+      color: #fff;
+    }
+
+    .chat-thread-meta {
+      font-size: 10px;
+      color: var(--text-muted);
+      margin-top: 6px;
+      display: flex;
+      justify-content: space-between;
+    }
+
+    .chat-view {
+      display: flex;
+      flex-direction: column;
+      height: 100%;
+    }
+
+    .chat-header {
+      padding: 16px 24px;
+      border-bottom: 1px solid var(--border-color);
+      background: rgba(13, 17, 33, 0.35);
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+
+    .chat-header h3 {
+      font-family: 'Outfit', sans-serif;
+      font-size: 14px;
+      font-weight: 700;
+      color: #fff;
+    }
+
+    .chat-header-participants {
+      font-size: 11px;
+      color: var(--text-muted);
+    }
+
+    .chat-messages {
+      flex-grow: 1;
+      padding: 24px;
+      overflow-y: auto;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+      background: rgba(5, 7, 16, 0.5);
+    }
+
+    .chat-bubble-container {
+      display: flex;
+      gap: 12px;
+      max-width: 80%;
+    }
+
+    .chat-bubble-container.sent {
+      align-self: flex-end;
+      flex-direction: row-reverse;
+    }
+
+    .chat-bubble-avatar {
+      width: 32px;
+      height: 32px;
+      border-radius: 50%;
+      background: var(--color-indigo-glow);
+      border: 1px solid var(--border-color);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--color-indigo);
+    }
+
+    .chat-bubble-wrapper {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+
+    .chat-bubble-sender {
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--text-secondary);
+    }
+
+    .chat-bubble-body {
+      background: var(--bg-card);
+      border: 1px solid var(--border-color);
+      padding: 12px 16px;
+      border-radius: 14px;
+      font-size: 13px;
+      line-height: 1.4;
+      color: #e2e8f0;
+    }
+
+    .chat-bubble-container.sent .chat-bubble-body {
+      background: rgba(99, 102, 241, 0.15);
+      border-color: rgba(99, 102, 241, 0.3);
+      border-top-left-radius: 14px;
+      border-top-right-radius: 0;
+    }
+
+    .chat-bubble-time {
+      font-size: 9px;
+      color: var(--text-muted);
+      align-self: flex-end;
+    }
+
+    .chat-bubble-container.sent .chat-bubble-time {
+      align-self: flex-start;
+    }
+
+    /* Modal styles */
+    .modal {
+      display: none;
+      position: fixed;
+      z-index: 100;
+      left: 0;
+      top: 0;
+      width: 100%;
+      height: 100%;
+      background-color: rgba(3, 7, 18, 0.85);
+      backdrop-filter: blur(8px);
+      align-items: center;
+      justify-content: center;
+      padding: 20px;
+    }
+
+    .modal-content {
+      background: #0d111d;
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      border-radius: 16px;
+      max-width: 720px;
+      width: 100%;
+      max-height: 85vh;
+      display: flex;
+      flex-direction: column;
+      box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.6);
+      animation: modalSlideUp 0.2s ease-out;
+    }
+
+    @keyframes modalSlideUp {
+      from { opacity: 0; transform: scale(0.97) translateY(8px); }
+      to { opacity: 1; transform: scale(1) translateY(0); }
+    }
+
+    .modal-header {
+      padding: 20px 24px;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    .modal-header h3 {
+      font-family: 'Outfit', sans-serif;
+      font-size: 16px;
+      font-weight: 700;
+      color: #fff;
+    }
+
+    .close-btn {
+      background: transparent;
+      border: none;
+      color: var(--text-muted);
+      font-size: 24px;
+      cursor: pointer;
+    }
+
+    .modal-body {
+      padding: 24px;
+      overflow-y: auto;
+      font-family: 'Fira Code', monospace;
+      font-size: 12.5px;
+      line-height: 1.5;
+      color: #e2e8f0;
+      background: #060810;
+    }
+
+    .modal-body pre {
+      white-space: pre-wrap;
+      word-break: break-all;
+    }
+
+    .lock-item {
+      background: rgba(255, 255, 255, 0.015);
+      border: 1px solid var(--border-color);
+      border-radius: 8px;
+      padding: 12px 16px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      font-size: 13px;
+    }
+
+    .lock-owner {
+      color: var(--color-indigo);
+      font-weight: 500;
+    }
+
+    /* Employee details card container inside Modal */
+    .employees-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+      gap: 20px;
+    }
+
+    .employee-card {
+      background: var(--bg-card);
+      border: 1px solid var(--border-color);
+      border-radius: 14px;
+      padding: 24px;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+      transition: all 0.25s;
+    }
+
+    .employee-card:hover {
+      background: var(--bg-card-hover);
+      border-color: var(--border-glow);
+      transform: translateY(-2px);
+    }
+
+    .employee-card-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+    }
+
+    .employee-identity {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .employee-avatar {
+      width: 44px;
+      height: 44px;
+      border-radius: 10px;
+      background: linear-gradient(135deg, rgba(99, 102, 241, 0.2), rgba(59, 130, 246, 0.2));
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: var(--color-indigo);
+      font-size: 18px;
+    }
+
+    .employee-name {
+      font-family: 'Outfit', sans-serif;
+      font-size: 15px;
+      font-weight: 600;
+      color: #fff;
+    }
+
+    .employee-role {
+      font-size: 12px;
+      color: var(--text-secondary);
+      margin-top: 2px;
+    }
+
+    .employee-meta {
+      font-size: 11px;
+      color: var(--text-muted);
+      word-break: break-all;
+    }
+
+    .tag-container {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+    }
+
+    .capability-tag {
+      background: rgba(255, 255, 255, 0.03);
+      border: 1px solid var(--border-color);
+      color: var(--text-secondary);
+      font-size: 11px;
+      padding: 3px 8px;
+      border-radius: 6px;
+    }
+
+    /* Hidden regression element */
+    #static-fallback-tests {
+      display: none !important;
+    }
+
+    /* Custom styles for interactive features */
+    .scenario-seeder-container {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      margin-bottom: 12px;
+      width: 100%;
+      text-align: left;
+    }
+    .scenario-label {
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+      color: var(--text-secondary);
+      letter-spacing: 0.5px;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .scenario-select {
+      background: rgba(13, 17, 33, 0.9);
+      border: 1px solid var(--border-color);
+      border-radius: 8px;
+      color: var(--text-primary);
+      padding: 8px 10px;
+      font-size: 11px;
+      outline: none;
+      cursor: pointer;
+      width: 100%;
+      transition: all 0.3s ease;
+    }
+    .scenario-select:focus {
+      border-color: var(--color-indigo);
+      box-shadow: 0 0 8px rgba(129, 140, 248, 0.3);
+    }
+    .scenario-select option {
+      background: #0f1224;
+      color: var(--text-primary);
+    }
+
+    .terminal-console-container {
+      background: #05070d;
+      border: 1px solid var(--border-color);
+      border-radius: 10px;
+      overflow: hidden;
+      box-shadow: inset 0 0 15px rgba(0,0,0,0.9);
+      display: flex;
+      flex-direction: column;
+    }
+    .terminal-console {
+      height: 220px !important;
+      border: none !important;
+      border-radius: 0 !important;
+      box-shadow: none !important;
+    }
+    .terminal-input-row {
+      display: flex;
+      align-items: center;
+      background: rgba(13, 17, 33, 0.85);
+      border-top: 1px solid var(--border-color);
+      padding: 6px 12px;
+      font-family: 'Fira Code', monospace;
+      font-size: 11px;
+    }
+    .terminal-prompt {
+      color: var(--color-indigo);
+      margin-right: 6px;
+      font-weight: bold;
+      user-select: none;
+    }
+    #terminal-input-field {
+      flex: 1;
+      background: transparent;
+      border: none;
+      outline: none;
+      color: #10b981;
+      font-family: 'Fira Code', monospace;
+      font-size: 11px;
+    }
+
+    .chat-input-bar {
+      display: flex;
+      gap: 10px;
+      padding: 10px 14px;
+      background: rgba(13, 17, 33, 0.6);
+      border-top: 1px solid var(--border-color);
+      border-bottom-right-radius: 16px;
+      position: relative;
+    }
+    #chat-input-field {
+      flex: 1;
+      background: rgba(7, 9, 19, 0.7);
+      border: 1px solid var(--border-color);
+      border-radius: 8px;
+      padding: 8px 12px;
+      color: var(--text-primary);
+      font-size: 12px;
+      outline: none;
+      transition: all 0.3s ease;
+    }
+    #chat-input-field:focus {
+      border-color: var(--color-indigo);
+      box-shadow: 0 0 6px rgba(129, 140, 248, 0.2);
+    }
+    .chat-send-btn {
+      background: var(--color-indigo);
+      color: white;
+      border: none;
+      border-radius: 8px;
+      padding: 8px 14px;
+      cursor: pointer;
+      font-size: 12px;
+      font-weight: 500;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      transition: all 0.3s ease;
+    }
+    .chat-send-btn:hover {
+      background: #6366f1;
+      box-shadow: 0 0 10px rgba(99, 102, 241, 0.3);
+    }
+
+    .kanban-card.dragging {
+      opacity: 0.4;
+      border: 2px dashed var(--color-indigo) !important;
+    }
+    .column-highlight {
+      background: rgba(99, 102, 241, 0.06);
+      box-shadow: 0 0 15px rgba(99, 102, 241, 0.1) inset;
+      transition: all 0.3s ease;
+    }
+
+    /* Typing indicator styling */
+    .typing-indicator {
+      display: flex;
+      align-items: center;
+      height: 18px;
+      padding-top: 4px;
+    }
+    .typing-indicator span {
+      display: inline-block;
+      width: 5px;
+      height: 5px;
+      border-radius: 50%;
+      background: var(--text-secondary);
+      margin-right: 3px;
+      animation: typing-bounce 1.4s infinite both;
+    }
+    .typing-indicator span:nth-child(2) { animation-delay: .2s; }
+    .typing-indicator span:nth-child(3) { animation-delay: .4s; }
+    @keyframes typing-bounce {
+      0%, 80%, 100% { transform: scale(0.6); opacity: 0.4; }
+      40% { transform: scale(1.2); opacity: 1; }
+    }
+
+    /* Recruiter Drawer styling */
+    .recruiter-drawer {
+      position: fixed;
+      top: 0;
+      right: -420px;
+      width: 400px;
+      height: 100vh;
+      background: rgba(10, 13, 22, 0.98);
+      border-left: 1px solid var(--border-color);
+      box-shadow: -10px 0 30px rgba(0,0,0,0.6);
+      z-index: 1000;
+      transition: right 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+      display: flex;
+      flex-direction: column;
+      backdrop-filter: blur(20px);
+    }
+    .recruiter-drawer.open {
+      right: 0;
+    }
+    .drawer-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 20px;
+      border-bottom: 1px solid var(--border-color);
+    }
+    .drawer-body {
+      padding: 20px;
+      overflow-y: auto;
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      gap: 15px;
+      text-align: left;
+    }
+    .form-group {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+    .form-label {
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+      color: var(--text-secondary);
+      letter-spacing: 0.5px;
+    }
+    .form-input {
+      background: rgba(7, 9, 19, 0.6);
+      border: 1px solid var(--border-color);
+      border-radius: 8px;
+      padding: 8px 12px;
+      color: var(--text-primary);
+      font-size: 12px;
+      outline: none;
+    }
+    .form-textarea {
+      background: rgba(7, 9, 19, 0.6);
+      border: 1px solid var(--border-color);
+      border-radius: 8px;
+      padding: 8px 12px;
+      color: var(--text-primary);
+      font-size: 12px;
+      outline: none;
+      resize: vertical;
+      font-family: inherit;
+    }
+    .recruiter-loader {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      font-size: 12px;
+      color: var(--text-secondary);
+      margin-top: 15px;
+    }
+    .spinner {
+      border: 2px solid rgba(255, 255, 255, 0.1);
+      width: 16px;
+      height: 16px;
+      border-radius: 50%;
+      border-left-color: var(--color-indigo);
+      animation: spin 1s linear infinite;
+    }
+    @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+    .synthesized-pills {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+    }
+    .synthesized-pill {
+      background: rgba(99, 102, 241, 0.1);
+      border: 1px solid rgba(99, 102, 241, 0.3);
+      color: var(--text-secondary);
+      font-size: 10px;
+      padding: 3px 8px;
+      border-radius: 6px;
+    }
+    .synthesized-code {
+      background: rgba(5, 7, 13, 0.8);
+      border: 1px solid var(--border-color);
+      border-radius: 6px;
+      padding: 10px;
+      max-height: 180px;
+      overflow-y: auto;
+      font-family: 'Fira Code', monospace;
+      font-size: 10px;
+      color: #34d399;
+    }
+
+    /* --- Overrides and fixes for employee cards and WeChat double-pane Chat --- */
+    .employee-card {
+      background: var(--bg-card);
+      border: 1px solid var(--border-color);
+      border-radius: 14px;
+      padding: 18px;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      position: relative;
+      transition: all 0.25s;
+    }
+
+    .employee-card:hover {
+      background: var(--bg-card-hover);
+      border-color: var(--border-glow);
+      transform: translateY(-2px);
+    }
+
+    .employee-card-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 12px;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+      padding-bottom: 8px;
+    }
+
+    .card-menu-container {
+      position: relative;
+    }
+
+    .card-menu-btn {
+      background: transparent;
+      border: none;
+      color: var(--text-muted);
+      font-size: 16px;
+      cursor: pointer;
+      padding: 4px 8px;
+      border-radius: 4px;
+      transition: all 0.2s;
+    }
+
+    .card-menu-btn:hover {
+      color: #fff;
+      background: rgba(255, 255, 255, 0.05);
+    }
+
+    .card-dropdown-menu {
+      display: none;
+      position: absolute;
+      top: 100%;
+      right: 0;
+      background: #0b0f19;
+      border: 1px solid var(--border-color);
+      border-radius: 8px;
+      box-shadow: 0 10px 25px -5px rgba(0,0,0,0.5);
+      z-index: 50;
+      min-width: 145px;
+      padding: 4px 0;
+    }
+
+    .card-dropdown-menu.open {
+      display: block;
+    }
+
+    .card-dropdown-item {
+      width: 100%;
+      padding: 9px 14px;
+      background: transparent;
+      border: none;
+      text-align: left;
+      color: var(--text-secondary);
+      font-size: 12px;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      box-sizing: border-box;
+    }
+
+    .card-dropdown-item:hover {
+      background: rgba(99, 102, 241, 0.12);
+      color: #fff;
+    }
+
+    .card-dropdown-item.danger {
+      color: #f87171;
+    }
+
+    .card-dropdown-item.danger:hover {
+      background: rgba(239, 68, 68, 0.12);
+    }
+
+    .employee-card-footer {
+      margin-top: auto;
+      padding-top: 10px;
+      border-top: 1px solid rgba(255,255,255,0.05);
+    }
+
+    .card-footer-action-btn {
+      width: 100%;
+      padding: 8px 12px;
+      background: rgba(16, 185, 129, 0.1);
+      border: 1px solid rgba(16, 185, 129, 0.3);
+      color: #86efac;
+      border-radius: 8px;
+      font-size: 11px;
+      font-weight: 600;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      transition: all 0.2s;
+    }
+
+    .card-footer-action-btn:hover {
+      background: rgba(16, 185, 129, 0.18);
+      box-shadow: 0 0 12px rgba(16, 185, 129, 0.2);
+    }
+
+    /* Split-Pane Chat Hub */
+    .chat-toolbar {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+      padding: 10px 12px 12px;
+      border-bottom: 1px solid var(--border-color);
+    }
+
+    .chat-tool-btn {
+      min-height: 30px;
+      border: 1px solid rgba(129, 140, 248, 0.32);
+      border-radius: 6px;
+      background: rgba(99, 102, 241, 0.12);
+      color: #c7d2fe;
+      font-size: 11px;
+      font-weight: 700;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+    }
+
+    .chat-tool-btn:hover {
+      background: rgba(99, 102, 241, 0.22);
+      border-color: rgba(129, 140, 248, 0.5);
+    }
+
+    .chat-header-main {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      width: 100%;
+    }
+
+    .chat-intercept-banner {
+      background: rgba(245, 158, 11, 0.08);
+      border-bottom: 1px solid rgba(245, 158, 11, 0.2);
+      padding: 8px 24px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      color: #fcd34d;
+      font-size: 12px;
+    }
+
+    .intercept-btn {
+      background: #d97706;
+      color: white;
+      border: none;
+      padding: 4px 10px;
+      border-radius: 6px;
+      font-size: 11px;
+      cursor: pointer;
+      font-weight: 600;
+      transition: all 0.2s;
+      display: flex;
+      align-items: center;
+      gap: 5px;
+    }
+
+    .intercept-btn:hover {
+      background: #b45309;
+    }
+
+    .intercept-btn.release {
+      background: rgba(16, 185, 129, 0.15);
+      border: 1px solid rgba(16, 185, 129, 0.35);
+      color: #86efac;
+    }
+
+    .intercept-btn.release:hover {
+      background: rgba(16, 185, 129, 0.25);
+    }
+
+    .chat-view.intercepted {
+      box-shadow: inset 0 0 30px rgba(245, 158, 11, 0.04);
+      border-left: 1px solid rgba(245, 158, 11, 0.15);
+    }
+
+    .agent-mention-suggestions {
+      display: none;
+      position: absolute;
+      left: 14px;
+      right: 84px;
+      bottom: 50px;
+      z-index: 100;
+      max-height: 180px;
+      overflow-y: auto;
+      padding: 6px;
+      border: 1px solid rgba(129, 140, 248, 0.32);
+      border-radius: 8px;
+      background: #0d111d;
+      box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+    }
+
+    .mention-option {
+      width: 100%;
+      min-height: 32px;
+      border: 0;
+      border-radius: 5px;
+      padding: 6px 10px;
+      background: transparent;
+      color: #e5e7eb;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      text-align: left;
+      box-sizing: border-box;
+    }
+
+    .mention-option:hover,
+    .mention-option.active {
+      background: rgba(99, 102, 241, 0.18);
+    }
+
+    .mention-option span {
+      font-weight: 700;
+      color: #a5b4fc;
+    }
+
+    .mention-option small,
+    .mention-empty {
+      color: var(--text-secondary);
+      font-size: 11px;
+    }
+
+    /* Inline System trace log elements in Chat Bubbles */
+    .chat-system-log {
+      align-self: center;
+      background: rgba(99, 102, 241, 0.04);
+      border: 1px dashed rgba(99, 102, 241, 0.2);
+      border-radius: 8px;
+      padding: 8px 16px;
+      font-family: 'Fira Code', monospace;
+      font-size: 11px;
+      color: #a5b4fc;
+      max-width: 90%;
+      text-align: center;
+      margin: 4px 0;
+    }
+
+    .dashboard-layout-fix .main-panel {
+      min-width: 0;
+    }
+
+    .dashboard-layout-fix .content-area {
+      box-sizing: border-box;
+      min-height: calc(100vh - 80px);
+      overflow: visible;
+    }
+
+    .dashboard-layout-fix .tab-pane.active {
+      display: flex;
+      flex-direction: column;
+      gap: 24px;
+      min-height: 1px;
+    }
+
+    .dashboard-layout-fix .chat-layout {
+      min-height: 460px;
+    }
+
+    .dashboard-layout-fix .traces-list-container {
+      display: grid;
+      gap: 14px;
+      min-height: 120px;
+    }
+
+    .dashboard-layout-fix .trace-item-card {
+      cursor: pointer;
+    }
+
+    .detail-summary {
+      display: grid;
+      gap: 8px;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    .detail-row {
+      display: grid;
+      grid-template-columns: minmax(110px, 180px) minmax(0, 1fr);
+      gap: 10px;
+      padding: 8px 0;
+      border-bottom: 1px solid rgba(148, 163, 184, 0.16);
+    }
+
+    .detail-key {
+      color: var(--text-secondary);
+      font-size: 11px;
+      font-weight: 800;
+      text-transform: uppercase;
+    }
+
+    .detail-value {
+      min-width: 0;
+      white-space: normal;
+      overflow-wrap: anywhere;
+      color: var(--text-primary);
+    }
+
+    .detail-json,
+    .detail-raw pre {
+      max-height: 260px;
+      overflow: auto;
+      white-space: pre-wrap;
+      background: rgba(2, 6, 23, 0.55);
+      border: 1px solid rgba(148, 163, 184, 0.16);
+      border-radius: 8px;
+      padding: 10px;
+    }
+
+    .detail-list {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+
+    .detail-raw {
+      margin-top: 12px;
+      color: var(--text-secondary);
+    }
+  </style>
+</head>
+<body>
+
+<div class="app-container">
+  <!-- Sidebar -->
+  <aside class="sidebar">
+    <div class="logo-container" style="display: flex; justify-content: space-between; align-items: center; gap: 8px;">
+      <div style="display: flex; align-items: center; gap: 8px;">
+        <i class="fa-solid fa-server logo-icon"></i>
+        <span class="logo-text">Super AI Kernel</span>
+      </div>
+      <div class="lang-selector-container">
+        <select id="lang-selector" class="scenario-select" style="margin: 0; padding: 2px 6px; font-size: 11px; width: auto; background: rgba(255,255,255,0.05); border: 1px solid var(--border-color); color: var(--text-primary); border-radius: 4px; cursor: pointer;" onchange="changeLanguage(this.value)">
+          <option value="en">EN</option>
+          <option value="zh">ZH</option>
+        </select>
+      </div>
+    </div>
+    
+    <nav class="nav-menu">
+      <button class="nav-btn active" data-tab="overview" onclick="switchTab('overview')" data-i18n="nav_overview">
+        <i class="fa-solid fa-gauge"></i> Overview
+      </button>
+      <button class="nav-btn" data-tab="tasks" onclick="switchTab('tasks')" data-i18n="nav_tasks">
+        <i class="fa-solid fa-list-check"></i> Tasks & Workflows
+      </button>
+      <button class="nav-btn" data-tab="projects" onclick="switchTab('projects')" data-i18n="nav_projects">
+        <i class="fa-solid fa-diagram-project"></i> Projects & Plans
+      </button>
+      <button class="nav-btn" data-tab="employees" onclick="switchTab('employees')" data-i18n="nav_employees">
+        <i class="fa-solid fa-user-gear"></i> AI Employees
+      </button>
+      <button class="nav-btn" data-tab="governance" onclick="switchTab('governance')" data-i18n="nav_governance">
+        <i class="fa-solid fa-scale-balanced"></i> Governance
+      </button>
+      <button class="nav-btn" data-tab="events" onclick="switchTab('events')" data-i18n="nav_events">
+        <i class="fa-solid fa-terminal"></i> Logs & Events
+      </button>
+      <button class="nav-btn" data-tab="telemetry" onclick="switchTab('telemetry')" data-i18n="nav_telemetry">
+        <i class="fa-solid fa-chart-line"></i> Trace Telemetry
+      </button>
+    </nav>
+    
+    <div class="sidebar-footer">
+      <div class="scenario-seeder-container">
+        <label class="scenario-label" data-i18n="scenario_label"><i class="fa-solid fa-flask-vial"></i> Scenario Seeder</label>
+        <select id="scenario-selector" class="scenario-select" onchange="triggerScenario(this.value)">
+          <option value="real">Real SQLite DB</option>
+          <option value="sim_normal">Simulation: Normal</option>
+          <option value="sim_outage">Simulation: Deadlock</option>
+          <option value="sim_sprint">Simulation: Live Sprint</option>
+        </select>
+      </div>
+      <button class="refresh-mode-btn" id="simulation-toggle-btn" style="display:none;" onclick="toggleSimulationMode()">
+        <i class="fa-solid fa-bolt"></i> Sandbox Simulation
+      </button>
+      <div class="auto-refresh-container">
+        <span data-i18n="auto_refresh">Auto Refresh (10s)</span>
+        <label class="switch">
+          <input type="checkbox" id="refresh-toggle" onchange="toggleAutoRefresh(this)">
+          <span class="slider"></span>
+        </label>
+      </div>
+      <button class="reload-btn" onclick="location.reload()" data-i18n="reload_btn">
+        <i class="fa-solid fa-rotate"></i> Reload Dashboard
+      </button>
+    </div>
+  </aside>
+
+  <!-- Main panel -->
+  <main class="main-panel">
+    <header class="top-bar">
+      <div class="page-title">
+        <h1 data-i18n="console_title">Operations Console</h1>
+        <p>API Gateway: <span id="db-path-label" style="font-family: monospace;">https://gateway.company.internal</span></p>
+      </div>
+      
+      <div id="top-status-badge" class="system-status">
+        <span class="status-dot"></span>
+        <span id="top-status-text">Operational</span>
+      </div>
+    </header>
+
+    <div class="content-area">
+      
+      <!-- Overview Tab -->
+      <div id="tab-overview" class="tab-pane active">
+        <div class="metrics-grid" id="metrics-cards">
+          <!-- Populated by JS -->
+        </div>
+
+        <div class="section-card">
+          <h2 data-i18n="network_map_title">
+            <i class="fa-solid fa-people-group"></i> Active Collaboration Network Map
+            <span style="font-size: 11px; font-weight: normal; color: var(--text-muted); margin-left: auto;" data-i18n="drag_nodes_hint">
+              <i class="fa-solid fa-arrows-up-down-left-right"></i> Try dragging employee nodes!
+            </span>
+          </h2>
+          <div class="collaboration-canvas-container" id="collaboration-canvas">
+            <div class="canvas-grid-bg"></div>
+            <svg id="network-svg">
+              <defs>
+                <marker id="arrow" viewBox="0 0 10 10" refX="28" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+                  <path d="M 0 0 L 10 5 L 0 10 z" fill="#818cf8"/>
+                </marker>
+                <marker id="arrow-completed" viewBox="0 0 10 10" refX="28" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+                  <path d="M 0 0 L 10 5 L 0 10 z" fill="#10b981"/>
+                </marker>
+              </defs>
+            </svg>
+          </div>
+        </div>
+        
+        <div class="dashboard-layout">
+          <div class="left-col">
+            <div class="section-card">
+              <h2 data-i18n="runtime_health_title"><i class="fa-solid fa-heartbeat"></i> Runtime Health Status</h2>
+              <div class="health-list" id="health-checks-list">
+                <!-- Populated by JS -->
+              </div>
+            </div>
+            
+            <div class="section-card">
+              <h2 data-i18n="terminal_title"><i class="fa-solid fa-terminal"></i> Kernel Operations Terminal</h2>
+              <div class="terminal-console-container">
+                <div class="terminal-console" id="terminal-stdout">
+                  <!-- Typewriter lines simulation by JS -->
+                </div>
+                <div class="terminal-input-row">
+                  <span class="terminal-prompt">kernel:~$</span>
+                  <input type="text" id="terminal-input-field" placeholder="Type help, status, agents, run-task, lock, scenario, or clear..." onkeydown="if(event.key==='Enter') executeTerminalCommand()">
+                </div>
+              </div>
+            </div>
+          </div>
+          
+          <div class="right-col">
+            <div class="section-card">
+              <h2 data-i18n="locks_title"><i class="fa-solid fa-lock"></i> Active Resource Locks</h2>
+              <div class="locks-list" id="active-locks-list">
+                <!-- Populated by JS -->
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Tasks Tab -->
+      <div id="tab-tasks" class="tab-pane">
+        <div class="section-card">
+          <h2 data-i18n="tasks_registry_title"><i class="fa-solid fa-list-check"></i> Tasks Registry</h2>
+          <div class="controls-row">
+            <div class="search-wrapper">
+              <i class="fa-solid fa-magnifying-glass"></i>
+              <input type="text" id="task-search" class="search-input" placeholder="Search tasks by ID, title, or agents..." oninput="filterTasks()" data-i18n="search_placeholder">
+            </div>
+            
+            <div style="display: flex; gap: 12px; align-items: center;">
+              <div class="filter-tabs" style="margin-right: 12px;">
+                <button class="filter-tab active" id="view-mode-table-btn" onclick="switchTaskViewMode('table')" data-i18n="view_table"><i class="fa-solid fa-table"></i> Table</button>
+                <button class="filter-tab" id="view-mode-kanban-btn" onclick="switchTaskViewMode('kanban')" data-i18n="view_kanban"><i class="fa-solid fa-table-columns"></i> Kanban Board</button>
+              </div>
+
+              <div class="filter-tabs" id="task-status-filters">
+                <button class="filter-tab active" onclick="setTaskFilter('all', this)" data-i18n="filter_all">All</button>
+                <button class="filter-tab" onclick="setTaskFilter('submitted', this)" data-i18n="filter_submitted">Submitted</button>
+                <button class="filter-tab" onclick="setTaskFilter('claimed', this)" data-i18n="filter_claimed">Claimed</button>
+                <button class="filter-tab" onclick="setTaskFilter('blocked', this)" data-i18n="filter_blocked">Blocked</button>
+                <button class="filter-tab" onclick="setTaskFilter('completed', this)" data-i18n="filter_completed">Completed</button>
+              </div>
+            </div>
+          </div>
+
+          <!-- Table View -->
+          <div class="table-container" id="tasks-table-view">
+            <table id="tasks-table">
+              <thead>
+                <tr>
+                  <th>Task ID</th>
+                  <th>Source</th>
+                  <th>Target</th>
+                  <th>Priority</th>
+                  <th>Status</th>
+                  <th>Claimed By</th>
+                  <th>Evidence</th>
+                  <th>Blocker</th>
+                  <th>Title</th>
+                  <th>Updated</th>
+                </tr>
+              </thead>
+              <tbody id="tasks-tbody">
+                <!-- Populated by JS -->
+              </tbody>
+            </table>
+          </div>
+
+          <!-- Kanban View -->
+          <div class="kanban-board" id="tasks-kanban-view">
+            <div class="kanban-col">
+              <div class="kanban-col-header">
+                <span>Submitted</span>
+                <span class="kanban-col-count" id="kanban-submitted-count">0</span>
+              </div>
+              <div class="kanban-cards-list" id="kanban-submitted-list" ondragover="allowDrop(event)" ondrop="dropCard(event, 'submitted')" style="display:flex; flex-direction:column; gap:12px; min-height: 250px;"></div>
+            </div>
+            <div class="kanban-col">
+              <div class="kanban-col-header">
+                <span>Claimed</span>
+                <span class="kanban-col-count" id="kanban-claimed-count">0</span>
+              </div>
+              <div class="kanban-cards-list" id="kanban-claimed-list" ondragover="allowDrop(event)" ondrop="dropCard(event, 'claimed')" style="display:flex; flex-direction:column; gap:12px; min-height: 250px;"></div>
+            </div>
+            <div class="kanban-col">
+              <div class="kanban-col-header">
+                <span>Blocked</span>
+                <span class="kanban-col-count" id="kanban-blocked-count">0</span>
+              </div>
+              <div class="kanban-cards-list" id="kanban-blocked-list" ondragover="allowDrop(event)" ondrop="dropCard(event, 'blocked')" style="display:flex; flex-direction:column; gap:12px; min-height: 250px;"></div>
+            </div>
+            <div class="kanban-col">
+              <div class="kanban-col-header">
+                <span>Completed</span>
+                <span class="kanban-col-count" id="kanban-completed-count">0</span>
+              </div>
+              <div class="kanban-cards-list" id="kanban-completed-list" ondragover="allowDrop(event)" ondrop="dropCard(event, 'completed')" style="display:flex; flex-direction:column; gap:12px; min-height: 250px;"></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="section-card">
+          <h2 data-i18n="delegation_tree_title"><i class="fa-solid fa-network-wired"></i> Task Delegation Tree</h2>
+          <div class="graph-panel">
+            <div class="graph-title"><i class="fa-solid fa-circle-nodes"></i> Mermaid Flowchart</div>
+            <pre class="mermaid" id="tasks-mermaid-flow"></pre>
+          </div>
+        </div>
+      </div>
+
+      <!-- Projects Tab -->
+      <div id="tab-projects" class="tab-pane">
+        <div class="section-card">
+          <h2 data-i18n="projects_graphs_title"><i class="fa-solid fa-diagram-project"></i> Project Execution Graphs</h2>
+          <div class="graph-panel">
+            <div class="graph-title"><i class="fa-solid fa-timeline"></i> Mermaid Project Flowcharts</div>
+            <pre class="mermaid" id="projects-mermaid-flow"></pre>
+          </div>
+        </div>
+
+        <div class="section-card">
+          <h2 data-i18n="projects_governance_title"><i class="fa-solid fa-diagram-project"></i> Project Governance</h2>
+          <div class="table-container">
+            <table>
+              <thead>
+                <tr>
+                  <th>Project ID</th>
+                  <th>Title</th>
+                  <th>Owner</th>
+                  <th>Status</th>
+                  <th>Review</th>
+                  <th>Plan items</th>
+                  <th>Accepted Evidence</th>
+                  <th>Retro Summary</th>
+                  <th>Updated</th>
+                </tr>
+              </thead>
+              <tbody id="projects-tbody">
+                <!-- Populated by JS -->
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <!-- Employees Tab -->
+      <div id="tab-employees" class="tab-pane">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
+          <h2 data-i18n="agent_roster_title"><i class="fa-solid fa-users"></i> AI Agent Roster</h2>
+          <button class="chat-send-btn" onclick="openRecruiterDrawer()" style="background: linear-gradient(135deg, #10b981, #059669); box-shadow: 0 4px 12px rgba(16, 185, 129, 0.2);" data-i18n="hire_employee">
+            <i class="fa-solid fa-user-plus"></i> Hire AI Employee
+          </button>
+        </div>
+        
+        <div class="employees-grid" id="employees-cards-container">
+          <!-- Populated by JS -->
+        </div>
+
+        <div class="section-card" style="margin-top: 20px;">
+          <h2><i class="fa-solid fa-user-clock"></i> Candidate Employees</h2>
+          <div class="employees-grid" id="candidate-employees-container">
+            <!-- Populated by JS -->
+          </div>
+        </div>
+
+        <!-- AI Recruiter Slide-out Drawer -->
+        <div id="recruiter-drawer" class="recruiter-drawer">
+          <div class="drawer-header">
+            <h3 data-i18n="recruiter_portal_title"><i class="fa-solid fa-flask-vial"></i> AI Recruiter Portal</h3>
+            <button class="close-btn" onclick="closeRecruiterDrawer()">&times;</button>
+          </div>
+          <div class="drawer-body">
+            <div class="form-group">
+              <label class="form-label" data-i18n="recruit_id_label">Employee ID / Alias</label>
+              <input type="text" id="recruit-id" class="form-input" placeholder="e.g. market-analyst" value="market-analyst">
+            </div>
+            <div class="form-group">
+              <label class="form-label" data-i18n="recruit_desc_label">Target Role & Core Responsibilities</label>
+              <textarea id="recruit-desc" class="form-textarea" rows="4" placeholder="Describe what you want this AI employee to do (e.g. crawl competitor pricing daily and compile markdown charts)..."></textarea>
+            </div>
+            <div class="form-group" style="display: flex; gap: 12px; margin-bottom: 15px;">
+              <div style="flex: 1; display: flex; flex-direction: column; gap: 6px;">
+                <label class="form-label" style="margin-bottom: 0;" data-i18n="agent_engine_label">Agent Engine</label>
+                <select id="recruit-engine" class="scenario-select" style="width: 100%; box-sizing: border-box;" onchange="autoSelectSandbox(this.value)">
+                  <option value="openclaw">OpenClaw Engine</option>
+                  <option value="hermes">Hermes CLI Engine</option>
+                  <option value="codex">Codex Engine</option>
+                  <option value="antigravity">Antigravity Adapter</option>
+                  <option value="trae">Trae IDE Engine</option>
+                  <option value="local">Local User Space</option>
+                </select>
+              </div>
+              <div style="flex: 1; display: flex; flex-direction: column; gap: 6px;">
+                <label class="form-label" style="margin-bottom: 0;" data-i18n="isolation_sandbox_label">Isolation Sandbox</label>
+                <select id="recruit-sandbox" class="scenario-select" style="width: 100%; box-sizing: border-box;">
+                  <option value="docker">Docker (gVisor)</option>
+                  <option value="firejail">Firejail</option>
+                  <option value="none">None (No Sandbox)</option>
+                </select>
+              </div>
+            </div>
+            
+            <button class="chat-send-btn" id="recruit-generate-btn" onclick="generateAgentSpecs()" style="width: 100%; justify-content: center; margin-top: 10px;" data-i18n="generate_btn">
+              <i class="fa-solid fa-wand-magic-sparkles"></i> AI Generate Capabilities & Limits
+            </button>
+            
+            <div id="recruiter-loader" class="recruiter-loader" style="display: none;">
+              <div class="spinner"></div>
+              <span>AI Recruiter synthesizing profiles, skills, and sandbox rules...</span>
+            </div>
+            
+            <div id="recruiter-result" style="display: none; margin-top: 20px;">
+              <h4 style="font-size: 12px; text-transform: uppercase; color: var(--text-secondary); margin-bottom: 8px;" data-i18n="synthesized_specs_title">AI Synthesized Specs</h4>
+              <div class="synthesized-pills" id="synthesized-skills-pills"></div>
+              
+              <div style="margin-top: 15px;">
+                <label class="form-label" data-i18n="permissions_json_label">Generated Permissions & Rules (JSON)</label>
+                <pre class="synthesized-code"><code id="synthesized-json-code"></code></pre>
+              </div>
+              
+              <button class="chat-send-btn" onclick="confirmAgentOnboarding()" style="width: 100%; justify-content: center; margin-top: 20px; background: linear-gradient(135deg, #10b981, #059669);" data-i18n="approve_onboard_btn">
+                <i class="fa-solid fa-circle-check"></i> Approve & Onboard to Workspace
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Governance Tab -->
+      <div id="tab-governance" class="tab-pane">
+        <div class="section-card">
+          <h2 data-i18n="pending_approvals_title"><i class="fa-solid fa-scale-balanced"></i> Pending approvals & Requests</h2>
+          <div class="table-container">
+            <table>
+              <thead>
+                <tr>
+                  <th>Approval ID</th>
+                  <th>Source Agent</th>
+                  <th>Action Type</th>
+                  <th>Status</th>
+                  <th>Reason / Details</th>
+                  <th>Updated</th>
+                </tr>
+              </thead>
+              <tbody id="approvals-tbody">
+                <!-- Populated by JS -->
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <div class="section-card">
+          <h2 data-i18n="rfc_governance_title"><i class="fa-solid fa-code-pull-request"></i> RFC Governance</h2>
+          <div class="table-container">
+            <table>
+              <thead>
+                <tr>
+                  <th>RFC ID</th>
+                  <th>Author</th>
+                  <th>Status</th>
+                  <th>Target Paths</th>
+                  <th>Reason / Goal</th>
+                  <th>Decision By</th>
+                  <th>Updated</th>
+                </tr>
+              </thead>
+              <tbody id="rfcs-tbody">
+                <!-- Populated by JS -->
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <!-- Events Tab -->
+      <div id="tab-events" class="tab-pane">
+        <div class="section-card">
+          <h2 data-i18n="chat_hub_title"><i class="fa-solid fa-message"></i> AI Conversation Chat Hub</h2>
+          <div class="chat-layout">
+            <div class="chat-sidebar" id="chat-threads-sidebar">
+              <div class="chat-threads-title" data-i18n="chat_threads_title">Conversations</div>
+              <div class="chat-toolbar">
+                <button id="chat-create-btn" class="chat-tool-btn" onclick="window.openNewConversationComposer()"><i class="fa-solid fa-plus"></i> New</button>
+                <button id="chat-refresh-btn" class="chat-tool-btn" onclick="window.refreshChatHub()"><i class="fa-solid fa-rotate"></i> Refresh</button>
+              </div>
+              <div id="chat-threads-list">
+                <!-- Threads lists by JS -->
+              </div>
+            </div>
+            <div class="chat-view" id="chat-view-container">
+              <div class="chat-intercept-banner" id="chat-intercept-banner" style="display: none;">
+                <div>
+                  <i class="fa-solid fa-triangle-exclamation"></i> <span id="intercept-status-text">Agents conversing autonomously (Read-Only)</span>
+                </div>
+                <button id="intercept-action-btn" class="intercept-btn" onclick="toggleInterceptionMode()">
+                  <i class="fa-solid fa-user-lock"></i> Intercept
+                </button>
+              </div>
+              <div class="chat-header">
+                <div class="chat-header-main">
+                  <div>
+                    <h3 id="chat-header-title">No Conversation Selected</h3>
+                    <span class="chat-header-participants" id="chat-header-members">Participants: -</span>
+                  </div>
+                  <button id="chat-join-btn" class="chat-tool-btn" onclick="window.joinActiveConversation()"><i class="fa-solid fa-user-plus"></i> Insert Owner</button>
+                </div>
+              </div>
+              <div class="chat-messages" id="chat-messages-container">
+                <!-- Conversation dialogues by JS -->
+              </div>
+              <div class="chat-input-bar">
+                <input type="text" id="chat-input-field" placeholder="Type a message to the agent conversation..." onkeydown="if(event.key==='Enter') sendChatMessage()" data-i18n="chat_placeholder">
+                <button class="chat-send-btn" onclick="sendChatMessage()" data-i18n="chat_send"><i class="fa-solid fa-paper-plane"></i> Send</button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="section-card">
+          <h2 data-i18n="adapter_runs_title"><i class="fa-solid fa-microchip"></i> Adapter Runs History</h2>
+          <div class="table-container">
+            <table>
+              <thead>
+                <tr>
+                  <th>Run ID</th>
+                  <th>Agent</th>
+                  <th>Task ID</th>
+                  <th>Command</th>
+                  <th>Ok</th>
+                  <th>Processed</th>
+                  <th>Ack By</th>
+                  <th>Ack Reason</th>
+                  <th>Created</th>
+                </tr>
+              </thead>
+              <tbody id="adapter-runs-tbody">
+                <!-- Populated by JS -->
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <!-- Telemetry Tab -->
+      <div id="tab-telemetry" class="tab-pane">
+        <div class="section-card">
+          <h2 data-i18n="telemetry_title_sub"><i class="fa-solid fa-chart-line"></i> Distributed Trace Telemetry</h2>
+          <p style="font-size: 13px; color: var(--text-secondary); margin-bottom: 15px;" data-i18n="telemetry_desc">
+            Trace ID propagation pipeline showing execution latencies and calling hierarchies across sandboxed agent runtimes.
+          </p>
+          <div class="controls-row" style="margin-bottom: 15px;">
+            <div class="search-wrapper">
+              <i class="fa-solid fa-magnifying-glass"></i>
+              <input type="text" id="trace-search" class="search-input" placeholder="Search traces by Trace ID, title, or service name..." oninput="filterTraces()" data-i18n="trace_search_placeholder">
+            </div>
+          </div>
+          <div class="traces-list-container" id="traces-list-container">
+            <!-- Populated dynamically by JS -->
+          </div>
+        </div>
+      </div>
+
+    </div>
+  </main>
+</div>
+
+<!-- Modal for details -->
+<div id="details-modal" class="modal" onclick="if(event.target===this) closeModal()">
+  <div class="modal-content">
+    <div class="modal-header">
+      <h3 id="modal-title">Details Information</h3>
+      <button class="close-btn" onclick="closeModal()">&times;</button>
+    </div>
+    <div class="modal-body">
+      <pre><code id="modal-code"></code></pre>
+    </div>
+  </div>
+</div>
+
+<!-- Modal for Safe Deletion Confirmation -->
+<div id="fire-employee-modal" class="modal" onclick="if(event.target===this) closeFireEmployeeModal()">
+  <div class="modal-content" style="max-width: 500px; border: 1px solid rgba(239, 68, 68, 0.3);">
+    <div class="modal-header" style="border-bottom: 1px solid rgba(239, 68, 68, 0.2);">
+      <h3 id="fire-modal-title" style="color: #f87171;" data-i18n="fire_title"><i class="fa-solid fa-triangle-exclamation"></i> Fire AI Employee Warning</h3>
+      <button class="close-btn" onclick="closeFireEmployeeModal()">&times;</button>
+    </div>
+    <div class="modal-body" style="color: var(--text-primary); font-size: 13px; display: flex; flex-direction: column; gap: 15px;">
+      <div style="background: rgba(239, 68, 68, 0.1); border: 1px solid rgba(239, 68, 68, 0.2); padding: 12px; border-radius: 8px; color: #f87171;">
+        <strong data-i18n="fire_warning_title">Warning: Data Loss Risk!</strong>
+        <p style="margin: 5px 0 0 0; font-size: 11px;" data-i18n="fire_warning_desc">Terminating an AI employee's contract requires deciding how to handle their generated assets and local workspace records.</p>
+      </div>
+
+      <div>
+        <label class="form-label" style="margin-bottom: 8px;" data-i18n="delete_mode_label">Deletion Mode</label>
+        <div style="display: flex; flex-direction: column; gap: 8px;">
+          <label style="display: flex; align-items: flex-start; gap: 10px; cursor: pointer;">
+            <input type="radio" name="delete-mode" id="delete-mode-soft" value="soft" checked onchange="toggleDeleteMode(this.value)" style="margin-top: 3px;">
+            <div>
+              <strong style="color: #60a5fa;" data-i18n="soft_archive_title">Soft Archive (Recommended - Safe)</strong>
+              <p style="margin: 2px 0 0 0; font-size: 11px; color: var(--text-muted);" data-i18n="soft_archive_desc">
+                Locks the agent, updates status to "archived", and hides it from the active roster. All files, reports, and evidence remain untouched.
+              </p>
+            </div>
+          </label>
+          <label style="display: flex; align-items: flex-start; gap: 10px; cursor: pointer; margin-top: 8px;">
+            <input type="radio" name="delete-mode" id="delete-mode-hard" value="hard" onchange="toggleDeleteMode(this.value)" style="margin-top: 3px;">
+            <div>
+              <strong style="color: #f87171;" data-i18n="hard_delete_title">Permanent Wipe (Dangerous)</strong>
+              <p style="margin: 2px 0 0 0; font-size: 11px; color: var(--text-muted);" data-i18n="hard_delete_desc">
+                Deletes the SQLite records, removes task definitions, and permanently erases the local workspace and metadata directories on disk.
+              </p>
+            </div>
+          </label>
+        </div>
+      </div>
+
+      <div id="fire-files-warning-section" style="display: none; border-top: 1px solid var(--border-color); padding-top: 15px;">
+        <label class="form-label" style="color: #f87171; margin-bottom: 6px;">Files to be permanently deleted:</label>
+        <ul id="fire-files-list" style="margin: 0; padding-left: 20px; font-family: monospace; font-size: 11px; color: #fca5a5; display: flex; flex-direction: column; gap: 4px;">
+        </ul>
+      </div>
+
+      <div id="fire-confirm-input-section" style="display: none; border-top: 1px solid var(--border-color); padding-top: 15px;">
+        <label class="form-label" id="fire-confirm-input-label" data-i18n="confirm_id_label">Type the Employee ID to confirm permanent delete</label>
+        <input type="text" id="fire-confirm-id-input" class="form-input" placeholder="e.g. market-analyst" oninput="validateFireIdInput()" style="width: 100%; box-sizing: border-box; border-color: rgba(239, 68, 68, 0.4);">
+      </div>
+
+      <div style="display: flex; justify-content: flex-end; gap: 12px; margin-top: 10px; border-top: 1px solid var(--border-color); padding-top: 15px;">
+        <button class="chat-send-btn" style="background: rgba(255,255,255,0.05); border: 1px solid var(--border-color); color: var(--text-primary);" onclick="closeFireEmployeeModal()" data-i18n="cancel_btn">Cancel</button>
+        <button class="chat-send-btn" id="fire-confirm-action-btn" style="background: linear-gradient(135deg, #3b82f6, #2563eb); box-shadow: 0 4px 12px rgba(59, 130, 246, 0.2);" onclick="executeEmployeeOffboard()" data-i18n="confirm_btn">Confirm Action</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Fallback debug seed data -->
+<div id="static-fallback-tests">
+  <!-- Stub elements for testing backward compatibility -->
+</div>
+
+<!-- Raw data script -->
+<script>
+  // LIVE SNAPSHOT FALLBACK DATA
+  const MOCK_SUMMARY = window.kernelSummary;
+  let summaryData = window.kernelSummary;
+  window.summaryData = summaryData;
+  let isSimulationMode = false;
+  
+  const HUMAN_OWNER_ID = 'owner';
+
+  function getCompanyApiBase() {
+    return String(window.companyApiBase || 'http://127.0.0.1:8765').replace(/\/$/, '');
+  }
+
+  function companyApiLog(tag, text, type) {
+    if (typeof printTerminalLine === 'function') {
+      printTerminalLine({tag, text, type});
+    } else {
+      console.log(`[${tag}] ${text}`);
+    }
+  }
+
+  async function companyApiGet(path) {
+    const res = await fetch(getCompanyApiBase() + path, {method: 'GET'});
+    const data = await res.json();
+    if (!res.ok || data.ok === false) {
+      throw new Error(data.error || data.message || JSON.stringify(data));
+    }
+    return data;
+  }
+
+  async function companyApiGetReachable(path) {
+    const res = await fetch(getCompanyApiBase() + path, {method: 'GET'});
+    const data = await res.json();
+    return {res, data};
+  }
+
+  async function checkCompanyApi() {
+    try {
+      const {res, data} = await companyApiGetReachable('/v1/health');
+      const employees = data.counts ? data.counts.employees : 'unknown';
+      companyApiLog('SYSTEM', `Company Kernel API online: ${getCompanyApiBase()} employees=${employees} health=${data.ok === false ? 'needs-attention' : 'ok'}`, data.ok === false ? 'normal' : 'success');
+      try {
+        const attendance = await companyApiGet('/v1/attendance/latest');
+        if (attendance.counts) {
+          companyApiLog('SYSTEM', `Latest attendance: online=${attendance.counts.online} stalled=${attendance.counts.worker_stalled} no_reply=${attendance.counts.no_reply}`, 'success');
+        }
+      } catch (attendanceErr) {
+        companyApiLog('SYSTEM', `No latest attendance report yet: ${attendanceErr.message}`, 'normal');
+      }
+      const label = document.getElementById('db-path-label');
+      if (label && !isSimulationMode) label.innerText = getCompanyApiBase();
+      const badge = document.getElementById('top-status-badge');
+      const text = document.getElementById('top-status-text');
+      if (badge) badge.className = data.ok === false ? 'system-status attention' : 'system-status ok';
+      if (text) text.innerText = data.ok === false ? 'API ONLINE / CHECK HEALTH' : 'API ONLINE';
+      return true;
+    } catch (err) {
+      companyApiLog('ERROR', `Company Kernel API offline: ${err.message}. Start: bin/company-api-gateway --quiet`, 'error');
+      guideCollaborationAfterFailure('API 异常，先不要让人干等。');
+      const badge = document.getElementById('top-status-badge');
+      const text = document.getElementById('top-status-text');
+      if (badge) badge.className = 'system-status attention';
+      if (text) text.innerText = 'API OFFLINE';
+      return false;
+    }
+  }
+
+  async function companyApiRequest(path, payload, method) {
+    const res = await fetch(getCompanyApiBase() + path, {
+      method: method || 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(payload || {})
+    });
+    const data = await res.json();
+    if (!res.ok || data.ok === false) {
+      throw new Error(data.error || data.message || JSON.stringify(data));
+    }
+    return data;
+  }
+
+  async function companyApiPost(path, payload) {
+    return companyApiRequest(path, payload, 'POST');
+  }
+
+  function getDashboardSummary() {
+    window.summaryData = window.summaryData || window.kernelSummary || {conversations: [], employees: []};
+    window.summaryData.conversations = window.summaryData.conversations || [];
+    window.summaryData.employees = window.summaryData.employees || [];
+    return window.summaryData;
+  }
+
+  function isVerifiedEmployee(emp) {
+    return (emp.employee_status || emp.status) === 'active' && emp.id !== 'owner' && emp.role !== 'human-owner' && emp.runtime !== 'human';
+  }
+
+  function activeEmployeeOptions() {
+    return (getDashboardSummary().employees || [])
+      .filter(isVerifiedEmployee)
+      .filter(emp => emp.id && emp.id !== HUMAN_OWNER_ID)
+      .map(emp => ({
+        id: String(emp.id),
+        name: String(emp.name || emp.id),
+        role: String(emp.role || ''),
+        runtime: String(emp.runtime || '')
+      }));
+  }
+
+  function collaborationHelpText() {
+    const options = activeEmployeeOptions().slice(0, 12).map(emp => `@${emp.id}`).join(' ');
+    return options
+      ? `是否需要其他员工协助？可选：${options}。输入 @ 选择员工，发送后会创建/复用多人会话。`
+      : '当前没有可协助的 active 员工。先完成员工验证或启动 API。';
+  }
+
+  function parseMaybeJson(value, fallback) {
+    if (value === null || value === undefined || value === '') return fallback;
+    if (typeof value === 'object') return value;
+    try {
+      return JSON.parse(String(value));
+    } catch (err) {
+      return fallback;
+    }
+  }
+
+  function shortText(value, maxLength) {
+    const raw = value === null || value === undefined ? '' : String(value);
+    const oneLine = raw.replace(/\s+/g, ' ').trim();
+    if (!oneLine) return '-';
+    return oneLine.length > maxLength ? oneLine.slice(0, maxLength - 1) + '…' : oneLine;
+  }
+
+  function approvalDetail(approval) {
+    const detail = parseMaybeJson(approval && approval.reason, {});
+    return detail && typeof detail === 'object' && !Array.isArray(detail) ? detail : {};
+  }
+
+  function approvalSummary(approval) {
+    const detail = approvalDetail(approval);
+    return {
+      request_reason: detail.request_reason || approval.reason || '',
+      target: detail.target || approval.target || '',
+      risk: detail.risk || approval.risk || '',
+      evidence: detail.evidence || '',
+      task_id: detail.metadata && detail.metadata.task_id ? detail.metadata.task_id : ''
+    };
+  }
+
+  function renderDetailValue(value) {
+    if (value === null || value === undefined || value === '') return '<span style="color: var(--text-muted);">-</span>';
+    if (Array.isArray(value)) return `<div class="detail-list">${value.map(item => `<span>${escapeHtml(typeof item === 'object' ? JSON.stringify(item) : item)}</span>`).join('')}</div>`;
+    if (typeof value === 'object') return `<pre class="detail-json">${escapeHtml(JSON.stringify(value, null, 2))}</pre>`;
+    return escapeHtml(value);
+  }
+
+  function renderDetails(title, rows, raw) {
+    const html = `
+      <div class="detail-summary">
+        ${rows.map(row => `
+          <div class="detail-row">
+            <div class="detail-key">${escapeHtml(row[0])}</div>
+            <div class="detail-value">${renderDetailValue(row[1])}</div>
+          </div>
+        `).join('')}
+      </div>
+      <details class="detail-raw">
+        <summary>Raw JSON</summary>
+        <pre>${escapeHtml(JSON.stringify(raw, null, 2))}</pre>
+      </details>
+    `;
+    const modalTitle = document.getElementById('modal-title');
+    const code = document.getElementById('modal-code');
+    if (modalTitle) modalTitle.innerText = title;
+    if (code) {
+      code.innerHTML = html;
+      code.style.whiteSpace = 'normal';
+    }
+    const modal = document.getElementById('details-modal');
+    if (modal) modal.style.display = 'flex';
+  }
+
+  function showApprovalDetails(approval) {
+    const detail = approvalDetail(approval);
+    const summary = approvalSummary(approval);
+    renderDetails(`Approval: ${approval.id || ''}`, [
+      ['Status', approval.status || ''],
+      ['Action', approval.action || ''],
+      ['Source', approval.source_agent || ''],
+      ['Target', summary.target || '-'],
+      ['Risk', summary.risk || '-'],
+      ['Task ID', summary.task_id || '-'],
+      ['Reason', summary.request_reason || '-'],
+      ['Evidence', summary.evidence || '-'],
+      ['Updated', formatDate(approval.updated_at || '')],
+      ['Decision By', detail.decided_by || detail.decision_by || '-'],
+      ['Decision Reason', detail.decision_reason || '-']
+    ], approval);
+  }
+
+  function showTraceDetails(trace) {
+    renderDetails(`Trace: ${trace.trace_id || ''}`, [
+      ['Title', trace.title || ''],
+      ['Span Count', (trace.spans || []).length],
+      ['Duration', `${trace.duration_ms || 0} ms`],
+      ['Started', formatDate(trace.started_at || '')],
+      ['Updated', formatDate(trace.updated_at || '')],
+      ['Services', [...new Set((trace.spans || []).map(span => span.service || 'unknown'))].join(', ')],
+      ['Spans', (trace.spans || []).map(span => `${span.service || '-'} / ${span.name || '-'} / ${span.task_id || '-'}`)]
+    ], trace);
+  }
+
+  function guideCollaborationAfterFailure(prefix) {
+    companyApiLog('SYSTEM', `${prefix} ${collaborationHelpText()}`, 'normal');
+  }
+
+  function ensureMentionSuggestBox(input) {
+    let box = document.getElementById('agent-mention-suggestions');
+    if (!box && input && input.parentElement) {
+      box = document.createElement('div');
+      box.id = 'agent-mention-suggestions';
+      box.className = 'agent-mention-suggestions';
+      input.parentElement.appendChild(box);
+    }
+    return box;
+  }
+
+  function currentMentionQuery(text, position) {
+    const left = String(text || '').slice(0, position);
+    const match = left.match(/(^|\s)@([a-zA-Z0-9_-]*)$/);
+    return match ? match[2] : null;
+  }
+
+  function renderMentionSuggestions(input) {
+    const box = ensureMentionSuggestBox(input);
+    if (!box || !input) return;
+    const query = currentMentionQuery(input.value, input.selectionStart || input.value.length);
+    if (query === null) {
+      box.style.display = 'none';
+      box.innerHTML = '';
+      return;
+    }
+    const lower = query.toLowerCase();
+    const matches = activeEmployeeOptions()
+      .filter(emp => emp.id.toLowerCase().includes(lower) || emp.name.toLowerCase().includes(lower))
+      .slice(0, 8);
+    if (!matches.length) {
+      box.innerHTML = `<div class="mention-empty">没有匹配员工。${escapeHtml(collaborationHelpText())}</div>`;
+      box.style.display = 'block';
+      return;
+    }
+    box.innerHTML = matches.map((emp, index) => `
+      <button type="button" class="mention-option ${index === 0 ? 'active' : ''}" data-agent="${escapeHtml(emp.id)}">
+        <span>@${escapeHtml(emp.id)}</span>
+        <small>${escapeHtml(emp.name)} · ${escapeHtml(emp.role || emp.runtime || 'agent')}</small>
+      </button>
+    `).join('');
+    box.style.display = 'block';
+  }
+
+  function insertMention(input, agentId) {
+    const position = input.selectionStart || input.value.length;
+    const left = input.value.slice(0, position);
+    const right = input.value.slice(position);
+    const replaced = left.replace(/(^|\s)@([a-zA-Z0-9_-]*)$/, `$1@${agentId} `);
+    input.value = replaced + right;
+    const nextPos = replaced.length;
+    input.focus();
+    input.setSelectionRange(nextPos, nextPos);
+    renderMentionSuggestions(input);
+  }
+
+  function bindMentionAutocomplete() {
+    if (window.agentMentionAutocompleteBound) return;
+    window.agentMentionAutocompleteBound = true;
+    const input = document.getElementById('chat-input-field');
+    if (!input) return;
+    ensureMentionSuggestBox(input);
+    input.addEventListener('input', () => renderMentionSuggestions(input));
+    input.addEventListener('keyup', () => renderMentionSuggestions(input));
+    input.addEventListener('blur', () => setTimeout(() => {
+      const box = document.getElementById('agent-mention-suggestions');
+      if (box) box.style.display = 'none';
+    }, 150));
+    input.addEventListener('keydown', (event) => {
+      const box = document.getElementById('agent-mention-suggestions');
+      if (event.key === 'Tab' && box && box.style.display !== 'none') {
+        const option = box.querySelector('.mention-option.active, .mention-option');
+        if (option) {
+          event.preventDefault();
+          insertMention(input, option.dataset.agent || '');
+        }
+      }
+    });
+    document.addEventListener('mousedown', (event) => {
+      const option = event.target && event.target.closest ? event.target.closest('.mention-option') : null;
+      if (!option) return;
+      event.preventDefault();
+      insertMention(input, option.dataset.agent || '');
+    });
+  }
+
+  // Settings Card Toggles
+  window.toggleCardSettingsMenu = function(event, agentId) {
+    event.stopPropagation();
+    document.querySelectorAll('.card-dropdown-menu').forEach(menu => {
+      if (menu.id !== `dropdown-${agentId}`) {
+        menu.classList.remove('open');
+      }
+    });
+    const targetMenu = document.getElementById(`dropdown-${agentId}`);
+    if (targetMenu) {
+      targetMenu.classList.toggle('open');
+    }
+  };
+
+  document.addEventListener('click', () => {
+    document.querySelectorAll('.card-dropdown-menu').forEach(menu => menu.classList.remove('open'));
+  });
+
+  // Safe Dialog Input Transitions
+  window.routeDirectMessageToChat = async function(agentId) {
+    switchTab('events');
+    const summary = getDashboardSummary();
+    let thread = (summary.conversations || []).find(c => {
+      const parts = conversationParticipants(c);
+      return parts.includes(agentId) && parts.length === 2;
+    });
+
+    if (!thread) {
+      companyApiLog('SYSTEM', `Initializing direct session with @${agentId}...`, 'normal');
+      try {
+        const result = await companyApiPost('/v1/conversations', {
+          from: HUMAN_OWNER_ID,
+          participants: [HUMAN_OWNER_ID, agentId].join(','),
+          title: `Direct Session with ${agentId}`,
+          body: `Direct channel opened with ${agentId}.`
+        });
+        thread = upsertConversationFromApi(result);
+      } catch (err) {
+        companyApiLog('ERROR', `Failed to open direct session: ${err.message}`, 'error');
+        return;
+      }
+    }
+
+    if (thread) {
+      window.activeThreadId = thread.id;
+      populateChatHub();
+      renderRealChatMessages();
+    }
+  };
+
+  // Interception status & claims coordinator
+  window.toggleInterceptionMode = async function() {
+    const threadId = getActiveConversationId();
+    if (!threadId) return;
+
+    const summary = getDashboardSummary();
+    const thread = (summary.conversations || []).find(c => c.id === threadId);
+    if (!thread) return;
+
+    const participants = conversationParticipants(thread);
+    const activeAgents = participants.filter(p => p !== HUMAN_OWNER_ID);
+    
+    // Check if we are currently intercepting (by reading some state or checking if owner is joined + communication is locked)
+    // We can hold state in window.isSessionIntercepted
+    const wasIntercepted = !!window.isSessionIntercepted;
+
+    try {
+      if (!wasIntercepted) {
+        // Intercept: Join & lock
+        if (!participants.includes(HUMAN_OWNER_ID)) {
+          companyApiLog('SYSTEM', `Inserting ${HUMAN_OWNER_ID} into ${threadId}...`, 'normal');
+          const result = await companyApiPost(`/v1/conversations/${encodeURIComponent(threadId)}/join`, {agent: HUMAN_OWNER_ID});
+          const updated = upsertConversationFromApi({conversation: result.conversation});
+          if (updated && result.conversation && result.conversation.participants) {
+            updated.participants_json = JSON.stringify(result.conversation.participants);
+          }
+        }
+        
+        for (const agentId of activeAgents) {
+          await companyApiPost(`/v1/employees/${encodeURIComponent(agentId)}/communication`, {enabled: false});
+          companyApiLog('SYSTEM', `Communication paused for agent: ${agentId}`, 'warn');
+        }
+        
+        window.isSessionIntercepted = true;
+        companyApiLog('SYSTEM', `Session ${threadId} intercepted. Agents paused.`, 'warn');
+      } else {
+        // Release control
+        for (const agentId of activeAgents) {
+          await companyApiPost(`/v1/employees/${encodeURIComponent(agentId)}/communication`, {enabled: true});
+          companyApiLog('SYSTEM', `Communication resumed for agent: ${agentId}`, 'success');
+        }
+        
+        window.isSessionIntercepted = false;
+        companyApiLog('SYSTEM', `Session ${threadId} released. Agents resumed.`, 'success');
+      }
+
+      refreshChatHub();
+    } catch(err) {
+      companyApiLog('ERROR', `Failed to toggle interception state: ${err.message}`, 'error');
+    }
+  };
+
+  function getActiveConversationId() {
+    if (window.activeThreadId) return window.activeThreadId;
+    const active = document.querySelector('.chat-thread-item.active');
+    const onclick = active ? String(active.getAttribute('onclick') || '') : '';
+    const match = onclick.match(/selectChatThread\('([^']+)'\)/);
+    return match ? match[1] : '';
+  }
+
+  function stripMentions(text) {
+    return String(text || '').replace(/@([a-zA-Z0-9_-]+)/g, '').trim();
+  }
+
+  function upsertConversationFromApi(result) {
+    const conversation = result.conversation || {};
+    const message = result.message;
+    if (!conversation.id) return null;
+    const summary = getDashboardSummary();
+    let existing = summary.conversations.find(item => item.id === conversation.id);
+    if (!existing) {
+      const participants = conversation.participants || [];
+      existing = {
+        id: conversation.id,
+        title: conversation.title || conversation.id,
+        created_by: HUMAN_OWNER_ID,
+        status: conversation.status || 'open',
+        participants_json: JSON.stringify(participants),
+        message_count: 0,
+        messages: []
+      };
+      summary.conversations.unshift(existing);
+    }
+    if (message && !(existing.messages || []).some(item => item.id === message.id)) {
+      existing.messages = existing.messages || [];
+      existing.messages.push(message);
+      existing.message_count = existing.messages.length;
+      existing.last_message_at = message.created_at || new Date().toISOString();
+    }
+    return existing;
+  }
+
+  function conversationParticipants(conversation) {
+    try {
+      const parsed = JSON.parse(conversation.participants_json || '[]');
+      return Array.isArray(parsed) ? parsed : [];
+    } catch (err) {
+      return [];
+    }
+  }
+
+  function ownerInConversation(conversation) {
+    return conversationParticipants(conversation).includes(HUMAN_OWNER_ID);
+  }
+
+  function renderRealChatMessages() {
+    const summary = getDashboardSummary();
+    const conversation = summary.conversations.find(conv => conv.id === getActiveConversationId());
+    const title = document.getElementById('chat-header-title');
+    const members = document.getElementById('chat-header-members');
+    const joinButton = document.getElementById('chat-join-btn');
+    const container = document.getElementById('chat-messages-container');
+    const banner = document.getElementById('chat-intercept-banner');
+    const actionBtn = document.getElementById('intercept-action-btn');
+    const statusText = document.getElementById('intercept-status-text');
+    const chatView = document.getElementById('chat-view-container');
+
+    if (!conversation || !container) return;
+    const participants = conversationParticipants(conversation);
+    if (title) title.innerText = conversation.title || conversation.id;
+    if (members) members.innerText = `Participants: ${participants.join(', ') || '-'}`;
+    if (joinButton) {
+      joinButton.disabled = ownerInConversation(conversation);
+      joinButton.innerHTML = ownerInConversation(conversation) ? '<i class="fa-solid fa-user-check"></i> Owner Inserted' : '<i class="fa-solid fa-user-plus"></i> Insert Owner';
+    }
+
+    // Interception Banner layout updates
+    if (banner) {
+      const activeAgents = participants.filter(p => p !== HUMAN_OWNER_ID);
+      if (activeAgents.length > 0) {
+        banner.style.display = 'flex';
+        if (window.isSessionIntercepted) {
+          statusText.innerText = 'Interception Mode: Agents communication is paused.';
+          actionBtn.className = 'intercept-btn release';
+          actionBtn.innerHTML = '<i class="fa-solid fa-lock-open"></i> Resume Agents';
+          if (chatView) chatView.classList.add('intercepted');
+        } else {
+          statusText.innerText = 'Session Active: Agents communicating autonomously (Read-Only).';
+          actionBtn.className = 'intercept-btn';
+          actionBtn.innerHTML = '<i class="fa-solid fa-user-lock"></i> Intercept';
+          if (chatView) chatView.classList.remove('intercepted');
+        }
+      } else {
+        banner.style.display = 'none';
+        if (chatView) chatView.classList.remove('intercepted');
+      }
+    }
+
+    const messages = conversation.messages || [];
+    if (!messages.length) {
+      container.innerHTML = '<div style="color: var(--text-muted); font-size: 12px; padding: 28px; text-align: center;">No messages recorded in this conversation.</div>';
+      return;
+    }
+    
+    container.innerHTML = messages.map((message) => {
+      // Inline System Event Cards inside conversations
+      if (message.source_agent === 'system' || message.source_agent === 'SYSTEM') {
+        return `<div class="chat-system-log">${escapeHtml(message.body)}</div>`;
+      }
+      
+      const isOwner = message.source_agent === HUMAN_OWNER_ID;
+      const avatarChar = String(message.source_agent || '--').slice(0, 2).toUpperCase();
+      return `
+        <div class="chat-bubble-container ${isOwner ? 'sent' : ''}">
+          <div class="chat-bubble-avatar">${escapeHtml(avatarChar)}</div>
+          <div class="chat-bubble-wrapper">
+            <div class="chat-bubble-sender">${escapeHtml(message.source_agent || '-')}</div>
+            <div class="chat-bubble-body">${escapeHtml(message.body || '')}</div>
+            <div class="chat-bubble-time">${formatDate(message.created_at || message.time || '')}</div>
+          </div>
+        </div>
+      `;
+    }).join('');
+    container.scrollTop = container.scrollHeight;
+  }
+
+  function refreshChatHub() {
+    if (typeof window.populateChatHub === 'function') window.populateChatHub();
+    renderRealChatMessages();
+    companyApiLog('SYSTEM', 'Chat list refreshed from embedded live summary.', 'normal');
+  }
+
+  async function joinActiveConversation() {
+    const conversationId = getActiveConversationId();
+    if (!conversationId) {
+      companyApiLog('ERROR', 'Select a conversation before inserting owner.', 'error');
+      return;
+    }
+    companyApiLog('SYSTEM', `Inserting ${HUMAN_OWNER_ID} into ${conversationId}...`, 'normal');
+    try {
+      const result = await companyApiPost(`/v1/conversations/${encodeURIComponent(conversationId)}/join`, {agent: HUMAN_OWNER_ID});
+      const conversation = upsertConversationFromApi({conversation: result.conversation});
+      if (conversation && result.conversation && result.conversation.participants) {
+        conversation.participants_json = JSON.stringify(result.conversation.participants);
+      }
+      if (typeof window.populateChatHub === 'function') window.populateChatHub();
+      renderRealChatMessages();
+      companyApiLog('SYSTEM', `${HUMAN_OWNER_ID} inserted into conversation: ${conversationId}`, 'success');
+    } catch (err) {
+      companyApiLog('ERROR', `Insert owner failed: ${err.message}`, 'error');
+    }
+  }
+
+  function openNewConversationComposer() {
+    const participants = prompt('Participants, comma-separated. You can also type @codex @trae in the message box.', 'codex,trae');
+    if (participants === null) return;
+    const body = prompt('Opening message', '');
+    if (body === null) return;
+    const mentions = parseMentionedEmployees(`${participants.split(',').map(item => '@' + item.trim()).join(' ')} ${body}`);
+    const input = document.getElementById('chat-input-field');
+    if (input) input.value = `${mentions.map(item => '@' + item).join(' ')} ${body}`.trim();
+    return realSendChatMessage();
+  }
+
+  async function realSendChatMessage() {
+    const input = document.getElementById('chat-input-field');
+    const msg = input ? input.value.trim() : '';
+    if (!msg) return;
+    const mentions = parseMentionedEmployees(msg);
+    companyApiLog('SYSTEM', mentions.length ? `Creating group conversation for @${mentions.join(' @')}...` : `Sending conversation reply as ${HUMAN_OWNER_ID}...`, 'normal');
+    try {
+      let conversation = null;
+      if (mentions.length > 0) {
+        const body = stripMentions(msg) || msg;
+        const title = body.slice(0, 48) || `Conversation with ${mentions.join(', ')}`;
+        const result = await companyApiPost('/v1/conversations', {
+          from: HUMAN_OWNER_ID,
+          participants: [HUMAN_OWNER_ID, ...mentions].join(','),
+          title,
+          body
+        });
+        conversation = upsertConversationFromApi(result);
+      } else {
+        const currentThreadId = getActiveConversationId();
+        const current = (getDashboardSummary().conversations || []).find(item => item.id === currentThreadId);
+        if (!current) {
+          companyApiLog('ERROR', 'Please select a conversation thread first, or @ one or more active employees.', 'error');
+          guideCollaborationAfterFailure('请选择会话或 @ 员工。');
+          return;
+        }
+        const result = await companyApiPost(`/v1/conversations/${encodeURIComponent(current.id)}/reply`, {
+          from: HUMAN_OWNER_ID,
+          body: msg
+        });
+        current.messages = current.messages || [];
+        current.messages.push(result.message);
+        current.message_count = current.messages.length;
+        current.last_message_at = result.message.created_at || new Date().toISOString();
+        conversation = current;
+      }
+      input.value = '';
+      if (conversation) window.activeThreadId = conversation.id;
+      if (typeof window.populateChatHub === 'function') window.populateChatHub();
+      renderRealChatMessages();
+      companyApiLog('SYSTEM', `Conversation message recorded: ${conversation ? conversation.id : 'unknown'}`, 'success');
+    } catch (err) {
+      companyApiLog('ERROR', `Conversation send failed: ${err.message}`, 'error');
+      guideCollaborationAfterFailure('发送失败，必须反馈给发起人并给出下一步。');
+    }
+  }
+
+  window.sendChatMessage = realSendChatMessage;
+  window.joinActiveConversation = joinActiveConversation;
+  window.openNewConversationComposer = openNewConversationComposer;
+  window.refreshChatHub = refreshChatHub;
+  
+  function bindChatControlButtons() {
+    if (window.chatControlButtonsBound) return;
+    window.chatControlButtonsBound = true;
+    document.addEventListener('click', (event) => {
+      const target = event.target && event.target.closest ? event.target.closest('#chat-join-btn, #chat-create-btn, #chat-refresh-btn') : null;
+      if (!target) return;
+      event.preventDefault();
+      event.stopPropagation();
+      companyApiLog('SYSTEM', `Chat control clicked: ${target.id}`, 'normal');
+      if (target.id === 'chat-join-btn') joinActiveConversation();
+      if (target.id === 'chat-create-btn') openNewConversationComposer();
+      if (target.id === 'chat-refresh-btn') refreshChatHub();
+    }, true);
+  }
+  
+  bindChatControlButtons();
+
+  async function realOnboardGeneratedEmployee() {
+    if (!generatedRecruitData) return;
+    printTerminalLine({tag: 'SYSTEM', text: `Calling Company Kernel API to onboard '${generatedRecruitData.id}'...`, type: 'normal'});
+    try {
+      await companyApiPost('/v1/employees/onboard', {
+        id: generatedRecruitData.id,
+        name: generatedRecruitData.name,
+        role: generatedRecruitData.role,
+        runtime: generatedRecruitData.runtime,
+        workspace: generatedRecruitData.workspace,
+        skills: generatedRecruitData.skills,
+        tools: generatedRecruitData.tools,
+        task_types: generatedRecruitData.task_types,
+        open_communication: true,
+        create_test_task: false
+      });
+      printTerminalLine({tag: 'SYSTEM', text: `Onboarded '${generatedRecruitData.id}'. Reloading live dashboard...`, type: 'success'});
+      setTimeout(() => location.reload(), 800);
+    } catch (err) {
+      printTerminalLine({tag: 'ERROR', text: `Onboard failed: ${err.message}`, type: 'error'});
+    }
+  }
+
+  async function realDirectEmployeeMessage(id, source, body) {
+    companyApiLog('SYSTEM', `Calling Company Kernel API direct message '${source}' -> '${id}'...`, 'normal');
+    try {
+      const result = await companyApiPost('/v1/messages/direct', {from: source || 'main', to: id, body});
+      companyApiLog('SYSTEM', `Direct reply from '${id}': ${result.reply || '(empty)'}; evidence=${result.file || 'n/a'}`, 'success');
+      return result;
+    } catch (err) {
+      companyApiLog('ERROR', `Direct message failed: ${err.message}`, 'error');
+      return null;
+    }
+  }
+
+  async function realUpdateEmployeeProfile(id, payload) {
+    companyApiLog('SYSTEM', `Calling Company Kernel API to update '${id}'...`, 'normal');
+    try {
+      await companyApiRequest(`/v1/employees/${encodeURIComponent(id)}`, payload || {}, 'PATCH');
+      companyApiLog('SYSTEM', `Updated '${id}'. Reloading live dashboard...`, 'success');
+      setTimeout(() => location.reload(), 800);
+    } catch (err) {
+      companyApiLog('ERROR', `Update failed: ${err.message}`, 'error');
+    }
+  }
+
+  async function toggleEmployeeCommunication(id, enabled) {
+    companyApiLog('SYSTEM', `${enabled ? 'Resuming' : 'Pausing'} communication for '${id}'...`, 'normal');
+    try {
+      await companyApiPost(`/v1/employees/${encodeURIComponent(id)}/communication`, {enabled});
+      companyApiLog('SYSTEM', `${enabled ? 'Resumed' : 'Paused'} communication for '${id}'. Reloading live dashboard...`, 'success');
+      setTimeout(() => location.reload(), 800);
+    } catch (err) {
+      companyApiLog('ERROR', `Communication update failed: ${err.message}`, 'error');
+    }
+  }
+
+  function joinCandidateEmployee(id) {
+    if (!id) return;
+    companyApiLog('ERROR', `Candidate '${id}' cannot be joined directly. Run: bin/companyctl employee verify-direct --id ${id} --from main --rounds 3 --activate`, 'error');
+  }
+
+  function openEditEmployeeProfile(id, currentName, currentRole, currentRuntime, currentStatus) {
+    const name = prompt(`Name for ${id}`, currentName || id);
+    if (name === null) return;
+    const role = prompt(`Role for ${id}`, currentRole || 'business-agent');
+    if (role === null) return;
+    const runtime = prompt(`Runtime for ${id}`, currentRuntime || 'local');
+    if (runtime === null) return;
+    const status = prompt(`Status for ${id}: active, candidate, archived`, currentStatus || 'active');
+    if (status === null) return;
+    if (!['active', 'candidate', 'archived'].includes(status)) {
+      companyApiLog('ERROR', `Invalid employee status: ${status}`, 'error');
+      return;
+    }
+    return realUpdateEmployeeProfile(id, {name, role, runtime, status});
+  }
+
+  async function realOffboardEmployee(id, hardDelete) {
+    printTerminalLine({tag: 'SYSTEM', text: `Calling Company Kernel API to offboard '${id}'...`, type: 'normal'});
+    try {
+      await companyApiRequest(`/v1/employees/${encodeURIComponent(id)}`, {hard_delete: !!hardDelete}, 'DELETE');
+      printTerminalLine({tag: 'SYSTEM', text: `Offboarded '${id}'. Reloading live dashboard...`, type: 'success'});
+      setTimeout(() => location.reload(), 800);
+    } catch (err) {
+      printTerminalLine({tag: 'ERROR', text: `Offboard failed: ${err.message}`, type: 'error'});
+    }
+  }
+
+  function installNotificationSettingsPanel() {
+    if (document.getElementById('notification-settings-panel')) return;
+    const sidebar = document.querySelector('.sidebar') || document.querySelector('aside') || document.body;
+    const panel = document.createElement('div');
+    panel.id = 'notification-settings-panel';
+    panel.style.cssText = 'margin:12px;padding:10px;border:1px solid rgba(129,140,248,.25);border-radius:8px;background:rgba(15,23,42,.72);font-size:11px;color:#c7d2fe;';
+    panel.innerHTML = `
+      <div style="font-weight:800;margin-bottom:8px;">通知设置</div>
+      <label style="display:block;margin-bottom:6px;">Telegram Account
+        <input id="notify-telegram-account" value="employee-notify" style="width:100%;margin-top:3px;background:#0b1020;color:#e5e7eb;border:1px solid rgba(129,140,248,.25);border-radius:6px;padding:6px;">
+      </label>
+      <label style="display:block;margin-bottom:6px;">Token Env Var
+        <input id="notify-telegram-token-env" value="COMPANY_EMPLOYEE_TELEGRAM_BOT_TOKEN" style="width:100%;margin-top:3px;background:#0b1020;color:#e5e7eb;border:1px solid rgba(129,140,248,.25);border-radius:6px;padding:6px;">
+      </label>
+      <label style="display:block;margin-bottom:6px;">Default Target
+        <input id="notify-telegram-target" placeholder="telegram chat/user target" style="width:100%;margin-top:3px;background:#0b1020;color:#e5e7eb;border:1px solid rgba(129,140,248,.25);border-radius:6px;padding:6px;">
+      </label>
+      <label style="display:block;margin-bottom:8px;">Enabled
+        <select id="notify-enabled" style="width:100%;margin-top:3px;background:#0b1020;color:#e5e7eb;border:1px solid rgba(129,140,248,.25);border-radius:6px;padding:6px;">
+          <option value="true">true</option>
+          <option value="false">false</option>
+        </select>
+      </label>
+      <div style="display:flex;gap:6px;">
+        <button type="button" onclick="saveNotificationSettings()" style="flex:1;border:0;border-radius:6px;padding:7px;background:#4f46e5;color:white;font-weight:700;">Save</button>
+        <button type="button" onclick="loadNotificationSettings()" style="flex:1;border:1px solid rgba(129,140,248,.35);border-radius:6px;padding:7px;background:transparent;color:#c7d2fe;font-weight:700;">Load</button>
+      </div>
+      <div id="notify-route-status" style="margin-top:7px;color:#94a3b8;line-height:1.45;">Routes: loading...</div>
+      <div style="margin-top:7px;color:#94a3b8;">不要粘贴 token，只保存环境变量名。</div>
+    `;
+    sidebar.appendChild(panel);
+  }
+
+  async function loadNotificationSettings() {
+    companyApiLog('SYSTEM', 'Loading notification settings...', 'normal');
+    try {
+      const data = await companyApiGet('/v1/settings/notification');
+      const cfg = data.employee_notifications || {};
+      const account = cfg.account || 'employee-notify';
+      const telegram = (data.telegram_accounts || {})[account] || {};
+      const accountInput = document.getElementById('notify-telegram-account');
+      const tokenInput = document.getElementById('notify-telegram-token-env');
+      const targetInput = document.getElementById('notify-telegram-target');
+      const enabledInput = document.getElementById('notify-enabled');
+      if (accountInput) accountInput.value = account;
+      if (tokenInput) tokenInput.value = telegram.bot_token_env || 'COMPANY_EMPLOYEE_TELEGRAM_BOT_TOKEN';
+      if (targetInput) targetInput.value = cfg.target || telegram.default_target || '';
+      if (enabledInput) enabledInput.value = cfg.enabled ? 'true' : 'false';
+      const routes = data.routes || {};
+      const routeStatus = document.getElementById('notify-route-status');
+      if (routeStatus) {
+        routeStatus.innerHTML = `Routes: approval -> ${escapeHtml((routes.approval || {}).target || '-')}<br>error -> ${escapeHtml((routes.error || {}).target || '-')}<br>token_configured=${telegram.token_configured ? 'yes' : 'no'}`;
+      }
+      companyApiLog('SYSTEM', `Notification loaded. approval/error routes ready. token_configured=${telegram.token_configured ? 'yes' : 'no'}`, 'success');
+    } catch (err) {
+      companyApiLog('ERROR', `Notification load failed: ${err.message}`, 'error');
+    }
+  }
+
+  async function saveNotificationSettings() {
+    const tokenEnv = (document.getElementById('notify-telegram-token-env')?.value || '').trim();
+    if (!tokenEnv) {
+      companyApiLog('ERROR', 'Bot token env var is required. Do not paste the token itself.', 'error');
+      return;
+    }
+    try {
+      await companyApiPost('/v1/settings/notification', {
+        telegram_account: (document.getElementById('notify-telegram-account')?.value || 'employee-notify').trim(),
+        telegram_bot_token_env: tokenEnv,
+        telegram_default_target: (document.getElementById('notify-telegram-target')?.value || '').trim(),
+        employee_notifications_enabled: (document.getElementById('notify-enabled')?.value || 'true') === 'true'
+      });
+      companyApiLog('SYSTEM', 'Notification settings saved without storing token.', 'success');
+    } catch (err) {
+      companyApiLog('ERROR', `Notification save failed: ${err.message}`, 'error');
+    }
+  }
+
+  function refreshGovernanceTables() {
+    const summary = getDashboardSummary();
+    const approvalsTbody = document.getElementById('approvals-tbody');
+    if (approvalsTbody) {
+      const approvals = summary.approvals || [];
+      approvalsTbody.innerHTML = approvals.length ? approvals.map((app, index) => {
+        const detail = approvalSummary(app);
+        return `
+          <tr data-approval-index="${index}">
+            <td style="font-family: monospace; max-width: 260px;">${escapeHtml(app.id || '')}</td>
+            <td>${escapeHtml(app.source_agent || '-')}</td>
+            <td><span class="badge claimed">${escapeHtml(app.action || '-')}</span></td>
+            <td><span class="badge ${escapeHtml(app.status || '')}">${escapeHtml(app.status || '')}</span></td>
+            <td>
+              <div style="font-weight:700;color:var(--text-primary);">${escapeHtml(shortText(detail.request_reason, 120))}</div>
+              <div style="margin-top:4px;color:var(--text-muted);font-size:11px;">
+                target=${escapeHtml(detail.target || '-')} · risk=${escapeHtml(detail.risk || '-')}${detail.task_id ? ` · task=${escapeHtml(detail.task_id)}` : ''}
+              </div>
+            </td>
+            <td>${formatDate(app.updated_at || '')}</td>
+          </tr>
+        `;
+      }).join('') : '<tr><td colspan="6" style="color:var(--text-muted);text-align:center;padding:24px;">No approvals.</td></tr>';
+      approvalsTbody.querySelectorAll('tr[data-approval-index]').forEach(row => {
+        row.addEventListener('click', () => showApprovalDetails(approvals[Number(row.dataset.approvalIndex)]));
+      });
+    }
+  }
+
+  function refreshTraceTelemetry() {
+    const summary = getDashboardSummary();
+    const container = document.getElementById('traces-list-container');
+    if (!container) return;
+    const traces = summary.traces || [];
+    if (!traces.length) {
+      container.innerHTML = `
+        <div style="color: var(--text-muted); font-size: 13px; text-align: center; padding: 30px;">
+          No trace spans yet. Submit/claim/done tasks or run adapters to generate trace_id-linked events.
+        </div>`;
+      return;
+    }
+    const q = document.getElementById('trace-search') ? document.getElementById('trace-search').value.toLowerCase() : '';
+    container.innerHTML = traces.map((trace, traceIndex) => {
+      const spans = trace.spans || [];
+      const services = [...new Set(spans.map(span => span.service || 'unknown'))];
+      const match = !q || trace.trace_id.toLowerCase().includes(q) || String(trace.title || '').toLowerCase().includes(q) || services.join(' ').toLowerCase().includes(q) || spans.some(span => String(span.name || '').toLowerCase().includes(q));
+      if (!match) return '';
+      const duration = Math.max(Number(trace.duration_ms || 1), 1);
+      const spansHtml = spans.map((span, spanIndex) => {
+        const widthPct = Math.max(4, Math.min(100, (Number(span.duration_ms || 1) / duration) * 100));
+        const leftPct = Math.max(0, Math.min(96, (Number(span.start_ms || 0) / duration) * 100));
+        const serviceClass = ['gateway', 'sandbox', 'video-creator', 'codex', 'hermes', 'main'].includes(String(span.service || '').toLowerCase()) ? `span-${String(span.service || '').toLowerCase()}` : 'span-unknown';
+        return `
+          <div class="flamegraph-row" data-trace-index="${traceIndex}" data-span-index="${spanIndex}">
+            <div class="flamegraph-span ${serviceClass}" style="width:${widthPct}%;left:${leftPct}%;">
+              ${escapeHtml(shortText(`${span.service || '-'}: ${span.name || '-'}`, 80))} · ${Math.round(Number(span.duration_ms || 0))}ms
+            </div>
+          </div>`;
+      }).join('');
+      return `
+        <div class="trace-item-card" id="trace-card-${escapeHtml(trace.trace_id || '')}" data-trace-index="${traceIndex}">
+          <div class="trace-card-header">
+            <span class="trace-card-title"><i class="fa-solid fa-code-merge"></i> ${escapeHtml(trace.title || trace.trace_id || '')}</span>
+            <div class="trace-card-meta">
+              <span><strong>${spans.length}</strong> spans</span>
+              <span>${escapeHtml(services.join(' -> ') || 'unknown')}</span>
+              <span>Total: <strong class="trace-duration">${Math.round(duration)}ms</strong></span>
+            </div>
+          </div>
+          <div class="flamegraph-container">${spansHtml}</div>
+        </div>`;
+    }).join('');
+    container.querySelectorAll('.trace-item-card[data-trace-index]').forEach(card => {
+      card.addEventListener('click', () => showTraceDetails(traces[Number(card.dataset.traceIndex)]));
+    });
+    container.querySelectorAll('.flamegraph-row[data-trace-index][data-span-index]').forEach(row => {
+      row.addEventListener('click', event => {
+        event.stopPropagation();
+        const trace = traces[Number(row.dataset.traceIndex)] || {};
+        const span = (trace.spans || [])[Number(row.dataset.spanIndex)];
+        showDetails('Telemetry Span details', span || {});
+      });
+    });
+  }
+
+  function refreshDashboardPresentation() {
+    refreshGovernanceTables();
+    refreshTraceTelemetry();
+  }
+
+  function populateFollowups() {
+    const summary = window.summaryData || window.kernelSummary || {followups: []};
+    const tbody = document.getElementById('followups-tbody');
+    if (!tbody) return;
+    const followups = summary.followups || [];
+    tbody.innerHTML = followups.map(item => `
+      <tr onclick="showDetails('Followup: ' + '${escapeHtml(item.id)}', ${JSON.stringify(item).replace(/'/g, "\'")})">
+        <td style="font-family: monospace;">${escapeHtml(item.id)}</td>
+        <td><span class="badge ${escapeHtml(item.status || 'submitted')}">${escapeHtml(item.status || '')}</span></td>
+        <td>${escapeHtml(item.source_agent || '-')}</td>
+        <td>${escapeHtml(item.target_agent || '-')}</td>
+        <td>${escapeHtml(item.question || '-')}</td>
+        <td>${escapeHtml(item.answer || '-')}</td>
+        <td>${formatDate(item.answered_at || '')}</td>
+      </tr>
+    `).join('');
+  }
+
+  // Tab switching
+  window.switchTab = function(tabId) {
+    document.querySelectorAll('.nav-btn').forEach(btn => {
+      btn.classList.toggle('active', btn.getAttribute('data-tab') === tabId);
+    });
+    document.querySelectorAll('.tab-pane').forEach(pane => {
+      pane.classList.toggle('active', pane.id === 'tab-' + tabId);
+    });
+    
+    if (tabId === 'overview') {
+      setTimeout(renderInteractiveNetworkMap, 100);
+    }
+    if (window.mermaid && (tabId === 'tasks' || tabId === 'projects')) {
+      renderMermaidFlowcharts();
+    }
+    if (tabId === 'events') {
+      populateChatHub();
+    }
+    if (tabId === 'telemetry') {
+      populateTraces();
+    }
+  };
+
+  // Global search & filtering for tasks
+  let activeTaskFilter = 'all';
+  let taskViewMode = 'table';
+
+  window.switchTaskViewMode = function(mode) {
+    taskViewMode = mode;
+    document.getElementById('view-mode-table-btn').classList.toggle('active', mode === 'table');
+    document.getElementById('view-mode-kanban-btn').classList.toggle('active', mode === 'kanban');
+    
+    document.getElementById('tasks-table-view').style.display = mode === 'table' ? '' : 'none';
+    document.getElementById('tasks-kanban-view').classList.toggle('active', mode === 'kanban');
+    
+    if (mode === 'kanban') {
+      populateKanban();
+    }
+  };
+
+  window.setTaskFilter = function(status, elem) {
+    document.querySelectorAll('#task-status-filters .filter-tab').forEach(btn => btn.classList.remove('active'));
+    elem.classList.add('active');
+    activeTaskFilter = status;
+    
+    if (taskViewMode === 'table') {
+      filterTasks();
+    } else {
+      populateKanban();
+    }
+  };
+
+  window.filterTasks = function() {
+    const q = document.getElementById('task-search').value.toLowerCase();
+    const rows = document.querySelectorAll('#tasks-tbody tr');
+    
+    rows.forEach(row => {
+      const text = row.innerText.toLowerCase();
+      const status = row.getAttribute('data-status');
+      
+      const matchSearch = text.includes(q);
+      const matchFilter = (activeTaskFilter === 'all' || status === activeTaskFilter);
+      
+      row.style.display = (matchSearch && matchFilter) ? '' : 'none';
+    });
+  };
+
+  // Populate data
+  function populateDashboard() {
+    const summary = summaryData;
+    if (!summary) return;
+
+    // Header values
+    const label = document.getElementById('db-path-label');
+    if (label && !isSimulationMode) label.innerText = getCompanyApiBase();
+    
+    // Overview Metrics
+    const metrics = summary.counts;
+    const cardsContainer = document.getElementById('metrics-cards');
+    cardsContainer.innerHTML = `
+      <div class="metric-card">
+        <h3>Total Tasks</h3>
+        <div class="value">
+          ${metrics.tasks} 
+          <i class="fa-solid fa-list-check"></i>
+        </div>
+      </div>
+      <div class="metric-card">
+        <h3>Employees</h3>
+        <div class="value">
+          ${metrics.employees} 
+          <i class="fa-solid fa-users"></i>
+        </div>
+      </div>
+      <div class="metric-card">
+        <h3>Pending Approvals</h3>
+        <div class="value" style="color: ${metrics.pending_approvals > 0 ? 'var(--color-amber)' : 'inherit'}">
+          ${metrics.pending_approvals} 
+          <i class="fa-solid fa-scale-balanced" style="color: ${metrics.pending_approvals > 0 ? 'var(--color-amber)' : 'inherit'}"></i>
+        </div>
+      </div>
+      <div class="metric-card">
+        <h3>Pending RFCs</h3>
+        <div class="value" style="color: ${metrics.pending_rfcs > 0 ? 'var(--color-amber)' : 'inherit'}">
+          ${metrics.pending_rfcs} 
+          <i class="fa-solid fa-code-pull-request" style="color: ${metrics.pending_rfcs > 0 ? 'var(--color-amber)' : 'inherit'}"></i>
+        </div>
+      </div>
+    `;
+
+    // Health Checks List
+    const healthList = document.getElementById('health-checks-list');
+    const daemonOk = summary.runtime_health.daemon.ok;
+    const launchdInstalled = summary.runtime_health.launchd.installed;
+
+    healthList.innerHTML = `
+      <div class="health-item">
+        <div class="health-header">
+          <span class="health-title"><i class="fa-solid fa-gears"></i> Daemon Heartbeat</span>
+          <span class="health-badge ${daemonOk ? 'ok' : 'fail'}">${daemonOk ? 'OK' : 'STALE'}</span>
+        </div>
+        <div class="health-meta">
+          <span>State File: ${escapeHtml(summary.runtime_health.daemon.state_file)}</span>
+        </div>
+      </div>
+
+      <div class="health-item">
+        <div class="health-header">
+          <span class="health-title"><i class="fa-solid fa-calendar-check"></i> Launchd Agent</span>
+          <span class="health-badge ${launchdInstalled ? 'ok' : 'fail'}">${launchdInstalled ? 'INSTALLED' : 'ERROR'}</span>
+        </div>
+        <div class="health-meta">
+          <span>Path: ${escapeHtml(summary.runtime_health.launchd.installed_path)}</span>
+        </div>
+      </div>
+    `;
+
+    // Active Resource Locks
+    const locksList = document.getElementById('active-locks-list');
+    if (summary.locks && summary.locks.length > 0) {
+      locksList.innerHTML = summary.locks.map(lock => `
+        <div class="lock-item" onclick="showDetails('Lock: ' + '${escapeHtml(lock.resource_key)}', ${JSON.stringify(lock).replace(/'/g, "\'")})">
+          <div class="lock-key"><i class="fa-solid fa-lock"></i> ${escapeHtml(lock.resource_key)}</div>
+          <div class="lock-owner">${escapeHtml(lock.owner_agent)}</div>
+        </div>
+      `).join('');
+    } else {
+      locksList.innerHTML = `<div style="color: var(--text-muted); font-size: 13px; text-align: center; padding: 20px;">No locks found.</div>`;
+    }
+
+    // Tasks Table
+    const tasksTbody = document.getElementById('tasks-tbody');
+    tasksTbody.innerHTML = summary.tasks.map(task => {
+      const detailStr = JSON.stringify(task).replace(/'/g, "\'");
+      return `
+        <tr data-status="${escapeHtml(task.status)}" onclick="showDetails('Task: ' + '${escapeHtml(task.id)}', ${detailStr})">
+          <td style="font-family: monospace;">${escapeHtml(task.id)}</td>
+          <td>${escapeHtml(task.source_agent)}</td>
+          <td>${escapeHtml(task.target_agent)}</td>
+          <td>${escapeHtml(task.priority)}</td>
+          <td><span class="badge ${escapeHtml(task.status)}">${escapeHtml(task.status)}</span></td>
+          <td>${escapeHtml(task.claimed_by || '-')}</td>
+          <td>${task.evidence_path ? 'Yes' : 'No'}</td>
+          <td style="color: var(--color-rose);">${escapeHtml(task.blocker || '-')}</td>
+          <td style="max-width: 150px; overflow: hidden; text-overflow: ellipsis;">${escapeHtml(task.title)}</td>
+          <td>${formatDate(task.updated_at)}</td>
+        </tr>
+      `;
+    }).join('');
+
+    // Projects Table
+    const projectsTbody = document.getElementById('projects-tbody');
+    projectsTbody.innerHTML = summary.projects.map(p => {
+      const detailStr = JSON.stringify(p).replace(/'/g, "\'");
+      return `
+        <tr onclick="showDetails('Project: ' + '${escapeHtml(p.id)}', ${detailStr})">
+          <td style="font-family: monospace;">${escapeHtml(p.id)}</td>
+          <td>${escapeHtml(p.title)}</td>
+          <td>${escapeHtml(p.owner_agent)}</td>
+          <td><span class="badge ${p.status === 'completed' ? 'completed' : 'claimed'}">${escapeHtml(p.status)}</span></td>
+          <td><span class="badge ${p.review_state === 'ready' ? 'completed' : 'blocked'}">${escapeHtml(p.review_state)}</span></td>
+          <td>${escapeHtml(p.plan || '-')}</td>
+          <td>${escapeHtml(p.latest_acceptance_summary || 'None')}</td>
+          <td>${escapeHtml(p.retro || '-')}</td>
+          <td>${formatDate(p.updated_at)}</td>
+        </tr>
+      `;
+    }).join('');
+
+    // Active Employees Cards
+    const empContainer = document.getElementById('employees-cards-container');
+    empContainer.innerHTML = summary.employees.filter(emp => (emp.employee_status || emp.status) === 'active').map(emp => {
+      const hbStatus = emp.heartbeat_status || 'missing';
+      const commPaused = !!emp.communication_paused;
+      let isolationBadge = '';
+      if (emp.runtime === 'antigravity') {
+        isolationBadge = '<span class="badge completed" style="background: rgba(236, 72, 153, 0.15); border-color: rgba(236, 72, 153, 0.3); color: #ec4899; font-size: 9px; vertical-align: middle;"><i class="fa-solid fa-wand-magic-sparkles"></i> Antigravity GUI</span>';
+      } else if (emp.runtime === 'trae') {
+        isolationBadge = '<span class="badge completed" style="background: rgba(168, 85, 247, 0.15); border-color: rgba(168, 85, 247, 0.3); color: #a855f7; font-size: 9px; vertical-align: middle;"><i class="fa-solid fa-bolt"></i> Trae IDE</span>';
+      } else if (emp.runtime === 'docker' || emp.id === 'video-creator') {
+        isolationBadge = '<span class="badge completed" style="background: rgba(16, 185, 129, 0.15); border-color: rgba(16, 185, 129, 0.3); color: #10b981; font-size: 9px; vertical-align: middle;"><i class="fa-solid fa-cube"></i> Docker/gVisor</span>';
+      } else if (emp.runtime === 'firejail' || emp.runtime === 'codex' || emp.runtime === 'hermes' || emp.id === 'codex' || emp.id === 'hermes') {
+        isolationBadge = '<span class="badge claimed" style="background: rgba(99, 102, 241, 0.15); border-color: rgba(99, 102, 241, 0.3); color: #818cf8; font-size: 9px; vertical-align: middle;"><i class="fa-solid fa-shield-halved"></i> Firejail Sandbox</span>';
+      } else {
+        isolationBadge = '<span class="badge blocked" style="background: rgba(245, 158, 11, 0.1); border-color: rgba(245, 158, 11, 0.2); color: #f59e0b; font-size: 9px; vertical-align: middle;"><i class="fa-solid fa-user-shield"></i> Local Exec</span>';
+      }
+      
+      const skills = emp.skills || '';
+      const skillsPills = skills ? skills.split(',').map(s => `<span class="capability-tag" style="font-size: 9px; padding: 2px 5px; margin-top: 4px;">${escapeHtml(s.trim())}</span>`).join(' ') : '';
+
+      return `
+        <div class="employee-card" onclick="showDetails('Employee details: ' + '${escapeHtml(emp.id)}', ${JSON.stringify(emp).replace(/'/g, "\'")})">
+          <div class="employee-card-header">
+            <div class="employee-identity">
+              <div class="employee-avatar"><i class="fa-solid fa-robot"></i></div>
+              <div>
+                <div class="employee-name">${escapeHtml(emp.name)}</div>
+                <div class="employee-role">${escapeHtml(emp.role)}</div>
+              </div>
+            </div>
+            <div class="card-menu-container">
+              <button class="card-menu-btn" onclick="toggleCardSettingsMenu(event, '${escapeHtml(emp.id)}')">
+                <i class="fa-solid fa-ellipsis-vertical"></i>
+              </button>
+              <div class="card-dropdown-menu" id="dropdown-${escapeHtml(emp.id)}">
+                <button class="card-dropdown-item" onclick="event.stopPropagation(); openEditEmployeeProfile('${escapeHtml(emp.id)}', '${escapeHtml(emp.name)}', '${escapeHtml(emp.role)}', '${escapeHtml(emp.runtime)}', '${escapeHtml(emp.status || 'active')}')">
+                  <i class="fa-solid fa-pen-to-square"></i> Edit Profile
+                </button>
+                <button class="card-dropdown-item" onclick="event.stopPropagation(); toggleEmployeeCommunication('${escapeHtml(emp.id)}', ${commPaused ? 'true' : 'false'})">
+                  <i class="fa-solid ${commPaused ? 'fa-play' : 'fa-pause'}"></i> ${commPaused ? 'Resume Comm' : 'Pause Comm'}
+                </button>
+                ${emp.id !== 'openclaw-main' && emp.id !== 'video-ops' ? `
+                  <button class="card-dropdown-item danger" onclick="event.stopPropagation(); openFireEmployeeModal('${escapeHtml(emp.id)}', '${escapeHtml(emp.runtime)}', '${escapeHtml(emp.workspace)}')">
+                    <i class="fa-solid fa-user-minus"></i> Fire Employee
+                  </button>
+                ` : ''}
+              </div>
+            </div>
+          </div>
+          <div class="employee-meta" style="margin-top: 6px; font-size: 11px;">
+            <div style="margin-bottom: 4px; display: flex; align-items: center; justify-content: space-between;">
+              <span><strong>Sandbox:</strong> ${isolationBadge}</span>
+              <span class="badge ${hbStatus}">${hbStatus}</span>
+            </div>
+            <div><strong>Last Active:</strong> ${formatDate(emp.last_seen_at) || 'Never'}</div>
+          </div>
+          <div style="display: flex; flex-wrap: wrap; gap: 4px; margin-top: 10px; border-top: 1px solid rgba(255,255,255,0.05); padding-top: 8px;">
+            ${skillsPills}
+          </div>
+          <div class="employee-card-footer">
+            <button class="card-footer-action-btn" onclick="event.stopPropagation(); routeDirectMessageToChat('${escapeHtml(emp.id)}')">
+              <i class="fa-solid fa-paper-plane"></i> Send Message
+            </button>
+          </div>
+        </div>
+      `;
+    }).join('');
+
+    // Candidate Employees Container
+    const candidateContainer = document.getElementById('candidate-employees-container');
+    if (candidateContainer) {
+      const candidates = summary.employees.filter(emp => (emp.employee_status || emp.status) === 'candidate');
+      candidateContainer.innerHTML = candidates.length ? candidates.map(emp => {
+        const skills = emp.skills || '';
+        const skillsPills = skills ? skills.split(',').map(s => `<span class="capability-tag" style="font-size: 9px; padding: 2px 5px; margin-top: 4px;">${escapeHtml(s.trim())}</span>`).join(' ') : '';
+        return `
+          <div class="employee-card" onclick="showDetails('Candidate employee: ' + '${escapeHtml(emp.id)}', ${JSON.stringify(emp).replace(/'/g, "\'")})">
+            <div class="employee-card-header">
+              <div class="employee-identity">
+                <div class="employee-avatar"><i class="fa-solid fa-user-clock"></i></div>
+                <div>
+                  <div class="employee-name">${escapeHtml(emp.name)}</div>
+                  <div class="employee-role">${escapeHtml(emp.role)}</div>
+                </div>
+              </div>
+              <div class="card-menu-container">
+                <button class="card-menu-btn" onclick="toggleCardSettingsMenu(event, '${escapeHtml(emp.id)}')">
+                  <i class="fa-solid fa-ellipsis-vertical"></i>
+                </button>
+                <div class="card-dropdown-menu" id="dropdown-${escapeHtml(emp.id)}">
+                  <button class="card-dropdown-item" onclick="event.stopPropagation(); openEditEmployeeProfile('${escapeHtml(emp.id)}', '${escapeHtml(emp.name)}', '${escapeHtml(emp.role)}', '${escapeHtml(emp.runtime)}', '${escapeHtml(emp.status || 'candidate')}')">
+                    <i class="fa-solid fa-pen-to-square"></i> Edit Profile
+                  </button>
+                </div>
+              </div>
+            </div>
+            <div class="employee-meta" style="margin-top: 6px; font-size: 11px;">
+              <div style="margin-bottom: 4px; display: flex; align-items: center; justify-content: space-between;">
+                <span><strong>Runtime:</strong> ${escapeHtml(emp.runtime || '-')}</span>
+                <span class="badge blocked">Candidate</span>
+              </div>
+              <div><strong>Last Active:</strong> ${formatDate(emp.last_seen_at) || 'Never'}</div>
+            </div>
+            <div style="display: flex; flex-wrap: wrap; gap: 4px; margin-top: 10px; border-top: 1px solid rgba(255,255,255,0.05); padding-top: 8px;">
+              ${skillsPills}
+            </div>
+            <div class="employee-card-footer">
+              <button class="card-footer-action-btn" style="background: rgba(16, 185, 129, 0.1); border-color: rgba(16, 185, 129, 0.3); color: #86efac;" onclick="event.stopPropagation(); joinCandidateEmployee('${escapeHtml(emp.id)}')">
+                <i class="fa-solid fa-user-check"></i> Join Team
+              </button>
+            </div>
+          </div>
+        `;
+      }).join('') : '<div style="color: var(--text-secondary); font-size: 12px; padding: 10px 0;">No candidate employees.</div>';
+    }
+
+    // Approvals Table
+    refreshGovernanceTables();
+
+    // RFCs Table
+    const rfcsTbody = document.getElementById('rfcs-tbody');
+    rfcsTbody.innerHTML = summary.rfcs.map(rfc => {
+      return `
+        <tr onclick="showDetails('RFC: ' + '${escapeHtml(rfc.id)}', ${JSON.stringify(rfc).replace(/'/g, "\'")})">
+          <td style="font-family: monospace;">${escapeHtml(rfc.id)}</td>
+          <td>${escapeHtml(rfc.author_agent)}</td>
+          <td><span class="badge ${escapeHtml(rfc.status)}">${escapeHtml(rfc.status)}</span></td>
+          <td>${escapeHtml(rfc.reason || '-')}</td>
+          <td>${escapeHtml(rfc.decision_by || '-')}</td>
+          <td>${formatDate(rfc.updated_at)}</td>
+        </tr>
+      `;
+    }).join('');
+
+    // Adapter Runs Table
+    const runsTbody = document.getElementById('adapter-runs-tbody');
+    runsTbody.innerHTML = summary.adapter_runs.map(run => {
+      const ok = run.ok === 1;
+      return `
+        <tr onclick="showDetails('Adapter Run: ' + '${escapeHtml(run.id)}', ${JSON.stringify(run).replace(/'/g, "\'")})">
+          <td style="font-family: monospace; font-size: 11px;">${escapeHtml(run.id)}</td>
+          <td>${escapeHtml(run.agent_id)}</td>
+          <td>${escapeHtml(run.task_id || '-')}</td>
+          <td>${escapeHtml(run.command)}</td>
+          <td><span class="badge ${ok ? 'completed' : 'blocked'}">${ok ? 'YES' : 'NO'}</span></td>
+          <td>${escapeHtml(run.processed)}</td>
+          <td>${escapeHtml(run.acknowledged_by || '-')}</td>
+          <td>${escapeHtml(run.acknowledgement_reason || '-')}</td>
+          <td>${formatDate(run.created_at)}</td>
+        </tr>
+      `;
+    }).join('');
+  }
+
+  // Populate Kanban columns
+  function populateKanban() {
+    const summary = summaryData;
+    if (!summary) return;
+    
+    const lists = {
+      submitted: document.getElementById('kanban-submitted-list'),
+      claimed: document.getElementById('kanban-claimed-list'),
+      blocked: document.getElementById('kanban-blocked-list'),
+      completed: document.getElementById('kanban-completed-list')
+    };
+
+    const counts = { submitted: 0, claimed: 0, blocked: 0, completed: 0 };
+    
+    for (const k in lists) {
+      lists[k].innerHTML = '';
+    }
+
+    const q = document.getElementById('task-search').value.toLowerCase();
+    
+    summary.tasks.forEach(t => {
+      const matchSearch = t.id.toLowerCase().includes(q) || t.title.toLowerCase().includes(q) || t.source_agent.toLowerCase().includes(q) || t.target_agent.toLowerCase().includes(q);
+      const matchFilter = (activeTaskFilter === 'all' || t.status === activeTaskFilter);
+      if (!matchSearch || !matchFilter) return;
+
+      const col = t.status;
+      if (lists[col]) {
+        counts[col]++;
+        const detailStr = JSON.stringify(t).replace(/'/g, "\'");
+        lists[col].innerHTML += `
+          <div class="kanban-card" draggable="true" ondragstart="onKanbanCardDragStart(event, '${t.id}')" onclick="showDetails('Task: ' + '${escapeHtml(t.id)}', ${detailStr})" style="cursor: grab;">
+            <div class="kanban-card-title">${escapeHtml(t.title)}</div>
+            <div style="font-size: 10px; color: var(--color-indigo); font-weight: 500;">
+              ${escapeHtml(t.source_agent)} &rarr; ${escapeHtml(t.target_agent)}
+            </div>
+            <div class="kanban-card-meta">
+              <span>${escapeHtml(t.id)}</span>
+              <span class="badge ${t.priority === 'P1' ? 'blocked' : 'submitted'}" style="padding: 2px 6px; font-size: 9px;">${t.priority}</span>
+            </div>
+          </div>
+        `;
+      }
+    });
+
+    for (const k in counts) {
+      document.getElementById(`kanban-${k}-count`).innerText = counts[k];
+    }
+  }
+
+  // Populate Trace Telemetry
+  window.populateTraces = function() {
+    refreshTraceTelemetry();
+  }
+
+  window.filterTraces = function() {
+    populateTraces();
+  }
+
+  // Populate Chat Hub Conversations
+  function populateChatHub() {
+    const summary = summaryData;
+    const listContainer = document.getElementById('chat-threads-list');
+    
+    if (!summary.conversations || summary.conversations.length === 0) {
+      listContainer.innerHTML = `<div style="color: var(--text-muted); font-size: 12px; padding: 20px; text-align: center;">No dialogues active</div>`;
+      return;
+    }
+
+    listContainer.innerHTML = summary.conversations.map(c => `
+      <div class="chat-thread-item ${activeThreadId === c.id ? 'active' : ''}" onclick="selectChatThread('${c.id}')">
+        <div class="chat-thread-name"><i class="fa-solid fa-comments"></i> ${escapeHtml(c.title)}</div>
+        <div class="chat-thread-meta">
+          <span>${c.message_count} rounds</span>
+          <span>${c.id}</span>
+        </div>
+      </div>
+    `).join('');
+
+    if (!activeThreadId && summary.conversations.length > 0) {
+      selectChatThread(summary.conversations[0].id);
+    } else if (activeThreadId) {
+      renderRealChatMessages();
+    }
+  }
+
+  function selectChatThread(threadId) {
+    activeThreadId = threadId;
+    document.querySelectorAll('.chat-thread-item').forEach(item => {
+      item.classList.toggle('active', item.getAttribute('onclick').includes(threadId));
+    });
+    
+    populateChatHub();
+  }
+
+  // INTERACTIVE DRAGGABLE NETWORK MAP
+  function renderInteractiveNetworkMap() {
+    const summary = summaryData;
+    const canvas = document.getElementById('collaboration-canvas');
+    if (!summary || !canvas) return;
+
+    document.querySelectorAll('.agent-node').forEach(n => n.remove());
+
+    const emps = summary.employees.filter(isVerifiedEmployee);
+    const empIds = new Set(emps.map(e => e.id));
+
+    const w = canvas.clientWidth;
+    const h = canvas.clientHeight;
+    const cx = w / 2;
+    const cy = h / 2;
+    const radius = Math.min(w, h) * 0.32;
+
+    emps.forEach((emp, idx) => {
+      const angle = (idx / emps.length) * 2 * Math.PI - Math.PI / 2;
+      const x = cx + radius * Math.cos(angle) - 85;
+      const y = cy + radius * Math.sin(angle) - 35;
+
+      const hb = emp.heartbeat_status || 'missing';
+      let icon = "🤖";
+      if (emp.role.toLowerCase().includes("producer") || emp.role.toLowerCase().includes("ops") || emp.role.toLowerCase().includes("supervisor")) icon = "👤";
+      if (emp.role.toLowerCase().includes("developer") || emp.role.toLowerCase().includes("engineer")) icon = "💻";
+
+      const node = document.createElement('div');
+      node.className = 'agent-node';
+      node.id = `node-${emp.id}`;
+      node.style.left = `${x}px`;
+      node.style.top = `${y}px`;
+      node.innerHTML = `
+        <div class="agent-node-header">
+          <div class="agent-node-avatar">${icon}</div>
+          <div class="agent-node-name">${escapeHtml(emp.name)}</div>
+        </div>
+        <div class="agent-node-role">${escapeHtml(emp.role)}</div>
+        <div class="agent-node-status">
+          <span>Active</span>
+          <span class="node-pulse-dot ${hb}"></span>
+        </div>
+      `;
+
+      node.addEventListener('click', (e) => {
+        if (node.classList.contains('was-dragged')) {
+          node.classList.remove('was-dragged');
+          return;
+        }
+        showDetails(`Employee: ${emp.name}`, emp);
+      });
+
+      let isDragging = false;
+      let startX, startY;
+
+      node.addEventListener('mousedown', (e) => {
+        isDragging = true;
+        node.style.zIndex = 1000;
+        startX = e.clientX - node.offsetLeft;
+        startY = e.clientY - node.offsetTop;
+        
+        function onMouseMove(e) {
+          if (!isDragging) return;
+          node.classList.add('was-dragged');
+          let nx = e.clientX - startX;
+          let ny = e.clientY - startY;
+          
+          nx = Math.max(0, Math.min(w - 170, nx));
+          ny = Math.max(0, Math.min(h - 70, ny));
+
+          node.style.left = `${nx}px`;
+          node.style.top = `${ny}px`;
+          drawSVGConnections();
+        }
+
+        function onMouseUp() {
+          isDragging = false;
+          node.style.zIndex = 3;
+          document.removeEventListener('mousemove', onMouseMove);
+          document.removeEventListener('mouseup', onMouseUp);
+        }
+
+        document.addEventListener('mousemove', onMouseMove);
+        document.addEventListener('mouseup', onMouseUp);
+      });
+
+      canvas.appendChild(node);
+    });
+
+    drawSVGConnections();
+  }
+
+  function drawSVGConnections() {
+    const summary = summaryData;
+    const svg = document.getElementById('network-svg');
+    if (!svg || !summary) return;
+
+    svg.innerHTML = `
+      <defs>
+        <marker id="arrow" viewBox="0 0 10 10" refX="28" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+          <path d="M 0 0 L 10 5 L 0 10 z" fill="#818cf8"/>
+        </marker>
+        <marker id="arrow-completed" viewBox="0 0 10 10" refX="28" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+          <path d="M 0 0 L 10 5 L 0 10 z" fill="#10b981"/>
+        </marker>
+      </defs>
+    `;
+
+    const empIds = new Set(summary.employees.filter(isVerifiedEmployee).map(e => e.id));
+
+    if (!summary.runtime_health.daemon.ok && summary.runtime_health.daemon.reason.toLowerCase().includes('deadlock')) {
+      if (empIds.has('codex') && empIds.has('video-creator')) {
+        drawPath('codex', 'video-creator', 'Deadlock: sqlite:schema-upgrade', 'deadlock', 'deadlock-1', false);
+        drawPath('video-creator', 'codex', 'Deadlock: video-rendering-engine', 'deadlock', 'deadlock-2', false);
+      }
+    }
+
+    summary.tasks.forEach(t => {
+      if (t.status !== 'completed' && empIds.has(t.source_agent) && empIds.has(t.target_agent)) {
+        const pathType = t.status === 'blocked' ? 'blocked' : 'task';
+        drawPath(t.source_agent, t.target_agent, `[Task] ${t.title} (${t.status})`, pathType, t.id, false);
+      }
+    });
+
+    summary.conversations.forEach(c => {
+      if (c.status === 'open') {
+        let participants = [];
+        try {
+          participants = JSON.parse(c.participants_json || '[]');
+        } catch(e) {}
+        
+        for (let i = 0; i < participants.length - 1; i++) {
+          const p1 = participants[i];
+          const p2 = participants[i+1];
+          if (empIds.has(p1) && empIds.has(p2)) {
+            drawPath(p1, p2, `[Discuss] ${c.title}`, 'discuss', c.id, true);
+          }
+        }
+      }
+    });
+  }
+
+  function drawPath(srcId, destId, labelText, type, relationId, isDashed) {
+    const n1 = document.getElementById(`node-${srcId}`);
+    const n2 = document.getElementById(`node-${destId}`);
+    if (!n1 || !n2) return;
+
+    const svg = document.getElementById('network-svg');
+
+    const x1 = n1.offsetLeft + 85;
+    const y1 = n1.offsetTop + 35;
+    const x2 = n2.offsetLeft + 85;
+    const y2 = n2.offsetTop + 35;
+
+    const mx = (x1 + x2) / 2;
+    const my = (y1 + y2) / 2;
+    const dx = x2 - x1;
+    const dy = y2 - y1;
+    const len = Math.sqrt(dx*dx + dy*dy);
+    const ox = -dy / len * (type === 'deadlock' ? 40 : 25);
+    const oy = dx / len * (type === 'deadlock' ? 40 : 25);
+
+    const cx = mx + ox;
+    const cy = my + oy;
+
+    const d = `M ${x1} ${y1} Q ${cx} ${cy} ${x2} ${y2}`;
+
+    const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    path.setAttribute('d', d);
+    path.setAttribute('class', `network-path ${type}`);
+    path.setAttribute('marker-end', type === 'deadlock' ? 'none' : 'url(#arrow)');
+    if (isDashed) {
+      path.setAttribute('stroke-dasharray', '5, 5');
+    }
+    
+    const circle = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+    circle.setAttribute('r', type === 'deadlock' ? '4' : '3');
+    let color = '#818cf8';
+    if (type === 'deadlock') color = '#ef4444';
+    else if (type === 'blocked') color = '#f59e0b';
+    else if (type === 'discuss') color = '#a5b4fc';
+    circle.setAttribute('fill', color);
+    
+    const anim = document.createElementNS('http://www.w3.org/2000/svg', 'animateMotion');
+    anim.setAttribute('path', d);
+    anim.setAttribute('dur', type === 'deadlock' ? '2s' : '4s');
+    anim.setAttribute('repeatCount', 'indefinite');
+    circle.appendChild(anim);
+
+    svg.appendChild(path);
+    svg.appendChild(circle);
+  }
+
+  // Scrolling Terminal Simulator
+  const terminalLogs = [
+    { tag: 'KERNEL', text: 'Company Kernel initialised successfully. Listening on SQLite connection...', type: 'success' },
+    { tag: 'DAEMON', text: 'Heartbeat scanning pass... hermes: ALIVE, codex: ALIVE, openclaw-main: ALIVE, antigravity: ALIVE, trae: ALIVE.', type: 'normal' },
+    { tag: 'SCHEDULER', text: 'Scanning pending events... 0 events found. Queue idle.', type: 'normal' },
+    { tag: 'REPAIR', text: 'Audit pass: Locks lease validation passed. 0 locks expired.', type: 'normal' },
+    { tag: 'video-ops', text: 'Submitted Task task-enterprise-001 (Funny Chinese Screenplay) to target: video-creator.', type: 'normal' },
+    { tag: 'SCHEDULER', text: 'Event trigger match: task.submit (task-enterprise-001). Creating inbox file.', type: 'success' },
+    { tag: 'video-creator', text: 'Heartbeat signal registered. Claiming task task-enterprise-001.', type: 'normal' },
+    { tag: 'KERNEL', text: 'Resource lock registered: lock:video-rendering-engine claimed by video-creator.', type: 'warn' },
+    { tag: 'video-creator', text: 'Executing local adapter worker... starting video script drafts.', type: 'normal' },
+    { tag: 'antigravity', text: 'Successfully parsed project files. Generated 2 structural proposals.', type: 'success' },
+    { tag: 'trae', text: 'Executing trae chat ask task. 0 conflicts found in workspace compiles.', type: 'success' },
+    { tag: 'codex', text: 'Claimed code migration task task-enterprise-002. Lock lock:sqlite:schema-upgrade acquired.', type: 'normal' },
+    { tag: 'codex', text: 'Code review result: 1 issue found in migration script indexes. Fixing patch...', type: 'warn' },
+    { tag: 'hermes', text: 'Executing automated task task-enterprise-005 (Staging check). Result: ok.', type: 'success' },
+    { tag: 'KERNEL', text: 'Evidence log task-enterprise-005 written to reports/task-enterprise-005.evidence.md.', type: 'success' }
+  ];
+
+  let logIndex = 0;
+  function startTerminalSimulation() {
+    const stdout = document.getElementById('terminal-stdout');
+    if (!stdout) return;
+    stdout.innerHTML = '';
+    
+    for(let i=0; i<6; i++) {
+      printTerminalLine(terminalLogs[i]);
+      logIndex = i + 1;
+    }
+
+    setInterval(() => {
+      if (logIndex >= terminalLogs.length) logIndex = 0;
+      printTerminalLine(terminalLogs[logIndex]);
+      logIndex++;
+    }, 4000);
+  }
+
+  function printTerminalLine(logObj) {
+    const stdout = document.getElementById('terminal-stdout');
+    if (!stdout) return;
+    
+    const timeStr = new Date().toLocaleTimeString();
+    const line = document.createElement('div');
+    line.className = 'terminal-line';
+    
+    let textClass = 'terminal-success';
+    if (logObj.type === 'warn') textClass = 'terminal-warn';
+    if (logObj.type === 'error') textClass = 'terminal-error';
+    if (logObj.type === 'normal') textClass = '';
+
+    line.innerHTML = `
+      <span class="terminal-time">[${timeStr}]</span>
+      <span class="terminal-tag">[${logObj.tag}]</span>
+      <span class="${textClass}">${escapeHtml(logObj.text)}</span>
+    `;
+    
+    stdout.appendChild(line);
+    stdout.scrollTop = stdout.scrollHeight;
+  }
+
+  function renderMermaidFlowcharts() {
+    if (!window.mermaid) return;
+    const summary = summaryData;
+    if (!summary) return;
+
+    // 1. Task Relations Mermaid Graph
+    const taskFlowElem = document.getElementById('tasks-mermaid-flow');
+    if (summary.task_delegations && summary.task_delegations.length > 0) {
+      let code = "graph TD\n";
+      const addedNodes = new Set();
+      
+      summary.task_delegations.forEach(del => {
+        const pId = del.parent_id;
+        const pText = `${pId} [${del.parent_owner}]`;
+        if (!addedNodes.has(pId)) {
+          code += `  ${pId}["${escapeHtml(pText)}\\n(${del.parent_status})"]\n`;
+          addedNodes.add(pId);
+        }
+        
+        const children = del.child_summary.split(';').map(c => c.trim()).filter(c => c);
+        children.forEach(childStr => {
+          const parts = childStr.split('/');
+          if (parts.length >= 3) {
+            const cId = parts[0];
+            const cOwner = parts[1];
+            const cStatus = parts[2];
+            const cText = `${cId} [${cOwner}]`;
+            
+            if (!addedNodes.has(cId)) {
+              code += `  ${cId}["${escapeHtml(cText)}\\n(${cStatus})"]\n`;
+              addedNodes.add(cId);
+            }
+            code += `  ${pId} --> ${cId}\n`;
+          }
+        });
+      });
+      
+      taskFlowElem.innerText = code;
+      try {
+        window.mermaid.draw('tasks-mermaid-flow-svg', code, (svg) => {
+          taskFlowElem.innerHTML = svg;
+        });
+      } catch(e) {}
+    } else {
+      taskFlowElem.innerText = "No task delegation chains active currently.";
+    }
+
+    // 2. Projects & Plan Mermaid Graph
+    const projectFlowElem = document.getElementById('projects-mermaid-flow');
+    if (summary.projects && summary.projects.length > 0) {
+      let code = "graph LR\n";
+      let totalNodes = 0;
+      
+      summary.projects.forEach(p => {
+        const items = (p.plan_items || '').split(';').map(i => i.trim()).filter(i => i);
+        if (items.length > 0) {
+          code += `  subgraph ${p.id}["Project: ${escapeHtml(p.title)}"]\n`;
+          let lastNodeId = '';
+          
+          items.forEach((itemStr, idx) => {
+            const matchStatusTitle = itemStr.match(/^([^:]+):(.+)/);
+            if (matchStatusTitle) {
+              const status = matchStatusTitle[1].trim();
+              let titleAndTask = matchStatusTitle[2].trim();
+              const nodeId = `${p.id}_item_${idx}`;
+              
+              code += `    ${nodeId}["${escapeHtml(status)}: ${escapeHtml(titleAndTask)}"]\n`;
+              if (lastNodeId) {
+                code += `    ${lastNodeId} --> ${nodeId}\n`;
+              }
+              lastNodeId = nodeId;
+              totalNodes++;
+            }
+          });
+          code += `  end\n`;
+        }
+      });
+      
+      if (totalNodes > 0) {
+        projectFlowElem.innerText = code;
+        try {
+          window.mermaid.draw('projects-mermaid-flow-svg', code, (svg) => {
+            projectFlowElem.innerHTML = svg;
+          });
+        } catch(e) {}
+      } else {
+        projectFlowElem.innerText = "No sequential plan items defined for active projects.";
+      }
+    } else {
+      projectFlowElem.innerText = "No active projects detected.";
+    }
+  }
+
+  // Auto refresh
+  let refreshInterval = null;
+  function toggleAutoRefresh(checkbox) {
+    if (checkbox.checked) {
+      localStorage.setItem('dashboard-auto-refresh', 'true');
+      refreshInterval = setInterval(() => {
+        location.reload();
+      }, 10000);
+    } else {
+      localStorage.setItem('dashboard-auto-refresh', 'false');
+      if (refreshInterval) clearInterval(refreshInterval);
+    }
+  }
+
+  const TRANSLATIONS = {
+    en: {
+      "nav_overview": "Overview",
+      "nav_tasks": "Tasks & Workflows",
+      "nav_projects": "Projects & Plans",
+      "nav_employees": "AI Employees",
+      "nav_governance": "Governance",
+      "nav_events": "Logs & Events",
+      "nav_telemetry": "Trace Telemetry",
+      "console_title": "Operations Console",
+      "network_map_title": "Active Collaboration Network Map",
+      "drag_nodes_hint": "Try dragging employee nodes!",
+      "runtime_health_title": "Runtime Health Status",
+      "terminal_title": "Kernel Operations Terminal",
+      "locks_title": "Active Resource Locks",
+      "tasks_registry_title": "Tasks Registry",
+      "view_table": "Table",
+      "view_kanban": "Kanban Board",
+      "filter_all": "All",
+      "filter_submitted": "Submitted",
+      "filter_claimed": "Claimed",
+      "filter_blocked": "Blocked",
+      "filter_completed": "Completed",
+      "delegation_tree_title": "Task Delegation Tree",
+      "projects_graphs_title": "Project Execution Graphs",
+      "projects_governance_title": "Project Governance",
+      "agent_roster_title": "AI Agent Roster",
+      "hire_employee": "Hire AI Employee",
+      "recruiter_portal_title": "AI Recruiter Portal",
+      "recruit_id_label": "Employee ID / Alias",
+      "recruit_desc_label": "Target Role & Core Responsibilities",
+      "agent_engine_label": "Agent Engine",
+      "isolation_sandbox_label": "Isolation Sandbox",
+      "generate_btn": "AI Generate Capabilities & Limits",
+      "synthesized_specs_title": "AI Synthesized Specs",
+      "permissions_json_label": "Generated Permissions & Rules (JSON)",
+      "approve_onboard_btn": "Approve & Onboard to Workspace",
+      "pending_approvals_title": "Pending approvals & Requests",
+      "rfc_governance_title": "RFC Governance",
+      "chat_hub_title": "AI Conversation Chat Hub",
+      "chat_threads_title": "Conversations",
+      "chat_placeholder": "Type a message to the agent conversation...",
+      "chat_send": "Send",
+      "adapter_runs_title": "Adapter Runs History",
+      "telemetry_title_sub": "Distributed Trace Telemetry",
+      "telemetry_desc": "Trace ID propagation pipeline showing execution latencies and calling hierarchies across sandboxed agent runtimes.",
+      "search_placeholder": "Search tasks by ID, title, or agents...",
+      "trace_search_placeholder": "Search traces by Trace ID, title, or service name...",
+      "scenario_label": "Scenario Seeder",
+      "reload_btn": "Reload Dashboard",
+      "auto_refresh": "Auto Refresh (10s)",
+      "fire_title": "Fire AI Employee Warning",
+      "fire_warning_title": "Warning: Data Loss Risk!",
+      "fire_warning_desc": "Terminating an AI employee's contract requires deciding how to handle their generated assets and local workspace records.",
+      "delete_mode_label": "Deletion Mode",
+      "soft_archive_title": "Soft Archive (Recommended - Safe)",
+      "soft_archive_desc": "Locks the agent, updates status to \"archived\", and hides it from the active roster. All files, reports, and evidence remain untouched.",
+      "hard_delete_title": "Permanent Wipe (Dangerous)",
+      "hard_delete_desc": "Deletes the SQLite records, removes task definitions, and permanently erases the local workspace and metadata directories on disk.",
+      "confirm_id_label": "Type the Employee ID to confirm permanent delete",
+      "cancel_btn": "Cancel",
+      "confirm_btn": "Confirm Action"
+    },
+    zh: {
+      "nav_overview": "系统概览",
+      "nav_tasks": "任务与工作流",
+      "nav_projects": "项目与计划",
+      "nav_employees": "AI 雇员",
+      "nav_governance": "安全治理",
+      "nav_events": "日志与会话",
+      "nav_telemetry": "链路追踪",
+      "console_title": "内核操作控制台",
+      "network_map_title": "活跃协作网络图",
+      "drag_nodes_hint": "可拖拽员工节点进行排版！",
+      "runtime_health_title": "运行时健康状态",
+      "terminal_title": "内核操作终端",
+      "locks_title": "活跃资源锁",
+      "tasks_registry_title": "任务列表",
+      "view_table": "表格视图",
+      "view_kanban": "看板视图",
+      "filter_all": "全部",
+      "filter_submitted": "已提交",
+      "filter_claimed": "已领取",
+      "filter_blocked": "已挂起",
+      "filter_completed": "已完成",
+      "delegation_tree_title": "任务委托树",
+      "projects_graphs_title": "项目执行流程图",
+      "projects_governance_title": "项目治理",
+      "agent_roster_title": "AI 代理名册",
+      "hire_employee": "招募 AI 雇员",
+      "recruiter_portal_title": "AI 招募门户",
+      "recruit_id_label": "雇员 ID / 别名",
+      "recruit_desc_label": "目标角色与核心职责描述",
+      "agent_engine_label": "代理引擎 (Engine)",
+      "isolation_sandbox_label": "隔离沙箱 (Sandbox)",
+      "generate_btn": "AI 自动生成权限与规格",
+      "synthesized_specs_title": "AI 智能合成属性",
+      "permissions_json_label": "生成的权限与规则清单 (JSON)",
+      "approve_onboard_btn": "批准并入职到工作空间",
+      "pending_approvals_title": "待处理审批与请求",
+      "rfc_governance_title": "RFC 治理提案",
+      "chat_hub_title": "AI 雇员会话中心",
+      "chat_threads_title": "活跃会话",
+      "chat_placeholder": "给智能代理会话发送消息...",
+      "chat_send": "发送",
+      "pattern_error": "正则匹配错误",
+      "adapter_runs_title": "适配器运行历史",
+      "telemetry_title_sub": "分布式链路追踪",
+      "telemetry_desc": "展示沙箱化代理运行时之间的调用层次与执行延迟追踪日志。",
+      "search_placeholder": "搜索任务 ID、标题或执行代理...",
+      "trace_search_placeholder": "搜索链路 ID、标题或服务名称...",
+      "scenario_label": "场景生成器",
+      "reload_btn": "刷新控制台",
+      "auto_refresh": "自动刷新 (10秒)",
+      "fire_title": "解雇 AI 雇员警告",
+      "fire_warning_title": "警告：存在数据丢失风险！",
+      "fire_warning_desc": "终止 AI 雇员合同需要妥善处理其已生成的资产与本地工作空间记录。",
+      "delete_mode_label": "删除模式",
+      "soft_archive_title": "软归档（推荐 - 安全）",
+      "soft_archive_desc": "锁定代理，更新状态为“archived”（已归档），并将其从活跃名册中隐藏。所有文件、报告和证据保持原样。",
+      "hard_delete_title": "永久清除（不可逆 - 危险）",
+      "hard_delete_desc": "删除数据库记录，清除任务定义，并永久物理抹除磁盘上的本地工作空间及元数据目录。",
+      "confirm_id_label": "输入雇员 ID 以确认永久删除",
+      "cancel_btn": "取消",
+      "confirm_btn": "确认操作"
+    }
+  };
+
+  window.changeLanguage = function(lang) {
+    localStorage.setItem('dashboard-language', lang);
+    applyTranslations(lang);
+  };
+
+  function applyTranslations(lang) {
+    const t = TRANSLATIONS[lang] || TRANSLATIONS.en;
+    
+    document.querySelectorAll('[data-i18n]').forEach(el => {
+      const key = el.getAttribute('data-i18n');
+      if (!t[key]) return;
+      
+      const icon = el.querySelector('i');
+      if (icon) {
+        const iconHtml = icon.outerHTML;
+        el.innerHTML = iconHtml + ' ' + t[key];
+      } else {
+        if (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA') {
+          el.placeholder = t[key];
+        } else {
+          el.textContent = t[key];
+        }
+      }
+    });
+  }
+
+  // Helper function to escape HTML output safely
+  function escapeHtml(str) {
+    if (str === null || str === undefined) return '';
+    return String(str)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#039;');
+  }
+
+  // Helper function to format Date in Bangkok timezone
+  function formatDate(isoStr) {
+    if (!isoStr) return '';
+    try {
+      const d = new Date(isoStr);
+      const formatted = new Intl.DateTimeFormat('en-GB', {
+        timeZone: 'Asia/Bangkok',
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit',
+        hour12: false
+      }).formatToParts(d).reduce((acc, part) => {
+        acc[part.type] = part.value;
+        return acc;
+      }, {});
+      return `${formatted.hour}:${formatted.minute}:${formatted.second} ${formatted.year}/${formatted.month}/${formatted.day} THA`;
+    } catch(e) {
+      return isoStr;
+    }
+  }
+
+  // Startup Init
+  window.addEventListener('DOMContentLoaded', () => {
+    const currentLang = localStorage.getItem('dashboard-language') || 'en';
+    const langSelect = document.getElementById('lang-selector');
+    if (langSelect) {
+      langSelect.value = currentLang;
+    }
+    applyTranslations(currentLang);
+
+    populateDashboard();
+    populateKanban();
+    populateTraces();
+    renderInteractiveNetworkMap();
+    startTerminalSimulation();
+    populateChatHub();
+    installNotificationSettingsPanel();
+    
+    // Auto-refresh state check
+    const isAutoRefresh = localStorage.getItem('dashboard-auto-refresh') === 'true';
+    const toggle = document.getElementById('refresh-toggle');
+    if (toggle) {
+      toggle.checked = isAutoRefresh;
+      if (isAutoRefresh) {
+        refreshInterval = setInterval(() => {
+          location.reload();
+        }, 10000);
+      }
+    }
+    
+    window.addEventListener('resize', drawSVGConnections);
+  });
+</script>
+
+</body>
+</html>
