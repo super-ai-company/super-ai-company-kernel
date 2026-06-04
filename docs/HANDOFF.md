@@ -36,6 +36,9 @@ gRPC:              http://127.0.0.1:8767
 
 Port `3000` is intentionally not used by Company Kernel.
 
+Local environment discovery, hidden tool directories, and skill activation are
+documented in [LOCAL_ENVIRONMENT_AND_SKILLS.md](LOCAL_ENVIRONMENT_AND_SKILLS.md).
+
 ## Main Commands
 
 ```bash
