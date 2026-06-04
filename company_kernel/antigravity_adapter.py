@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import shutil
 import sqlite3
 import subprocess
@@ -86,6 +87,133 @@ def direct_reply_text(message: str) -> str:
     return "ANTIGRAVITY_DIRECT_ACK"
 
 
+def expected_direct_token(message: str) -> str:
+    for marker in ("只回复：", "只回复:", "只回复"):
+        if marker in message:
+            token = message.split(marker, 1)[1].lstrip("：: ").strip().split()[0]
+            return token.strip()
+    return ""
+
+
+def is_lightweight_direct_message(message: str) -> bool:
+    text = message.strip()
+    if not text:
+        return True
+    if expected_direct_token(text):
+        return True
+    if len(text) <= 180 and any(marker in text for marker in ("DIRECT_OK", "VERIFY_ROUND", "CLI_OK", "ACK", "OK", "在岗")):
+        return True
+    execution_markers = ("执行", "修复", "实现", "测试", "验证", "git", "github", "repo", "项目", "文件", "代码", "开发", "push", "commit", "重构", "frontend", "dashboard")
+    lower = text.lower()
+    return not any(marker in lower or marker in text for marker in execution_markers)
+
+
+def structured_status(reply: str) -> dict[str, str]:
+    result: dict[str, str] = {}
+    for line in reply.splitlines():
+        match = re.match(r"^\s*(status|current_action|changed_files|verification_run|browser_check|blocker|eta)\s*[:：]\s*(.*)\s*$", line, re.I)
+        if match:
+            result[match.group(1).lower()] = match.group(2).strip()
+    return result
+
+
+def command_output(args: list[str]) -> tuple[int, str, str]:
+    cp = subprocess.run(args, cwd=str(ROOT), text=True, capture_output=True)
+    return cp.returncode, cp.stdout.strip(), cp.stderr.strip()
+
+
+def git_changed_files() -> list[str]:
+    code, out, _ = command_output(["git", "status", "--porcelain", "--untracked-files=no"])
+    if code != 0:
+        return []
+    files: list[str] = []
+    for line in out.splitlines():
+        if not line.strip():
+            continue
+        path = line[3:].strip()
+        if path:
+            files.append(path)
+    return files
+
+
+def build_guarded_task_prompt(message: str) -> str:
+    return "\n".join(
+        [
+            "You are the Antigravity Company Kernel frontend employee.",
+            "Use only the current repository and current user request. Ignore stale Hermes/Codex/permission tasks from previous context.",
+            "If the request is not a frontend/dashboard task, report blocked_context_mismatch.",
+            "",
+            "User request:",
+            message.strip(),
+            "",
+            "Required final output. Do not echo this template. Fill concrete values:",
+            "status: working|done|blocked",
+            "current_action: <what you actually did>",
+            "changed_files: <comma-separated files actually changed, or ->",
+            "verification_run: <commands actually run and result, or ->",
+            "browser_check: <browser checks actually run, or ->",
+            "blocker: <specific blocker, or ->",
+            "eta: <remaining time, or ->",
+        ]
+    )
+
+
+def validate_agy_reply(*, message: str, reply: str, before_files: list[str], after_files: list[str]) -> dict:
+    token = expected_direct_token(message)
+    if is_lightweight_direct_message(message):
+        if token:
+            ok = reply.strip() == token
+            return {
+                "ok": ok,
+                "mode": "lightweight",
+                "status": "working" if ok else "blocked",
+                "activation_eligible": ok,
+                "blocker": "" if ok else f"expected exact token {token!r}, got {reply.strip()!r}",
+                "fields": {},
+                "changed_files": [],
+            }
+        return {
+            "ok": bool(reply.strip()),
+            "mode": "lightweight",
+            "status": "working" if reply.strip() else "blocked",
+            "activation_eligible": bool(reply.strip()),
+            "blocker": "" if reply.strip() else "empty Antigravity reply",
+            "fields": {},
+            "changed_files": [],
+        }
+    fields = structured_status(reply)
+    changed_files = sorted(set(after_files) - set(before_files))
+    stale_markers = ("HERMES_LOCAL_VERIFY_OK", "approval-route-task-hermes", "dangerously-skip-permissions", "protected path", "permission grants")
+    stale_hit = next((marker for marker in stale_markers if marker.lower() in reply.lower()), "")
+    required = ("status", "current_action", "changed_files", "verification_run", "blocker")
+    missing = [field for field in required if not fields.get(field)]
+    status = fields.get("status", "").lower()
+    placeholder_changed = fields.get("changed_files", "").strip() in {"", "-", "n/a", "none"}
+    placeholder_verification = fields.get("verification_run", "").strip() in {"", "-", "n/a", "none"}
+    done_without_evidence = status == "done" and (placeholder_changed or placeholder_verification)
+    ok = not stale_hit and not missing and status in {"working", "done", "blocked"} and not done_without_evidence
+    blocker = ""
+    if stale_hit:
+        blocker = f"blocked_context_mismatch: reply contains stale marker {stale_hit}"
+    elif missing:
+        blocker = "missing structured fields: " + ", ".join(missing)
+    elif status not in {"working", "done", "blocked"}:
+        blocker = f"invalid status: {fields.get('status', '')}"
+    elif done_without_evidence:
+        blocker = "status done requires concrete changed_files and verification_run"
+    elif status == "blocked":
+        blocker = fields.get("blocker", "blocked")
+    return {
+        "ok": ok and status != "blocked",
+        "mode": "execution",
+        "status": status if status in {"working", "done", "blocked"} else "blocked",
+        "activation_eligible": False,
+        "blocker": blocker,
+        "fields": fields,
+        "changed_files": changed_files,
+    }
+
+
 def run_agy_print(message: str, timeout: int) -> tuple[int, str, str]:
     command = shutil.which(AGY_COMMAND)
     if not command:
@@ -94,7 +222,8 @@ def run_agy_print(message: str, timeout: int) -> tuple[int, str, str]:
     return cp.returncode, cp.stdout.strip(), cp.stderr.strip()
 
 
-def write_direct_brief(agent: str, source: str, session_key: str, message: str, reply: str) -> dict[str, Path]:
+def write_direct_brief(agent: str, source: str, session_key: str, message: str, reply: str, validation: dict | None = None) -> dict[str, Path]:
+    validation = validation or {}
     artifact = direct_paths(agent)
     artifact["brief"].write_text(
         "\n".join(
@@ -132,10 +261,11 @@ def write_direct_brief(agent: str, source: str, session_key: str, message: str, 
                 "source": source,
                 "session_key": session_key,
                 "reply": reply,
-                "activation_eligible": True,
+                "activation_eligible": bool(validation.get("activation_eligible")),
+                "validation": validation,
                 "brief": str(artifact["brief"]),
                 "created_at": now(),
-                "next_action": "Antigravity CLI direct reply verified; implementation tasks still require evidence or blocker return.",
+                "next_action": "Antigravity direct request accepted only when validation.ok=true; otherwise sender must receive blocked status.",
             },
             ensure_ascii=False,
             indent=2,
@@ -270,16 +400,20 @@ def process(args: argparse.Namespace) -> int:
         return 1
     if args.direct_message:
         run_companyctl(["heartbeat", "--agent", args.agent])
-        agy_code, agy_reply, agy_err = run_agy_print(args.direct_message, args.timeout)
+        before_files = git_changed_files()
+        agy_prompt = args.direct_message if is_lightweight_direct_message(args.direct_message) else build_guarded_task_prompt(args.direct_message)
+        agy_code, agy_reply, agy_err = run_agy_print(agy_prompt, args.timeout)
+        after_files = git_changed_files()
         reply = agy_reply or direct_reply_text(args.direct_message)
-        artifact = write_direct_brief(args.agent, args.direct_source, args.direct_session_key, args.direct_message, reply)
-        agy_ok = agy_code == 0 and bool(agy_reply)
+        validation = validate_agy_reply(message=args.direct_message, reply=reply, before_files=before_files, after_files=after_files)
+        artifact = write_direct_brief(args.agent, args.direct_source, args.direct_session_key, args.direct_message, reply, validation)
+        agy_ok = agy_code == 0 and bool(agy_reply) and bool(validation["ok"])
         status_body = status_reply_text(
-            status="working" if agy_ok else "blocked",
-            current_action="Antigravity CLI direct reply verified" if agy_ok else "Antigravity GUI brief recorded; autonomous GUI execution not verified",
-            changed_files=str(artifact["brief"]),
-            verification_run=str(artifact["report"]),
-            blocker="-" if agy_ok else "Antigravity direct channel has ACK/brief only; GUI implementation requires evidence return path",
+            status=validation["status"] if agy_code == 0 and agy_reply else "blocked",
+            current_action=validation["fields"].get("current_action", "Antigravity direct reply validated" if agy_ok else "Antigravity direct reply rejected by execution guard"),
+            changed_files=validation["fields"].get("changed_files") or (", ".join(validation["changed_files"]) if validation["changed_files"] else str(artifact["brief"])),
+            verification_run=validation["fields"].get("verification_run") or str(artifact["report"]),
+            blocker="-" if agy_ok else (validation["blocker"] or agy_err or "Antigravity reply failed validation"),
             eta="-",
         )
         status_delivery = send_source_status(args.agent, args.direct_source, status_body)
@@ -292,14 +426,15 @@ def process(args: argparse.Namespace) -> int:
                 "source": args.direct_source,
                 "session_key": args.direct_session_key,
                 "reply": reply,
-                "activation_eligible": agy_ok,
+                "activation_eligible": bool(validation["activation_eligible"]) and agy_ok,
                 "brief": str(artifact["brief"]),
                 "report": str(artifact["report"]),
                 "status_delivery": status_delivery,
                 "agy_exit_code": agy_code,
                 "agy_stderr": agy_err[-1000:],
+                "validation": validation,
                 "blocked_execution": not agy_ok,
-                "blocker": "" if agy_ok else "Antigravity direct channel can prepare GUI brief and ACK, but GUI implementation still requires Antigravity app/human evidence.",
+                "blocker": "" if agy_ok else (validation["blocker"] or "Antigravity direct reply did not meet execution evidence contract."),
             }
         )
         return 0 if agy_ok else 1

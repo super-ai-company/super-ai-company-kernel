@@ -3616,6 +3616,49 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual(0, code, main_messages)
         self.assertTrue(any(message["source_agent"] == "antigravity" and "status: blocked" in message["body"] for message in main_messages["messages"]))
 
+    def test_antigravity_direct_requires_exact_lightweight_token(self) -> None:
+        workspace = self.root / "workspace" / "antigravity"
+        code, employee = run_cli("employee", "create", "--id", "main", "--name", "main", "--role", "operator", "--runtime", "openclaw", "--workspace", str(self.root / "workspace" / "main"))
+        self.assertEqual(code, 0, employee)
+        code, employee = run_cli("employee", "create", "--id", "antigravity", "--name", "Antigravity", "--role", "developer", "--runtime", "antigravity", "--workspace", str(workspace))
+        self.assertEqual(code, 0, employee)
+        captured = io.StringIO()
+        with mock.patch.object(antigravity_adapter, "run_agy_print", return_value=(0, "我收到 ANTIGRAVITY_DIRECT_OK", "")), contextlib.redirect_stdout(captured):
+            code = antigravity_adapter.main(["--agent", "antigravity", "--direct-source", "main", "--direct-session-key", "agent:antigravity:main", "--direct-message", "只回复：ANTIGRAVITY_DIRECT_OK"])
+        result = json.loads(captured.getvalue())
+        self.assertEqual(1, code, result)
+        self.assertFalse(result["ok"])
+        self.assertFalse(result["activation_eligible"])
+        self.assertIn("expected exact token", result["blocker"])
+        self.assertTrue(result["blocked_execution"])
+
+    def test_antigravity_complex_direct_blocks_stale_context_without_evidence(self) -> None:
+        workspace = self.root / "workspace" / "antigravity"
+        code, employee = run_cli("employee", "create", "--id", "main", "--name", "main", "--role", "operator", "--runtime", "openclaw", "--workspace", str(self.root / "workspace" / "main"))
+        self.assertEqual(code, 0, employee)
+        code, employee = run_cli("employee", "create", "--id", "antigravity", "--name", "Antigravity", "--role", "developer", "--runtime", "antigravity", "--workspace", str(workspace))
+        self.assertEqual(code, 0, employee)
+        stale_reply = "\n".join(
+            [
+                "status: done",
+                "current_action: approved approval-route-task-hermes and got HERMES_LOCAL_VERIFY_OK",
+                "changed_files: -",
+                "verification_run: -",
+                "browser_check: -",
+                "blocker: -",
+            ]
+        )
+        captured = io.StringIO()
+        with mock.patch.object(antigravity_adapter, "run_agy_print", return_value=(0, stale_reply, "")), contextlib.redirect_stdout(captured):
+            code = antigravity_adapter.main(["--agent", "antigravity", "--direct-source", "main", "--direct-session-key", "agent:antigravity:main", "--direct-message", "请重构 dashboard 前端并运行浏览器验证"])
+        result = json.loads(captured.getvalue())
+        self.assertEqual(1, code, result)
+        self.assertFalse(result["ok"])
+        self.assertFalse(result["activation_eligible"])
+        self.assertIn("blocked_context_mismatch", result["blocker"])
+        self.assertEqual("execution", result["validation"]["mode"])
+        self.assertTrue(result["blocked_execution"])
+
     def test_attendance_sweep_uses_session_and_spool_evidence(self) -> None:
         for agent in ("main", "nestcar", "codex"):
             code, created = run_cli(

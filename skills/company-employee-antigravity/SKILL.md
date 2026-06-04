@@ -52,6 +52,7 @@ Required pass criteria before `active`:
 - Every received request must ACK or return a blocker reply to the sender.
 - A frontend implementation is not complete unless `git diff --stat` shows the expected files and tests/browser checks were run. If the reply references unrelated Hermes/Codex tasks, treat it as `blocked_context_mismatch`, not done.
 - Keep task prompts narrow: include the exact repo path, branch, allowed files, expected pages, and required verification commands. Reject stale conversation carry-over.
+- Adapter enforcement: lightweight verification messages must return the exact requested token. Complex frontend tasks must return structured `status`, `current_action`, `changed_files`, `verification_run`, `browser_check`, and `blocker`; replies mentioning stale Hermes/permission tasks or claiming `done` without changed files and verification are automatically `blocked`.
 - If asked to optimize UI, Antigravity must inspect every dashboard page in the browser before proposing or implementing changes: Overview, Tasks & Workflows, Projects & Plans, AI Employees, Governance, Logs & Events, Trace Telemetry.
 - If Antigravity cannot operate the GUI or commit code, it must return a blocker to the requesting agent and suggest `@codex` or another active employee to implement the changes.
 - On failure, include status, blocker, evidence path, and next action; suggest active `@agent` collaborators when helpful.
