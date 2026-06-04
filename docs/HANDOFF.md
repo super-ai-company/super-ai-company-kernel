@@ -20,13 +20,8 @@ The older workspace project:
 /Users/owner/openclaw/workspace-xmanx/projects/openclaw-company-management
 ```
 
-is a legacy OpenClaw control/skill package. Its reusable files have been copied into:
-
-```text
-docs/legacy-openclaw-company-management/
-```
-
-Do not treat that legacy workspace as the active Company Kernel root.
+is an independent OpenClaw control/skill project. It should stay separate and
+must not be treated as the active Company Kernel root.
 
 ## Runtime Endpoints
 
@@ -111,9 +106,9 @@ python3 -B -m unittest discover -s tests -v
 bin/company-dashboard --variant advanced
 ```
 
-## Migration Notes
+## Related Project Notes
 
-The legacy `openclaw-company-management` content was copied for reference only. It contains older scripts for:
+The separate `openclaw-company-management` project contains OpenClaw-side helper scripts for:
 
 - OpenClaw-side skill install
 - account route SQLite helpers
@@ -122,7 +117,7 @@ The legacy `openclaw-company-management` content was copied for reference only. 
 - Company Kernel health bridge
 - attendance and communication smoke scripts
 
-These are not the canonical runtime implementation. New code should be added to `company_kernel/`, `bin/`, `dashboard_templates/`, `config/`, or `docs/` in this repository.
+Those files remain in their own repository. They are not the canonical Company Kernel runtime implementation. New Company Kernel code should be added to `company_kernel/`, `bin/`, `dashboard_templates/`, `config/`, or `docs/` in this repository.
 
 ## Ownership Boundary
 
