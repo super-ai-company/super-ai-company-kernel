@@ -41,9 +41,42 @@ After scan/apply, Codex must run or output the 2-4 round handshake plan as the i
 - For a required ACK, call `bin/companyctl message direct --from <source> --to codex --body "只回复：CODEX_ACK"` or use `POST /v1/messages/direct`.
 - The Codex direct path runs `company-codex-adapter --direct-message` and returns an immediate adapter reply.
 - If OpenClaw sends with record-only `message send`, the expected state is pending inbox until a daemon/adapter/human explicitly processes it.
+- Execution-class direct messages must not stop at receipt. The adapter must write repo-local progress files and send a status message back to the source.
+- Required states are `acknowledged`, `in_progress`, `blocked`, and `completed`. `acknowledged` is not work evidence.
+- A valid execution smoke must produce both:
+  - source inbox message containing `status: working`;
+  - final receipt containing `status: done` or `status: blocked`.
 - Codex must reply at least once to every received employee request. If blocked or rejected, reply to the sender with status, blocker, evidence path, and the next action.
 - If another employee is needed, name active collaborators as `@agent` options and ask the sender whether to add them.
 - For human-facing requests, close the loop back to the requesting agent so it can notify the human operator; do not leave the human waiting on an internal inbox record.
+
+## Verified Direct Execution Loop
+
+Use this smoke after onboarding or repair:
+
+```bash
+bin/companyctl message direct \
+  --from main \
+  --to codex \
+  --body "执行一次只读闭环烟测：不要修改业务代码，只检查当前仓库状态并按要求返回 status/current_action/changed_files/verification_run/blocker/eta。" \
+  --timeout 120
+bin/companyctl message list --agent main
+```
+
+Pass criteria:
+
+- `main -> codex` request is recorded.
+- `codex -> main` progress message exists with `status: working`.
+- `codex -> main` receipt exists with `status: done` or `status: blocked`.
+- Codex workspace contains `reports/progress_acknowledged_*.json`, `reports/progress_in_progress_*.json`, and final `progress_completed_*.json` or `progress_blocked_*.json`.
+- The final reply includes concrete `changed_files`, `verification_run`, `blocker`, and `eta`; echoing the prompt is failure.
+
+## Main/Codex Role Boundary
+
+- Main/OpenClaw owns project registration, scope, acceptance, sequencing, GitHub finalization, and human-facing status.
+- Codex owns bounded implementation/review inside the assigned repo.
+- Main must verify `git status`, `git diff --stat`, changed files, tests, runtime/browser evidence, and artifacts before accepting Codex output.
+- Codex must not redefine the product goal, touch unrelated business workspaces, or turn pending/candidate states into success.
 
 ## Execution Rules
 

@@ -3464,6 +3464,21 @@ class CompanyKernelCoreTest(unittest.TestCase):
             "employee",
             "create",
             "--id",
+            "main",
+            "--name",
+            "main",
+            "--role",
+            "operator",
+            "--runtime",
+            "openclaw",
+            "--workspace",
+            str(self.root / "workspace" / "main"),
+        )
+        self.assertEqual(code, 0, employee)
+        code, employee = run_cli(
+            "employee",
+            "create",
+            "--id",
             "antigravity",
             "--name",
             "Antigravity",
@@ -3495,6 +3510,10 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertTrue(Path(result["brief"]).exists())
         self.assertTrue(Path(result["report"]).exists())
         self.assertTrue(result["blocked_execution"])
+        self.assertTrue(result["status_delivery"]["ok"], result)
+        code, main_messages = run_cli("message", "list", "--agent", "main")
+        self.assertEqual(0, code, main_messages)
+        self.assertTrue(any(message["source_agent"] == "antigravity" and "status: blocked" in message["body"] for message in main_messages["messages"]))
 
     def test_attendance_sweep_uses_session_and_spool_evidence(self) -> None:
         for agent in ("main", "nestcar", "codex"):

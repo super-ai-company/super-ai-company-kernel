@@ -136,6 +136,31 @@ def write_direct_brief(agent: str, source: str, session_key: str, message: str, 
     return artifact
 
 
+def status_reply_text(*, status: str, current_action: str, changed_files: str = "-", verification_run: str = "-", blocker: str = "-", eta: str = "-") -> str:
+    return "\n".join(
+        [
+            f"status: {status}",
+            f"current_action: {current_action}",
+            f"changed_files: {changed_files}",
+            f"verification_run: {verification_run}",
+            f"blocker: {blocker}",
+            f"eta: {eta}",
+        ]
+    )
+
+
+def send_source_status(agent: str, source: str, body: str) -> dict:
+    if not source:
+        return {"ok": False, "skipped": True, "reason": "missing direct source"}
+    message_id = f"msg-{agent}-status-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
+    code, out, err = run_companyctl(["message", "send", "--from", agent, "--to", source, "--body", body, "--message-id", message_id])
+    try:
+        payload = json.loads(out or "{}")
+    except json.JSONDecodeError:
+        payload = {}
+    return {"ok": code == 0, "exit_code": code, "message_id": message_id, "payload": payload, "stderr": err[-1000:]}
+
+
 def build_brief(task: sqlite3.Row) -> str:
     return "\n".join(
         [
@@ -237,6 +262,15 @@ def process(args: argparse.Namespace) -> int:
         run_companyctl(["heartbeat", "--agent", args.agent])
         reply = direct_reply_text(args.direct_message)
         artifact = write_direct_brief(args.agent, args.direct_source, args.direct_session_key, args.direct_message, reply)
+        blocked_status = status_reply_text(
+            status="blocked",
+            current_action="Antigravity GUI brief recorded; autonomous GUI execution not verified",
+            changed_files=str(artifact["brief"]),
+            verification_run=str(artifact["report"]),
+            blocker="Antigravity direct channel has ACK/brief only; GUI implementation requires evidence return path",
+            eta="-",
+        )
+        status_delivery = send_source_status(args.agent, args.direct_source, blocked_status)
         emit(
             {
                 "ok": True,
@@ -249,6 +283,7 @@ def process(args: argparse.Namespace) -> int:
                 "activation_eligible": False,
                 "brief": str(artifact["brief"]),
                 "report": str(artifact["report"]),
+                "status_delivery": status_delivery,
                 "blocked_execution": True,
                 "blocker": "Antigravity direct channel can prepare GUI brief and ACK, but GUI implementation still requires Antigravity app/human evidence.",
             }

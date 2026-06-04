@@ -11,6 +11,18 @@ Antigravity is a GUI employee. There may be no stable CLI, so keep execution exp
 
 “Onboard Antigravity as a GUI developer, verify direct reply, generate GUI task briefs by default, and require manual evidence or blocker for completion.”
 
+## Hire Antigravity Contract
+
+Antigravity is a GUI-first candidate unless it can prove a real execution loop. Do not treat `ANTIGRAVITY_DIRECT_OK`, app existence, or a generated brief as employee readiness.
+
+Required pass criteria before `active`:
+
+- 2-4 direct rounds return real replies, not only saved inbox files.
+- A direct request produces a sender-visible status message.
+- If GUI execution is unavailable, the status must be `blocked` with a blocker and evidence path.
+- If GUI execution is available, Antigravity must inspect the requested pages, implement or review, and return evidence through `--complete` or `--block`.
+- Any quota, login, app, CLI, or GUI-control error keeps the employee `candidate` and pauses autonomous routing.
+
 ## Required Checks
 
 1. Locate app:
@@ -27,7 +39,7 @@ Antigravity is a GUI employee. There may be no stable CLI, so keep execution exp
 ## Execution Rules
 
 - Default adapter mode is dry-run: writes a GUI task brief and evidence.
-- Direct messages must not fail with “unsupported runtime”. They must write a direct GUI brief under `employees/antigravity/reports/direct/`, return an ACK to the sender, and clearly state that implementation still requires GUI evidence or a blocker.
+- Direct messages must not fail with “unsupported runtime”. They must write a direct GUI brief under `employees/antigravity/reports/direct/`, return an ACK to the sender, and send a structured `status: blocked` message back to the source when autonomous GUI execution is not verified.
 - Direct GUI brief ACK keeps Antigravity as `candidate`; it does not prove active employee readiness.
 - Active status is forbidden until `employee verify-direct` completes 2-4 rounds with receipt and the runtime has a real implementation/blocker evidence return path.
 - If Antigravity cannot actually inspect the GUI pages and return implementation evidence, it must stay `candidate` and must not receive autonomous tasks.
@@ -40,6 +52,38 @@ Antigravity is a GUI employee. There may be no stable CLI, so keep execution exp
 - If Antigravity cannot operate the GUI or commit code, it must return a blocker to the requesting agent and suggest `@codex` or another active employee to implement the changes.
 - On failure, include status, blocker, evidence path, and next action; suggest active `@agent` collaborators when helpful.
 - Human-originated requests must return through the requesting agent so the human operator receives a clear update.
+
+## Verified Candidate Smoke
+
+Use this smoke after configuring Antigravity:
+
+```bash
+bin/companyctl message direct \
+  --from main \
+  --to antigravity \
+  --body "请查看每个 dashboard 页面并给出前端优化。只回复 ANTIGRAVITY_BRIEF_OK"
+bin/companyctl message list --agent main
+```
+
+Expected current candidate behavior:
+
+- direct command returns `activation_eligible=false`;
+- `employees/antigravity/reports/direct/` contains a GUI brief and report;
+- `main` receives a message containing `status: blocked`;
+- blocker says GUI implementation still requires Antigravity app/human evidence.
+
+This is a safe candidate smoke, not activation evidence.
+
+## Activation Failure Handling
+
+If Antigravity cannot return real GUI evidence:
+
+```bash
+bin/companyctl employee update --id antigravity --status candidate
+bin/companyctl employee communication antigravity --enabled false
+```
+
+Then suggest active collaborators such as `@codex` for implementation or `@hermes` for verification.
 
 ## Blocked Cases
 
