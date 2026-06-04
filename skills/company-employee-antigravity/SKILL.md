@@ -5,22 +5,23 @@ description: Use when onboarding or operating Google Antigravity as a Company Ke
 
 # Company Employee: Antigravity
 
-Antigravity is a GUI employee. There may be no stable CLI, so keep execution explicit and evidence-driven.
+Antigravity is a GUI/browser/IDE employee. Current local deployments may expose an `agy --print` CLI that can pass direct communication, but task completion still has to be evidence-driven.
 
 ## One-Sentence Onboarding
 
-“Onboard Antigravity as a GUI developer, verify direct reply, generate GUI task briefs by default, and require manual evidence or blocker for completion.”
+“Onboard Antigravity as a GUI/front-end developer, verify 3 direct rounds through `agy --print` when available, and only accept tasks as done when it returns changed files plus verification evidence.”
 
 ## Hire Antigravity Contract
 
-Antigravity is a GUI-first candidate unless it can prove a real execution loop. Do not treat `ANTIGRAVITY_DIRECT_OK`, app existence, or a generated brief as employee readiness.
+Antigravity is a GUI-first candidate unless it can prove a real execution loop. Do not treat `ANTIGRAVITY_DIRECT_OK`, app existence, generated briefs, or unrelated status prose as employee readiness.
 
 Required pass criteria before `active`:
 
 - 2-4 direct rounds return real replies, not only saved inbox files.
 - A direct request produces a sender-visible status message.
+- If `agy` is present, `agy --print "只回复 antigravity_CLI_OK" --print-timeout 60s` must return the exact text before activation.
 - If GUI execution is unavailable, the status must be `blocked` with a blocker and evidence path.
-- If GUI execution is available, Antigravity must inspect the requested pages, implement or review, and return evidence through `--complete` or `--block`.
+- If GUI execution is available, Antigravity must inspect the requested pages, implement or review, and return `status`, `changed_files`, `verification_run`, and `blocker` through `--complete`, `--block`, or a structured direct status reply.
 - Any quota, login, app, CLI, or GUI-control error keeps the employee `candidate` and pauses autonomous routing.
 
 ## Required Checks
@@ -32,9 +33,10 @@ Required pass criteria before `active`:
    - `bin/companyctl employee create --id antigravity --name Antigravity --role developer --runtime antigravity --workspace <workspace>`
 3. Smoke and activation:
    - `bin/companyctl heartbeat --agent antigravity`
-   - `bin/companyctl message direct --from main --to antigravity --body "只回复：antigravity_DIRECT_OK"`
-   - `bin/companyctl employee verify-direct --id antigravity --from main --rounds 3 --activate`
-   - `bin/company-antigravity-adapter --agent antigravity`
+- `bin/companyctl message direct --from main --to antigravity --body "只回复：antigravity_DIRECT_OK"`
+- `agy --print "只回复 antigravity_CLI_OK" --print-timeout 60s` when the CLI exists.
+- `bin/companyctl employee verify-direct --id antigravity --from main --rounds 3 --activate`
+- `bin/company-antigravity-adapter --agent antigravity`
 
 ## Execution Rules
 
@@ -48,6 +50,8 @@ Required pass criteria before `active`:
 - Use `--complete --task-id <id> --summary ... --evidence ...` or equivalent Company Kernel task completion after GUI work has real evidence.
 - Use `--block --task-id <id> --blocker ...` if the GUI cannot complete safely.
 - Every received request must ACK or return a blocker reply to the sender.
+- A frontend implementation is not complete unless `git diff --stat` shows the expected files and tests/browser checks were run. If the reply references unrelated Hermes/Codex tasks, treat it as `blocked_context_mismatch`, not done.
+- Keep task prompts narrow: include the exact repo path, branch, allowed files, expected pages, and required verification commands. Reject stale conversation carry-over.
 - If asked to optimize UI, Antigravity must inspect every dashboard page in the browser before proposing or implementing changes: Overview, Tasks & Workflows, Projects & Plans, AI Employees, Governance, Logs & Events, Trace Telemetry.
 - If Antigravity cannot operate the GUI or commit code, it must return a blocker to the requesting agent and suggest `@codex` or another active employee to implement the changes.
 - On failure, include status, blocker, evidence path, and next action; suggest active `@agent` collaborators when helpful.

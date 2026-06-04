@@ -1201,6 +1201,25 @@ def inject_advanced_dashboard(template: str, summary: dict, *, db_path: Path, ap
         '"soft_archive_desc": "Locks the agent, updates status to "archived", and hides it from the active roster. All files, reports, and evidence remain untouched."',
         '"soft_archive_desc": "Locks the agent, updates status to \\"archived\\", and hides it from the active roster. All files, reports, and evidence remain untouched."',
     )
+    if 'id="kernel-form-modal"' not in html_text:
+        html_text = append_before_body(
+            html_text,
+            """\n  <div id="kernel-form-modal" class="kernel-form-modal" aria-hidden="true">
+    <div class="kernel-form-panel" role="dialog" aria-modal="true" aria-labelledby="kernel-form-title">
+      <div class="kernel-form-header">
+        <h3 id="kernel-form-title">Action</h3>
+        <button type="button" class="chat-tool-btn" onclick="closeKernelFormModal()"><i class="fa-solid fa-xmark"></i></button>
+      </div>
+      <form id="kernel-form" onsubmit="return submitKernelFormModal(event)">
+        <div id="kernel-form-body" class="kernel-form-body"></div>
+        <div class="kernel-form-actions">
+          <button type="button" class="chat-tool-btn" onclick="closeKernelFormModal()">Cancel</button>
+          <button id="kernel-form-submit" type="submit" class="chat-tool-btn"><i class="fa-solid fa-paper-plane"></i> Send</button>
+        </div>
+      </form>
+    </div>
+  </div>\n""",
+        )
     html_text = html_text.replace(
         "summaryData.employees.push(generatedRecruitData);\n    summaryData.counts.employees = summaryData.employees.length;",
         "return realOnboardGeneratedEmployee();",
@@ -1232,17 +1251,26 @@ def inject_advanced_dashboard(template: str, summary: dict, *, db_path: Path, ap
       max-width: 42%;
     }
 
+    .employee-card-header > div:last-child {
+      flex: 0 0 auto;
+      max-width: 46%;
+      display: flex;
+      justify-content: flex-end;
+      gap: 6px;
+    }
+
     .employee-card-actions {
       display: grid;
-      grid-template-columns: repeat(4, minmax(0, 1fr));
+      grid-template-columns: minmax(0, 1fr) 34px;
       gap: 8px;
       margin-top: auto;
       padding-top: 12px;
       border-top: 1px solid rgba(255,255,255,0.06);
+      position: relative;
     }
 
     .employee-action-btn {
-      min-height: 28px;
+      min-height: 32px;
       min-width: 0;
       border-radius: 6px;
       padding: 0 8px;
@@ -1291,10 +1319,147 @@ def inject_advanced_dashboard(template: str, summary: dict, *, db_path: Path, ap
       color: #f87171;
     }
 
+    .employee-action-btn.menu {
+      padding: 0;
+      font-size: 16px;
+      letter-spacing: 0;
+    }
+
+    .employee-card-menu {
+      display: none;
+      position: absolute;
+      right: 0;
+      bottom: 48px;
+      z-index: 60;
+      min-width: 176px;
+      padding: 6px;
+      border: 1px solid rgba(129, 140, 248, 0.28);
+      border-radius: 8px;
+      background: rgba(12, 16, 34, 0.98);
+      box-shadow: 0 18px 42px rgba(0, 0, 0, 0.38);
+    }
+
+    .employee-card-menu.open {
+      display: grid;
+      gap: 4px;
+    }
+
+    .employee-card-menu button {
+      width: 100%;
+      min-height: 30px;
+      border: 0;
+      border-radius: 6px;
+      padding: 0 9px;
+      background: transparent;
+      color: #dbeafe;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 11px;
+      font-weight: 700;
+      text-align: left;
+    }
+
+    .employee-card-menu button:hover {
+      background: rgba(99, 102, 241, 0.18);
+    }
+
+    .employee-card-menu button.danger {
+      color: #fca5a5;
+    }
+
     @media (max-width: 720px) {
       .employee-card-actions {
-        grid-template-columns: repeat(2, minmax(0, 1fr));
+        grid-template-columns: minmax(0, 1fr) 34px;
       }
+    }""",
+            1,
+        )
+    if ".kernel-form-modal" not in html_text:
+        html_text = html_text.replace(
+            """    .detail-raw {
+      margin-top: 12px;
+      color: var(--text-secondary);
+    }""",
+            """    .detail-raw {
+      margin-top: 12px;
+      color: var(--text-secondary);
+    }
+
+    .kernel-form-modal {
+      position: fixed;
+      inset: 0;
+      z-index: 120;
+      display: none;
+      align-items: center;
+      justify-content: center;
+      padding: 24px;
+      background: rgba(2, 6, 23, 0.72);
+      backdrop-filter: blur(8px);
+    }
+
+    .kernel-form-panel {
+      width: min(560px, 100%);
+      border: 1px solid rgba(129, 140, 248, 0.28);
+      border-radius: 8px;
+      background: #0f1425;
+      box-shadow: 0 24px 80px rgba(0, 0, 0, 0.45);
+      overflow: hidden;
+    }
+
+    .kernel-form-header,
+    .kernel-form-actions {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 14px 16px;
+      border-bottom: 1px solid rgba(255,255,255,0.08);
+    }
+
+    .kernel-form-actions {
+      justify-content: flex-end;
+      border-top: 1px solid rgba(255,255,255,0.08);
+      border-bottom: 0;
+    }
+
+    .kernel-form-body {
+      display: grid;
+      gap: 12px;
+      padding: 16px;
+    }
+
+    .kernel-form-body label {
+      display: grid;
+      gap: 6px;
+      color: var(--text-secondary);
+      font-size: 11px;
+      font-weight: 800;
+      text-transform: uppercase;
+    }
+
+    .kernel-form-body input,
+    .kernel-form-body textarea {
+      width: 100%;
+      box-sizing: border-box;
+      border: 1px solid rgba(129, 140, 248, 0.25);
+      border-radius: 6px;
+      background: rgba(2, 6, 23, 0.55);
+      color: var(--text-primary);
+      padding: 9px 10px;
+      font: inherit;
+    }
+
+    .kernel-form-body textarea {
+      min-height: 96px;
+      resize: vertical;
+    }
+
+    .kernel-form-help {
+      color: var(--text-secondary);
+      font-size: 11px;
+      line-height: 1.45;
     }""",
             1,
         )
@@ -1321,20 +1486,25 @@ def inject_advanced_dashboard(template: str, summary: dict, *, db_path: Path, ap
             ${skillsPills}
           </div>
           <div class="employee-card-actions">
-            <button class="employee-action-btn direct" onclick="event.stopPropagation(); openDirectEmployeeMessage('${escapeHtml(emp.id)}')" title="Direct message">
-              <i class="fa-solid fa-paper-plane"></i> Direct
+            <button class="employee-action-btn direct" onclick="event.stopPropagation(); openDirectEmployeeMessage('${escapeHtml(emp.id)}')" title="Send message">
+              <i class="fa-solid fa-comment-dots"></i> Send Message
             </button>
-            <button class="employee-action-btn ${commPaused ? 'resume' : 'pause'}" onclick="event.stopPropagation(); toggleEmployeeCommunication('${escapeHtml(emp.id)}', ${commPaused ? 'true' : 'false'})" title="${commPaused ? 'Resume communication' : 'Pause communication'}">
-              <i class="fa-solid ${commPaused ? 'fa-play' : 'fa-pause'}"></i> ${commPaused ? 'Resume' : 'Pause'}
+            <button class="employee-action-btn menu" onclick="event.stopPropagation(); toggleEmployeeActionMenu('${escapeHtml(emp.id)}')" title="More actions">
+              <i class="fa-solid fa-ellipsis-vertical"></i>
             </button>
-            <button class="employee-action-btn edit" onclick="event.stopPropagation(); openEditEmployeeProfile('${escapeHtml(emp.id)}', '${escapeHtml(emp.name)}', '${escapeHtml(emp.role)}', '${escapeHtml(emp.runtime)}', '${escapeHtml(emp.status || 'active')}')" title="Edit employee">
-              <i class="fa-solid fa-pen-to-square"></i> Edit
-            </button>
-            ${emp.id !== 'openclaw-main' && emp.id !== 'video-ops' ? `
-              <button class="employee-action-btn fire" onclick="event.stopPropagation(); openFireEmployeeModal('${escapeHtml(emp.id)}', '${escapeHtml(emp.runtime)}', '${escapeHtml(emp.workspace)}')" title="Offboard employee">
-                <i class="fa-solid fa-user-minus"></i> Fire
+            <div class="employee-card-menu" id="employee-menu-${escapeHtml(emp.id)}">
+              <button onclick="event.stopPropagation(); openEditEmployeeProfile('${escapeHtml(emp.id)}', '${escapeHtml(emp.name)}', '${escapeHtml(emp.role)}', '${escapeHtml(emp.runtime)}', '${escapeHtml(emp.status || 'active')}')">
+                <i class="fa-solid fa-pen-to-square"></i> Edit Profile
               </button>
-            ` : ''}
+              <button onclick="event.stopPropagation(); toggleEmployeeCommunication('${escapeHtml(emp.id)}', ${commPaused ? 'true' : 'false'})">
+                <i class="fa-solid ${commPaused ? 'fa-play' : 'fa-pause'}"></i> ${commPaused ? 'Resume Communication' : 'Pause Communication'}
+              </button>
+              ${emp.id !== 'openclaw-main' && emp.id !== 'video-ops' ? `
+                <button class="danger" onclick="event.stopPropagation(); openFireEmployeeModal('${escapeHtml(emp.id)}', '${escapeHtml(emp.runtime)}', '${escapeHtml(emp.workspace)}')">
+                  <i class="fa-solid fa-user-minus"></i> Offboard
+                </button>
+              ` : ''}
+            </div>
           </div>""",
         1,
     )
@@ -1666,6 +1836,38 @@ def inject_advanced_dashboard(template: str, summary: dict, *, db_path: Path, ap
       insertMention(input, option.dataset.agent || '');
     }});
   }}
+  function toggleEmployeeActionMenu(id) {{
+    const targetId = `employee-menu-${{id}}`;
+    document.querySelectorAll('.employee-card-menu.open').forEach(menu => {{
+      if (menu.id !== targetId) menu.classList.remove('open');
+    }});
+    const menu = document.getElementById(targetId);
+    if (menu) menu.classList.toggle('open');
+  }}
+  document.addEventListener('click', (event) => {{
+    if (event.target && event.target.closest && event.target.closest('.employee-card-actions')) return;
+    document.querySelectorAll('.employee-card-menu.open').forEach(menu => menu.classList.remove('open'));
+  }});
+  function focusChatHub() {{
+    const logsTab = Array.from(document.querySelectorAll('.nav-item, [data-tab], button')).find(el => /Logs|日志|Chat|会话/.test(el.textContent || '') || String(el.getAttribute('onclick') || '').includes('logs'));
+    if (logsTab && typeof logsTab.click === 'function') logsTab.click();
+    const input = document.getElementById('chat-input-field');
+    if (input) input.focus();
+    return input;
+  }}
+  function prefillChatMention(id) {{
+    const input = focusChatHub();
+    if (!input) return false;
+    const prefix = `@${{id}} `;
+    if (!String(input.value || '').includes(prefix)) {{
+      input.value = `${{prefix}}${{input.value || ''}}`.trimStart();
+    }}
+    input.focus();
+    input.setSelectionRange(input.value.length, input.value.length);
+    renderMentionSuggestions(input);
+    companyApiLog('SYSTEM', `Chat Hub ready for @${{id}}. Send will create or reuse a real API conversation.`, 'normal');
+    return true;
+  }}
   function getActiveConversationId() {{
     if (window.activeThreadId) return window.activeThreadId;
     const active = document.querySelector('.chat-thread-item.active');
@@ -1775,16 +1977,82 @@ def inject_advanced_dashboard(template: str, summary: dict, *, db_path: Path, ap
       companyApiLog('ERROR', `Insert owner failed: ${{err.message}}`, 'error');
     }}
   }}
-  function openNewConversationComposer() {{
-    const participants = prompt('Participants, comma-separated. You can also type @codex @trae in the message box.', 'codex,trae');
-    if (participants === null) return;
-    const body = prompt('Opening message', '');
-    if (body === null) return;
-    const mentions = parseMentionedEmployees(`${{participants.split(',').map(item => '@' + item.trim()).join(' ')}} ${{body}}`);
-    const input = document.getElementById('chat-input-field');
-    if (input) input.value = `${{mentions.map(item => '@' + item).join(' ')}} ${{body}}`.trim();
-    return realSendChatMessage();
+  let kernelFormMode = '';
+  let kernelFormTarget = '';
+  function openKernelFormModal(mode, target) {{
+    kernelFormMode = mode || '';
+    kernelFormTarget = target || '';
+    const modal = document.getElementById('kernel-form-modal');
+    const title = document.getElementById('kernel-form-title');
+    const body = document.getElementById('kernel-form-body');
+    const submit = document.getElementById('kernel-form-submit');
+    if (!modal || !title || !body) return;
+    if (mode === 'direct') {{
+      title.textContent = `Direct message: ${{target}}`;
+      if (submit) submit.innerHTML = '<i class="fa-solid fa-paper-plane"></i> Send Direct';
+      body.innerHTML = `
+        <label>Source
+          <input id="kernel-form-source" value="main" autocomplete="off">
+        </label>
+        <label>Message
+          <textarea id="kernel-form-message">只回复：${{escapeHtml(target)}}_DIRECT_OK</textarea>
+        </label>
+        <div class="kernel-form-help">${{escapeHtml(collaborationHelpText())}}</div>
+      `;
+    }} else if (mode === 'conversation') {{
+      title.textContent = 'New conversation';
+      if (submit) submit.innerHTML = '<i class="fa-solid fa-comments"></i> Create';
+      const options = activeEmployeeOptions().slice(0, 10).map(emp => `@${{escapeHtml(emp.id)}}`).join(' ');
+      body.innerHTML = `
+        <label>Participants
+          <input id="kernel-form-participants" value="" placeholder="@codex @trae">
+        </label>
+        <label>Opening message
+          <textarea id="kernel-form-message" placeholder="Describe the work or question..."></textarea>
+        </label>
+        <div class="kernel-form-help">Active employees: ${{options || 'none'}}. Use @ to create a real group conversation through the API.</div>
+      `;
+    }}
+    modal.style.display = 'flex';
+    modal.setAttribute('aria-hidden', 'false');
+    setTimeout(() => body.querySelector('textarea, input')?.focus(), 0);
   }}
+  function closeKernelFormModal() {{
+    const modal = document.getElementById('kernel-form-modal');
+    if (modal) {{
+      modal.style.display = 'none';
+      modal.setAttribute('aria-hidden', 'true');
+    }}
+    kernelFormMode = '';
+    kernelFormTarget = '';
+  }}
+  function submitKernelFormModal(event) {{
+    if (event) {{
+      event.preventDefault();
+      event.stopPropagation();
+    }}
+    const message = document.getElementById('kernel-form-message')?.value.trim() || '';
+    if (kernelFormMode === 'direct') {{
+      const source = document.getElementById('kernel-form-source')?.value.trim() || 'main';
+      closeKernelFormModal();
+      if (message) realDirectEmployeeMessage(kernelFormTarget, source, message);
+    }} else if (kernelFormMode === 'conversation') {{
+      const participants = document.getElementById('kernel-form-participants')?.value.trim() || '';
+      const mentions = parseMentionedEmployees(`${{participants}} ${{message}}`);
+      const input = document.getElementById('chat-input-field');
+      if (input) input.value = `${{mentions.map(item => '@' + item).join(' ')}} ${{message}}`.trim();
+      closeKernelFormModal();
+      realSendChatMessage();
+    }}
+    return false;
+  }}
+  function openNewConversationComposer() {{
+    return openKernelFormModal('conversation', '');
+  }}
+  window.openKernelFormModal = openKernelFormModal;
+  window.openNewConversationComposer = openNewConversationComposer;
+  window.closeKernelFormModal = closeKernelFormModal;
+  window.submitKernelFormModal = submitKernelFormModal;
   async function realSendChatMessage() {{
     const input = document.getElementById('chat-input-field');
     const msg = input ? input.value.trim() : '';
@@ -1884,12 +2152,11 @@ def inject_advanced_dashboard(template: str, summary: dict, *, db_path: Path, ap
     }}
   }}
   function openDirectEmployeeMessage(id) {{
-    const source = prompt(`Source employee for direct message to ${{id}}`, 'main');
-    if (source === null) return;
-    const body = prompt(`Message to ${{id}}`, `只回复：${{id}}_DIRECT_OK`);
-    if (body === null) return;
-    return realDirectEmployeeMessage(id, source, body);
+    if (prefillChatMention(id)) return;
+    return openKernelFormModal('direct', id);
   }}
+  window.openDirectEmployeeMessage = openDirectEmployeeMessage;
+  window.toggleEmployeeActionMenu = toggleEmployeeActionMenu;
   async function realUpdateEmployeeProfile(id, payload) {{
     companyApiLog('SYSTEM', `Calling Company Kernel API to update '${{id}}'...`, 'normal');
     try {{
