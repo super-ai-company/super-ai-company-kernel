@@ -58,7 +58,7 @@ human -> hermes -> codex -> hermes -> main
 ## 目标模式执行稿
 
 ```text
-目标：逐项验证 Company Kernel 的真实闭环通信，不允许把 stdout、inbox 文件、API ONLINE 当作最终成功。仓库：/Users/owner/openclaw/company-kernel，分支：codex/dashboard-real-conversations。不要覆盖 main，不要重置用户改动。
+目标：逐项验证 Company Kernel 的真实闭环通信，不允许把 stdout、inbox 文件、API ONLINE 当作最终成功。仓库：$OPENCLAW_COMPANY_KERNEL_ROOT，分支：codex/dashboard-real-conversations。不要覆盖 main，不要重置用户改动。
 
 强制验收链路：
 1. human -> main -> codex -> main -> human/main

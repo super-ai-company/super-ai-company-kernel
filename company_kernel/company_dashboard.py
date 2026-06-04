@@ -19,9 +19,7 @@ SCHEMA = ROOT / "company_kernel" / "schema.sql"
 DEFAULT_OUTPUT = ROOT / "state" / "dashboard.html"
 ADVANCED_TEMPLATE_CANDIDATES = [
     ROOT / "dashboard_templates" / "gemini_dashboard.html",
-    Path("/Users/owner/Documents/anti/state/dashboard.html"),
 ]
-REAL_PROJECT_ROOT = Path("/Users/owner/openclaw/company-kernel")
 
 
 def now() -> str:
@@ -619,7 +617,7 @@ def render(summary: dict) -> str:
         </select>
       </label>
       <label>Workspace
-        <input id="employee-workspace" placeholder="/Users/owner/openclaw/...">
+        <input id="employee-workspace" placeholder="$OPENCLAW_COMPANY_KERNEL_ROOT/employees/<id>">
       </label>
       <label>Skills
         <input id="employee-skills" placeholder="ops,review">
@@ -721,7 +719,7 @@ def render(summary: dict) -> str:
       const name = document.getElementById('employee-name').value.trim() || id;
       const role = document.getElementById('employee-role').value.trim() || 'business-agent';
       const runtime = document.getElementById('employee-runtime').value;
-      const workspace = document.getElementById('employee-workspace').value.trim() || `/Users/owner/openclaw/company-kernel/employees/${{id}}`;
+      const workspace = document.getElementById('employee-workspace').value.trim() || `${{window.companyKernelRoot || '.'}}/employees/${{id}}`;
       const skills = document.getElementById('employee-skills').value.trim();
       if (!id) {{
         setEmployeeApiStatus('employee id is required', true);
@@ -847,8 +845,6 @@ def load_advanced_template(path: str = "", *, include_external: bool = False) ->
         candidates = [Path(path)]
     else:
         candidates = [ROOT / "dashboard_templates" / "gemini_dashboard.html"]
-        if include_external or ROOT == REAL_PROJECT_ROOT:
-            candidates.append(Path("/Users/owner/Documents/anti/state/dashboard.html"))
     for candidate in candidates:
         if candidate.exists():
             return candidate, candidate.read_text(encoding="utf-8")
@@ -858,7 +854,7 @@ def load_advanced_template(path: str = "", *, include_external: bool = False) ->
 def inject_advanced_dashboard(template: str, summary: dict, *, db_path: Path, api_base: str) -> str:
     payload = json.dumps(advanced_summary(summary), ensure_ascii=False)
     payload_b64 = base64.b64encode(payload.encode("utf-8")).decode("ascii")
-    html_text = template.replace("/Users/owner/Documents/anti", str(ROOT))
+    html_text = template
 
     def append_before_body(text: str, insertion: str) -> str:
         idx = text.lower().rfind("</body>")
@@ -872,6 +868,7 @@ def inject_advanced_dashboard(template: str, summary: dict, *, db_path: Path, ap
         f"  window.kernelSummary = JSON.parse(decodeURIComponent(escape(atob({json.dumps(payload_b64)}))));\n"
         f"  window.dbPath = {json.dumps(str(db_path), ensure_ascii=False)};\n"
         f"  window.companyApiBase = {json.dumps(api_base, ensure_ascii=False)};\n"
+        f"  window.companyKernelRoot = {json.dumps(str(ROOT), ensure_ascii=False)};\n"
         f"</script>\n"
     )
 

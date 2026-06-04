@@ -25,7 +25,7 @@ After scan/apply, OpenClaw must run or output the 2-4 round handshake plan as th
 ## Required Checks
 
 1. Locate OpenClaw:
-   - `OPENCLAW_ROOT` or `/Users/owner/openclaw`.
+   - `OPENCLAW_ROOT` or `$OPENCLAW_ROOT`.
    - Must contain `scripts/oc`.
 2. Locate employee workspace:
    - `workspace-<agent>` or explicit user path.

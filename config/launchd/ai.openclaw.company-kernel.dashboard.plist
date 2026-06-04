@@ -6,16 +6,16 @@
   <string>ai.openclaw.company-kernel.dashboard</string>
   <key>ProgramArguments</key>
   <array>
-    <string>/Users/owner/openclaw/company-kernel/bin/company-dashboard-server</string>
+    <string>__COMPANY_KERNEL_ROOT__/bin/company-dashboard-server</string>
   </array>
   <key>KeepAlive</key>
   <true/>
   <key>WorkingDirectory</key>
-  <string>/Users/owner/openclaw/company-kernel</string>
+  <string>__COMPANY_KERNEL_ROOT__</string>
   <key>StandardOutPath</key>
-  <string>/Users/owner/openclaw/company-kernel/logs/company-dashboard.launchd.out.log</string>
+  <string>__COMPANY_KERNEL_ROOT__/logs/company-dashboard.launchd.out.log</string>
   <key>StandardErrorPath</key>
-  <string>/Users/owner/openclaw/company-kernel/logs/company-dashboard.launchd.err.log</string>
+  <string>__COMPANY_KERNEL_ROOT__/logs/company-dashboard.launchd.err.log</string>
   <key>RunAtLoad</key>
   <true/>
 </dict>

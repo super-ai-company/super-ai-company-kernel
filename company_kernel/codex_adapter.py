@@ -15,7 +15,9 @@ from .sandboxing import wrap_command
 
 ROOT = Path(os.environ.get("OPENCLAW_COMPANY_KERNEL_ROOT", Path(__file__).resolve().parents[1])).resolve()
 DB_PATH = ROOT / "company.sqlite"
-DEFAULT_WORKSPACE = Path(os.environ.get("OPENCLAW_CODEX_WORKSPACE", "/Users/owner/openclaw/workspace-xmanx/projects/openclaw-codex-controller")).resolve()
+DEFAULT_WORKSPACE = Path(
+    os.environ.get("OPENCLAW_CODEX_WORKSPACE", str(Path.home() / ".codex"))
+).expanduser().resolve()
 
 
 def now() -> str:

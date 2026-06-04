@@ -6,7 +6,7 @@ SRC="$ROOT/config/launchd/${LABEL}.plist"
 DST="$HOME/Library/LaunchAgents/${LABEL}.plist"
 
 mkdir -p "$HOME/Library/LaunchAgents" "$ROOT/logs"
-cp "$SRC" "$DST"
+sed "s#__COMPANY_KERNEL_ROOT__#$ROOT#g" "$SRC" > "$DST"
 launchctl bootout "gui/$(id -u)" "$DST" >/dev/null 2>&1 || true
 launchctl bootstrap "gui/$(id -u)" "$DST"
 launchctl kickstart -k "gui/$(id -u)/$LABEL"

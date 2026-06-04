@@ -113,7 +113,7 @@ OpenClaw / Hermes / Codex / Claude / Trae / Antigravity 负责执行
 
 必须完成：
 
-- 独立项目目录：`/Users/owner/openclaw/company-kernel`
+- 独立项目目录：`$OPENCLAW_COMPANY_KERNEL_ROOT`
 - SQLite 公司数据库：员工、任务、消息、锁、心跳、审批、审计
 - 统一命令：`companyctl`
 - 员工创建：`employee create`
@@ -159,7 +159,7 @@ OpenClaw / Hermes / Codex / Claude / Trae / Antigravity 负责执行
 - 已有 `config/hooks.json` 和 `company_events` 事件表，`task.done` 后可由 scheduler 自动触发消息、派新任务和心跳；已验证 maker 完成后自动派 publisher，publisher 完成后自动通知 ops。
 - 已有审批中心，支持高风险动作进入 `pending/approved/denied` 状态，并写入 `state/approvals/<status>/` 作为可恢复审计文件。
 - Scheduler 已支持 approval gate：hook action 标记 `requires_approval` 后，未批准会自动生成 pending approval 并阻断高风险动作；安全动作可先执行，已执行动作记录到 `hook_action_runs`，批准后重跑 scheduler 只补执行未完成动作。
-- OpenClaw adapter 的 `--execute` 已接入 approval gate：未批准不会写 legacy bus，会生成 pending approval；批准后重跑才提交到 `/Users/owner/openclaw/ops/agent_bus`。
+- OpenClaw adapter 的 `--execute` 已接入 approval gate：未批准不会写 legacy bus，会生成 pending approval；批准后重跑才提交到 `$OPENCLAW_ROOT/ops/agent_bus`。
 - 已有任务租约恢复：`task claim` 会创建 `task:<id>` 锁；`repair reset-stale-claims` 可释放过期锁并把过期 claimed 任务恢复为 submitted，避免员工中断后队列卡死。
 - 已有 `company-daemon` 本机巡检循环，按 `config/daemon.json` 定期执行 repair、scheduler 和 heartbeat；默认不启动真实外部工具。
 - 已有静态 Dashboard，生成到 `state/dashboard.html`，集中展示员工在线状态、任务队列、审批、事件和锁。

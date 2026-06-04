@@ -19,7 +19,7 @@ Then run or output the 2-4 round handshake plan with `--installer-agent hermes -
 ## Required Checks
 
 1. Locate Hermes:
-   - `command -v hermes`, `/Users/owner/.local/bin/hermes`, `/Users/owner/.hermes`, or `/Users/owner/hermes`.
+   - `command -v hermes`, `$HOME/.local/bin/hermes`, `$OPENCLAW_HERMES_WORKSPACE`, or `$HERMES_HOME`.
    - If Hermes is reached through OpenClaw runtime, discover its canonical runtime agent id before sending. The Company Kernel employee id may be `hermes` while the runtime agent id is `default`.
    - Company Kernel DB source of truth is `<kernel-root>/company.sqlite`, not `state/company.db`.
    - `employees/*/profile.json` files are secondary evidence and must not override `company.sqlite` for active/candidate/human-owner state.

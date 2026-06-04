@@ -13,7 +13,7 @@ from company_kernel.policy_guard import require_approval
 
 ROOT = Path(os.environ.get("OPENCLAW_COMPANY_KERNEL_ROOT", Path(__file__).resolve().parents[1])).resolve()
 DB_PATH = ROOT / "company.sqlite"
-OPENCLAW_ROOT = Path(os.environ.get("OPENCLAW_ROOT", "/Users/owner/openclaw")).resolve()
+OPENCLAW_ROOT = Path(os.environ.get("OPENCLAW_ROOT", str(Path.home() / "openclaw"))).expanduser().resolve()
 OPENCLAW_BUS_AGENTS = {"main", "nestcar", "chindahotpot", "invest", "video-creator", "video-publisher", "video-ops", "krothong"}
 
 

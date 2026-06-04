@@ -418,7 +418,7 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual([], pending["events"])
 
     def test_message_direct_uses_openclaw_session_key(self) -> None:
-        code, created = run_cli("employee", "create", "--id", "main", "--name", "main", "--role", "operator", "--runtime", "openclaw", "--workspace", str(self.root / "workspace" / "main"))
+        code, created = run_cli("employee", "create", "--id", "main", "--name", "main", "--role", "operator", "--runtime", "local", "--workspace", str(self.root / "workspace" / "main"))
         self.assertEqual(0, code, created)
         code, created = run_cli("employee", "create", "--id", "nestcar", "--name", "NestCar", "--role", "business-agent", "--runtime", "openclaw", "--workspace", str(self.root / "workspace" / "nestcar"))
         self.assertEqual(0, code, created)
@@ -669,7 +669,7 @@ class CompanyKernelCoreTest(unittest.TestCase):
             {
                 "telegram_account": "employee-notify",
                 "telegram_bot_token_env": "COMPANY_EMPLOYEE_TELEGRAM_BOT_TOKEN",
-                "telegram_default_target": "telegram:6066269036",
+                "telegram_default_target": "telegram:<operator-chat-id>",
                 "employee_notifications_enabled": "true",
             },
         )
@@ -684,7 +684,7 @@ class CompanyKernelCoreTest(unittest.TestCase):
                 return False
 
             def read(self):
-                return json.dumps({"ok": True, "result": {"message_id": 115, "chat": {"id": 6066269036}}}).encode("utf-8")
+                return json.dumps({"ok": True, "result": {"message_id": 115, "chat": {"id": 123456789}}}).encode("utf-8")
 
         def fake_urlopen(request, timeout=None):
             requests.append(request)
@@ -695,7 +695,7 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual(0, code, sent)
         self.assertEqual("115", str(sent["message_id"]))
         self.assertEqual("error", sent["kind"])
-        self.assertEqual("telegram:6066269036", sent["target"])
+        self.assertEqual("telegram:<operator-chat-id>", sent["target"])
         self.assertNotIn("123456:secret", json.dumps(sent, ensure_ascii=False))
         self.assertIn("123456:secret", requests[0].full_url)
         self.assertNotIn("123456:secret", (self.root / "config" / "company_communications.json").read_text(encoding="utf-8"))
@@ -706,7 +706,7 @@ class CompanyKernelCoreTest(unittest.TestCase):
             {
                 "telegram_account": "employee-notify",
                 "telegram_bot_token_env": "COMPANY_EMPLOYEE_TELEGRAM_BOT_TOKEN",
-                "telegram_default_target": "telegram:6066269036",
+                "telegram_default_target": "telegram:<operator-chat-id>",
                 "employee_notifications_enabled": "true",
             },
         )
@@ -715,7 +715,7 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual(HTTPStatus.OK, status, sent)
         self.assertTrue(sent["dry_run"])
         self.assertEqual("error", sent["kind"])
-        self.assertEqual("telegram:6066269036", sent["target"])
+        self.assertEqual("telegram:<operator-chat-id>", sent["target"])
 
     def test_approval_request_notifies_operator_route(self) -> None:
         code, created = run_cli("employee", "create", "--id", "main", "--name", "main", "--role", "operator", "--runtime", "openclaw", "--workspace", str(self.root / "workspace" / "main"))
@@ -725,7 +725,7 @@ class CompanyKernelCoreTest(unittest.TestCase):
             {
                 "telegram_account": "employee-notify",
                 "telegram_bot_token_env": "COMPANY_EMPLOYEE_TELEGRAM_BOT_TOKEN",
-                "telegram_default_target": "telegram:6066269036",
+                "telegram_default_target": "telegram:<operator-chat-id>",
                 "employee_notifications_enabled": "true",
             },
         )
@@ -738,7 +738,7 @@ class CompanyKernelCoreTest(unittest.TestCase):
                 return False
 
             def read(self):
-                return json.dumps({"ok": True, "result": {"message_id": 116, "chat": {"id": 6066269036}}}).encode("utf-8")
+                return json.dumps({"ok": True, "result": {"message_id": 116, "chat": {"id": 123456789}}}).encode("utf-8")
 
         with mock.patch.dict("os.environ", {"COMPANY_EMPLOYEE_TELEGRAM_BOT_TOKEN": "123456:secret"}), mock.patch.object(companyctl.urllib.request, "urlopen", return_value=FakeResponse()):
             code, approval = run_cli("approval", "request", "--from", "main", "--action", "external_send", "--reason", "publish requires human approval")
@@ -756,7 +756,7 @@ class CompanyKernelCoreTest(unittest.TestCase):
             {
                 "telegram_account": "employee-notify",
                 "telegram_bot_token_env": "COMPANY_EMPLOYEE_TELEGRAM_BOT_TOKEN",
-                "telegram_default_target": "telegram:6066269036",
+                "telegram_default_target": "telegram:<operator-chat-id>",
                 "employee_notifications_enabled": "true",
             },
         )
@@ -1413,7 +1413,7 @@ class CompanyKernelCoreTest(unittest.TestCase):
 </div>
 <script>
   window.kernelSummary = {"counts":{"employees":1},"employees":[{"id":"old"}]};
-  window.dbPath = "/Users/owner/Documents/anti/company.sqlite";
+  window.dbPath = "company.sqlite";
   function confirmAgentOnboarding() {
     summaryData.employees.push(generatedRecruitData);
     summaryData.counts.employees = summaryData.employees.length;
@@ -1466,7 +1466,8 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual(0, code)
         html = output.read_text(encoding="utf-8")
         self.assertIn(str(self.root / "company.sqlite"), html)
-        self.assertNotIn("/Users/owner/Documents/anti/company.sqlite", html)
+        stale_external_db = "/tmp/external-dashboard/company.sqlite"
+        self.assertNotIn(stale_external_db, html)
         self.assertIn('"employees": 7', html)
         self.assertIn('"id": "hermes"', html)
         self.assertIn("window.companyApiBase", html)
@@ -4312,7 +4313,7 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual(300, payload["StartInterval"])
         self.assertLess(payload["StartInterval"], 10 * 60)
         self.assertEqual(
-            ["/Users/owner/openclaw/company-kernel/bin/company-daemon", "--once", "--summary"],
+            ["__COMPANY_KERNEL_ROOT__/bin/company-daemon", "--once", "--summary"],
             payload["ProgramArguments"],
         )
         self.assertTrue(payload["RunAtLoad"])
@@ -4324,10 +4325,10 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual("ai.openclaw.company-kernel.api", api["Label"])
         self.assertEqual("ai.openclaw.company-kernel.dashboard", dashboard["Label"])
         self.assertEqual(
-            ["/Users/owner/openclaw/company-kernel/bin/company-api-gateway", "--host", "127.0.0.1", "--port", "8765", "--quiet"],
+            ["__COMPANY_KERNEL_ROOT__/bin/company-api-gateway", "--host", "127.0.0.1", "--port", "8765", "--quiet"],
             api["ProgramArguments"],
         )
-        self.assertEqual(["/Users/owner/openclaw/company-kernel/bin/company-dashboard-server"], dashboard["ProgramArguments"])
+        self.assertEqual(["__COMPANY_KERNEL_ROOT__/bin/company-dashboard-server"], dashboard["ProgramArguments"])
         self.assertTrue(api["KeepAlive"])
         self.assertTrue(dashboard["KeepAlive"])
         self.assertTrue(api["RunAtLoad"])

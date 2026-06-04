@@ -651,7 +651,7 @@
       "employee-notify": {
         "channel": "telegram",
         "bot_token_env": "COMPANY_EMPLOYEE_TELEGRAM_BOT_TOKEN",
-        "default_target": "telegram:6066269036",
+        "default_target": "telegram:<operator-chat-id>",
         "updated_at": "2026-06-04T01:22:08+07:00"
       }
     },
@@ -659,20 +659,20 @@
       "enabled": true,
       "channel": "telegram",
       "account": "employee-notify",
-      "target": "telegram:6066269036",
+      "target": "telegram:<operator-chat-id>",
       "updated_at": "2026-06-04T01:22:08+07:00"
     },
     "routes": {
       "approval": {
         "enabled": true,
         "account": "employee-notify",
-        "target": "telegram:6066269036",
+        "target": "telegram:<operator-chat-id>",
         "updated_at": "2026-06-04T01:38:00+07:00"
       },
       "error": {
         "enabled": true,
         "account": "employee-notify",
-        "target": "telegram:6066269036",
+        "target": "telegram:<operator-chat-id>",
         "updated_at": "2026-06-04T01:38:00+07:00"
       }
     }

@@ -13,10 +13,10 @@
 ## Quick Start
 
 ```bash
-cd /Users/owner/openclaw/company-kernel
+cd $OPENCLAW_COMPANY_KERNEL_ROOT
 python3 -m company_kernel.companyctl doctor
-python3 -m company_kernel.companyctl employee create --id hermes --name Hermes --role supervisor --runtime hermes --workspace /Users/owner/.hermes
-python3 -m company_kernel.companyctl employee create --id codex --name Codex --role developer --runtime codex --workspace /Users/owner/openclaw/workspace-xmanx/projects/openclaw-codex-controller
+python3 -m company_kernel.companyctl employee create --id hermes --name Hermes --role supervisor --runtime hermes --workspace $OPENCLAW_HERMES_WORKSPACE
+python3 -m company_kernel.companyctl employee create --id codex --name Codex --role developer --runtime codex --workspace $OPENCLAW_CODEX_WORKSPACE
 python3 -m company_kernel.companyctl conversation start --from hermes --participants hermes,codex,claude --title "方案讨论" --body "请讨论第一版实现方案"
 python3 -m company_kernel.companyctl task submit --from hermes --to codex --title "测试互通" --description "Codex 领取任务并回传 evidence"
 python3 -m company_kernel.companyctl runtime verify-adapters --agents hermes,codex,claude,trae,antigravity,nestcar
@@ -113,7 +113,7 @@ bin/companyctl employee onboard \
   --name Cursor \
   --role ide-developer \
   --runtime cursor \
-  --workspace /Users/owner/.cursor \
+  --workspace $HOME/.cursor \
   --alias cursor \
   --skills code-editing,review \
   --tools companyctl \
@@ -122,7 +122,7 @@ bin/companyctl employee onboard \
   --can-assign-to codex \
   --channel engineering \
   --create-test-task
-bin/companyctl employee create --id video-reviewer --name "Video Reviewer" --role reviewer --runtime openclaw --workspace /Users/owner/openclaw/workspace-video-reviewer
+bin/companyctl employee create --id video-reviewer --name "Video Reviewer" --role reviewer --runtime openclaw --workspace $OPENCLAW_ROOT/workspace-video-reviewer
 bin/companyctl employee show --id video-reviewer
 bin/companyctl employee capabilities --id video-reviewer --add-skill review --add-tool "oc bus"
 bin/companyctl employee permissions --id video-reviewer --can-modify-kernel false --requires-approval-for "external_send,payment,compensation"
@@ -237,15 +237,15 @@ bin/companyctl approval show --approval-id <id>
 
 - 审批请求由 OpenClaw `ops_bus_worker.py` 发送到 Telegram。
 - Telegram 按钮值为 `oc_approve:<task_id>` / `oc_deny:<task_id>`。
-- 生产必须接入 OpenClaw 原生回调/插件桥接，再调用 `/Users/owner/openclaw/scripts/ops_approval_center.py apply-callback`。
-- `/Users/owner/openclaw/scripts/ops_telegram_approval_watcher.py` 是禁用的遗留 smoke 工具；不要启动它，它会和 OpenClaw 默认 Telegram bot 的 `getUpdates` 长轮询冲突，导致 NestCar 等独立 agent 已读不回。
+- 生产必须接入 OpenClaw 原生回调/插件桥接，再调用 `$OPENCLAW_ROOT/scripts/ops_approval_center.py apply-callback`。
+- `$OPENCLAW_ROOT/scripts/ops_telegram_approval_watcher.py` 是禁用的遗留 smoke 工具；不要启动它，它会和 OpenClaw 默认 Telegram bot 的 `getUpdates` 长轮询冲突，导致 NestCar 等独立 agent 已读不回。
 
 验证：
 
 ```bash
 openclaw gateway probe
 bin/companyctl doctor --summary --strict-openclaw
-ls /Users/owner/openclaw/ops/approvals/approved
+ls $OPENCLAW_ROOT/ops/approvals/approved
 ```
 
 注意：这是项目/业务审批链路，不能替代 Codex Desktop 自身的系统级命令授权弹窗。Codex 宿主弹窗只能在本机批准或在弹窗里选择“以后同类命令不再询问”。
@@ -416,10 +416,10 @@ curl -X POST http://127.0.0.1:8765/v1/runtimes \
   --data '{"runtime":"cursor","command":"cursor-agent","notes":"Cursor adapter placeholder"}'
 curl -X POST http://127.0.0.1:8765/v1/employees \
   -H 'Content-Type: application/json' \
-  --data '{"id":"cursor-dev","name":"Cursor Dev","role":"developer","runtime":"cursor","workspace":"/Users/owner/openclaw/workspace-cursor"}'
+  --data '{"id":"cursor-dev","name":"Cursor Dev","role":"developer","runtime":"cursor","workspace":"$OPENCLAW_ROOT/workspace-cursor"}'
 curl -X POST http://127.0.0.1:8765/v1/employees/onboard \
   -H 'Content-Type: application/json' \
-  --data '{"id":"api-reviewer","name":"API Reviewer","role":"reviewer","runtime":"hermes","workspace":"/Users/owner/openclaw/company-kernel/employees/api-reviewer","alias":"api-reviewer","skills":"review,qa","create_test_task":"true"}'
+  --data '{"id":"api-reviewer","name":"API Reviewer","role":"reviewer","runtime":"hermes","workspace":"$OPENCLAW_COMPANY_KERNEL_ROOT/employees/api-reviewer","alias":"api-reviewer","skills":"review,qa","create_test_task":"true"}'
 curl -X POST http://127.0.0.1:8765/v1/employees/api-reviewer/offboard \
   -H 'Content-Type: application/json' \
   --data '{"dry_run":"true"}'
@@ -474,7 +474,7 @@ bin/companyctl task list --agent codex
 
 ```bash
 bin/company-dashboard
-open /Users/owner/openclaw/company-kernel/state/dashboard.html
+open $OPENCLAW_COMPANY_KERNEL_ROOT/state/dashboard.html
 ```
 
 默认会优先生成 Gemini 版高级操作台；找不到高级模板时回退到轻量静态表格。操作台包含员工、心跳、项目目标/验收/复盘、任务、审批、事件和锁状态。

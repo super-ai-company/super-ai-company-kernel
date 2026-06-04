@@ -6,7 +6,7 @@
   <string>ai.openclaw.company-kernel.api</string>
   <key>ProgramArguments</key>
   <array>
-    <string>/Users/owner/openclaw/company-kernel/bin/company-api-gateway</string>
+    <string>__COMPANY_KERNEL_ROOT__/bin/company-api-gateway</string>
     <string>--host</string>
     <string>127.0.0.1</string>
     <string>--port</string>
@@ -16,11 +16,11 @@
   <key>KeepAlive</key>
   <true/>
   <key>WorkingDirectory</key>
-  <string>/Users/owner/openclaw/company-kernel</string>
+  <string>__COMPANY_KERNEL_ROOT__</string>
   <key>StandardOutPath</key>
-  <string>/Users/owner/openclaw/company-kernel/logs/company-api.launchd.out.log</string>
+  <string>__COMPANY_KERNEL_ROOT__/logs/company-api.launchd.out.log</string>
   <key>StandardErrorPath</key>
-  <string>/Users/owner/openclaw/company-kernel/logs/company-api.launchd.err.log</string>
+  <string>__COMPANY_KERNEL_ROOT__/logs/company-api.launchd.err.log</string>
   <key>RunAtLoad</key>
   <true/>
 </dict>

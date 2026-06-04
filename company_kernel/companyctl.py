@@ -659,8 +659,6 @@ def openclaw_root() -> Path:
     env = os.environ.get("OPENCLAW_ROOT")
     if env:
         return Path(env).expanduser()
-    if Path("/Users/owner/openclaw").exists():
-        return Path("/Users/owner/openclaw")
     return Path.home() / "openclaw"
 
 
@@ -4543,14 +4541,16 @@ def cmd_runtime_test(args: argparse.Namespace) -> int:
     checks: list[dict] = []
     if args.runtime == "openclaw":
         checks.append(check_command("openclaw"))
-        oc = Path("/Users/owner/openclaw/scripts/oc")
+        oc = openclaw_root() / "scripts" / "oc"
         checks.append({"command": str(oc), "available": oc.exists(), "path": str(oc) if oc.exists() else ""})
     elif args.runtime == "hermes":
         checks.append(check_command("hermes"))
-        checks.append({"path": "/Users/owner/.hermes", "available": Path("/Users/owner/.hermes").exists()})
+        hermes_home = Path(os.environ.get("OPENCLAW_HERMES_WORKSPACE", os.environ.get("HERMES_HOME", str(Path.home() / ".hermes")))).expanduser()
+        checks.append({"path": str(hermes_home), "available": hermes_home.exists()})
     elif args.runtime == "codex":
         checks.append(check_command("codex"))
-        checks.append({"path": "/Users/owner/openclaw/workspace-xmanx/projects/openclaw-codex-controller", "available": Path("/Users/owner/openclaw/workspace-xmanx/projects/openclaw-codex-controller").exists()})
+        codex_home = Path(os.environ.get("OPENCLAW_CODEX_WORKSPACE", os.environ.get("CODEX_HOME", str(Path.home() / ".codex")))).expanduser()
+        checks.append({"path": str(codex_home), "available": codex_home.exists()})
     elif args.runtime == "claude":
         checks.append(check_command("claude"))
     elif args.runtime == "trae":
@@ -5127,7 +5127,7 @@ def build_parser() -> argparse.ArgumentParser:
     emp_match.add_argument("--include-unavailable", action="store_true")
     emp_match.set_defaults(func=cmd_employee_match)
     emp_import_openclaw = emp_sub.add_parser("import-openclaw")
-    emp_import_openclaw.add_argument("--config", default="/Users/owner/openclaw/openclaw.json")
+    emp_import_openclaw.add_argument("--config", default=str(openclaw_root() / "openclaw.json"))
     emp_import_openclaw.add_argument("--dry-run", action="store_true")
     emp_import_openclaw.set_defaults(func=cmd_employee_import_openclaw)
     emp_onboard = emp_sub.add_parser("onboard")

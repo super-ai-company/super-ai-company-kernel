@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import shutil
 import sqlite3
 import subprocess
@@ -11,9 +12,9 @@ from pathlib import Path
 from .adapter_result import execution_detail
 
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(os.environ.get("OPENCLAW_COMPANY_KERNEL_ROOT", Path(__file__).resolve().parents[1])).resolve()
 DB_PATH = ROOT / "company.sqlite"
-DEFAULT_WORKSPACE = Path("/Users/owner")
+DEFAULT_WORKSPACE = Path(os.environ.get("COMPANY_CLAUDE_WORKSPACE", str(Path.home()))).expanduser().resolve()
 
 
 def now() -> str:

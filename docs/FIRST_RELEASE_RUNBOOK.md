@@ -7,7 +7,7 @@
 这会安装 daemon、API Gateway `8765`、静态 dashboard `8780` 三个 launchd 服务。
 
 ```bash
-cd /Users/owner/openclaw/company-kernel
+cd $OPENCLAW_COMPANY_KERNEL_ROOT
 bash bin/company-services-install-launchd
 curl http://127.0.0.1:8765/v1/health
 curl http://127.0.0.1:8780/dashboard.html
@@ -53,7 +53,7 @@ bin/company-local-smoke --json-only
 看结果文件：
 
 ```bash
-open /Users/owner/openclaw/company-kernel/state/local-smoke/latest.json
+open $OPENCLAW_COMPANY_KERNEL_ROOT/state/local-smoke/latest.json
 ```
 
 通过标准：

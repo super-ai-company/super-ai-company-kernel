@@ -5,7 +5,7 @@
 The real Company Kernel project root is:
 
 ```text
-/Users/owner/openclaw/company-kernel
+$OPENCLAW_COMPANY_KERNEL_ROOT
 ```
 
 This is the repository that serves the current Operations Console, owns the SQLite state, and is pushed to:
@@ -17,7 +17,7 @@ https://github.com/super-ai-company/super-ai-company-kernel.git
 The older workspace project:
 
 ```text
-/Users/owner/openclaw/workspace-xmanx/projects/openclaw-company-management
+$OPENCLAW_ROOT/workspace-xmanx/projects/openclaw-company-management
 ```
 
 is an independent OpenClaw control/skill project. It should stay separate and
@@ -42,7 +42,7 @@ documented in [LOCAL_ENVIRONMENT_AND_SKILLS.md](LOCAL_ENVIRONMENT_AND_SKILLS.md)
 ## Main Commands
 
 ```bash
-cd /Users/owner/openclaw/company-kernel
+cd $OPENCLAW_COMPANY_KERNEL_ROOT
 bin/companyctl doctor --summary
 bin/company-dashboard --variant advanced
 python3 -B -m unittest discover -s tests -v
@@ -54,7 +54,7 @@ bin/company-local-smoke --json-only
 After changing dashboard code:
 
 ```bash
-cd /Users/owner/openclaw/company-kernel
+cd $OPENCLAW_COMPANY_KERNEL_ROOT
 bin/company-dashboard --variant advanced
 node - <<'NODE'
 const fs = require('fs');
