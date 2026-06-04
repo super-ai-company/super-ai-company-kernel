@@ -2459,6 +2459,7 @@
   let summaryData = window.kernelSummary;
   window.summaryData = summaryData;
   let isSimulationMode = false;
+  window.activeThreadId = window.activeThreadId || '';
   
   const HUMAN_OWNER_ID = 'owner';
 
@@ -3792,7 +3793,7 @@
     }
 
     listContainer.innerHTML = summary.conversations.map(c => `
-      <div class="chat-thread-item ${activeThreadId === c.id ? 'active' : ''}" onclick="selectChatThread('${c.id}')">
+      <div class="chat-thread-item ${window.activeThreadId === c.id ? 'active' : ''}" onclick="selectChatThread('${c.id}')">
         <div class="chat-thread-name"><i class="fa-solid fa-comments"></i> ${escapeHtml(c.title)}</div>
         <div class="chat-thread-meta">
           <span>${c.message_count} rounds</span>
@@ -3801,15 +3802,15 @@
       </div>
     `).join('');
 
-    if (!activeThreadId && summary.conversations.length > 0) {
+    if (!window.activeThreadId && summary.conversations.length > 0) {
       selectChatThread(summary.conversations[0].id);
-    } else if (activeThreadId) {
+    } else if (window.activeThreadId) {
       renderRealChatMessages();
     }
   }
 
   function selectChatThread(threadId) {
-    activeThreadId = threadId;
+    window.activeThreadId = threadId;
     document.querySelectorAll('.chat-thread-item').forEach(item => {
       item.classList.toggle('active', item.getAttribute('onclick').includes(threadId));
     });

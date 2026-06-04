@@ -1511,6 +1511,14 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertIn("setTimeout(loadNotificationSettings, 350)", html)
         self.assertNotIn("onclick='showApprovalDetails(${JSON.stringify(app)", html)
 
+    def test_dashboard_versioned_template_initializes_chat_state(self) -> None:
+        template = Path(__file__).resolve().parents[1] / "dashboard_templates" / "gemini_dashboard.html"
+        html = template.read_text(encoding="utf-8")
+        self.assertIn("window.activeThreadId = window.activeThreadId || ''", html)
+        self.assertNotIn("${activeThreadId ===", html)
+        self.assertNotIn("if (!activeThreadId", html)
+        self.assertNotIn("\n    activeThreadId = threadId;", html)
+
     def test_dashboard_renders_task_evidence_blocker_and_approval_counts(self) -> None:
         code, submitted = run_cli("task", "submit", "--from", "ops", "--to", "maker", "--task-id", "task-dashboard-blocked", "--title", "blocked task")
         self.assertEqual(code, 0, submitted)
