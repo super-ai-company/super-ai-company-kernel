@@ -2447,6 +2447,104 @@
   </div>
 </div>
 
+<!-- Modal for Starting a New Conversation -->
+<div id="new-conversation-modal" class="modal" onclick="if(event.target===this) closeNewConversationModal()">
+  <div class="modal-content" style="max-width: 550px;">
+    <div class="modal-header">
+      <h3 id="new-conv-modal-title" style="font-family: 'Outfit', sans-serif;"><i class="fa-solid fa-comments"></i> Start New Conversation</h3>
+      <button class="close-btn" onclick="closeNewConversationModal()">&times;</button>
+    </div>
+    <div class="modal-body" style="color: var(--text-primary); font-size: 13px; display: flex; flex-direction: column; gap: 15px; font-family: 'Inter', sans-serif; background: #0d111d; padding: 20px 24px;">
+      
+      <div class="form-group" style="display: flex; flex-direction: column; gap: 6px;">
+        <label class="form-label" style="font-weight: 700; color: var(--text-secondary);">Select Participants</label>
+        <div id="new-conv-participants-list" style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; padding: 12px; background: rgba(7, 9, 19, 0.7); border: 1px solid var(--border-color); border-radius: 8px; max-height: 150px; overflow-y: auto;">
+          <!-- Dynamically populated checkboxes of active employees -->
+        </div>
+        <div style="font-size: 11px; color: var(--text-muted); margin-top: 4px;">
+          Select one or more active employees to participate in this conversation.
+        </div>
+      </div>
+
+      <div class="form-group" style="display: flex; flex-direction: column; gap: 6px;">
+        <label class="form-label" style="font-weight: 700; color: var(--text-secondary);">Conversation Title</label>
+        <input type="text" id="new-conv-title" class="form-input" placeholder="e.g. Code Review or Project Sync" style="width: 100%; box-sizing: border-box; background: #0b1020; color: var(--text-primary); border: 1px solid var(--border-color); border-radius: 6px; padding: 8px;">
+      </div>
+
+      <div class="form-group" style="display: flex; flex-direction: column; gap: 6px;">
+        <label class="form-label" style="font-weight: 700; color: var(--text-secondary);">Opening Message</label>
+        <textarea id="new-conv-message" class="form-textarea" rows="4" placeholder="Type the message to kick off the conversation..." style="width: 100%; box-sizing: border-box; background: #0b1020; color: var(--text-primary); border: 1px solid var(--border-color); border-radius: 6px; padding: 8px; font-family: inherit; resize: vertical; outline: none;"></textarea>
+      </div>
+
+      <div style="display: flex; justify-content: flex-end; gap: 12px; margin-top: 10px; border-top: 1px solid rgba(255,255,255,0.05); padding-top: 15px;">
+        <button class="chat-send-btn" style="background: rgba(255,255,255,0.05); border: 1px solid var(--border-color); color: var(--text-primary);" onclick="closeNewConversationModal()">Cancel</button>
+        <button class="chat-send-btn" style="background: linear-gradient(135deg, #10b981, #059669); box-shadow: 0 4px 12px rgba(16, 185, 129, 0.2);" onclick="executeNewConversationCreation()"><i class="fa-solid fa-paper-plane"></i> Start Conversation</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Modal for Kanban Task Transitions -->
+<div id="kanban-transition-modal" class="modal" onclick="if(event.target===this) closeKanbanTransitionModal()">
+  <div class="modal-content" style="max-width: 500px;">
+    <div class="modal-header">
+      <h3 id="kanban-trans-title" style="font-family: 'Outfit', sans-serif;"><i class="fa-solid fa-arrows-spin"></i> Update Task Status</h3>
+      <button class="close-btn" onclick="closeKanbanTransitionModal()">&times;</button>
+    </div>
+    <div class="modal-body" style="color: var(--text-primary); font-size: 13px; display: flex; flex-direction: column; gap: 15px; font-family: 'Inter', sans-serif; background: #0d111d; padding: 20px 24px;">
+      <input type="hidden" id="trans-task-id">
+      <input type="hidden" id="trans-target-status">
+      
+      <div id="trans-info-text" style="padding: 10px; background: rgba(129, 140, 248, 0.08); border: 1px solid var(--border-color); border-radius: 6px; font-size: 12px; color: var(--text-secondary);">
+        <!-- Info text about transition -->
+      </div>
+
+      <!-- Form for CLAIMED -->
+      <div id="trans-form-claimed" class="trans-form-group" style="display: none; flex-direction: column; gap: 6px;">
+        <label class="form-label" style="font-weight: 700; color: var(--text-secondary);">Claiming AI Employee</label>
+        <select id="trans-claim-agent" class="scenario-select" style="width: 100%; box-sizing: border-box; background: #0b1020; color: var(--text-primary); border: 1px solid var(--border-color); border-radius: 6px; padding: 8px;">
+          <!-- Dynamically populated options of active employees -->
+        </select>
+      </div>
+
+      <!-- Form for BLOCKED -->
+      <div id="trans-form-blocked" class="trans-form-group" style="display: none; flex-direction: column; gap: 6px;">
+        <label class="form-label" style="font-weight: 700; color: var(--text-secondary);">Blocker Reason</label>
+        <input type="text" id="trans-blocked-reason" class="form-input" placeholder="e.g. Waiting for client response or API limit" style="width: 100%; box-sizing: border-box; background: #0b1020; color: var(--text-primary); border: 1px solid var(--border-color); border-radius: 6px; padding: 8px;">
+      </div>
+
+      <!-- Form for COMPLETED -->
+      <div id="trans-form-completed" class="trans-form-group" style="display: none; flex-direction: column; gap: 12px;">
+        <div style="display: flex; flex-direction: column; gap: 6px;">
+          <label class="form-label" style="font-weight: 700; color: var(--text-secondary);">Completing AI Employee</label>
+          <select id="trans-completed-agent" class="scenario-select" style="width: 100%; box-sizing: border-box; background: #0b1020; color: var(--text-primary); border: 1px solid var(--border-color); border-radius: 6px; padding: 8px;">
+            <!-- Dynamically populated options of active employees -->
+          </select>
+        </div>
+        <div style="display: flex; flex-direction: column; gap: 6px;">
+          <label class="form-label" style="font-weight: 700; color: var(--text-secondary);">Evidence File Path</label>
+          <input type="text" id="trans-completed-evidence" class="form-input" placeholder="e.g. reports/task-xyz.evidence.md" style="width: 100%; box-sizing: border-box; background: #0b1020; color: var(--text-primary); border: 1px solid var(--border-color); border-radius: 6px; padding: 8px;">
+        </div>
+        <div style="display: flex; flex-direction: column; gap: 6px;">
+          <label class="form-label" style="font-weight: 700; color: var(--text-secondary);">Completion Summary</label>
+          <textarea id="trans-completed-summary" class="form-textarea" rows="3" placeholder="Describe the result of this task..." style="width: 100%; box-sizing: border-box; background: #0b1020; color: var(--text-primary); border: 1px solid var(--border-color); border-radius: 6px; padding: 8px; resize: vertical; outline: none; font-family: inherit;"></textarea>
+        </div>
+      </div>
+
+      <!-- Form for SUBMITTED (Reopen/Reassign) -->
+      <div id="trans-form-submitted" class="trans-form-group" style="display: none; flex-direction: column; gap: 6px;">
+        <label class="form-label" style="font-weight: 700; color: var(--text-secondary);">Reopen Reason</label>
+        <input type="text" id="trans-submitted-reason" class="form-input" placeholder="e.g. Blockers cleared or requirement changes" style="width: 100%; box-sizing: border-box; background: #0b1020; color: var(--text-primary); border: 1px solid var(--border-color); border-radius: 6px; padding: 8px;">
+      </div>
+
+      <div style="display: flex; justify-content: flex-end; gap: 12px; margin-top: 10px; border-top: 1px solid rgba(255,255,255,0.05); padding-top: 15px;">
+        <button class="chat-send-btn" style="background: rgba(255,255,255,0.05); border: 1px solid var(--border-color); color: var(--text-primary);" onclick="closeKanbanTransitionModal()">Cancel</button>
+        <button class="chat-send-btn" style="background: linear-gradient(135deg, #10b981, #059669); box-shadow: 0 4px 12px rgba(16, 185, 129, 0.2);" onclick="executeKanbanTransition()"><i class="fa-solid fa-check"></i> Apply Transition</button>
+      </div>
+    </div>
+  </div>
+</div>
+
 <!-- Fallback debug seed data -->
 <div id="static-fallback-tests">
   <!-- Stub elements for testing backward compatibility -->
@@ -3007,16 +3105,190 @@
     }
   }
 
-  function openNewConversationComposer() {
-    const participants = prompt('Participants, comma-separated. You can also type @codex @trae in the message box.', 'codex,trae');
-    if (participants === null) return;
-    const body = prompt('Opening message', '');
-    if (body === null) return;
-    const mentions = parseMentionedEmployees(`${participants.split(',').map(item => '@' + item.trim()).join(' ')} ${body}`);
-    const input = document.getElementById('chat-input-field');
-    if (input) input.value = `${mentions.map(item => '@' + item).join(' ')} ${body}`.trim();
-    return realSendChatMessage();
-  }
+  window.openNewConversationComposer = function() {
+    const summary = getDashboardSummary();
+    const activeEmployees = (summary.employees || []).filter(emp => {
+      const status = emp.employee_status || emp.status;
+      return status === 'active' && emp.id !== HUMAN_OWNER_ID;
+    });
+    const container = document.getElementById('new-conv-participants-list');
+    
+    if (container) {
+      if (activeEmployees.length === 0) {
+        container.innerHTML = `<div style="color: var(--text-muted); font-size: 11px; grid-column: span 2; padding: 10px; text-align: center;">No active AI employees found.</div>`;
+      } else {
+        container.innerHTML = activeEmployees.map(emp => `
+          <label style="display: flex; align-items: center; gap: 8px; color: var(--text-primary); cursor: pointer; font-size: 12px; padding: 4px; user-select: none;">
+            <input type="checkbox" name="new-conv-participant" value="${escapeHtml(emp.id)}" style="cursor: pointer; accent-color: var(--color-indigo);">
+            <span>${escapeHtml(emp.name)} (${escapeHtml(emp.id)})</span>
+          </label>
+        `).join('');
+      }
+    }
+    
+    document.getElementById('new-conv-title').value = '';
+    document.getElementById('new-conv-message').value = '';
+    document.getElementById('new-conversation-modal').style.display = 'flex';
+  };
+
+  window.closeNewConversationModal = function() {
+    document.getElementById('new-conversation-modal').style.display = 'none';
+  };
+
+  window.executeNewConversationCreation = async function() {
+    const titleInput = document.getElementById('new-conv-title').value.trim();
+    const messageInput = document.getElementById('new-conv-message').value.trim();
+    
+    const checkedBoxes = document.querySelectorAll('input[name="new-conv-participant"]:checked');
+    const selectedParticipants = Array.from(checkedBoxes).map(cb => cb.value);
+    
+    if (selectedParticipants.length === 0) {
+      companyApiLog('ERROR', 'Please select at least one participant.', 'error');
+      return;
+    }
+    if (!messageInput) {
+      companyApiLog('ERROR', 'Opening message cannot be empty.', 'error');
+      return;
+    }
+    
+    const title = titleInput || `Conversation with ${selectedParticipants.join(', ')}`;
+    
+    closeNewConversationModal();
+    
+    companyApiLog('SYSTEM', `Creating group conversation with ${selectedParticipants.join(', ')}...`, 'normal');
+    
+    try {
+      const result = await companyApiPost('/v1/conversations', {
+        from: HUMAN_OWNER_ID,
+        participants: [HUMAN_OWNER_ID, ...selectedParticipants].join(','),
+        title,
+        body: messageInput
+      });
+      const conversation = upsertConversationFromApi(result);
+      if (conversation) window.activeThreadId = conversation.id;
+      if (typeof window.populateChatHub === 'function') window.populateChatHub();
+      renderRealChatMessages();
+      companyApiLog('SYSTEM', `Conversation started: ${conversation ? conversation.id : 'unknown'}`, 'success');
+    } catch (err) {
+      companyApiLog('ERROR', `Failed to start conversation: ${err.message}`, 'error');
+    }
+  };
+
+  // Kanban Drag and Drop Logic
+  window.allowDrop = function(ev) {
+    ev.preventDefault();
+  };
+
+  window.onKanbanCardDragStart = function(ev, taskId) {
+    ev.dataTransfer.setData("text/plain", taskId);
+    const card = ev.target;
+    card.classList.add('dragging');
+    ev.dataTransfer.effectAllowed = "move";
+  };
+
+  document.addEventListener('dragend', (ev) => {
+    if (ev.target && ev.target.classList) {
+      ev.target.classList.remove('dragging');
+    }
+  });
+
+  window.dropCard = function(ev, targetStatus) {
+    ev.preventDefault();
+    const taskId = ev.dataTransfer.getData("text/plain");
+    if (!taskId) return;
+    
+    const summary = getDashboardSummary();
+    const task = (summary.tasks || []).find(t => t.id === taskId);
+    if (!task) return;
+    if (task.status === targetStatus) return;
+    
+    openKanbanTransitionModal(task, targetStatus);
+  };
+
+  window.openKanbanTransitionModal = function(task, targetStatus) {
+    document.getElementById('trans-task-id').value = task.id;
+    document.getElementById('trans-target-status').value = targetStatus;
+    
+    const infoText = document.getElementById('trans-info-text');
+    infoText.innerHTML = `Transitioning task <strong>${escapeHtml(task.id)}</strong> ("${escapeHtml(task.title)}") from <strong>${task.status.toUpperCase()}</strong> to <strong>${targetStatus.toUpperCase()}</strong>.`;
+    
+    document.querySelectorAll('.trans-form-group').forEach(el => el.style.display = 'none');
+    
+    const summary = getDashboardSummary();
+    const activeEmployees = (summary.employees || []).filter(emp => {
+      const status = emp.employee_status || emp.status;
+      return status === 'active';
+    });
+    
+    const selectClaim = document.getElementById('trans-claim-agent');
+    const selectDone = document.getElementById('trans-completed-agent');
+    
+    const optionsHtml = activeEmployees.map(emp => `<option value="${escapeHtml(emp.id)}">${escapeHtml(emp.name)} (${escapeHtml(emp.id)})</option>`).join('');
+    if (selectClaim) selectClaim.innerHTML = optionsHtml;
+    if (selectDone) selectDone.innerHTML = optionsHtml;
+
+    if (task.target_agent) {
+      if (selectClaim) selectClaim.value = task.target_agent;
+      if (selectDone) selectDone.value = task.target_agent;
+    } else if (activeEmployees.length > 0) {
+      if (selectClaim) selectClaim.value = activeEmployees[0].id;
+      if (selectDone) selectDone.value = activeEmployees[0].id;
+    }
+    
+    if (targetStatus === 'claimed') {
+      document.getElementById('trans-form-claimed').style.display = 'flex';
+    } else if (targetStatus === 'blocked') {
+      document.getElementById('trans-form-blocked').style.display = 'flex';
+      document.getElementById('trans-blocked-reason').value = '';
+    } else if (targetStatus === 'completed') {
+      document.getElementById('trans-form-completed').style.display = 'flex';
+      document.getElementById('trans-completed-evidence').value = task.evidence_path || `reports/${task.id}.evidence.md`;
+      document.getElementById('trans-completed-summary').value = '';
+    } else if (targetStatus === 'submitted') {
+      document.getElementById('trans-form-submitted').style.display = 'flex';
+      document.getElementById('trans-submitted-reason').value = '';
+    }
+    
+    document.getElementById('kanban-transition-modal').style.display = 'flex';
+  };
+
+  window.closeKanbanTransitionModal = function() {
+    document.getElementById('kanban-transition-modal').style.display = 'none';
+  };
+
+  window.executeKanbanTransition = async function() {
+    const taskId = document.getElementById('trans-task-id').value;
+    const targetStatus = document.getElementById('trans-target-status').value;
+    
+    closeKanbanTransitionModal();
+    companyApiLog('SYSTEM', `Executing transition for task ${taskId} to ${targetStatus}...`, 'normal');
+    
+    try {
+      if (targetStatus === 'claimed') {
+        const agent = document.getElementById('trans-claim-agent').value;
+        await companyApiPost(`/v1/tasks/${encodeURIComponent(taskId)}/claim`, { agent });
+        companyApiLog('SYSTEM', `Task ${taskId} claimed by ${agent}.`, 'success');
+      } else if (targetStatus === 'blocked') {
+        const reason = document.getElementById('trans-blocked-reason').value.trim() || 'Blocked via Kanban board drag';
+        await companyApiPost(`/v1/tasks/${encodeURIComponent(taskId)}/block`, { blocker: reason });
+        companyApiLog('SYSTEM', `Task ${taskId} blocked: ${reason}`, 'success');
+      } else if (targetStatus === 'completed') {
+        const agent = document.getElementById('trans-completed-agent').value;
+        const evidence = document.getElementById('trans-completed-evidence').value.trim() || `reports/${taskId}.evidence.md`;
+        const summary = document.getElementById('trans-completed-summary').value.trim() || 'Completed via Kanban board drag';
+        await companyApiPost(`/v1/tasks/${encodeURIComponent(taskId)}/done`, { agent, evidence, summary });
+        companyApiLog('SYSTEM', `Task ${taskId} completed by ${agent}.`, 'success');
+      } else if (targetStatus === 'submitted') {
+        const reason = document.getElementById('trans-submitted-reason').value.trim() || 'Reopened via Kanban board drag';
+        await companyApiPost(`/v1/tasks/${encodeURIComponent(taskId)}/reopen`, { by: HUMAN_OWNER_ID, reason });
+        companyApiLog('SYSTEM', `Task ${taskId} reopened: ${reason}`, 'success');
+      }
+      
+      setTimeout(() => location.reload(), 800);
+    } catch (err) {
+      companyApiLog('ERROR', `Transition failed: ${err.message}`, 'error');
+    }
+  };
 
   async function realSendChatMessage() {
     const input = document.getElementById('chat-input-field');
