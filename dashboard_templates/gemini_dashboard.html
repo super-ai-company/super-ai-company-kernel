@@ -2385,6 +2385,60 @@
   </div>
 </div>
 
+<!-- Modal for Editing Employee Profile -->
+<div id="edit-employee-modal" class="modal" onclick="if(event.target===this) closeEditEmployeeModal()">
+  <div class="modal-content" style="max-width: 500px; border: 1px solid rgba(129, 140, 248, 0.25);">
+    <div class="modal-header" style="border-bottom: 1px solid rgba(255, 255, 255, 0.05);">
+      <h3 id="edit-modal-title" style="font-family: 'Outfit', sans-serif;"><i class="fa-solid fa-user-gear"></i> Edit AI Employee Profile</h3>
+      <button class="close-btn" onclick="closeEditEmployeeModal()">&times;</button>
+    </div>
+    <div class="modal-body" style="color: var(--text-primary); font-size: 13px; display: flex; flex-direction: column; gap: 15px; font-family: 'Inter', sans-serif; background: #0d111d;">
+      <input type="hidden" id="edit-employee-id">
+      
+      <div class="form-group" style="display: flex; flex-direction: column; gap: 6px;">
+        <label class="form-label" style="font-weight: 700; color: var(--text-secondary);">Employee ID</label>
+        <input type="text" id="edit-employee-id-display" class="form-input" disabled style="width: 100%; box-sizing: border-box; background: rgba(255,255,255,0.03); color: var(--text-muted); cursor: not-allowed; border: 1px solid var(--border-color); border-radius: 6px; padding: 8px;">
+      </div>
+
+      <div class="form-group" style="display: flex; flex-direction: column; gap: 6px;">
+        <label class="form-label" style="font-weight: 700; color: var(--text-secondary);">Name</label>
+        <input type="text" id="edit-employee-name" class="form-input" style="width: 100%; box-sizing: border-box; background: #0b1020; color: var(--text-primary); border: 1px solid var(--border-color); border-radius: 6px; padding: 8px;">
+      </div>
+
+      <div class="form-group" style="display: flex; flex-direction: column; gap: 6px;">
+        <label class="form-label" style="font-weight: 700; color: var(--text-secondary);">Role</label>
+        <input type="text" id="edit-employee-role" class="form-input" style="width: 100%; box-sizing: border-box; background: #0b1020; color: var(--text-primary); border: 1px solid var(--border-color); border-radius: 6px; padding: 8px;">
+      </div>
+
+      <div class="form-group" style="display: flex; flex-direction: column; gap: 6px;">
+        <label class="form-label" style="font-weight: 700; color: var(--text-secondary);">Runtime Engine</label>
+        <select id="edit-employee-runtime" class="scenario-select" style="width: 100%; box-sizing: border-box; background: #0b1020; color: var(--text-primary); border: 1px solid var(--border-color); border-radius: 6px; padding: 8px;">
+          <option value="openclaw">OpenClaw Engine</option>
+          <option value="hermes">Hermes CLI Engine</option>
+          <option value="codex">Codex Engine</option>
+          <option value="antigravity">Antigravity Adapter</option>
+          <option value="trae">Trae IDE Engine</option>
+          <option value="local">Local User Space</option>
+        </select>
+      </div>
+
+      <div class="form-group" style="display: flex; flex-direction: column; gap: 6px;">
+        <label class="form-label" style="font-weight: 700; color: var(--text-secondary);">Contract Status</label>
+        <select id="edit-employee-status" class="scenario-select" style="width: 100%; box-sizing: border-box; background: #0b1020; color: var(--text-primary); border: 1px solid var(--border-color); border-radius: 6px; padding: 8px;">
+          <option value="active">Active (Onboarded)</option>
+          <option value="candidate">Candidate (Contracting)</option>
+          <option value="archived">Archived (Soft Suspended)</option>
+        </select>
+      </div>
+
+      <div style="display: flex; justify-content: flex-end; gap: 12px; margin-top: 10px; border-top: 1px solid rgba(255,255,255,0.05); padding-top: 15px;">
+        <button class="chat-send-btn" style="background: rgba(255,255,255,0.05); border: 1px solid var(--border-color); color: var(--text-primary);" onclick="closeEditEmployeeModal()">Cancel</button>
+        <button class="chat-send-btn" id="edit-confirm-action-btn" style="background: linear-gradient(135deg, #10b981, #059669); box-shadow: 0 4px 12px rgba(16, 185, 129, 0.2);" onclick="executeEmployeeProfileUpdate()"><i class="fa-solid fa-save"></i> Save Changes</button>
+      </div>
+    </div>
+  </div>
+</div>
+
 <!-- Fallback debug seed data -->
 <div id="static-fallback-tests">
   <!-- Stub elements for testing backward compatibility -->
@@ -3086,21 +3140,39 @@
     companyApiLog('ERROR', `Candidate '${id}' cannot be joined directly. Run: bin/companyctl employee verify-direct --id ${id} --from main --rounds 3 --activate`, 'error');
   }
 
-  function openEditEmployeeProfile(id, currentName, currentRole, currentRuntime, currentStatus) {
-    const name = prompt(`Name for ${id}`, currentName || id);
-    if (name === null) return;
-    const role = prompt(`Role for ${id}`, currentRole || 'business-agent');
-    if (role === null) return;
-    const runtime = prompt(`Runtime for ${id}`, currentRuntime || 'local');
-    if (runtime === null) return;
-    const status = prompt(`Status for ${id}: active, candidate, archived`, currentStatus || 'active');
-    if (status === null) return;
-    if (!['active', 'candidate', 'archived'].includes(status)) {
-      companyApiLog('ERROR', `Invalid employee status: ${status}`, 'error');
+  window.openEditEmployeeProfile = function(id, currentName, currentRole, currentRuntime, currentStatus) {
+    document.getElementById('edit-employee-id').value = id;
+    document.getElementById('edit-employee-id-display').value = id;
+    document.getElementById('edit-employee-name').value = currentName || '';
+    document.getElementById('edit-employee-role').value = currentRole || '';
+    document.getElementById('edit-employee-runtime').value = currentRuntime || 'local';
+    document.getElementById('edit-employee-status').value = currentStatus || 'active';
+    document.getElementById('edit-employee-modal').style.display = 'flex';
+  };
+
+  window.closeEditEmployeeModal = function() {
+    document.getElementById('edit-employee-modal').style.display = 'none';
+  };
+
+  window.executeEmployeeProfileUpdate = async function() {
+    const id = document.getElementById('edit-employee-id').value;
+    const name = document.getElementById('edit-employee-name').value.trim();
+    const role = document.getElementById('edit-employee-role').value.trim();
+    const runtime = document.getElementById('edit-employee-runtime').value;
+    const status = document.getElementById('edit-employee-status').value;
+
+    if (!name) {
+      companyApiLog('ERROR', 'Name cannot be empty.', 'error');
       return;
     }
-    return realUpdateEmployeeProfile(id, {name, role, runtime, status});
-  }
+    if (!role) {
+      companyApiLog('ERROR', 'Role cannot be empty.', 'error');
+      return;
+    }
+
+    closeEditEmployeeModal();
+    await realUpdateEmployeeProfile(id, {name, role, runtime, status});
+  };
 
   async function realOffboardEmployee(id, hardDelete) {
     printTerminalLine({tag: 'SYSTEM', text: `Calling Company Kernel API to offboard '${id}'...`, type: 'normal'});
