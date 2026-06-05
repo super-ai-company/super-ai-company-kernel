@@ -50,6 +50,32 @@ After scan/apply, Codex must run or output the 2-4 round handshake plan as the i
 - If another employee is needed, name active collaborators as `@agent` options and ask the sender whether to add them.
 - For human-facing requests, close the loop back to the requesting agent so it can notify the human operator; do not leave the human waiting on an internal inbox record.
 
+## Postmortem: 2026-06-04 Why Codex Was Not Continuously Controllable
+
+Observed failure:
+
+- Company Kernel could create Codex inbox records and task cards, but this was sometimes reported like Codex was actually working.
+- Some requests stopped after `acknowledged`; the human-facing loop did not always receive `in_progress` and final `done|blocked` receipts.
+- A dry-run or policy-gated task was confused with implementation progress.
+- Codex attempted to use a missing `scripts/progress_report.py` helper in one flow, so there was no standardized progress artifact for the supervisor to read.
+- Kernel-change tasks could be blocked by approval policy. That was correct safety behavior, but without a structured blocker reply it looked like Codex had gone silent.
+
+Root causes:
+
+1. `message send` was record-only; it did not invoke `company-codex-adapter --direct-message`.
+2. Heartbeat/employee existence was treated as liveness/control evidence.
+3. The adapter did not always enforce a two-phase progress receipt (`working` then `done|blocked`).
+4. Progress evidence location was not standardized enough for dashboard/Hermes summaries.
+5. The requesting agent did not always close the result back to the human.
+
+Preventive rules for future installs/customers:
+
+- Use `message direct` for control probes; never accept inbox files as proof.
+- Keep Codex `candidate` until 2-4 direct rounds pass and a sender-visible receipt exists for every round.
+- Execution tasks must write repo-local progress JSON under `reports/` and send a final receipt.
+- If approval/policy blocks execution, Codex must return `status: blocked`, the policy reason, evidence path, and the next required action.
+- Hermes/main must verify changed files, tests, and progress artifacts before telling the human Codex completed work.
+
 ## Verified Direct Execution Loop
 
 Use this smoke after onboarding or repair:

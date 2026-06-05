@@ -9,6 +9,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
 from . import companyctl
+from . import company_dashboard
 
 
 API_VERSION = "v1"
@@ -28,6 +29,7 @@ API_CAPABILITIES = [
     "employees",
     "runtimes",
     "settings",
+    "external_mirror",
 ]
 API_ENDPOINTS = [
     {"method": "GET", "path": "/v1/health", "summary": "Company Kernel health summary"},
@@ -62,6 +64,11 @@ API_ENDPOINTS = [
     {"method": "GET", "path": "/v1/tasks/{task_id}/conversations", "summary": "List task-bound conversations"},
     {"method": "POST", "path": "/v1/tasks/{task_id}/conversations", "summary": "Start task-bound conversation", "body": {"from": "employee id optional", "participants": "comma-separated extra participants optional", "title": "string optional", "body": "string optional", "conversation_id": "string optional", "evidence": "path optional"}},
     {"method": "GET", "path": "/v1/messages", "summary": "List messages", "query": {"agent": "employee id required"}},
+    {"method": "GET", "path": "/v1/messages/recent-direct", "summary": "Dashboard-ready recent direct messages feed", "query": {"limit": "integer optional"}},
+    {"method": "GET", "path": "/v1/dashboard/communication-observability", "summary": "Dashboard-ready summary for direct messages, external mirror status, adapter-run progress, and internal no-receipt watchdog"},
+    {"method": "GET", "path": "/v1/dashboard/internal-watchdog", "summary": "Detect internal messages/tasks that were delivered but have no receipt, claim, or final evidence"},
+    {"method": "POST", "path": "/v1/dashboard/internal-watchdog/remediate", "summary": "Create or dry-run follow-up/escalation/reroute-decision actions for no-receipt messages and open internal tasks", "body": {"source": "employee id optional", "dry_run": "bool optional default true", "deliver": "bool optional", "escalate_to": "employee id optional default hermes", "escalate_existing": "bool optional", "reroute_to": "employee id optional default codex", "create_reroute_plan": "bool optional"}},
+    {"method": "POST", "path": "/v1/dashboard/internal-watchdog/apply-reroutes", "summary": "Apply answered reroute decisions by creating new tasks and blocking original stalled tasks", "body": {"by": "employee id optional default hermes", "dry_run": "bool optional default true"}},
     {"method": "POST", "path": "/v1/messages", "summary": "Send message", "body": {"from": "employee id", "to": "employee id", "body": "string", "message_id": "string optional"}},
     {"method": "POST", "path": "/v1/messages/direct", "summary": "Directly invoke target employee runtime and record message evidence", "body": {"from": "employee id", "to": "employee id", "body": "string", "message_id": "string optional", "session_key": "string optional", "timeout": "integer optional", "deliver": "bool optional", "reply_channel": "string optional", "reply_to": "string optional", "reply_account": "string optional"}},
     {"method": "GET", "path": "/v1/followups", "summary": "List followups", "query": {"status": "pending/answered/cancelled/all optional"}},
@@ -71,6 +78,10 @@ API_ENDPOINTS = [
     {"method": "GET", "path": "/v1/conversations", "summary": "List conversations for an agent", "query": {"agent": "employee id required"}},
     {"method": "POST", "path": "/v1/conversations", "summary": "Start conversation", "body": {"from": "employee id", "participants": "comma-separated employee ids", "title": "string", "body": "string", "conversation_id": "string optional", "evidence": "path optional"}},
     {"method": "GET", "path": "/v1/conversations/{conversation_id}", "summary": "Show conversation"},
+    {"method": "GET", "path": "/v1/external-threads", "summary": "List sanitized external mirror threads", "query": {"platform": "platform optional", "owner_agent": "owner agent optional", "limit": "integer optional"}},
+    {"method": "GET", "path": "/v1/external-threads/{thread_id}", "summary": "Show sanitized external mirror thread and messages"},
+    {"method": "GET", "path": "/v1/external-threads/{thread_id}/messages", "summary": "List sanitized external mirror messages"},
+    {"method": "POST", "path": "/v1/external-mirror/import", "summary": "Import sanitized external mirror payload without secrets", "body": {"thread": "sanitized thread object", "messages": "sanitized messages list"}},
     {"method": "POST", "path": "/v1/conversations/{conversation_id}/join", "summary": "Join an existing conversation as Human Owner or another employee", "body": {"agent": "employee id optional, defaults owner"}},
     {"method": "POST", "path": "/v1/conversations/{conversation_id}/reply", "summary": "Reply to conversation", "body": {"from": "employee id", "body": "string", "message_id": "string optional", "evidence": "path optional"}},
     {"method": "GET", "path": "/v1/approvals", "summary": "List approvals", "query": {"status": "pending/approved/denied/all optional", "agent": "employee id optional", "action": "approval action optional", "limit": "integer optional"}},
@@ -248,6 +259,28 @@ def route_get(path: str, query: dict[str, list[str]]) -> tuple[int, dict]:
             return HTTPStatus.BAD_REQUEST, {"ok": False, "error": "missing query: agent"}
         code, payload = run_companyctl(["message", "list", "--agent", agent])
         return (HTTPStatus.OK if code == 0 else HTTPStatus.BAD_REQUEST), {"exit_code": code, **payload}
+    if path == "/v1/messages/recent-direct":
+        conn = companyctl.connect()
+        try:
+            limit_raw = query_value(query, "limit", "20")
+            limit = int(limit_raw) if str(limit_raw).isdigit() else 20
+            return HTTPStatus.OK, {"ok": True, "direct_messages_recent": company_dashboard.recent_direct_messages(conn, limit=limit)}
+        finally:
+            conn.close()
+    if path == "/v1/dashboard/communication-observability":
+        conn = companyctl.connect()
+        try:
+            summary = company_dashboard.load_summary(conn)
+            return HTTPStatus.OK, {"ok": True, **company_dashboard.communication_observability_summary(summary)}
+        finally:
+            conn.close()
+    if path == "/v1/dashboard/internal-watchdog":
+        conn = companyctl.connect()
+        try:
+            summary = company_dashboard.load_summary(conn)
+            return HTTPStatus.OK, {"ok": True, "generated_at": summary.get("generated_at", ""), "internal_watchdog": summary.get("internal_watchdog", {})}
+        finally:
+            conn.close()
     if path == "/v1/followups":
         argv = ["followup", "list"]
         status = query_value(query, "status")
@@ -269,6 +302,27 @@ def route_get(path: str, query: dict[str, list[str]]) -> tuple[int, dict]:
         conversation_id = path.removeprefix("/v1/conversations/").strip("/")
         code, payload = run_companyctl(["conversation", "show", "--conversation-id", conversation_id])
         return (HTTPStatus.OK if code == 0 else HTTPStatus.BAD_REQUEST), {"exit_code": code, **payload}
+    if path == "/v1/external-threads":
+        conn = companyctl.connect()
+        try:
+            limit_raw = query_value(query, "limit", "50")
+            limit = int(limit_raw) if str(limit_raw).isdigit() else 50
+            return HTTPStatus.OK, {"ok": True, "threads": companyctl.list_external_threads(conn, platform=query_value(query, "platform"), owner_agent=query_value(query, "owner_agent"), limit=limit)}
+        finally:
+            conn.close()
+    if path.startswith("/v1/external-threads/"):
+        tail = path.removeprefix("/v1/external-threads/").strip("/")
+        thread_id = tail.removesuffix("/messages").strip("/")
+        conn = companyctl.connect()
+        try:
+            payload = companyctl.show_external_thread(conn, thread_id)
+            if not payload.get("ok"):
+                return HTTPStatus.NOT_FOUND, payload
+            if tail.endswith("/messages"):
+                return HTTPStatus.OK, {"ok": True, "thread_id": thread_id, "messages": payload["messages"]}
+            return HTTPStatus.OK, payload
+        finally:
+            conn.close()
     if path == "/v1/approvals":
         argv = ["approval", "list"]
         status = query_value(query, "status", "all")
@@ -430,6 +484,40 @@ def route_post(path: str, body: dict) -> tuple[int, dict]:
             argv.append("--dry-run")
         code, payload = run_companyctl(argv)
         return (HTTPStatus.OK if code == 0 else HTTPStatus.BAD_REQUEST), {"exit_code": code, **payload}
+    if path == "/v1/external-mirror/import":
+        conn = companyctl.connect()
+        try:
+            result = companyctl.import_external_mirror(conn, body)
+            return (HTTPStatus.CREATED if result.get("ok") else HTTPStatus.BAD_REQUEST), result
+        finally:
+            conn.close()
+    if path == "/v1/dashboard/internal-watchdog/remediate":
+        conn = companyctl.connect()
+        try:
+            result = company_dashboard.remediate_internal_watchdog(
+                conn,
+                source_agent=str(body.get("source", "main") or "main"),
+                dry_run=truthy(body.get("dry_run", True)),
+                deliver=truthy(body.get("deliver")),
+                escalate_to=str(body.get("escalate_to", "hermes") or "hermes"),
+                escalate_existing=truthy(body.get("escalate_existing", True)),
+                reroute_to=str(body.get("reroute_to", "codex") or "codex"),
+                create_reroute_plan=truthy(body.get("create_reroute_plan", True)),
+            )
+            return HTTPStatus.OK, result
+        finally:
+            conn.close()
+    if path == "/v1/dashboard/internal-watchdog/apply-reroutes":
+        conn = companyctl.connect()
+        try:
+            result = company_dashboard.apply_reroute_decisions(
+                conn,
+                by=str(body.get("by", "hermes") or "hermes"),
+                dry_run=truthy(body.get("dry_run", True)),
+            )
+            return HTTPStatus.OK, result
+        finally:
+            conn.close()
     if path == "/v1/employees/onboard":
         argv = [
             "employee",

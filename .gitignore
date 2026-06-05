@@ -12,6 +12,11 @@ employees/*/inbox/
 employees/*/outbox/
 employees/*/reports/
 
+.ops/
+reports/heartbeats/
+reports/tmp-chrome-profile/
+reports/*.log
+
 .pytest_cache/
 .coverage
 htmlcov/
