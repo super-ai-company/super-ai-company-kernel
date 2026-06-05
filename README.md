@@ -86,6 +86,33 @@ curl 'http://127.0.0.1:8765/v1/messages/recent-direct?limit=20'
 
 `/v1/messages?agent=<id>` remains the per-agent inbox/outbox query. `/v1/messages/recent-direct` is the aggregate feed used by dashboard summary and Chat Hub style views.
 
+## Progress Heartbeat Protocol
+
+Supervisor-facing progress is now normalized into 5 machine-readable layers:
+
+- `received` -> `received|acknowledged|claimed`
+- `working` -> `working|in_progress|actively_progressing`
+- `waiting` -> `waiting|blocked_on_input_or_dependency`
+- `blocked` -> `blocked|failed_to_progress`
+- `done` -> `done|verified_complete|completed`
+
+Write the progress payload inside heartbeat metadata or repo-local progress JSON:
+
+```json
+{
+  "progress": {
+    "state": "blocked_on_input_or_dependency",
+    "summary": "waiting for Shift reply"
+  }
+}
+```
+
+Stable read paths:
+
+- `POST /v1/heartbeats`: persists the progress payload into heartbeat metadata.
+- `GET /v1/dashboard/communication-observability`: returns adapter-run `progress_layer/progress_state`.
+- dashboard employee/adapter views: show normalized progress layer/state from heartbeat or repo-local progress reports.
+
 ## Sanitized External Mirror
 
 Hermes/Telegram or other outside-chat history must enter Company Kernel as a sanitized mirror payload only. Do not pass bot tokens, API keys, passwords, cookies, or raw secret-bearing records.
@@ -655,8 +682,26 @@ curl 'http://127.0.0.1:8765/v1/dashboard/communication-observability'
 - `direct_messages.items[]`: 最近员工 direct messages，给 dashboard 的人类可读面板使用。
 - `external_mirror.threads[]`: external thread 的 `platform/owner_agent/bridge_agent/cursor/last_message_at`。
 - `adapter_runs.items[]`: adapter run 的 `command/task_id`，以及 repo 内安全相对路径的 `progress_file/state_file`。
+- `progress_notifications.items[]`: heartbeat 进度层级变化生成的用户向通知项，包含 `from_layer/to_layer/message/reason/delivery_status/delivery_error/delivered_at`。
 
 `progress_file` / `state_file` 只会暴露 repo-local 路径；repo 外绝对路径会被清空，避免 dashboard 泄露运行态边界外文件。
+
+额外只读接口：
+
+```bash
+curl 'http://127.0.0.1:8765/v1/progress/notifications?pending_only=true'
+```
+
+progress notification 复用 `company_events` 的 `event_type=progress.notification`。heartbeat 先落一条 pending，再由 repo 内 delivery 闭环复用现有 notification settings / send 机制，把结果写回同一事件：
+
+- 会发什么：短句 `message`
+- 为什么发：`reason`
+- 由谁触发：`triggered_by`
+- 何时触发：heartbeat 写入时检测到 `progress layer/state` 变化
+- 发得怎样：`delivery_status=pending/sent/skipped/failed`
+- 若发送失败：`delivery_error`
+
+同一 agent 的同一层级切换（如 `working -> waiting`）会按 repo 内 fingerprint 去重，避免重复骚扰。
 
 ## Adapter Worker
 

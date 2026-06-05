@@ -4193,6 +4193,7 @@
     const direct = observability.direct_messages || {counts: {}, items: []};
     const mirror = observability.external_mirror || {counts: {}, threads: []};
     const adapter = observability.adapter_runs || {counts: {}, items: []};
+    const progressNotifications = observability.progress_notifications || {counts: {}, items: []};
     const watchdog = observability.internal_watchdog || {counts: {}, no_receipt_messages: [], open_tasks: []};
 
     const directItems = (direct.items || []).map(item => `
@@ -4228,12 +4229,31 @@
         </div>
         <div class="observability-body">${escapeHtml(item.progress_file || item.state_file || item.summary || 'No repo-local progress path')}</div>
         <div class="observability-meta">
+          <span>progress=${escapeHtml(item.progress_layer || 'unknown')}</span>
+          <span>state=${escapeHtml(item.progress_state || 'unknown')}</span>
           <span>agent=${escapeHtml(item.agent_id || '-')}</span>
           <span>attempt=${escapeHtml(item.attempt)}</span>
           <span>created=${formatDate(item.created_at)}</span>
         </div>
       </div>
     `).join('') || `<div class="chat-direct-empty">No adapter runs captured in current snapshot.</div>`;
+
+    const progressItems = (progressNotifications.items || []).map(item => `
+      <div class="observability-item">
+        <div class="observability-item-top">
+          <div class="observability-route">${escapeHtml(item.agent_id || item.source_agent || '-')} · ${escapeHtml(item.from_layer || '?')} → ${escapeHtml(item.to_layer || '?')}</div>
+          <span class="observability-chip ${item.pending ? 'warn' : 'good'}">${escapeHtml(item.delivery_status || (item.pending ? 'pending' : 'recorded'))}</span>
+        </div>
+        <div class="observability-body">${escapeHtml(item.message || '(empty)')}</div>
+        <div class="observability-meta">
+          <span>reason=${escapeHtml(item.reason || '-')}</span>
+          <span>state=${escapeHtml(item.from_state || '?')} → ${escapeHtml(item.to_state || '?')}</span>
+          <span>delivered=${formatDate(item.delivered_at || '')}</span>
+          <span>${escapeHtml(item.delivery_error || '-')}</span>
+          <span>created=${formatDate(item.created_at)}</span>
+        </div>
+      </div>
+    `).join('') || `<div class="chat-direct-empty">No progress transitions captured in current snapshot.</div>`;
 
     const watchdogMessageItems = (watchdog.no_receipt_messages || []).map(item => `
       <div class="observability-item">
@@ -4300,8 +4320,25 @@
         <div class="observability-statline">
           <span class="observability-chip good">ok ${escapeHtml(adapter.counts && adapter.counts.ok || 0)}</span>
           <span class="observability-chip warn">failed ${escapeHtml(adapter.counts && adapter.counts.failed || 0)}</span>
+          <span class="observability-chip">5-layer progress</span>
         </div>
         <div class="observability-list">${adapterItems}</div>
+      </div>
+      <div class="observability-panel">
+        <div class="observability-header">
+          <div>
+            <div class="observability-title">Progress Transition Notifications</div>
+            <div class="observability-subtitle">User-facing progress messages generated when heartbeat progress changes layer.</div>
+          </div>
+        </div>
+        <div class="observability-statline">
+          <span class="observability-chip">shown ${escapeHtml(progressNotifications.counts && progressNotifications.counts.shown || 0)}</span>
+          <span class="observability-chip warn">pending ${escapeHtml(progressNotifications.counts && progressNotifications.counts.pending || 0)}</span>
+          <span class="observability-chip good">sent ${escapeHtml(progressNotifications.counts && progressNotifications.counts.sent || 0)}</span>
+          <span class="observability-chip">skipped ${escapeHtml(progressNotifications.counts && progressNotifications.counts.skipped || 0)}</span>
+          <span class="observability-chip warn">failed ${escapeHtml(progressNotifications.counts && progressNotifications.counts.failed || 0)}</span>
+        </div>
+        <div class="observability-list">${progressItems}</div>
       </div>
       <div class="observability-panel">
         <div class="observability-header">

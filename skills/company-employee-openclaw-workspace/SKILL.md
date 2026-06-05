@@ -76,6 +76,15 @@ Required states:
 - `done`: target completed; must include evidence path and verification.
 - `not_for_me`: target refuses because the request is for another agent; must suggest the correct `@agent` if known.
 
+Preferred 5-layer progress protocol for supervisor heartbeat/API:
+
+- `received` -> `received|acknowledged|claimed`
+- `working` -> `working|in_progress|actively_progressing`
+- `waiting` -> `waiting|blocked_on_input_or_dependency`
+- `blocked` -> `blocked|failed_to_progress`
+- `done` -> `done|verified_complete|completed`
+- 如果 heartbeat 让 layer/state 发生变化，Kernel 应生成 repo 内 `progress.notification` 记录，并在 delivery 闭环后回写 `delivery_status/delivery_error/delivered_at`；只有 `sent` 才代表真的发给了 Shift。
+
 ## Minimum Agent-to-Agent Task Envelope
 
 Use this envelope for all internal execution requests:

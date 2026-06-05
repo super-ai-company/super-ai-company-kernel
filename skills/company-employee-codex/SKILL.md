@@ -42,7 +42,9 @@ After scan/apply, Codex must run or output the 2-4 round handshake plan as the i
 - The Codex direct path runs `company-codex-adapter --direct-message` and returns an immediate adapter reply.
 - If OpenClaw sends with record-only `message send`, the expected state is pending inbox until a daemon/adapter/human explicitly processes it.
 - Execution-class direct messages must not stop at receipt. The adapter must write repo-local progress files and send a status message back to the source.
-- Required states are `acknowledged`, `in_progress`, `blocked`, and `completed`. `acknowledged` is not work evidence.
+- Required progress protocol layers are `received`, `working`, `waiting`, `blocked`, and `done`.
+- Preferred states are `acknowledged`, `actively_progressing`, `blocked_on_input_or_dependency`, `failed_to_progress`, and `verified_complete`.
+- 当 heartbeat 让 layer/state 变化时，Codex 侧结果会被 Kernel 记录成 `progress.notification`，并由 repo 内 delivery 闭环回写 `pending/sent/skipped/failed`；不要把 `pending` 当成已送达。
 - A valid execution smoke must produce both:
   - source inbox message containing `status: working`;
   - final receipt containing `status: done` or `status: blocked`.

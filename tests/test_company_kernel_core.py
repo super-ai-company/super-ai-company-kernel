@@ -1558,6 +1558,8 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual(str(progress_path), run_summary["report"])
         self.assertEqual("in_progress", run_summary["progress_state"])
         self.assertEqual("task-adapter-progress", run_summary["progress_task_id"])
+        self.assertEqual("working", run_summary["progress_layer"])
+        self.assertEqual("actively_progressing", run_summary["progress_label"])
 
 
     def test_adapter_run_summary_rejects_progress_report_outside_repo(self) -> None:
@@ -1588,7 +1590,204 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual("/etc/passwd", run_summary["report"])
         self.assertEqual("", run_summary["progress_state"])
         self.assertEqual("", run_summary["progress_task_id"])
+        self.assertEqual("", run_summary["progress_layer"])
         self.assertEqual("outside_repo", run_summary["progress_report_error"])
+
+    def test_heartbeat_and_employee_summary_expose_progress_layer(self) -> None:
+        code, created = run_cli("employee", "create", "--id", "codex-progress", "--name", "codex-progress", "--role", "engineer", "--runtime", "codex", "--workspace", str(self.root / "workspace" / "codex-progress"))
+        self.assertEqual(0, code, created)
+        code, updated = run_cli("employee", "update", "--id", "codex-progress", "--status", "active")
+        self.assertEqual(2, code, updated)
+
+        conn = companyctl.connect()
+        try:
+            conn.execute("UPDATE employees SET status = 'active', updated_at = ? WHERE id = ?", (companyctl.now(), "codex-progress"))
+            companyctl.heartbeat_internal(
+                conn,
+                "codex-progress",
+                {
+                    "source": "unit-test",
+                    "progress": {
+                        "state": "blocked_on_input_or_dependency",
+                        "summary": "waiting for Shift reply",
+                    },
+                },
+            )
+        finally:
+            conn.close()
+
+        conn = companyctl.connect()
+        try:
+            summary = company_dashboard.load_summary(conn)
+        finally:
+            conn.close()
+        employee = next(item for item in summary["employees"] if item["id"] == "codex-progress")
+        model = next(item for item in company_dashboard.employee_view_models(summary) if item["id"] == "codex-progress")
+        self.assertEqual("waiting", employee["progress_layer"])
+        self.assertEqual("blocked_on_input_or_dependency", employee["progress_state"])
+        self.assertEqual("waiting / blocked_on_input_or_dependency", model["progress_display"])
+
+    def test_progress_protocol_normalizes_five_layers(self) -> None:
+        self.assertEqual("received", companyctl.normalize_progress_state("acknowledged")["layer"])
+        self.assertEqual("working", companyctl.normalize_progress_state("actively_progressing")["layer"])
+        self.assertEqual("waiting", companyctl.normalize_progress_state("blocked_on_input_or_dependency")["layer"])
+        self.assertEqual("blocked", companyctl.normalize_progress_state("failed_to_progress")["layer"])
+        self.assertEqual("done", companyctl.normalize_progress_state("verified_complete")["layer"])
+
+    def test_heartbeat_progress_transition_creates_user_notification(self) -> None:
+        code, created = run_cli("employee", "create", "--id", "codex-notify", "--name", "codex-notify", "--role", "engineer", "--runtime", "codex", "--workspace", str(self.root / "workspace" / "codex-notify"))
+        self.assertEqual(0, code, created)
+
+        conn = companyctl.connect()
+        try:
+            conn.execute("UPDATE employees SET status = 'active', updated_at = ? WHERE id = ?", (companyctl.now(), "codex-notify"))
+            companyctl.heartbeat_internal(conn, "codex-notify", {"source": "unit-test", "progress": {"state": "acknowledged", "summary": "已接收"}})
+            second = companyctl.heartbeat_internal(conn, "codex-notify", {"source": "unit-test", "progress": {"state": "actively_progressing", "summary": "开始处理"}})
+        finally:
+            conn.close()
+
+        notification = second.get("progress_notification") or {}
+        self.assertTrue(notification.get("triggered"))
+        self.assertEqual("received", notification.get("from_layer"))
+        self.assertEqual("working", notification.get("to_layer"))
+        self.assertEqual("pending", notification.get("delivery_status"))
+        self.assertEqual("progress_transition", notification.get("kind"))
+        self.assertIn("已开始处理", notification.get("message", ""))
+
+    def test_api_gateway_exposes_recent_progress_notifications(self) -> None:
+        code, created = run_cli("employee", "create", "--id", "codex-progress-api", "--name", "codex-progress-api", "--role", "engineer", "--runtime", "codex", "--workspace", str(self.root / "workspace" / "codex-progress-api"))
+        self.assertEqual(0, code, created)
+
+        conn = companyctl.connect()
+        try:
+            conn.execute("UPDATE employees SET status = 'active', updated_at = ? WHERE id = ?", (companyctl.now(), "codex-progress-api"))
+            companyctl.heartbeat_internal(conn, "codex-progress-api", {"source": "unit-test", "progress": {"state": "actively_progressing", "summary": "执行中"}})
+            companyctl.heartbeat_internal(conn, "codex-progress-api", {"source": "unit-test", "progress": {"state": "blocked_on_input_or_dependency", "summary": "等你确认"}})
+        finally:
+            conn.close()
+
+        status, payload = api_gateway.route_get("/v1/progress/notifications", {})
+        self.assertEqual(200, status, payload)
+        self.assertTrue(payload["ok"])
+        self.assertGreaterEqual(payload["counts"]["pending"], 1)
+        self.assertEqual("codex-progress-api", payload["items"][0]["agent_id"])
+        self.assertEqual("working", payload["items"][0]["from_layer"])
+        self.assertEqual("waiting", payload["items"][0]["to_layer"])
+
+    def test_dashboard_observability_includes_progress_transitions(self) -> None:
+        code, created = run_cli("employee", "create", "--id", "codex-progress-dashboard", "--name", "codex-progress-dashboard", "--role", "engineer", "--runtime", "codex", "--workspace", str(self.root / "workspace" / "codex-progress-dashboard"))
+        self.assertEqual(0, code, created)
+
+        conn = companyctl.connect()
+        try:
+            conn.execute("UPDATE employees SET status = 'active', updated_at = ? WHERE id = ?", (companyctl.now(), "codex-progress-dashboard"))
+            companyctl.heartbeat_internal(conn, "codex-progress-dashboard", {"source": "unit-test", "progress": {"state": "actively_progressing", "summary": "处理中"}})
+            companyctl.heartbeat_internal(conn, "codex-progress-dashboard", {"source": "unit-test", "progress": {"state": "verified_complete", "summary": "已完成"}})
+            summary = company_dashboard.load_summary(conn)
+            observability = company_dashboard.communication_observability_summary(summary)
+        finally:
+            conn.close()
+
+        self.assertEqual(1, observability["progress_notifications"]["counts"]["pending"])
+        self.assertEqual("working", observability["progress_notifications"]["items"][0]["from_layer"])
+        self.assertEqual("done", observability["progress_notifications"]["items"][0]["to_layer"])
+
+    def test_progress_notification_delivery_sends_and_marks_sent(self) -> None:
+        code, created = run_cli("employee", "create", "--id", "codex-progress-delivery", "--name", "codex-progress-delivery", "--role", "engineer", "--runtime", "codex", "--workspace", str(self.root / "workspace" / "codex-progress-delivery"))
+        self.assertEqual(0, code, created)
+        status, saved = api_gateway.route_post(
+            "/v1/settings/notification",
+            {
+                "telegram_account": "employee-notify",
+                "telegram_bot_token_env": "COMPANY_EMPLOYEE_TELEGRAM_BOT_TOKEN",
+                "telegram_default_target": "telegram:<operator-chat-id>",
+                "employee_notifications_enabled": "true",
+            },
+        )
+        self.assertEqual(HTTPStatus.OK, status, saved)
+
+        class FakeResponse:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def read(self):
+                return json.dumps({"ok": True, "result": {"message_id": 117, "chat": {"id": 123456789}}}).encode("utf-8")
+
+        with mock.patch.dict("os.environ", {"COMPANY_EMPLOYEE_TELEGRAM_BOT_TOKEN": "123456:secret"}), mock.patch.object(companyctl.urllib.request, "urlopen", return_value=FakeResponse()):
+            conn = companyctl.connect()
+            try:
+                conn.execute("UPDATE employees SET status = 'active', updated_at = ? WHERE id = ?", (companyctl.now(), "codex-progress-delivery"))
+                companyctl.heartbeat_internal(conn, "codex-progress-delivery", {"source": "unit-test", "progress": {"state": "actively_progressing", "summary": "处理中"}})
+                second = companyctl.heartbeat_internal(conn, "codex-progress-delivery", {"source": "unit-test", "progress": {"state": "blocked_on_input_or_dependency", "summary": "等你确认"}})
+                delivery = companyctl.deliver_pending_progress_notifications(conn)
+                items = companyctl.list_progress_notifications(conn, limit=10)
+            finally:
+                conn.close()
+
+        self.assertTrue(second.get("progress_notification", {}).get("triggered"))
+        self.assertEqual(1, delivery["counts"]["sent"])
+        self.assertEqual("sent", items[0]["delivery_status"])
+        self.assertEqual("117", str(items[0]["delivery_result"]["message_id"]))
+        self.assertFalse(items[0]["pending"])
+
+    def test_progress_notification_delivery_deduplicates_same_transition(self) -> None:
+        code, created = run_cli("employee", "create", "--id", "codex-progress-dedupe", "--name", "codex-progress-dedupe", "--role", "engineer", "--runtime", "codex", "--workspace", str(self.root / "workspace" / "codex-progress-dedupe"))
+        self.assertEqual(0, code, created)
+
+        conn = companyctl.connect()
+        try:
+            conn.execute("UPDATE employees SET status = 'active', updated_at = ? WHERE id = ?", (companyctl.now(), "codex-progress-dedupe"))
+            companyctl.heartbeat_internal(conn, "codex-progress-dedupe", {"source": "unit-test", "progress": {"state": "actively_progressing", "summary": "处理中"}})
+            third = companyctl.heartbeat_internal(conn, "codex-progress-dedupe", {"source": "unit-test", "progress": {"state": "blocked_on_input_or_dependency", "summary": "第一次等待"}})
+            companyctl.heartbeat_internal(conn, "codex-progress-dedupe", {"source": "unit-test", "progress": {"state": "actively_progressing", "summary": "继续处理"}})
+            fourth = companyctl.heartbeat_internal(conn, "codex-progress-dedupe", {"source": "unit-test", "progress": {"state": "blocked_on_input_or_dependency", "summary": "第二次等待"}})
+            items = companyctl.list_progress_notifications(conn, limit=10)
+        finally:
+            conn.close()
+
+        self.assertTrue(third.get("progress_notification", {}).get("triggered"))
+        self.assertFalse(fourth.get("progress_notification", {}).get("triggered"))
+        self.assertEqual(1, sum(1 for item in items if item["agent_id"] == "codex-progress-dedupe" and item["from_layer"] == "working" and item["to_layer"] == "waiting"))
+
+    def test_progress_notification_delivery_marks_failed_when_route_unavailable(self) -> None:
+        code, created = run_cli("employee", "create", "--id", "codex-progress-failed", "--name", "codex-progress-failed", "--role", "engineer", "--runtime", "codex", "--workspace", str(self.root / "workspace" / "codex-progress-failed"))
+        self.assertEqual(0, code, created)
+
+        conn = companyctl.connect()
+        try:
+            conn.execute("UPDATE employees SET status = 'active', updated_at = ? WHERE id = ?", (companyctl.now(), "codex-progress-failed"))
+            companyctl.heartbeat_internal(conn, "codex-progress-failed", {"source": "unit-test", "progress": {"state": "actively_progressing", "summary": "处理中"}})
+            companyctl.heartbeat_internal(conn, "codex-progress-failed", {"source": "unit-test", "progress": {"state": "verified_complete", "summary": "已完成"}})
+            delivery = companyctl.deliver_pending_progress_notifications(conn)
+            items = companyctl.list_progress_notifications(conn, limit=10)
+        finally:
+            conn.close()
+
+        self.assertEqual(1, delivery["counts"]["failed"])
+        self.assertEqual("failed", items[0]["delivery_status"])
+        self.assertIn("notification account is not configured", items[0]["delivery_error"])
+
+    def test_api_gateway_exposes_progress_notification_delivery_results(self) -> None:
+        code, created = run_cli("employee", "create", "--id", "codex-progress-api-delivery", "--name", "codex-progress-api-delivery", "--role", "engineer", "--runtime", "codex", "--workspace", str(self.root / "workspace" / "codex-progress-api-delivery"))
+        self.assertEqual(0, code, created)
+
+        conn = companyctl.connect()
+        try:
+            conn.execute("UPDATE employees SET status = 'active', updated_at = ? WHERE id = ?", (companyctl.now(), "codex-progress-api-delivery"))
+            companyctl.heartbeat_internal(conn, "codex-progress-api-delivery", {"source": "unit-test", "progress": {"state": "actively_progressing", "summary": "处理中"}})
+            companyctl.heartbeat_internal(conn, "codex-progress-api-delivery", {"source": "unit-test", "progress": {"state": "verified_complete", "summary": "已完成"}})
+            companyctl.deliver_pending_progress_notifications(conn)
+        finally:
+            conn.close()
+
+        status, payload = api_gateway.route_get("/v1/progress/notifications", {})
+        self.assertEqual(200, status, payload)
+        self.assertTrue(payload["ok"])
+        self.assertGreaterEqual(payload["counts"]["failed"], 1)
+        self.assertEqual("failed", payload["items"][0]["delivery_status"])
 
     def test_external_mirror_import_rejects_tokens_and_exposes_readonly_api(self) -> None:
         secret_payload = {
@@ -1692,8 +1891,8 @@ class CompanyKernelCoreTest(unittest.TestCase):
             code = company_dashboard.main(["--output", str(output)])
         self.assertEqual(0, code)
         html = output.read_text(encoding="utf-8")
-        self.assertIn("<td>hermes</td><td>active</td><td>online</td><td>yes</td>", html)
-        self.assertIn("<td>cursor</td><td>candidate</td><td>candidate</td><td>no</td>", html)
+        self.assertIn("<td>hermes</td><td>active</td><td>online</td><td></td><td>yes</td>", html)
+        self.assertIn("<td>cursor</td><td>candidate</td><td>candidate</td><td></td><td>no</td>", html)
         self.assertIn("active_employees", html)
         self.assertIn("candidate_employees", html)
         self.assertIn("employee-manager", html)

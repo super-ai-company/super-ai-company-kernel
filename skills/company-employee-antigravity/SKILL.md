@@ -82,6 +82,10 @@ Company Kernel usage rule: first use `agy --print` and/or an interactive `agy` s
 
 - Default adapter mode is dry-run: writes a GUI task brief and evidence.
 - Direct messages must not fail with “unsupported runtime”. They must write a direct GUI brief under `employees/antigravity/reports/direct/`, return an ACK to the sender, and send a structured `status: blocked` message back to the source when autonomous GUI execution is not verified.
+- Progress/status receipts should use the normalized 5-layer protocol:
+  `received`, `working`, `waiting`, `blocked`, `done`
+  with preferred state names `acknowledged`, `actively_progressing`, `blocked_on_input_or_dependency`, `failed_to_progress`, `verified_complete`.
+- 如果 heartbeat 进度从一层切到另一层，Kernel 会生成 repo 内 `progress.notification`，并把真实 delivery 结果回写给 dashboard/API；`pending` 是待发，`sent` 才是已送达。
 - Direct GUI brief ACK keeps Antigravity as `candidate`; it does not prove active employee readiness.
 - Active status is forbidden until `employee verify-direct` completes 2-4 rounds with receipt and the runtime has a real implementation/blocker evidence return path.
 - If Antigravity cannot actually inspect the GUI pages and return implementation evidence, it must stay `candidate` and must not receive autonomous tasks.
