@@ -1789,6 +1789,67 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertGreaterEqual(payload["counts"]["failed"], 1)
         self.assertEqual("failed", payload["items"][0]["delivery_status"])
 
+    def test_supervisor_loop_scans_delivery_and_marks_retry_ready(self) -> None:
+        code, created = run_cli("employee", "create", "--id", "codex-supervisor-loop", "--name", "codex-supervisor-loop", "--role", "engineer", "--runtime", "codex", "--workspace", str(self.root / "workspace" / "codex-supervisor-loop"))
+        self.assertEqual(0, code, created)
+
+        conn = companyctl.connect()
+        try:
+            conn.execute("UPDATE employees SET status = 'active', updated_at = ? WHERE id = ?", (companyctl.now(), "codex-supervisor-loop"))
+            companyctl.heartbeat_internal(conn, "codex-supervisor-loop", {"source": "unit-test", "progress": {"state": "actively_progressing", "summary": "处理中"}})
+            companyctl.heartbeat_internal(conn, "codex-supervisor-loop", {"source": "unit-test", "progress": {"state": "verified_complete", "summary": "已完成"}})
+            result = companyctl.run_supervisor_delivery_loop(conn, limit=10)
+            items = companyctl.list_progress_notifications(conn, limit=10)
+        finally:
+            conn.close()
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(1, result["counts"]["scanned"])
+        self.assertEqual(1, result["counts"]["failed"])
+        self.assertEqual(1, result["counts"]["retry_ready"])
+        self.assertEqual(0, result["counts"]["escalate_ready"])
+        self.assertEqual("failed", items[0]["delivery_status"])
+        self.assertEqual("retry_ready", items[0]["supervisor_decision"])
+
+    def test_supervisor_loop_marks_escalate_ready_after_retry_threshold(self) -> None:
+        code, created = run_cli("employee", "create", "--id", "codex-supervisor-escalate", "--name", "codex-supervisor-escalate", "--role", "engineer", "--runtime", "codex", "--workspace", str(self.root / "workspace" / "codex-supervisor-escalate"))
+        self.assertEqual(0, code, created)
+
+        conn = companyctl.connect()
+        try:
+            conn.execute("UPDATE employees SET status = 'active', updated_at = ? WHERE id = ?", (companyctl.now(), "codex-supervisor-escalate"))
+            companyctl.heartbeat_internal(conn, "codex-supervisor-escalate", {"source": "unit-test", "progress": {"state": "actively_progressing", "summary": "处理中"}})
+            companyctl.heartbeat_internal(conn, "codex-supervisor-escalate", {"source": "unit-test", "progress": {"state": "verified_complete", "summary": "已完成"}})
+            first = companyctl.run_supervisor_delivery_loop(conn, limit=10)
+            second = companyctl.run_supervisor_delivery_loop(conn, limit=10)
+            items = companyctl.list_progress_notifications(conn, limit=10)
+        finally:
+            conn.close()
+
+        self.assertEqual(1, first["counts"]["retry_ready"])
+        self.assertEqual(1, second["counts"]["escalate_ready"])
+        self.assertEqual("escalate_ready", items[0]["supervisor_decision"])
+        self.assertGreaterEqual(int(items[0]["supervisor_attempts"]), 2)
+
+    def test_api_gateway_can_trigger_supervisor_loop(self) -> None:
+        code, created = run_cli("employee", "create", "--id", "codex-supervisor-api", "--name", "codex-supervisor-api", "--role", "engineer", "--runtime", "codex", "--workspace", str(self.root / "workspace" / "codex-supervisor-api"))
+        self.assertEqual(0, code, created)
+
+        conn = companyctl.connect()
+        try:
+            conn.execute("UPDATE employees SET status = 'active', updated_at = ? WHERE id = ?", (companyctl.now(), "codex-supervisor-api"))
+            companyctl.heartbeat_internal(conn, "codex-supervisor-api", {"source": "unit-test", "progress": {"state": "actively_progressing", "summary": "处理中"}})
+            companyctl.heartbeat_internal(conn, "codex-supervisor-api", {"source": "unit-test", "progress": {"state": "verified_complete", "summary": "已完成"}})
+        finally:
+            conn.close()
+
+        status, payload = api_gateway.route_post("/v1/supervisor/delivery-loop", {"limit": 10})
+        self.assertEqual(200, status, payload)
+        self.assertTrue(payload["ok"])
+        self.assertEqual(1, payload["counts"]["scanned"])
+        self.assertIn("latest_result", payload)
+        self.assertEqual(1, payload["latest_result"]["counts"]["retry_ready"])
+
     def test_external_mirror_import_rejects_tokens_and_exposes_readonly_api(self) -> None:
         secret_payload = {
             "thread": {"id": "ext-secret", "platform": "telegram", "owner_agent": "hermes"},
@@ -3475,6 +3536,28 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertIn("Dashboard should show this direct message", html)
         self.assertIn("tg-dashboard-observability", html)
         self.assertIn("reports/dashboard-progress.json", html)
+
+    def test_advanced_dashboard_renders_supervisor_loop_panel(self) -> None:
+        code, created = run_cli("employee", "create", "--id", "codex-dashboard-supervisor", "--name", "codex-dashboard-supervisor", "--role", "engineer", "--runtime", "codex", "--workspace", str(self.root / "workspace" / "codex-dashboard-supervisor"))
+        self.assertEqual(0, code, created)
+
+        conn = companyctl.connect()
+        try:
+            conn.execute("UPDATE employees SET status = 'active', updated_at = ? WHERE id = ?", (companyctl.now(), "codex-dashboard-supervisor"))
+            companyctl.heartbeat_internal(conn, "codex-dashboard-supervisor", {"source": "unit-test", "progress": {"state": "actively_progressing", "summary": "处理中"}})
+            companyctl.heartbeat_internal(conn, "codex-dashboard-supervisor", {"source": "unit-test", "progress": {"state": "verified_complete", "summary": "已完成"}})
+            companyctl.run_supervisor_delivery_loop(conn, limit=10, actor="hermes")
+        finally:
+            conn.close()
+
+        output = self.root / "state" / "dashboard-supervisor-loop.html"
+        with contextlib.redirect_stdout(io.StringIO()):
+            code = company_dashboard.main(["--output", str(output), "--variant", "advanced"])
+        self.assertEqual(0, code)
+        html = output.read_text(encoding="utf-8")
+        self.assertIn("Autonomous Supervisor Loop", html)
+        self.assertIn("latest supervisor loop result", html)
+        self.assertIn("retry_ready", html)
 
     def test_api_gateway_exposes_project_governance(self) -> None:
         status, project = api_gateway.route_post(
