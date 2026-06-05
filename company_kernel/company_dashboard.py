@@ -731,8 +731,13 @@ def communication_observability_summary(summary: dict) -> dict:
                 "delivered_at": item.get("delivered_at", ""),
                 "created_at": item.get("created_at", ""),
                 "pending": bool(item.get("pending")),
+                "supervisor_decision": item.get("supervisor_decision", ""),
+                "supervisor_attempts": item.get("supervisor_attempts", 0),
+                "supervisor_summary": item.get("supervisor_summary", ""),
             }
         )
+
+    supervisor_loop = summary.get("supervisor_loop", {}) if isinstance(summary.get("supervisor_loop", {}), dict) else {}
 
     return {
         "generated_at": summary.get("generated_at", ""),
@@ -754,6 +759,10 @@ def communication_observability_summary(summary: dict) -> dict:
         "progress_notifications": {
             "counts": {"total": len(summary.get("progress_notifications_recent", [])), "pending": pending_count, "sent": sent_count, "skipped": skipped_count, "failed": failed_count, "shown": len(progress_items)},
             "items": progress_items,
+        },
+        "supervisor_loop": {
+            "latest_result": supervisor_loop,
+            "counts": supervisor_loop.get("counts", {}) if isinstance(supervisor_loop, dict) else {},
         },
         "internal_watchdog": summary.get("internal_watchdog", {"counts": {}, "no_receipt_messages": [], "open_tasks": []}),
     }
@@ -857,6 +866,7 @@ def load_summary(conn: sqlite3.Connection) -> dict:
         "rfc_status": status_counts(conn, "rfcs"),
         "direct_messages_recent": direct_messages_recent,
         "progress_notifications_recent": companyctl.list_progress_notifications(conn, limit=20),
+        "supervisor_loop": companyctl.load_latest_supervisor_loop_result(),
         "internal_watchdog": internal_communication_watchdog(conn, generated_at=generated_at, limit=20),
         "external_threads": rows(conn, "SELECT * FROM external_threads ORDER BY last_message_at DESC, updated_at DESC LIMIT 20"),
         "external_messages_recent": rows(conn, "SELECT * FROM external_messages ORDER BY created_at DESC, id DESC LIMIT 20"),

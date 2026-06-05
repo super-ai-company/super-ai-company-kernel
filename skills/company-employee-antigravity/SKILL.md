@@ -86,6 +86,7 @@ Company Kernel usage rule: first use `agy --print` and/or an interactive `agy` s
   `received`, `working`, `waiting`, `blocked`, `done`
   with preferred state names `acknowledged`, `actively_progressing`, `blocked_on_input_or_dependency`, `failed_to_progress`, `verified_complete`.
 - 如果 heartbeat 进度从一层切到另一层，Kernel 会生成 repo 内 `progress.notification`，并把真实 delivery 结果回写给 dashboard/API；`pending` 是待发，`sent` 才是已送达。
+- 如果通知投递失败，supervisor loop 会把它记成 `retry_ready` 或 `escalate_ready`；这表示通知链路要补救，不代表 GUI 工作已经验收失败。
 - Direct GUI brief ACK keeps Antigravity as `candidate`; it does not prove active employee readiness.
 - Active status is forbidden until `employee verify-direct` completes 2-4 rounds with receipt and the runtime has a real implementation/blocker evidence return path.
 - If Antigravity cannot actually inspect the GUI pages and return implementation evidence, it must stay `candidate` and must not receive autonomous tasks.

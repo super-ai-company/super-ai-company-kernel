@@ -45,6 +45,7 @@ After scan/apply, Codex must run or output the 2-4 round handshake plan as the i
 - Required progress protocol layers are `received`, `working`, `waiting`, `blocked`, and `done`.
 - Preferred states are `acknowledged`, `actively_progressing`, `blocked_on_input_or_dependency`, `failed_to_progress`, and `verified_complete`.
 - 当 heartbeat 让 layer/state 变化时，Codex 侧结果会被 Kernel 记录成 `progress.notification`，并由 repo 内 delivery 闭环回写 `pending/sent/skipped/failed`；不要把 `pending` 当成已送达。
+- 如果 supervisor loop 把该通知标成 `retry_ready` 或 `escalate_ready`，说明是通知闭环问题，不等于 Codex 已完成或失败；仍要看最终 `done|blocked` receipt。
 - A valid execution smoke must produce both:
   - source inbox message containing `status: working`;
   - final receipt containing `status: done` or `status: blocked`.

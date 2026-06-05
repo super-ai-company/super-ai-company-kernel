@@ -4194,6 +4194,7 @@
     const mirror = observability.external_mirror || {counts: {}, threads: []};
     const adapter = observability.adapter_runs || {counts: {}, items: []};
     const progressNotifications = observability.progress_notifications || {counts: {}, items: []};
+    const supervisorLoop = observability.supervisor_loop || {counts: {}, latest_result: {}};
     const watchdog = observability.internal_watchdog || {counts: {}, no_receipt_messages: [], open_tasks: []};
 
     const directItems = (direct.items || []).map(item => `
@@ -4248,6 +4249,8 @@
         <div class="observability-meta">
           <span>reason=${escapeHtml(item.reason || '-')}</span>
           <span>state=${escapeHtml(item.from_state || '?')} → ${escapeHtml(item.to_state || '?')}</span>
+          <span>decision=${escapeHtml(item.supervisor_decision || '-')}</span>
+          <span>attempts=${escapeHtml(item.supervisor_attempts ?? 0)}</span>
           <span>delivered=${formatDate(item.delivered_at || '')}</span>
           <span>${escapeHtml(item.delivery_error || '-')}</span>
           <span>created=${formatDate(item.created_at)}</span>
@@ -4339,6 +4342,34 @@
           <span class="observability-chip warn">failed ${escapeHtml(progressNotifications.counts && progressNotifications.counts.failed || 0)}</span>
         </div>
         <div class="observability-list">${progressItems}</div>
+      </div>
+      <div class="observability-panel">
+        <div class="observability-header">
+          <div>
+            <div class="observability-title">Autonomous Supervisor Loop</div>
+            <div class="observability-subtitle">主动轮询 progress 通知，并给出重试或升级决策。</div>
+          </div>
+        </div>
+        <div class="observability-statline">
+          <span class="observability-chip">scanned ${escapeHtml(supervisorLoop.counts && supervisorLoop.counts.scanned || 0)}</span>
+          <span class="observability-chip good">sent ${escapeHtml(supervisorLoop.counts && supervisorLoop.counts.sent || 0)}</span>
+          <span class="observability-chip warn">failed ${escapeHtml(supervisorLoop.counts && supervisorLoop.counts.failed || 0)}</span>
+          <span class="observability-chip">retry ${escapeHtml(supervisorLoop.counts && supervisorLoop.counts.retry_ready || 0)}</span>
+          <span class="observability-chip warn">escalate ${escapeHtml(supervisorLoop.counts && supervisorLoop.counts.escalate_ready || 0)}</span>
+        </div>
+        <div class="observability-list">
+          <div class="observability-item">
+            <div class="observability-item-top">
+              <div class="observability-route">latest supervisor loop result</div>
+              <span class="observability-chip">${formatDate(supervisorLoop.latest_result && supervisorLoop.latest_result.completed_at || '')}</span>
+            </div>
+            <div class="observability-body">${escapeHtml(supervisorLoop.latest_result && supervisorLoop.latest_result.actor || 'supervisor-loop')}</div>
+            <div class="observability-meta">
+              <span>retry_ready=${escapeHtml(supervisorLoop.counts && supervisorLoop.counts.retry_ready || 0)}</span>
+              <span>escalate_ready=${escapeHtml(supervisorLoop.counts && supervisorLoop.counts.escalate_ready || 0)}</span>
+            </div>
+          </div>
+        </div>
       </div>
       <div class="observability-panel">
         <div class="observability-header">

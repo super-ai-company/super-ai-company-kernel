@@ -50,6 +50,8 @@ API_ENDPOINTS = [
     {"method": "POST", "path": "/v1/settings/notification", "summary": "Configure employee notification account without storing tokens", "body": {"telegram_account": "account id", "telegram_bot_token_env": "environment variable name containing token", "telegram_default_target": "chat/user target optional", "employee_notifications_enabled": "bool optional"}},
     {"method": "POST", "path": "/v1/notifications/send", "summary": "Send configured operator notification without exposing secrets", "body": {"message": "string required", "kind": "general/approval/error optional", "subject": "string optional", "target": "telegram target optional", "account": "account optional", "dry_run": "bool optional"}},
     {"method": "GET", "path": "/v1/progress/notifications", "summary": "Read pending or recent progress transition notifications", "query": {"pending_only": "bool optional", "limit": "integer optional"}},
+    {"method": "GET", "path": "/v1/supervisor/delivery-loop", "summary": "Read latest autonomous supervisor delivery-loop result"},
+    {"method": "POST", "path": "/v1/supervisor/delivery-loop", "summary": "Run autonomous supervisor delivery-loop once", "body": {"limit": "integer optional", "by": "actor optional"}},
     {"method": "POST", "path": "/v1/policy-blocks/report", "summary": "Report non-popup tool-policy blockers and notify operator", "body": {"source": "employee optional", "target": "employee optional", "tool": "tool name optional", "operation": "operation optional", "error": "error text required", "dry_run": "bool optional"}},
     {"method": "GET", "path": "/v1/runtimes", "summary": "List runtimes"},
     {"method": "POST", "path": "/v1/runtimes", "summary": "Register runtime", "body": {"runtime": "runtime id", "command": "command optional", "status": "registered/disabled optional", "notes": "string optional"}},
@@ -297,6 +299,9 @@ def route_get(path: str, query: dict[str, list[str]]) -> tuple[int, dict]:
             }
         finally:
             conn.close()
+    if path == "/v1/supervisor/delivery-loop":
+        latest = companyctl.load_latest_supervisor_loop_result()
+        return HTTPStatus.OK, {"ok": True, "latest_result": latest}
     if path == "/v1/dashboard/internal-watchdog":
         conn = companyctl.connect()
         try:
@@ -507,6 +512,14 @@ def route_post(path: str, body: dict) -> tuple[int, dict]:
             argv.append("--dry-run")
         code, payload = run_companyctl(argv)
         return (HTTPStatus.OK if code == 0 else HTTPStatus.BAD_REQUEST), {"exit_code": code, **payload}
+    if path == "/v1/supervisor/delivery-loop":
+        argv = ["supervisor", "delivery-loop"]
+        if body.get("limit") not in {None, ""}:
+            argv.extend(["--limit", str(body["limit"])])
+        if body.get("by"):
+            argv.extend(["--by", str(body["by"])])
+        code, payload = run_companyctl(argv)
+        return (HTTPStatus.OK if code == 0 else HTTPStatus.BAD_REQUEST), {"exit_code": code, **payload, "latest_result": payload}
     if path == "/v1/external-mirror/import":
         conn = companyctl.connect()
         try:

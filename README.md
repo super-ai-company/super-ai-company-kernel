@@ -111,7 +111,26 @@ Stable read paths:
 
 - `POST /v1/heartbeats`: persists the progress payload into heartbeat metadata.
 - `GET /v1/dashboard/communication-observability`: returns adapter-run `progress_layer/progress_state`.
+- `POST /v1/supervisor/delivery-loop`: runs one autonomous supervisor pass over pending progress notifications.
+- `GET /v1/supervisor/delivery-loop`: reads the latest supervisor loop result from `state/supervisor/latest_delivery_loop.json`.
 - dashboard employee/adapter views: show normalized progress layer/state from heartbeat or repo-local progress reports.
+
+Minimal autonomous supervisor loop:
+
+```bash
+python3 -m company_kernel.companyctl supervisor delivery-loop --limit 20
+curl -X POST http://127.0.0.1:8765/v1/supervisor/delivery-loop -H 'Content-Type: application/json' -d '{"limit":20}'
+curl http://127.0.0.1:8765/v1/supervisor/delivery-loop
+```
+
+Returned counts:
+
+- `scanned`
+- `sent`
+- `skipped`
+- `failed`
+- `retry_ready`
+- `escalate_ready`
 
 ## Sanitized External Mirror
 

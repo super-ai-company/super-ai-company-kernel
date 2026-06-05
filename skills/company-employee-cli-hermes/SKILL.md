@@ -153,3 +153,4 @@ When Hermes supervises progress, use the normalized 5-layer protocol in heartbea
 - `blocked` -> `blocked|failed_to_progress`
 - `done` -> `done|verified_complete|completed`
 - 只要 layer 变化，Hermes/Kernel 应能读到对应 `progress.notification` 记录，并看到真实 `delivery_status`（`pending/sent/skipped/failed`）；只有 `sent` 才能宣称已通知到人。
+- 当用户没有继续发消息时，优先跑 `bin/companyctl supervisor delivery-loop --limit 20` 或 `POST /v1/supervisor/delivery-loop` 主动扫一轮；最小决策只要求写出 `retry_ready` 或 `escalate_ready`。

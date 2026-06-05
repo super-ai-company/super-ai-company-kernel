@@ -35,6 +35,7 @@ POLICY_PATH = CONFIG_DIR / "policy.json"
 PROTECTED_PATHS_CONFIG = CONFIG_DIR / "protected_paths.json"
 APPROVAL_STATE_DIR = STATE_DIR / "approvals"
 FOLLOWUP_STATE_DIR = STATE_DIR / "followups"
+SUPERVISOR_STATE_DIR = STATE_DIR / "supervisor"
 SCHEMA = ROOT / "company_kernel" / "schema.sql"
 
 KNOWN_RUNTIMES = {
@@ -300,6 +301,75 @@ def deliver_pending_progress_notifications(conn: sqlite3.Connection, *, limit: i
         update_company_event_payload(conn, str(item.get("event_id", "") or ""), updated, processed=True)
         results.append(updated)
     return {"ok": True, "counts": counts, "items": results}
+
+
+def supervisor_loop_result_path() -> Path:
+    return SUPERVISOR_STATE_DIR / "latest_delivery_loop.json"
+
+
+def load_latest_supervisor_loop_result() -> dict:
+    return load_json_or_default(supervisor_loop_result_path(), {})
+
+
+def save_latest_supervisor_loop_result(result: dict) -> str:
+    path = supervisor_loop_result_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(result, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    return str(path)
+
+
+def supervisor_delivery_decision(item: dict, *, escalate_after_attempts: int = 2) -> tuple[str, int]:
+    attempts = int(item.get("supervisor_attempts", 0) or 0) + 1
+    if attempts >= escalate_after_attempts:
+        return "escalate_ready", attempts
+    return "retry_ready", attempts
+
+
+def run_supervisor_delivery_loop(conn: sqlite3.Connection, *, limit: int = 20, actor: str = "supervisor-loop") -> dict:
+    started_at = now()
+    pending_before = list_progress_notifications(conn, pending_only=True, limit=limit)
+    delivery = deliver_pending_progress_notifications(conn, limit=limit)
+    candidate_items: list[dict] = list(delivery.get("items", []))
+    if not candidate_items:
+        candidate_items = [
+            item
+            for item in list_progress_notifications(conn, pending_only=False, limit=limit)
+            if str(item.get("delivery_status", "") or "") == "failed"
+            and str(item.get("supervisor_decision", "") or "") != "escalate_ready"
+        ]
+    counts = {
+        "scanned": len(candidate_items) if candidate_items else len(pending_before),
+        "sent": int(delivery.get("counts", {}).get("sent", 0) or 0),
+        "skipped": int(delivery.get("counts", {}).get("skipped", 0) or 0),
+        "failed": 0,
+        "retry_ready": 0,
+        "escalate_ready": 0,
+    }
+    updated_items: list[dict] = []
+    for item in candidate_items:
+        if str(item.get("delivery_status", "") or "") != "failed":
+            updated_items.append(item)
+            continue
+        counts["failed"] += 1
+        decision, attempts = supervisor_delivery_decision(item)
+        updated = dict(item)
+        updated["supervisor_checked_at"] = now()
+        updated["supervisor_decision"] = decision
+        updated["supervisor_attempts"] = attempts
+        updated["supervisor_summary"] = "待重试" if decision == "retry_ready" else "待升级"
+        update_company_event_payload(conn, str(item.get("event_id", "") or ""), updated, processed=not bool(updated.get("pending")))
+        counts[decision] += 1
+        updated_items.append(updated)
+    result = {
+        "ok": True,
+        "started_at": started_at,
+        "completed_at": now(),
+        "actor": actor,
+        "counts": counts,
+        "items": updated_items,
+    }
+    result["file"] = save_latest_supervisor_loop_result(result)
+    return result
 
 
 def parse_time(value: str) -> datetime:
@@ -2907,6 +2977,16 @@ def cmd_notification_send(args: argparse.Namespace) -> int:
         kind=args.kind,
         dry_run=args.dry_run,
     )
+    emit(result)
+    return 0 if result.get("ok") else 1
+
+
+def cmd_supervisor_delivery_loop(args: argparse.Namespace) -> int:
+    conn = connect()
+    try:
+        result = run_supervisor_delivery_loop(conn, limit=args.limit, actor=args.by)
+    finally:
+        conn.close()
     emit(result)
     return 0 if result.get("ok") else 1
 
@@ -5899,6 +5979,13 @@ def build_parser() -> argparse.ArgumentParser:
     notification_send.add_argument("--kind", choices=["general", "approval", "error"], default="general")
     notification_send.add_argument("--dry-run", action="store_true")
     notification_send.set_defaults(func=cmd_notification_send)
+
+    supervisor = sub.add_parser("supervisor")
+    supervisor_sub = supervisor.add_subparsers(dest="supervisor_cmd", required=True)
+    supervisor_loop = supervisor_sub.add_parser("delivery-loop")
+    supervisor_loop.add_argument("--limit", type=int, default=20)
+    supervisor_loop.add_argument("--by", default="supervisor-loop")
+    supervisor_loop.set_defaults(func=cmd_supervisor_delivery_loop)
 
     policy = sub.add_parser("policy")
     policy_sub = policy.add_subparsers(dest="policy_cmd", required=True)

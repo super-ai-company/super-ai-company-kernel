@@ -84,6 +84,7 @@ Preferred 5-layer progress protocol for supervisor heartbeat/API:
 - `blocked` -> `blocked|failed_to_progress`
 - `done` -> `done|verified_complete|completed`
 - 如果 heartbeat 让 layer/state 发生变化，Kernel 应生成 repo 内 `progress.notification` 记录，并在 delivery 闭环后回写 `delivery_status/delivery_error/delivered_at`；只有 `sent` 才代表真的发给了 Shift。
+- 如果没有新的用户催促，也要允许 supervisor loop 主动扫 `progress.notification`；第一次失败可记 `retry_ready`，连续失败再记 `escalate_ready`。
 
 ## Minimum Agent-to-Agent Task Envelope
 
