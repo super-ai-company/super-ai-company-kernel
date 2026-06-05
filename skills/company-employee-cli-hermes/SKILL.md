@@ -144,3 +144,12 @@ Root causes:
 Preventive rule:
 
 A worker is not controllable until it completes 2-4 direct rounds with sender-visible receipts and, for execution tasks, writes repo-local progress evidence plus a final `done` or `blocked` receipt.
+
+When Hermes supervises progress, use the normalized 5-layer protocol in heartbeat/progress artifacts:
+
+- `received` -> `received|acknowledged|claimed`
+- `working` -> `working|in_progress|actively_progressing`
+- `waiting` -> `waiting|blocked_on_input_or_dependency`
+- `blocked` -> `blocked|failed_to_progress`
+- `done` -> `done|verified_complete|completed`
+- 只要 layer 变化，Hermes/Kernel 应能读到对应 `progress.notification` 记录，并看到真实 `delivery_status`（`pending/sent/skipped/failed`）；只有 `sent` 才能宣称已通知到人。

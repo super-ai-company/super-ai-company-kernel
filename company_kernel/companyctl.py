@@ -65,6 +65,243 @@ def now() -> str:
     return datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
 
 
+PROGRESS_LAYER_DEFINITIONS = {
+    "received": {
+        "states": {"received", "acknowledged", "ack", "claimed"},
+        "label": "acknowledged",
+    },
+    "working": {
+        "states": {"working", "in_progress", "actively_progressing", "active", "running"},
+        "label": "actively_progressing",
+    },
+    "waiting": {
+        "states": {"waiting", "blocked_on_input_or_dependency", "awaiting_input", "awaiting_dependency", "pending_input"},
+        "label": "blocked_on_input_or_dependency",
+    },
+    "blocked": {
+        "states": {"blocked", "failed_to_progress", "error", "stalled", "failed"},
+        "label": "failed_to_progress",
+    },
+    "done": {
+        "states": {"done", "verified_complete", "completed", "complete", "success"},
+        "label": "verified_complete",
+    },
+}
+
+PROGRESS_TRANSITION_MESSAGES = {
+    ("received", "working"): "已开始处理",
+    ("working", "waiting"): "需要等待",
+    ("waiting", "blocked"): "已卡住",
+    ("working", "done"): "已完成",
+}
+
+
+def normalize_progress_state(state: str, *, summary: str = "") -> dict[str, str]:
+    raw_state = str(state or "").strip()
+    normalized = raw_state.lower().replace("-", "_").replace(" ", "_")
+    for layer, config in PROGRESS_LAYER_DEFINITIONS.items():
+        if normalized in config["states"]:
+            return {
+                "layer": layer,
+                "state": normalized,
+                "label": str(config["label"]),
+                "summary": str(summary or ""),
+            }
+    return {
+        "layer": "",
+        "state": normalized,
+        "label": "",
+        "summary": str(summary or ""),
+    }
+
+
+def extract_progress_payload(payload: object) -> dict[str, str]:
+    if isinstance(payload, dict):
+        nested = payload.get("progress")
+        if isinstance(nested, dict):
+            state = str(nested.get("state") or nested.get("status") or "")
+            summary = str(nested.get("summary") or nested.get("message") or payload.get("summary") or "")
+            return normalize_progress_state(state, summary=summary)
+        state = str(payload.get("state") or payload.get("status") or "")
+        summary = str(payload.get("summary") or payload.get("message") or "")
+        if state:
+            return normalize_progress_state(state, summary=summary)
+    if isinstance(payload, str):
+        return normalize_progress_state(payload)
+    return normalize_progress_state("")
+
+
+def progress_notification_message(agent: str, from_progress: dict[str, str], to_progress: dict[str, str]) -> str:
+    action = PROGRESS_TRANSITION_MESSAGES.get((from_progress.get("layer", ""), to_progress.get("layer", "")))
+    summary = str(to_progress.get("summary", "") or "").strip()
+    if action and summary:
+        return f"{agent} {action}：{summary}"
+    if action:
+        return f"{agent} {action}"
+    if summary:
+        return f"{agent} 进度变更：{summary}"
+    return f"{agent} 进度从 {from_progress.get('layer', 'unknown')} 变为 {to_progress.get('layer', 'unknown')}"
+
+
+def progress_notification_decision(agent: str, from_progress: dict[str, str], to_progress: dict[str, str], *, source: str = "heartbeat") -> dict:
+    return {
+        "kind": "progress_transition",
+        "trigger": source,
+        "triggered_by": agent,
+        "from_layer": from_progress.get("layer", ""),
+        "from_state": from_progress.get("state", ""),
+        "to_layer": to_progress.get("layer", ""),
+        "to_state": to_progress.get("state", ""),
+        "should_notify_user": True,
+        "reason": f"progress layer changed from {from_progress.get('layer', '')} to {to_progress.get('layer', '')}",
+        "message": progress_notification_message(agent, from_progress, to_progress),
+        "summary": to_progress.get("summary", ""),
+    }
+
+
+def progress_notification_fingerprint(agent: str, from_progress: dict[str, str], to_progress: dict[str, str], *, task_id: str = "") -> str:
+    parts = [
+        str(agent or "").strip(),
+        str(task_id or "").strip(),
+        str(from_progress.get("layer", "") or "").strip(),
+        str(to_progress.get("layer", "") or "").strip(),
+    ]
+    return "|".join(parts)
+
+
+def has_progress_notification_fingerprint(conn: sqlite3.Connection, fingerprint: str) -> bool:
+    if not fingerprint:
+        return False
+    for row in rows(
+        conn,
+        "SELECT payload_json FROM company_events WHERE event_type = 'progress.notification' ORDER BY created_at DESC LIMIT 200",
+    ):
+        try:
+            payload = json.loads(row.get("payload_json", "{}") or "{}")
+        except json.JSONDecodeError:
+            payload = {}
+        if isinstance(payload, dict) and str(payload.get("fingerprint", "") or "") == fingerprint:
+            return True
+    return False
+
+
+def maybe_record_progress_transition(conn: sqlite3.Connection, agent: str, previous_progress: dict[str, str], current_progress: dict[str, str], *, task_id: str = "", trace_id: str = "", source: str = "heartbeat") -> dict:
+    previous_layer = previous_progress.get("layer", "")
+    current_layer = current_progress.get("layer", "")
+    if not previous_layer or not current_layer:
+        return {"triggered": False}
+    if previous_layer == current_layer and previous_progress.get("state", "") == current_progress.get("state", ""):
+        return {"triggered": False}
+    decision = progress_notification_decision(agent, previous_progress, current_progress, source=source)
+    fingerprint = progress_notification_fingerprint(agent, previous_progress, current_progress, task_id=task_id)
+    if has_progress_notification_fingerprint(conn, fingerprint):
+        return {"triggered": False, "duplicate": True, "fingerprint": fingerprint}
+    queue_item = {
+        "kind": decision["kind"],
+        "agent_id": agent,
+        "task_id": task_id,
+        "trace_id": trace_id,
+        "trigger": source,
+        "triggered_at": now(),
+        "triggered_by": agent,
+        "from_layer": decision["from_layer"],
+        "from_state": decision["from_state"],
+        "to_layer": decision["to_layer"],
+        "to_state": decision["to_state"],
+        "message": decision["message"],
+        "summary": decision["summary"],
+        "reason": decision["reason"],
+        "delivery_status": "pending",
+        "channel": "repo-only",
+        "account": "",
+        "target": "",
+        "fingerprint": fingerprint,
+    }
+    event = record_event(conn, "progress.notification", agent, task_id=task_id, payload=queue_item, trace_id=trace_id)
+    return {
+        "triggered": True,
+        **queue_item,
+        "event_id": event["id"],
+    }
+
+
+def list_progress_notifications(conn: sqlite3.Connection, *, pending_only: bool = False, limit: int = 20) -> list[dict]:
+    where = ["event_type = 'progress.notification'"]
+    if pending_only:
+        where.append("processed_at = ''")
+    rows_out = rows(conn, f"SELECT * FROM company_events WHERE {' AND '.join(where)} ORDER BY created_at DESC LIMIT ?", (limit,))
+    items: list[dict] = []
+    for row in rows_out:
+        try:
+            payload = json.loads(row.get("payload_json", "{}") or "{}")
+        except json.JSONDecodeError:
+            payload = {}
+        if not isinstance(payload, dict):
+            payload = {}
+        items.append(
+            {
+                **payload,
+                "event_id": row.get("id", ""),
+                "created_at": row.get("created_at", ""),
+                "processed_at": row.get("processed_at", ""),
+                "pending": not bool(row.get("processed_at", "")),
+                "trace_id": row.get("trace_id", ""),
+                "source_agent": row.get("source_agent", ""),
+            }
+        )
+    return items
+
+
+def update_company_event_payload(conn: sqlite3.Connection, event_id: str, payload: dict, *, processed: bool = False) -> None:
+    if processed:
+        conn.execute(
+            "UPDATE company_events SET payload_json = ?, processed_at = ? WHERE id = ?",
+            (json.dumps(payload, ensure_ascii=False), now(), event_id),
+        )
+    else:
+        conn.execute(
+            "UPDATE company_events SET payload_json = ? WHERE id = ?",
+            (json.dumps(payload, ensure_ascii=False), event_id),
+        )
+    conn.commit()
+
+
+def progress_notification_delivery_enabled() -> bool:
+    settings = notification_settings()
+    employee_notifications = settings.get("employee_notifications", {})
+    return bool(employee_notifications.get("enabled"))
+
+
+def deliver_pending_progress_notifications(conn: sqlite3.Connection, *, limit: int = 20) -> dict:
+    pending = list_progress_notifications(conn, pending_only=True, limit=limit)
+    results: list[dict] = []
+    counts = {"pending": len(pending), "sent": 0, "skipped": 0, "failed": 0}
+    for item in pending:
+        message = str(item.get("message", "") or "").strip()
+        result = notification_send_result(message=message, kind="general")
+        updated = dict(item)
+        updated["delivery_attempted_at"] = now()
+        updated["account"] = str(result.get("account", updated.get("account", "")) or "")
+        updated["target"] = str(result.get("target", updated.get("target", "")) or "")
+        updated["channel"] = str(result.get("platform", updated.get("channel", "")) or updated.get("channel", ""))
+        updated["delivery_result"] = result
+        updated["delivery_error"] = str(result.get("error", "") or result.get("reason", "") or "")
+        if result.get("ok") and not result.get("skipped"):
+            updated["delivery_status"] = "sent"
+            updated["delivered_at"] = now()
+            counts["sent"] += 1
+        elif result.get("skipped"):
+            updated["delivery_status"] = "skipped"
+            updated["delivered_at"] = now()
+            counts["skipped"] += 1
+        else:
+            updated["delivery_status"] = "failed"
+            counts["failed"] += 1
+        update_company_event_payload(conn, str(item.get("event_id", "") or ""), updated, processed=True)
+        results.append(updated)
+    return {"ok": True, "counts": counts, "items": results}
+
+
 def parse_time(value: str) -> datetime:
     raw = value.replace("Z", "+00:00")
     return datetime.fromisoformat(raw)
@@ -4618,7 +4855,24 @@ def heartbeat_internal(conn: sqlite3.Connection, agent: str, metadata: dict | No
     emp = conn.execute("SELECT * FROM employees WHERE id = ?", (agent,)).fetchone()
     runtime = emp["runtime"] if emp else ""
     workspace = emp["workspace"] if emp else ""
+    previous_row = conn.execute("SELECT metadata_json FROM heartbeats WHERE agent_id = ?", (agent,)).fetchone()
+    previous_metadata: dict[str, object] = {}
+    if previous_row:
+        try:
+            previous_metadata = json.loads(previous_row["metadata_json"] or "{}")
+        except json.JSONDecodeError:
+            previous_metadata = {}
+    previous_progress = extract_progress_payload(previous_metadata)
     ts = now()
+    metadata_payload = dict(metadata or {"source": "companyctl"})
+    progress = extract_progress_payload(metadata_payload)
+    if progress.get("layer"):
+        metadata_payload["progress"] = {
+            "layer": progress["layer"],
+            "state": progress["state"],
+            "label": progress["label"],
+            "summary": progress["summary"],
+        }
     conn.execute(
         """
         INSERT INTO heartbeats(agent_id, runtime, workspace, status, last_seen_at, metadata_json)
@@ -4630,10 +4884,23 @@ def heartbeat_internal(conn: sqlite3.Connection, agent: str, metadata: dict | No
           last_seen_at = excluded.last_seen_at,
           metadata_json = excluded.metadata_json
         """,
-        (agent, runtime, workspace, ts, json.dumps(metadata or {"source": "companyctl"}, ensure_ascii=False)),
+        (agent, runtime, workspace, ts, json.dumps(metadata_payload, ensure_ascii=False)),
     )
     conn.commit()
     hb = {"agent_id": agent, "runtime": runtime, "workspace": workspace, "status": "alive", "last_seen_at": ts}
+    if progress.get("layer"):
+        hb["progress"] = progress
+    progress_notification = maybe_record_progress_transition(
+        conn,
+        agent,
+        previous_progress,
+        progress,
+        task_id=str(metadata_payload.get("task_id", "") or ""),
+        trace_id=str(metadata_payload.get("trace_id", "") or ""),
+        source=str(metadata_payload.get("source", "heartbeat") or "heartbeat"),
+    )
+    if progress_notification.get("triggered"):
+        hb["progress_notification"] = progress_notification
     if emp:
         p = employee_paths(agent)["heartbeat"]
         p.parent.mkdir(parents=True, exist_ok=True)
@@ -4853,6 +5120,7 @@ def summarize_adapter_result(result: dict) -> dict:
                             progress_state = str(report.get("state", ""))
             except (OSError, json.JSONDecodeError):
                 progress_report_error = "unreadable"
+        progress = normalize_progress_state(progress_state)
         runs.append(
             {
                 "index": run.get("index", ""),
@@ -4862,6 +5130,8 @@ def summarize_adapter_result(result: dict) -> dict:
                 "processed": parsed.get("processed", "") if isinstance(parsed, dict) else "",
                 "report": report_path,
                 "progress_state": progress_state,
+                "progress_layer": progress.get("layer", ""),
+                "progress_label": progress.get("label", ""),
                 "progress_task_id": progress_task_id,
                 "progress_report_error": progress_report_error,
             }

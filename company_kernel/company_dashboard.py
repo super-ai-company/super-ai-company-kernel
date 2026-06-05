@@ -622,6 +622,20 @@ def safe_repo_relative_path(value: str) -> str:
     return normalized
 
 
+def progress_from_report_path(report_path: str) -> dict[str, str]:
+    if not report_path:
+        return companyctl.extract_progress_payload({})
+    try:
+        resolved = Path(report_path).expanduser().resolve()
+        resolved.relative_to(ROOT.resolve(strict=False))
+        payload = json.loads(resolved.read_text(encoding="utf-8"))
+        if isinstance(payload, dict):
+            return companyctl.extract_progress_payload(payload.get("report", payload))
+    except (OSError, ValueError, json.JSONDecodeError):
+        return companyctl.extract_progress_payload({})
+    return companyctl.extract_progress_payload({})
+
+
 def communication_observability_summary(summary: dict) -> dict:
     direct_items = []
     for item in summary.get("direct_messages_recent", [])[:8]:
@@ -660,6 +674,8 @@ def communication_observability_summary(summary: dict) -> dict:
         parsed_runs = result.get("runs", []) if isinstance(result, dict) else []
         first_parsed = parsed_runs[0] if parsed_runs and isinstance(parsed_runs[0], dict) else {}
         parsed_stdout = first_parsed.get("parsed_stdout", {}) if isinstance(first_parsed, dict) else {}
+        report_path = str(parsed_stdout.get("report", "")) if isinstance(parsed_stdout, dict) else ""
+        progress = progress_from_report_path(report_path)
         if run.get("ok"):
             ok_count += 1
         else:
@@ -677,7 +693,44 @@ def communication_observability_summary(summary: dict) -> dict:
                 "next_retry_at": run.get("next_retry_at", ""),
                 "state_file": safe_repo_relative_path(result.get("state_file", "") if isinstance(result, dict) else ""),
                 "progress_file": safe_repo_relative_path(parsed_stdout.get("progress_file", "") if isinstance(parsed_stdout, dict) else ""),
+                "progress_layer": progress.get("layer", ""),
+                "progress_state": progress.get("state", ""),
+                "progress_label": progress.get("label", ""),
                 "summary": parsed_stdout.get("summary", "") if isinstance(parsed_stdout, dict) else "",
+            }
+        )
+
+    progress_items = []
+    pending_count = 0
+    sent_count = 0
+    skipped_count = 0
+    failed_count = 0
+    recent_progress = summary.get("progress_notifications_recent", [])[:8]
+    for item in recent_progress:
+        if item.get("pending"):
+            pending_count += 1
+        status = str(item.get("delivery_status", "") or "")
+        if status == "sent":
+            sent_count += 1
+        elif status == "skipped":
+            skipped_count += 1
+        elif status == "failed":
+            failed_count += 1
+        progress_items.append(
+            {
+                "event_id": item.get("event_id", ""),
+                "agent_id": item.get("agent_id", ""),
+                "from_layer": item.get("from_layer", ""),
+                "from_state": item.get("from_state", ""),
+                "to_layer": item.get("to_layer", ""),
+                "to_state": item.get("to_state", ""),
+                "message": item.get("message", ""),
+                "reason": item.get("reason", ""),
+                "delivery_status": item.get("delivery_status", ""),
+                "delivery_error": item.get("delivery_error", ""),
+                "delivered_at": item.get("delivered_at", ""),
+                "created_at": item.get("created_at", ""),
+                "pending": bool(item.get("pending")),
             }
         )
 
@@ -697,6 +750,10 @@ def communication_observability_summary(summary: dict) -> dict:
         "adapter_runs": {
             "counts": {"total": len(summary.get("adapter_runs", [])), "shown": len(adapter_items), "ok": ok_count, "failed": failed_count},
             "items": adapter_items,
+        },
+        "progress_notifications": {
+            "counts": {"total": len(summary.get("progress_notifications_recent", [])), "pending": pending_count, "sent": sent_count, "skipped": skipped_count, "failed": failed_count, "shown": len(progress_items)},
+            "items": progress_items,
         },
         "internal_watchdog": summary.get("internal_watchdog", {"counts": {}, "no_receipt_messages": [], "open_tasks": []}),
     }
@@ -731,6 +788,39 @@ def load_summary(conn: sqlite3.Connection) -> dict:
             """,
             (conversation["id"],),
         )
+    employee_rows = rows(
+        conn,
+        """
+        SELECT e.id, e.name, e.role, e.runtime, e.status AS employee_status, e.workspace,
+               COALESCE(h.status, 'missing') AS heartbeat_status,
+               COALESCE(h.last_seen_at, '') AS last_seen_at,
+               COALESCE(h.metadata_json, '{}') AS heartbeat_metadata_json,
+               COALESCE(
+                 (SELECT COUNT(*) FROM tasks t WHERE t.target_agent = e.id AND t.status = 'submitted'),
+                 0
+               ) AS submitted_tasks,
+               COALESCE(
+                 (SELECT COUNT(*) FROM tasks t WHERE t.target_agent = e.id AND t.status = 'claimed'),
+                 0
+               ) AS claimed_tasks
+        FROM employees e
+        LEFT JOIN heartbeats h ON h.agent_id = e.id
+        ORDER BY
+          CASE e.status WHEN 'active' THEN 0 WHEN 'candidate' THEN 1 ELSE 2 END,
+          e.id
+        """,
+    )
+    for employee in employee_rows:
+        try:
+            heartbeat_metadata = json.loads(employee.get("heartbeat_metadata_json", "{}") or "{}")
+        except json.JSONDecodeError:
+            heartbeat_metadata = {}
+        progress = companyctl.extract_progress_payload(heartbeat_metadata)
+        employee["progress_layer"] = progress.get("layer", "")
+        employee["progress_state"] = progress.get("state", "")
+        employee["progress_label"] = progress.get("label", "")
+        employee["progress_summary"] = progress.get("summary", "")
+
     return {
         "generated_at": generated_at,
         "runtime_health": {
@@ -766,31 +856,11 @@ def load_summary(conn: sqlite3.Connection) -> dict:
         "approval_status": status_counts(conn, "approvals"),
         "rfc_status": status_counts(conn, "rfcs"),
         "direct_messages_recent": direct_messages_recent,
+        "progress_notifications_recent": companyctl.list_progress_notifications(conn, limit=20),
         "internal_watchdog": internal_communication_watchdog(conn, generated_at=generated_at, limit=20),
         "external_threads": rows(conn, "SELECT * FROM external_threads ORDER BY last_message_at DESC, updated_at DESC LIMIT 20"),
         "external_messages_recent": rows(conn, "SELECT * FROM external_messages ORDER BY created_at DESC, id DESC LIMIT 20"),
-        "employees": rows(
-            conn,
-            """
-            SELECT e.id, e.name, e.role, e.runtime, e.status AS employee_status, e.workspace,
-                   COALESCE(h.status, 'missing') AS heartbeat_status,
-                   COALESCE(h.last_seen_at, '') AS last_seen_at,
-                   COALESCE(h.metadata_json, '{}') AS heartbeat_metadata_json,
-                   COALESCE(
-                     (SELECT COUNT(*) FROM tasks t WHERE t.target_agent = e.id AND t.status = 'submitted'),
-                     0
-                   ) AS submitted_tasks,
-                   COALESCE(
-                     (SELECT COUNT(*) FROM tasks t WHERE t.target_agent = e.id AND t.status = 'claimed'),
-                     0
-                   ) AS claimed_tasks
-            FROM employees e
-            LEFT JOIN heartbeats h ON h.agent_id = e.id
-            ORDER BY
-              CASE e.status WHEN 'active' THEN 0 WHEN 'candidate' THEN 1 ELSE 2 END,
-              e.id
-            """,
-        ),
+        "employees": employee_rows,
         "projects": rows(
             conn,
             """
@@ -883,8 +953,8 @@ def render_table(headers: list[str], items: list[dict], fields: list[str]) -> st
 
 
 def render_employee_table(items: list[dict]) -> str:
-    headers = ["id", "status", "kernel_state", "schedulable", "role", "runtime", "heartbeat", "age_min", "backlog", "skills", "tools", "task_types", "last_seen", "actions"]
-    fields = ["id", "employee_status", "kernel_state", "schedulable", "role", "runtime", "heartbeat_status", "heartbeat_age_minutes", "backlog", "skills", "tools", "task_types", "last_seen_at"]
+    headers = ["id", "status", "kernel_state", "progress", "schedulable", "role", "runtime", "heartbeat", "age_min", "backlog", "skills", "tools", "task_types", "last_seen", "actions"]
+    fields = ["id", "employee_status", "kernel_state", "progress_display", "schedulable", "role", "runtime", "heartbeat_status", "heartbeat_age_minutes", "backlog", "skills", "tools", "task_types", "last_seen_at"]
     head = "".join(f"<th>{e(header)}</th>" for header in headers)
     body = []
     for item in items:
@@ -913,6 +983,11 @@ def employee_view_models(summary: dict) -> list[dict]:
         tools = capabilities.get("tools", [])
         task_types = capabilities.get("preferred_task_types", [])
         communication_profile = communication_profiles.get(employee["id"], {})
+        try:
+            heartbeat_metadata = json.loads(employee.get("heartbeat_metadata_json", "{}") or "{}")
+        except json.JSONDecodeError:
+            heartbeat_metadata = {}
+        heartbeat_progress = companyctl.extract_progress_payload(heartbeat_metadata)
         age = minutes_since(employee.get("last_seen_at", ""), summary["generated_at"])
         employee_status = employee.get("employee_status") or employee.get("status", "")
         heartbeat_status = employee.get("heartbeat_status", "missing")
@@ -939,6 +1014,10 @@ def employee_view_models(summary: dict) -> list[dict]:
                 "communication_paused": bool(communication_profile.get("communication_paused")),
                 "communication_status": "paused" if communication_profile.get("communication_paused") else "enabled",
                 "backlog": f"{employee.get('submitted_tasks', 0)} submitted, {employee.get('claimed_tasks', 0)} claimed",
+                "progress_layer": heartbeat_progress.get("layer", ""),
+                "progress_state": heartbeat_progress.get("state", ""),
+                "progress_label": heartbeat_progress.get("label", ""),
+                "progress_display": f"{heartbeat_progress.get('layer', '')} / {heartbeat_progress.get('state', '')}".strip(" /") if heartbeat_progress.get("layer") or heartbeat_progress.get("state") else "",
                 "skills": ", ".join(str(item) for item in skills[:4]) if isinstance(skills, list) else "invalid",
                 "tools": ", ".join(str(item) for item in tools[:4]) if isinstance(tools, list) else "invalid",
                 "task_types": ", ".join(str(item) for item in task_types[:4]) if isinstance(task_types, list) else "invalid",
@@ -1062,7 +1141,21 @@ def render(summary: dict) -> str:
             result = json.loads(run.get("result_json", "{}") or "{}")
         except json.JSONDecodeError:
             result = {}
-        adapter_runs.append({**run, "ok_text": "yes" if run.get("ok") else "no", "state_file": result.get("state_file", "")})
+        progress = companyctl.extract_progress_payload({})
+        parsed_runs = result.get("runs", []) if isinstance(result, dict) else []
+        first_parsed = parsed_runs[0] if parsed_runs and isinstance(parsed_runs[0], dict) else {}
+        parsed_stdout = first_parsed.get("parsed_stdout", {}) if isinstance(first_parsed, dict) else {}
+        report_path = str(parsed_stdout.get("report", "")) if isinstance(parsed_stdout, dict) else ""
+        progress = progress_from_report_path(report_path)
+        adapter_runs.append(
+            {
+                **run,
+                "ok_text": "yes" if run.get("ok") else "no",
+                "state_file": result.get("state_file", ""),
+                "progress_layer": progress.get("layer", ""),
+                "progress_state": progress.get("state", ""),
+            }
+        )
     runtime_health = [
         {"name": "daemon", "path": summary["runtime_health"]["daemon"].get("state_file", ""), **summary["runtime_health"]["daemon"]},
         {"name": "launchd", "path": summary["runtime_health"]["launchd"].get("template", ""), **summary["runtime_health"]["launchd"]},
@@ -1208,7 +1301,7 @@ def render(summary: dict) -> str:
     <h2>Recent Events</h2>
     {render_table(["id", "trace", "type", "source", "task", "processed_at", "created"], summary["events"], ["id", "trace_id", "event_type", "source_agent", "task_id", "processed_at", "created_at"])}
     <h2>Adapter Runs</h2>
-    {render_table(["id", "trace", "agent", "task", "command", "ok", "processed", "attempt", "next_retry", "ack_by", "ack_reason", "state_file", "created"], adapter_runs, ["id", "trace_id", "agent_id", "task_id", "command", "ok_text", "processed", "attempt", "next_retry_at", "acknowledged_by", "acknowledgement_reason", "state_file", "created_at"])}
+    {render_table(["id", "trace", "agent", "task", "command", "ok", "progress_layer", "progress_state", "processed", "attempt", "next_retry", "ack_by", "ack_reason", "state_file", "created"], adapter_runs, ["id", "trace_id", "agent_id", "task_id", "command", "ok_text", "progress_layer", "progress_state", "processed", "attempt", "next_retry_at", "acknowledged_by", "acknowledgement_reason", "state_file", "created_at"])}
     <h2>Locks</h2>
     {render_table(["resource", "owner", "lease_until", "updated"], summary["locks"], ["resource_key", "owner_agent", "lease_until", "updated_at"])}
   </main>
