@@ -2228,6 +2228,165 @@ def write_task_collection_report(parent_task: dict, children: list[dict], collec
     return path
 
 
+
+def contains_forbidden_secret_key(value: object) -> bool:
+    forbidden = {"token", "bot_token", "telegram_bot_token", "secret", "password", "api_key", "authorization"}
+    if isinstance(value, dict):
+        for key, item in value.items():
+            lowered = str(key).lower()
+            if any(name in lowered for name in forbidden):
+                return True
+            if contains_forbidden_secret_key(item):
+                return True
+    elif isinstance(value, list):
+        return any(contains_forbidden_secret_key(item) for item in value)
+    return False
+
+
+def list_external_threads(conn: sqlite3.Connection, platform: str = "", owner_agent: str = "", limit: int = 50) -> list[dict]:
+    clauses = []
+    params: list[object] = []
+    if platform:
+        clauses.append("platform = ?")
+        params.append(platform)
+    if owner_agent:
+        clauses.append("owner_agent = ?")
+        params.append(owner_agent)
+    where = " WHERE " + " AND ".join(clauses) if clauses else ""
+    params.append(limit)
+    return rows(conn, f"SELECT * FROM external_threads{where} ORDER BY last_message_at DESC, updated_at DESC LIMIT ?", tuple(params))
+
+
+def show_external_thread(conn: sqlite3.Connection, thread_id: str) -> dict:
+    thread = conn.execute("SELECT * FROM external_threads WHERE id = ?", (thread_id,)).fetchone()
+    if not thread:
+        return {"ok": False, "error": "external thread not found", "thread_id": thread_id}
+    messages = rows(conn, "SELECT * FROM external_messages WHERE thread_id = ? ORDER BY created_at ASC, id ASC", (thread_id,))
+    return {"ok": True, "thread": dict(thread), "messages": messages}
+
+
+def import_external_mirror(conn: sqlite3.Connection, payload: dict) -> dict:
+    if contains_forbidden_secret_key(payload):
+        return {"ok": False, "error": "external mirror import rejects secret/token/password fields; ingest sanitized payload only"}
+    thread = dict(payload.get("thread") or {})
+    messages = payload.get("messages") or []
+    if not isinstance(messages, list):
+        return {"ok": False, "error": "messages must be a list"}
+    thread_id = str(thread.get("id") or payload.get("thread_id") or "").strip()
+    platform = str(thread.get("platform") or payload.get("platform") or "telegram").strip()
+    owner_agent = str(thread.get("owner_agent", payload.get("owner_agent", ""))).strip()
+    bridge_agent = str(thread.get("bridge_agent", payload.get("bridge_agent", ""))).strip()
+    if not thread_id:
+        return {"ok": False, "error": "thread.id or thread_id is required"}
+    if not owner_agent:
+        return {"ok": False, "error": "thread.owner_agent or owner_agent is required"}
+    if not bridge_agent:
+        return {"ok": False, "error": "thread.bridge_agent or bridge_agent is required"}
+    ts = now()
+    last_message_at = str(thread.get("last_message_at") or max([str(m.get("created_at") or ts) for m in messages if isinstance(m, dict)] or [ts]))
+    metadata = thread.get("metadata_json", thread.get("metadata", {}))
+    if not isinstance(metadata, str):
+        metadata = json.dumps(metadata or {}, ensure_ascii=False)
+    conn.execute(
+        """
+        INSERT INTO external_threads(id, platform, account_id, external_user_id, external_chat_id, owner_agent, bridge_agent, title, status, last_message_at, created_at, updated_at, metadata_json)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET platform=excluded.platform, account_id=excluded.account_id, external_user_id=excluded.external_user_id,
+          external_chat_id=excluded.external_chat_id, owner_agent=excluded.owner_agent, bridge_agent=excluded.bridge_agent, title=excluded.title,
+          status=excluded.status, last_message_at=excluded.last_message_at, updated_at=excluded.updated_at, metadata_json=excluded.metadata_json
+        """,
+        (
+            thread_id,
+            platform,
+            str(thread.get("account_id", "")),
+            str(thread.get("external_user_id", "")),
+            str(thread.get("external_chat_id", "")),
+            owner_agent,
+            bridge_agent,
+            str(thread.get("title", thread_id)),
+            str(thread.get("status", "open")),
+            last_message_at,
+            str(thread.get("created_at", ts)),
+            ts,
+            metadata,
+        ),
+    )
+    imported = []
+    duplicate_messages = 0
+    for msg in messages:
+        if not isinstance(msg, dict):
+            continue
+        message_id = str(msg.get("id") or msg.get("message_id") or "").strip()
+        if not message_id:
+            continue
+        existing_message = conn.execute("SELECT id FROM external_messages WHERE id = ?", (message_id,)).fetchone()
+        if existing_message:
+            duplicate_messages += 1
+            continue
+        msg_meta = msg.get("metadata_json", msg.get("metadata", {}))
+        if not isinstance(msg_meta, str):
+            msg_meta = json.dumps(msg_meta or {}, ensure_ascii=False)
+        conn.execute(
+            """
+            INSERT INTO external_messages(id, thread_id, direction, platform, sender_kind, sender_id, body, raw_excerpt, evidence_path, source_event_id, created_at, metadata_json)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                message_id, thread_id, str(msg.get("direction", "")), str(msg.get("platform", platform)), str(msg.get("sender_kind", "")),
+                str(msg.get("sender_id", "")), str(msg.get("body", "")), str(msg.get("raw_excerpt", "")), str(msg.get("evidence_path", "")),
+                str(msg.get("source_event_id", "")), str(msg.get("created_at", ts)), msg_meta,
+            ),
+        )
+        company_message_id = str(msg.get("company_message_id", ""))
+        conversation_message_id = str(msg.get("conversation_message_id", ""))
+        if company_message_id or conversation_message_id:
+            conn.execute(
+                "INSERT OR IGNORE INTO external_message_links(external_message_id, company_message_id, conversation_message_id, created_at) VALUES (?, ?, ?, ?)",
+                (message_id, company_message_id, conversation_message_id, ts),
+            )
+        imported.append(message_id)
+    cursor_obj = payload.get("cursor")
+    cursor = cursor_obj if isinstance(cursor_obj, dict) else {}
+    cursor_id = str(cursor.get("id") or payload.get("cursor_id") or f"{platform}-{thread.get('account_id', '')}-{owner_agent}").strip("-")
+    cursor_value = str(cursor.get("value") or cursor.get("cursor_value") or payload.get("cursor_value") or last_message_at)
+    cursor_state = cursor.get("state_json", cursor.get("state", {}))
+    if not isinstance(cursor_state, str):
+        cursor_state = json.dumps(cursor_state or {}, ensure_ascii=False)
+    conn.execute(
+        """
+        INSERT INTO external_ingest_cursors(id, platform, account_id, bridge_agent, cursor_value, last_seen_at, state_json, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET platform=excluded.platform, account_id=excluded.account_id, bridge_agent=excluded.bridge_agent,
+          cursor_value=excluded.cursor_value, last_seen_at=excluded.last_seen_at, state_json=excluded.state_json, updated_at=excluded.updated_at
+        """,
+        (cursor_id, platform, str(thread.get("account_id", "")), bridge_agent, cursor_value, last_message_at, cursor_state, ts),
+    )
+    conn.commit()
+    audit(conn, "external-mirror", "import", thread_id, {"platform": platform, "messages": len(imported), "duplicates": duplicate_messages, "cursor_id": cursor_id})
+    return {"ok": True, "thread_id": thread_id, "platform": platform, "cursor_id": cursor_id, "imported_messages": len(imported), "duplicate_messages": duplicate_messages, "messages": imported}
+
+
+def cmd_external_threads(args: argparse.Namespace) -> int:
+    conn = connect()
+    emit({"ok": True, "threads": list_external_threads(conn, platform=args.platform, owner_agent=args.owner_agent, limit=args.limit)})
+    return 0
+
+
+def cmd_external_show(args: argparse.Namespace) -> int:
+    conn = connect()
+    result = show_external_thread(conn, args.thread_id)
+    emit(result)
+    return 0 if result.get("ok") else 1
+
+
+def cmd_external_import(args: argparse.Namespace) -> int:
+    payload = json.loads(args.payload) if args.payload else json.loads(Path(args.file).read_text(encoding="utf-8"))
+    conn = connect()
+    result = import_external_mirror(conn, payload)
+    emit(result)
+    return 0 if result.get("ok") else 2
+
+
 def cmd_message_send(args: argparse.Namespace) -> int:
     conn = connect()
     result = send_message_internal(conn, source=args.source, target=args.target, body=args.body, message_id=args.message_id)
@@ -4673,6 +4832,27 @@ def summarize_adapter_result(result: dict) -> dict:
             continue
         command_result = run.get("result", {})
         parsed = run.get("parsed_stdout", {})
+        report_path = str(parsed.get("report", "")) if isinstance(parsed, dict) else ""
+        progress_state = ""
+        progress_task_id = ""
+        progress_report_error = ""
+        if report_path:
+            try:
+                resolved_report = Path(report_path).expanduser().resolve()
+                repo_root = Path(ROOT).resolve()
+                try:
+                    resolved_report.relative_to(repo_root)
+                except ValueError:
+                    progress_report_error = "outside_repo"
+                else:
+                    progress_payload = json.loads(resolved_report.read_text(encoding="utf-8"))
+                    if isinstance(progress_payload, dict):
+                        progress_task_id = str(progress_payload.get("task_id", ""))
+                        report = progress_payload.get("report")
+                        if isinstance(report, dict):
+                            progress_state = str(report.get("state", ""))
+            except (OSError, json.JSONDecodeError):
+                progress_report_error = "unreadable"
         runs.append(
             {
                 "index": run.get("index", ""),
@@ -4680,7 +4860,10 @@ def summarize_adapter_result(result: dict) -> dict:
                 "task_id": parsed.get("task_id", "") if isinstance(parsed, dict) else "",
                 "status": parsed.get("status", "") if isinstance(parsed, dict) else "",
                 "processed": parsed.get("processed", "") if isinstance(parsed, dict) else "",
-                "report": parsed.get("report", "") if isinstance(parsed, dict) else "",
+                "report": report_path,
+                "progress_state": progress_state,
+                "progress_task_id": progress_task_id,
+                "progress_report_error": progress_report_error,
             }
         )
     return {
@@ -5324,6 +5507,22 @@ def build_parser() -> argparse.ArgumentParser:
     project_accept.add_argument("--summary", required=True)
     project_accept.add_argument("--force", action="store_true")
     project_accept.set_defaults(func=cmd_project_accept)
+
+
+    external = sub.add_parser("external")
+    external_sub = external.add_subparsers(dest="external_cmd", required=True)
+    external_threads = external_sub.add_parser("threads")
+    external_threads.add_argument("--platform", default="")
+    external_threads.add_argument("--owner-agent", default="")
+    external_threads.add_argument("--limit", type=int, default=50)
+    external_threads.set_defaults(func=cmd_external_threads)
+    external_show = external_sub.add_parser("show")
+    external_show.add_argument("--thread-id", required=True)
+    external_show.set_defaults(func=cmd_external_show)
+    external_import = external_sub.add_parser("import")
+    external_import.add_argument("--payload", default="")
+    external_import.add_argument("--file", default="")
+    external_import.set_defaults(func=cmd_external_import)
 
     message = sub.add_parser("message")
     message_sub = message.add_subparsers(dest="message_cmd", required=True)

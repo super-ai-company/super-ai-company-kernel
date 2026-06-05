@@ -135,6 +135,58 @@ CREATE TABLE IF NOT EXISTS conversation_messages (
   FOREIGN KEY(conversation_id) REFERENCES conversations(id)
 );
 
+
+CREATE TABLE IF NOT EXISTS external_threads (
+  id TEXT PRIMARY KEY,
+  platform TEXT NOT NULL,
+  account_id TEXT NOT NULL DEFAULT '',
+  external_user_id TEXT NOT NULL DEFAULT '',
+  external_chat_id TEXT NOT NULL DEFAULT '',
+  owner_agent TEXT NOT NULL DEFAULT '',
+  bridge_agent TEXT NOT NULL DEFAULT '',
+  title TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL DEFAULT 'open',
+  last_message_at TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  metadata_json TEXT NOT NULL DEFAULT '{}'
+);
+
+CREATE TABLE IF NOT EXISTS external_messages (
+  id TEXT PRIMARY KEY,
+  thread_id TEXT NOT NULL,
+  direction TEXT NOT NULL DEFAULT '',
+  platform TEXT NOT NULL,
+  sender_kind TEXT NOT NULL DEFAULT '',
+  sender_id TEXT NOT NULL DEFAULT '',
+  body TEXT NOT NULL DEFAULT '',
+  raw_excerpt TEXT NOT NULL DEFAULT '',
+  evidence_path TEXT NOT NULL DEFAULT '',
+  source_event_id TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  metadata_json TEXT NOT NULL DEFAULT '{}',
+  FOREIGN KEY(thread_id) REFERENCES external_threads(id)
+);
+
+CREATE TABLE IF NOT EXISTS external_ingest_cursors (
+  id TEXT PRIMARY KEY,
+  platform TEXT NOT NULL,
+  account_id TEXT NOT NULL DEFAULT '',
+  bridge_agent TEXT NOT NULL DEFAULT '',
+  cursor_value TEXT NOT NULL DEFAULT '',
+  last_seen_at TEXT NOT NULL DEFAULT '',
+  state_json TEXT NOT NULL DEFAULT '{}',
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS external_message_links (
+  external_message_id TEXT NOT NULL,
+  company_message_id TEXT NOT NULL DEFAULT '',
+  conversation_message_id TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  PRIMARY KEY(external_message_id, company_message_id, conversation_message_id)
+);
+
 CREATE TABLE IF NOT EXISTS locks (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   resource_key TEXT NOT NULL UNIQUE,
