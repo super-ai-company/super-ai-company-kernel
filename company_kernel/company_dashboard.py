@@ -203,6 +203,10 @@ def internal_communication_watchdog(conn: sqlite3.Connection, *, generated_at: s
                  WHERE r.source_agent = m.target_agent
                    AND r.target_agent = m.source_agent
                    AND r.created_at >= m.created_at
+                   AND (
+                     r.id = m.id || '-receipt'
+                     OR r.body LIKE '%original_message_id: ' || m.id || '%'
+                   )
                  ORDER BY r.created_at ASC, r.id ASC
                  LIMIT 1
                ), '') AS receipt_id,
@@ -212,6 +216,10 @@ def internal_communication_watchdog(conn: sqlite3.Connection, *, generated_at: s
                  WHERE r.source_agent = m.target_agent
                    AND r.target_agent = m.source_agent
                    AND r.created_at >= m.created_at
+                   AND (
+                     r.id = m.id || '-receipt'
+                     OR r.body LIKE '%original_message_id: ' || m.id || '%'
+                   )
                  ORDER BY r.created_at ASC, r.id ASC
                  LIMIT 1
                ), '') AS receipt_at
