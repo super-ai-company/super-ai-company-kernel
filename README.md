@@ -76,6 +76,131 @@ bin/company-api-rpc --host 127.0.0.1 --port 8766
 bin/company-api-grpc --host 127.0.0.1 --port 8767
 ```
 
+## Direct Messages Dashboard Feed
+
+Dashboard-ready recent direct messages are available without hard-coded employee IDs:
+
+```bash
+curl 'http://127.0.0.1:8765/v1/messages/recent-direct?limit=20'
+```
+
+`/v1/messages?agent=<id>` remains the per-agent inbox/outbox query. `/v1/messages/recent-direct` is the aggregate feed used by dashboard summary and Chat Hub style views.
+
+## Sanitized External Mirror
+
+Hermes/Telegram or other outside-chat history must enter Company Kernel as a sanitized mirror payload only. Do not pass bot tokens, API keys, passwords, cookies, or raw secret-bearing records.
+
+Required minimal payload:
+
+```json
+{
+  "thread": {
+    "id": "ext-telegram-hermes-001",
+    "platform": "telegram",
+    "account_id": "home",
+    "external_chat_id": "6066269036",
+    "owner_agent": "hermes",
+    "bridge_agent": "telegram-bridge",
+    "title": "Shift ↔ Hermes"
+  },
+  "cursor": {
+    "id": "telegram-home-hermes",
+    "value": "cursor-or-message-offset",
+    "state": {"sanitized": true}
+  },
+  "messages": [
+    {
+      "id": "ext-msg-001",
+      "direction": "inbound",
+      "platform": "telegram",
+      "sender_kind": "user",
+      "sender_id": "shift",
+      "body": "sanitized message text",
+      "created_at": "2026-06-05T01:45:00+07:00"
+    }
+  ]
+}
+```
+
+Import/query:
+
+```bash
+bin/companyctl external import --file /path/to/sanitized-payload.json
+curl 'http://127.0.0.1:8765/v1/external-threads?platform=telegram&owner_agent=hermes'
+curl 'http://127.0.0.1:8765/v1/external-threads/ext-telegram-hermes-001/messages'
+```
+
+Repeated imports are idempotent by external message id and update `external_ingest_cursors`.
+
+## Adapter Progress Evidence
+
+`runtime adapter-run show --summary` returns compact `result_summary.runs[]` fields including parsed `report`, `progress_state`, and `progress_task_id` when the adapter stdout points to a repo-local progress JSON.
+
+```bash
+bin/companyctl runtime adapter-run show --run-id <run-id> --summary
+```
+
+## Internal Communication Watchdog Runbook
+
+Use this when agents appear to talk but do not execute. The goal is to distinguish delivered messages from real work receipts.
+
+Detect missing receipts and open internal tasks:
+
+```bash
+curl 'http://127.0.0.1:8765/v1/dashboard/internal-watchdog'
+```
+
+Plan follow-up actions without writing state:
+
+```bash
+curl -X POST 'http://127.0.0.1:8765/v1/dashboard/internal-watchdog/remediate' \
+  -H 'Content-Type: application/json' \
+  -d '{"source":"openclaw-main","dry_run":true,"escalate_existing":false}'
+```
+
+Create first follow-ups to stalled targets:
+
+```bash
+curl -X POST 'http://127.0.0.1:8765/v1/dashboard/internal-watchdog/remediate' \
+  -H 'Content-Type: application/json' \
+  -d '{"source":"openclaw-main","dry_run":false,"escalate_existing":false}'
+```
+
+If the same stalled item remains after a follow-up already exists, escalate to Hermes/main and create a reroute decision envelope:
+
+```bash
+curl -X POST 'http://127.0.0.1:8765/v1/dashboard/internal-watchdog/remediate' \
+  -H 'Content-Type: application/json' \
+  -d '{"source":"openclaw-main","dry_run":false,"escalate_to":"hermes","reroute_to":"codex"}'
+```
+
+Hermes/main should answer the generated `reroute-*` follow-up with:
+
+```text
+decision: reroute
+new_owner: codex
+reason: target stalled
+evidence_path: state/watchdog.json
+next_action: create rerouted task
+rollback: close rerouted task
+```
+
+Apply answered reroute decisions:
+
+```bash
+curl -X POST 'http://127.0.0.1:8765/v1/dashboard/internal-watchdog/apply-reroutes' \
+  -H 'Content-Type: application/json' \
+  -d '{"by":"hermes","dry_run":false}'
+```
+
+Effects:
+
+- creates `rerouted-<original_task_id>` for the new owner;
+- blocks the original stalled task with `rerouted_to:<agent>` evidence;
+- keeps all follow-up/escalation/reroute records repo-local under `state/followups/`;
+- dashboard Communication Observatory shows no-receipt/open-task watchdog state.
+- direct API coverage now includes `/v1/dashboard/internal-watchdog`, `/v1/dashboard/internal-watchdog/remediate`, and `/v1/dashboard/internal-watchdog/apply-reroutes`.
+
 ## Boundary
 
 Company Kernel 管制度和通信。OpenClaw、Hermes、Codex、Claude、Trae、Antigravity 都只是 runtime adapter。
@@ -509,6 +634,29 @@ bin/companyctl project list --status active
 ## Schema Migrations
 
 `companyctl` 和 `company-dashboard` 会自动执行轻量 SQLite 迁移，并把已应用迁移记录到 `schema_migrations`。
+
+## Communication Observability Dashboard
+
+如果要在网页里看员工私聊、external mirror 同步状态、adapter-run summary，使用 advanced dashboard：
+
+```bash
+bin/company-dashboard --variant advanced
+open $OPENCLAW_COMPANY_KERNEL_ROOT/state/dashboard.html
+```
+
+只读聚合接口：
+
+```bash
+curl 'http://127.0.0.1:8765/v1/dashboard/communication-observability'
+```
+
+返回三块摘要：
+
+- `direct_messages.items[]`: 最近员工 direct messages，给 dashboard 的人类可读面板使用。
+- `external_mirror.threads[]`: external thread 的 `platform/owner_agent/bridge_agent/cursor/last_message_at`。
+- `adapter_runs.items[]`: adapter run 的 `command/task_id`，以及 repo 内安全相对路径的 `progress_file/state_file`。
+
+`progress_file` / `state_file` 只会暴露 repo-local 路径；repo 外绝对路径会被清空，避免 dashboard 泄露运行态边界外文件。
 
 ## Adapter Worker
 

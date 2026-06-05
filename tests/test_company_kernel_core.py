@@ -3,6 +3,7 @@ from __future__ import annotations
 import contextlib
 import io
 import json
+import os
 import plistlib
 import runpy
 import sqlite3
@@ -56,6 +57,10 @@ class CompanyKernelCoreTest(unittest.TestCase):
         for source_file in source_pkg.glob("*.py"):
             (root / "company_kernel" / source_file.name).write_text(source_file.read_text(encoding="utf-8"), encoding="utf-8")
         (root / "company_kernel" / "schema.sql").write_text(companyctl.SCHEMA.read_text(encoding="utf-8"), encoding="utf-8")
+        (root / "dashboard_templates").mkdir()
+        source_templates = Path(__file__).resolve().parents[1] / "dashboard_templates"
+        for source_file in source_templates.glob("*.html"):
+            (root / "dashboard_templates" / source_file.name).write_text(source_file.read_text(encoding="utf-8"), encoding="utf-8")
         (root / "bin").mkdir()
         for executable in ["companyctl", "company-adapter-worker", "company-codex-adapter", "company-openclaw-adapter", "company-trace", "company-api-rpc", "company-api-grpc", "company-service-smoke", "company-local-smoke"]:
             target = root / "bin" / executable
@@ -995,10 +1000,51 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual("acknowledged", report_payload["state"])
         self.assertEqual("main", report_payload["source"])
 
+    def test_progress_report_helper_cli_writes_expected_json(self) -> None:
+        script = Path(__file__).resolve().parents[1] / "scripts" / "progress_report.py"
+        out_dir = self.root / "workspace" / "codex" / "reports"
+        argv = [
+            str(script),
+            "--state",
+            "completed",
+            "--project",
+            "codex",
+            "--action",
+            "completed direct task",
+            "--checking",
+            "python3 -m unittest OK",
+            "--risks",
+            "none",
+            "--out-dir",
+            str(out_dir),
+        ]
+        stdout = io.StringIO()
+        old_argv = sys.argv[:]
+        with contextlib.redirect_stdout(stdout):
+            try:
+                sys.argv = argv
+                runpy.run_path(str(script), run_name="__main__")
+            except SystemExit as exc:
+                self.assertEqual(0, exc.code)
+            finally:
+                sys.argv = old_argv
+        result = json.loads(stdout.getvalue())
+        report = Path(result["path"])
+        self.assertTrue(report.exists())
+        payload = json.loads(report.read_text(encoding="utf-8"))
+        self.assertTrue(payload["ok"])
+        self.assertEqual("completed", payload["report"]["state"])
+        self.assertEqual("codex", payload["report"]["project"])
+        self.assertEqual("completed direct task", payload["report"]["action"])
+        self.assertEqual("python3 -m unittest OK", payload["report"]["checking"])
+        self.assertEqual("none", payload["report"]["risks"])
+        self.assertEqual(str(out_dir.parent.resolve()), payload["report"]["targets"])
+
     def test_codex_direct_execution_runs_worker_and_writes_repo_progress(self) -> None:
         workspace = self.root / "workspace" / "codex"
         (workspace / "scripts").mkdir(parents=True, exist_ok=True)
-        (workspace / "scripts" / "progress_report.py").write_text("print('ok')\n", encoding="utf-8")
+        helper = Path(__file__).resolve().parents[1] / "scripts" / "progress_report.py"
+        (workspace / "scripts" / "progress_report.py").write_text(helper.read_text(encoding="utf-8"), encoding="utf-8")
         code, created = run_cli(
             "employee",
             "create",
@@ -1037,6 +1083,30 @@ class CompanyKernelCoreTest(unittest.TestCase):
             task_text = task_card.read_text(encoding="utf-8")
             self.assertIn("Mandatory communication loop", task_text)
             self.assertIn("Required final output", task_text)
+            old_cwd = Path.cwd()
+            old_argv = sys.argv[:]
+            os.chdir(workspace_arg)
+            try:
+                sys.argv = [
+                    "progress_report.py",
+                    "--state",
+                    "completed",
+                    "--project",
+                    workspace_arg.name,
+                    "--action",
+                    "completed direct task",
+                    "--checking",
+                    "worker wrote progress helper output",
+                    "--out-dir",
+                    "reports",
+                ]
+                with contextlib.redirect_stdout(io.StringIO()):
+                    runpy.run_path(str(workspace_arg / "scripts" / "progress_report.py"), run_name="__main__")
+            except SystemExit as exc:
+                self.assertEqual(0, exc.code)
+            finally:
+                sys.argv = old_argv
+                os.chdir(old_cwd)
             output.write_text(
                 "\n".join(
                     [
@@ -1076,7 +1146,7 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertIn("changed_files: README.md", payload["reply"])
         self.assertEqual("workspace-write", calls[0]["sandbox"])
         workspace_reports = sorted((workspace / "reports").glob("progress_*.json"))
-        self.assertGreaterEqual(len(workspace_reports), 2)
+        self.assertGreaterEqual(len(workspace_reports), 3)
         states = [json.loads(path.read_text(encoding="utf-8"))["report"]["state"] for path in workspace_reports]
         self.assertIn("acknowledged", states)
         self.assertIn("in_progress", states)
@@ -1290,17 +1360,32 @@ class CompanyKernelCoreTest(unittest.TestCase):
                 "followup-dashboard-001",
             ])
         self.assertEqual(0, code)
-        with contextlib.redirect_stdout(io.StringIO()):
-            code = companyctl.main([
-                "followup",
-                "reply",
-                "--followup-id",
-                "followup-dashboard-001",
-                "--by",
-                "main",
-                "--answer",
-                "本次还车里程是 10234 km",
-            ])
+        def fake_followup_reply(_args) -> int:
+            print(
+                json.dumps(
+                    {
+                        "ok": True,
+                        "message": {"id": "msg-followup-dashboard-001-answer"},
+                        "reply": "ack",
+                        "file": str(self.root / "employees" / "nestcar" / "inbox" / "msg-followup-dashboard-001-answer.message.json"),
+                    },
+                    ensure_ascii=False,
+                )
+            )
+            return 0
+
+        with mock.patch.object(companyctl, "cmd_message_direct", side_effect=fake_followup_reply):
+            with contextlib.redirect_stdout(io.StringIO()):
+                code = companyctl.main([
+                    "followup",
+                    "reply",
+                    "--followup-id",
+                    "followup-dashboard-001",
+                    "--by",
+                    "main",
+                    "--answer",
+                    "本次还车里程是 10234 km",
+                ])
         self.assertEqual(0, code)
         conn = companyctl.connect()
         try:
@@ -1336,6 +1421,256 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertIn("Needs Attention", html)
         self.assertIn("trace-dashboard-live", html)
         self.assertIn("company-codex-adapter", html)
+
+    def test_dashboard_summary_includes_direct_messages_recent(self) -> None:
+        code, created = run_cli("employee", "create", "--id", "main", "--name", "main", "--role", "operator", "--runtime", "openclaw", "--workspace", str(self.root / "workspace" / "main"))
+        self.assertEqual(code, 0, created)
+        code, worker = run_cli("employee", "create", "--id", "worker-x", "--name", "worker-x", "--role", "operator", "--runtime", "local", "--workspace", str(self.root / "workspace" / "worker-x"))
+        self.assertEqual(code, 0, worker)
+        conn = companyctl.connect()
+        try:
+            conn.execute(
+                """
+                INSERT INTO messages(id, source_agent, target_agent, body, created_at)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                ("msg-dashboard-direct-001", "main", "worker-x", "dashboard direct ping", "2026-06-04T22:45:00+07:00"),
+            )
+            conn.commit()
+            summary = company_dashboard.load_summary(conn)
+        finally:
+            conn.close()
+
+        self.assertIn("direct_messages_recent", summary)
+        self.assertEqual(1, len(summary["direct_messages_recent"]))
+        self.assertEqual(
+            {
+                "id": "msg-dashboard-direct-001",
+                "source_agent": "main",
+                "target_agent": "worker-x",
+                "body": "dashboard direct ping",
+                "evidence_path": "",
+                "created_at": "2026-06-04T22:45:00+07:00",
+            },
+            summary["direct_messages_recent"][0],
+        )
+        status, api_payload = api_gateway.route_get("/v1/messages/recent-direct", {"limit": ["5"]})
+        self.assertEqual(200, int(status))
+        self.assertEqual(summary["direct_messages_recent"], api_payload["direct_messages_recent"])
+
+    def test_external_mirror_bridge_contract_requires_owner_bridge_and_cursor_idempotent(self) -> None:
+        missing_owner = {
+            "thread": {"id": "ext-missing-owner", "platform": "telegram", "bridge_agent": "telegram-bridge"},
+            "messages": [],
+        }
+        status, rejected = api_gateway.route_post("/v1/external-mirror/import", missing_owner)
+        self.assertEqual(400, int(status))
+        self.assertIn("owner_agent", rejected["error"])
+
+        payload = {
+            "thread": {
+                "id": "ext-telegram-hermes-002",
+                "platform": "telegram",
+                "account_id": "home",
+                "external_chat_id": "6066269036",
+                "owner_agent": "hermes",
+                "bridge_agent": "telegram-bridge",
+                "title": "Shift ↔ Hermes",
+            },
+            "cursor": {"id": "telegram-home-hermes", "value": "cursor-001", "state": {"page": 1}},
+            "messages": [
+                {
+                    "id": "ext-msg-002",
+                    "direction": "inbound",
+                    "platform": "telegram",
+                    "sender_kind": "user",
+                    "sender_id": "shift",
+                    "body": "继续开发",
+                    "created_at": "2026-06-05T01:45:00+07:00",
+                    "company_message_id": "",
+                    "conversation_message_id": "",
+                }
+            ],
+        }
+        status, imported = api_gateway.route_post("/v1/external-mirror/import", payload)
+        self.assertEqual(201, int(status))
+        self.assertEqual(1, imported["imported_messages"])
+        self.assertEqual("telegram-home-hermes", imported["cursor_id"])
+        status, imported_again = api_gateway.route_post("/v1/external-mirror/import", payload)
+        self.assertEqual(201, int(status))
+        self.assertEqual(0, imported_again["imported_messages"])
+        conn = companyctl.connect()
+        try:
+            cursor = conn.execute("SELECT * FROM external_ingest_cursors WHERE id = ?", ("telegram-home-hermes",)).fetchone()
+        finally:
+            conn.close()
+        self.assertIsNotNone(cursor)
+        self.assertEqual("cursor-001", cursor["cursor_value"])
+
+    def test_adapter_run_summary_reads_progress_report_state_and_task_id(self) -> None:
+        code, main = run_cli("employee", "create", "--id", "main", "--name", "main", "--role", "operator", "--runtime", "local", "--workspace", str(self.root / "workspace" / "main"))
+        self.assertEqual(code, 0, main)
+        progress_dir = self.root / "employees" / "codex" / "reports" / "task-adapter-progress"
+        progress_dir.mkdir(parents=True, exist_ok=True)
+        progress_path = progress_dir / "progress_in_progress_20260605.json"
+        progress_path.write_text(
+            json.dumps(
+                {
+                    "ok": True,
+                    "task_id": "task-adapter-progress",
+                    "report": {"state": "in_progress", "project": "super-ai-company-kernel", "action": "testing adapter progress"},
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        conn = companyctl.connect()
+        try:
+            conn.execute(
+                """
+                INSERT INTO tasks(id, source_agent, target_agent, title, description, priority, status, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                ("task-adapter-progress", "main", "codex", "adapter progress", "", "P2", "blocked", "2026-06-05T01:00:00+07:00", "2026-06-05T01:00:00+07:00"),
+            )
+            conn.execute(
+                """
+                INSERT INTO adapter_runs(id, agent_id, task_id, command, ok, processed, result_json, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "adapter-run-progress-001",
+                    "codex",
+                    "task-adapter-progress",
+                    "company-codex-adapter",
+                    0,
+                    1,
+                    json.dumps({"runs": [{"index": 0, "parsed_stdout": {"task_id": "task-adapter-progress", "status": "blocked", "report": str(progress_path)}}]}, ensure_ascii=False),
+                    "2026-06-05T01:02:00+07:00",
+                ),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        code, shown = run_cli("runtime", "adapter-run", "show", "--run-id", "adapter-run-progress-001", "--summary")
+        self.assertEqual(0, code, shown)
+        run_summary = shown["result_summary"]["runs"][0]
+        self.assertEqual(str(progress_path), run_summary["report"])
+        self.assertEqual("in_progress", run_summary["progress_state"])
+        self.assertEqual("task-adapter-progress", run_summary["progress_task_id"])
+
+
+    def test_adapter_run_summary_rejects_progress_report_outside_repo(self) -> None:
+        conn = companyctl.connect()
+        try:
+            conn.execute(
+                """
+                INSERT INTO adapter_runs(id, agent_id, task_id, command, ok, processed, result_json, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "adapter-run-progress-outside",
+                    "codex",
+                    "task-adapter-progress",
+                    "company-codex-adapter",
+                    0,
+                    1,
+                    json.dumps({"runs": [{"index": 0, "parsed_stdout": {"task_id": "task-adapter-progress", "status": "blocked", "report": "/etc/passwd"}}]}, ensure_ascii=False),
+                    "2026-06-05T01:03:00+07:00",
+                ),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        code, shown = run_cli("runtime", "adapter-run", "show", "--run-id", "adapter-run-progress-outside", "--summary")
+        self.assertEqual(0, code, shown)
+        run_summary = shown["result_summary"]["runs"][0]
+        self.assertEqual("/etc/passwd", run_summary["report"])
+        self.assertEqual("", run_summary["progress_state"])
+        self.assertEqual("", run_summary["progress_task_id"])
+        self.assertEqual("outside_repo", run_summary["progress_report_error"])
+
+    def test_external_mirror_import_rejects_tokens_and_exposes_readonly_api(self) -> None:
+        secret_payload = {
+            "thread": {"id": "ext-secret", "platform": "telegram", "owner_agent": "hermes"},
+            "telegram_bot_token": "SHOULD_NOT_BE_STORED",
+            "messages": [],
+        }
+        status, rejected = api_gateway.route_post("/v1/external-mirror/import", secret_payload)
+        self.assertEqual(400, int(status))
+        self.assertFalse(rejected["ok"])
+
+        payload = {
+            "thread": {
+                "id": "ext-telegram-hermes-001",
+                "platform": "telegram",
+                "account_id": "home",
+                "external_user_id": "shift",
+                "external_chat_id": "6066269036",
+                "owner_agent": "hermes",
+                "bridge_agent": "telegram-bridge",
+                "title": "Shift ↔ Hermes",
+                "metadata": {"sanitized": True},
+            },
+            "messages": [
+                {
+                    "id": "ext-msg-001",
+                    "direction": "inbound",
+                    "platform": "telegram",
+                    "sender_kind": "user",
+                    "sender_id": "shift",
+                    "body": "继续",
+                    "raw_excerpt": "继续",
+                    "evidence_path": "reports/external-mirror/sample.json",
+                    "created_at": "2026-06-05T00:45:00+07:00",
+                }
+            ],
+        }
+        status, imported = api_gateway.route_post("/v1/external-mirror/import", payload)
+        self.assertEqual(201, int(status))
+        self.assertTrue(imported["ok"])
+        self.assertEqual(1, imported["imported_messages"])
+
+        status, listed = api_gateway.route_get("/v1/external-threads", {"platform": ["telegram"], "owner_agent": ["hermes"]})
+        self.assertEqual(200, int(status))
+        self.assertEqual("ext-telegram-hermes-001", listed["threads"][0]["id"])
+        status, shown = api_gateway.route_get("/v1/external-threads/ext-telegram-hermes-001/messages", {})
+        self.assertEqual(200, int(status))
+        self.assertEqual("继续", shown["messages"][0]["body"])
+
+        conn = companyctl.connect()
+        try:
+            summary = company_dashboard.load_summary(conn)
+        finally:
+            conn.close()
+        self.assertEqual("ext-telegram-hermes-001", summary["external_threads"][0]["id"])
+        self.assertEqual("ext-msg-001", summary["external_messages_recent"][0]["id"])
+
+    def test_advanced_dashboard_chat_hub_renders_direct_messages_recent(self) -> None:
+        conn = companyctl.connect()
+        try:
+            conn.execute(
+                """
+                INSERT INTO messages(id, source_agent, target_agent, body, created_at)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                ("msg-dashboard-direct-ui-001", "main", "codex", "dashboard direct UI ping", "2026-06-04T22:50:00+07:00"),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        output = self.root / "state" / "dashboard-direct-messages.html"
+        template = Path(__file__).resolve().parents[1] / "dashboard_templates" / "gemini_dashboard.html"
+        with contextlib.redirect_stdout(io.StringIO()):
+            code = company_dashboard.main(["--variant", "advanced", "--template", str(template), "--output", str(output)])
+        self.assertEqual(0, code)
+        html = output.read_text(encoding="utf-8")
+        self.assertIn("direct_messages_recent", html)
+        self.assertIn("Recent Direct Messages", html)
+        self.assertIn("messages table", html)
+        self.assertIn("dashboard direct UI ping", html)
+        self.assertIn("renderDirectMessagesRecent", html)
 
     def test_dashboard_distinguishes_active_online_from_candidate_heartbeat(self) -> None:
         code, hermes = run_cli("employee", "create", "--id", "hermes", "--name", "Hermes", "--role", "supervisor", "--runtime", "hermes", "--workspace", str(self.root / "hermes"))
@@ -2712,6 +3047,232 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual(200, status, failed)
         self.assertNotIn("adapter-run-api-retry", [item["id"] for item in failed["adapter_runs"]])
 
+    def test_api_gateway_exposes_communication_observability_summary(self) -> None:
+        code, sent_a = run_cli("message", "send", "--from", "openclaw-main", "--to", "codex", "--body", "请确认 adapter-run summary")
+        self.assertEqual(code, 0, sent_a)
+        code, sent_b = run_cli("message", "send", "--from", "codex", "--to", "openclaw-main", "--body", "已同步 external mirror")
+        self.assertEqual(code, 0, sent_b)
+        status, direct = api_gateway.route_get("/v1/messages/recent-direct", {"limit": ["1"]})
+        self.assertEqual(200, status, direct)
+        self.assertEqual(1, len(direct["direct_messages_recent"]))
+
+        imported_at = companyctl.now()
+        status, imported = api_gateway.route_post(
+            "/v1/external-mirror/import",
+            {
+                "thread": {
+                    "id": "tg-owner-codex",
+                    "platform": "telegram",
+                    "owner_agent": "openclaw-main",
+                    "bridge_agent": "codex",
+                    "external_user_id": "tg-user-42",
+                    "external_title": "Shift Telegram Mirror",
+                    "last_message_at": imported_at,
+                    "cursor": "cursor-001",
+                    "metadata": {"source": "telegram", "mirror_kind": "operator"},
+                },
+                "messages": [
+                    {
+                        "id": "ext-msg-001",
+                        "thread_id": "tg-owner-codex",
+                        "direction": "inbound",
+                        "agent_id": "openclaw-main",
+                        "external_message_id": "telegram-1001",
+                        "body": "外部消息已进入 mirror",
+                        "created_at": imported_at,
+                        "metadata": {"import_batch": "batch-1"},
+                    }
+                ],
+            },
+        )
+        self.assertEqual(201, status, imported)
+
+        code, submitted = run_cli("task", "submit", "--from", "openclaw-main", "--to", "codex", "--task-id", "task-api-observability", "--title", "communication observability")
+        self.assertEqual(code, 0, submitted)
+        trace_id = submitted["task"]["metadata"]["trace_id"]
+        conn = companyctl.connect()
+        try:
+            conn.execute(
+                """
+                INSERT INTO adapter_runs(id, trace_id, agent_id, task_id, command, ok, processed, attempt, next_retry_at, result_json, created_at)
+                VALUES ('adapter-run-observability', ?, 'codex', 'task-api-observability', 'company-codex-adapter', 1, 1, 2, '', ?, ?)
+                """,
+                (
+                    trace_id,
+                    json.dumps(
+                        {
+                            "state_file": str(self.root / "state" / "daemon" / "workers" / "codex.json"),
+                            "runs": [
+                                {
+                                    "task_id": "task-api-observability",
+                                    "parsed_stdout": {"task_id": "task-api-observability", "progress_file": "reports/adapter-progress.json"},
+                                }
+                            ],
+                        },
+                        ensure_ascii=False,
+                    ),
+                    imported_at,
+                ),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        status, payload = api_gateway.route_get("/v1/dashboard/communication-observability", {})
+        self.assertEqual(200, status, payload)
+        self.assertTrue(payload["ok"])
+        direct_bodies = [item["body"] for item in payload["direct_messages"]["items"]]
+        self.assertIn("已同步 external mirror", direct_bodies)
+        self.assertIn("请确认 adapter-run summary", direct_bodies)
+        self.assertEqual(2, payload["direct_messages"]["counts"]["total"])
+        self.assertEqual(1, payload["external_mirror"]["counts"]["threads"])
+        self.assertEqual("telegram", payload["external_mirror"]["threads"][0]["platform"])
+        self.assertEqual("codex", payload["external_mirror"]["threads"][0]["bridge_agent"])
+        self.assertEqual(1, payload["adapter_runs"]["counts"]["total"])
+        self.assertEqual("reports/adapter-progress.json", payload["adapter_runs"]["items"][0]["progress_file"])
+        self.assertIn("internal_watchdog", payload)
+        self.assertEqual(1, payload["internal_watchdog"]["counts"]["open_tasks"])
+
+    def test_api_gateway_exposes_internal_watchdog_for_no_receipt_messages_and_open_tasks(self) -> None:
+        code, sent = run_cli("message", "send", "--from", "openclaw-main", "--to", "nestcar", "--body", "请处理内部任务但没有回执")
+        self.assertEqual(0, code, sent)
+        code, submitted = run_cli("task", "submit", "--from", "openclaw-main", "--to", "nestcar", "--task-id", "task-watchdog-open", "--title", "watchdog should flag open task")
+        self.assertEqual(0, code, submitted)
+
+        status, payload = api_gateway.route_get("/v1/dashboard/internal-watchdog", {})
+        self.assertEqual(200, status, payload)
+        watchdog = payload["internal_watchdog"]
+        self.assertEqual(1, watchdog["counts"]["no_receipt_messages"])
+        self.assertEqual(1, watchdog["counts"]["open_tasks"])
+        self.assertEqual("no_receipt", watchdog["no_receipt_messages"][0]["status"])
+        self.assertEqual("task-watchdog-open", watchdog["open_tasks"][0]["id"])
+        self.assertEqual("unclaimed", watchdog["open_tasks"][0]["watchdog_status"])
+
+        status, dry = api_gateway.route_post("/v1/dashboard/internal-watchdog/remediate", {"source": "openclaw-main", "dry_run": True, "escalate_existing": False})
+        self.assertEqual(200, status, dry)
+        self.assertTrue(dry["dry_run"])
+        self.assertEqual(2, dry["actions_planned"])
+        self.assertEqual(0, dry["actions_created"])
+
+        status, applied = api_gateway.route_post("/v1/dashboard/internal-watchdog/remediate", {"source": "openclaw-main", "dry_run": False, "escalate_existing": False})
+        self.assertEqual(200, status, applied)
+        self.assertFalse(applied["dry_run"])
+        self.assertEqual(2, applied["actions_planned"])
+        self.assertGreaterEqual(applied["actions_created"], 1)
+        self.assertLessEqual(applied["actions_created"], 2)
+        self.assertTrue((companyctl.followup_paths("pending") / f"remediate-no-receipt-{sent['message']['id']}.json").exists())
+        self.assertTrue((companyctl.followup_paths("pending") / "remediate-open-task-task-watchdog-open.json").exists())
+
+        status, escalated = api_gateway.route_post("/v1/dashboard/internal-watchdog/remediate", {"source": "openclaw-main", "dry_run": False, "escalate_to": "hermes", "reroute_to": "codex"})
+        self.assertEqual(200, status, escalated)
+        self.assertEqual(2, escalated["escalations_planned"])
+        self.assertGreaterEqual(escalated["escalations_created"], 1)
+        self.assertLessEqual(escalated["escalations_created"], 2)
+        self.assertEqual(2, escalated["reroutes_planned"])
+        self.assertGreaterEqual(escalated["reroutes_created"], 1)
+        self.assertLessEqual(escalated["reroutes_created"], 2)
+        self.assertTrue((companyctl.followup_paths("pending") / f"escalate-remediate-no-receipt-{sent['message']['id']}.json").exists())
+        self.assertTrue((companyctl.followup_paths("pending") / "escalate-remediate-open-task-task-watchdog-open.json").exists())
+        self.assertTrue((companyctl.followup_paths("pending") / f"reroute-remediate-no-receipt-{sent['message']['id']}.json").exists())
+        self.assertTrue(company_dashboard.remediation_followup_exists("reroute-remediate-open-task-task-watchdog-open"))
+        reroute_open_path = next(path for status in ("pending", "answered", "cancelled") for path in [companyctl.followup_paths(status) / "reroute-remediate-open-task-task-watchdog-open.json"] if path.exists())
+        self.assertIn("candidate_new_owner: codex", reroute_open_path.read_text(encoding="utf-8"))
+
+        reroute_path = next(path for status in ("pending", "answered", "cancelled") for path in [companyctl.followup_paths(status) / "reroute-remediate-open-task-task-watchdog-open.json"] if path.exists())
+        reroute_followup = json.loads(reroute_path.read_text(encoding="utf-8"))
+        reroute_path.unlink()
+        reroute_followup["status"] = "answered"
+        reroute_followup["answer"] = "decision: reroute\nnew_owner: codex\nreason: target stalled\nevidence_path: state/watchdog.json\nnext_action: create rerouted task\nrollback: close rerouted task"
+        reroute_followup["answered_at"] = companyctl.now()
+        companyctl.save_followup(reroute_followup, "answered")
+
+        status, reroute_dry = api_gateway.route_post("/v1/dashboard/internal-watchdog/apply-reroutes", {"by": "hermes", "dry_run": True})
+        self.assertEqual(200, status, reroute_dry)
+        self.assertEqual(1, reroute_dry["actions_planned"])
+        self.assertEqual(0, reroute_dry["reroutes_applied"])
+
+        status, reroute_apply = api_gateway.route_post("/v1/dashboard/internal-watchdog/apply-reroutes", {"by": "hermes", "dry_run": False})
+        self.assertEqual(200, status, reroute_apply)
+        self.assertEqual(1, reroute_apply["reroutes_applied"])
+        code, new_task = run_cli("task", "show", "--task-id", "rerouted-task-watchdog-open")
+        self.assertEqual(0, code, new_task)
+        self.assertEqual("codex", new_task["task"]["target_agent"])
+        code, original_task = run_cli("task", "show", "--task-id", "task-watchdog-open")
+        self.assertEqual(0, code, original_task)
+        self.assertEqual("blocked", original_task["task"]["status"])
+    def test_advanced_dashboard_renders_communication_observability_panels(self) -> None:
+        code, sent = run_cli("message", "send", "--from", "openclaw-main", "--to", "codex", "--body", "Dashboard should show this direct message")
+        self.assertEqual(code, 0, sent)
+        imported_at = companyctl.now()
+        status, imported = api_gateway.route_post(
+            "/v1/external-mirror/import",
+            {
+                "thread": {
+                    "id": "tg-dashboard-observability",
+                    "platform": "telegram",
+                    "owner_agent": "openclaw-main",
+                    "bridge_agent": "cursor",
+                    "external_user_id": "tg-dashboard-user",
+                    "external_title": "Dashboard Mirror",
+                    "last_message_at": imported_at,
+                    "cursor": "cursor-dashboard",
+                    "metadata": {"source": "telegram"},
+                },
+                "messages": [
+                    {
+                        "id": "ext-dashboard-001",
+                        "thread_id": "tg-dashboard-observability",
+                        "direction": "outbound",
+                        "agent_id": "codex",
+                        "external_message_id": "telegram-2002",
+                        "body": "mirror reply delivered",
+                        "created_at": imported_at,
+                        "metadata": {"sync": "ok"},
+                    }
+                ],
+            },
+        )
+        self.assertEqual(201, status, imported)
+        conn = companyctl.connect()
+        try:
+            conn.execute(
+                """
+                INSERT INTO adapter_runs(id, trace_id, agent_id, task_id, command, ok, processed, attempt, next_retry_at, result_json, created_at)
+                VALUES ('adapter-run-dashboard-observability', '', 'codex', 'task-dashboard-observability', 'company-codex-adapter', 1, 1, 1, '', ?, ?)
+                """,
+                (
+                    json.dumps(
+                        {
+                            "state_file": str(self.root / "state" / "daemon" / "workers" / "codex.json"),
+                            "runs": [
+                                {
+                                    "task_id": "task-dashboard-observability",
+                                    "parsed_stdout": {"progress_file": "reports/dashboard-progress.json", "summary": "ok"},
+                                }
+                            ],
+                        },
+                        ensure_ascii=False,
+                    ),
+                    imported_at,
+                ),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        output = self.root / "state" / "dashboard-communication-observability.html"
+        with contextlib.redirect_stdout(io.StringIO()):
+            code = company_dashboard.main(["--output", str(output), "--variant", "advanced"])
+        self.assertEqual(0, code)
+        html = output.read_text(encoding="utf-8")
+        self.assertIn("Communication Observatory", html)
+        self.assertIn("External Mirror Sync", html)
+        self.assertIn("Adapter Run Summary", html)
+        self.assertIn("Internal Receipt Watchdog", html)
+        self.assertIn("Dashboard should show this direct message", html)
+        self.assertIn("tg-dashboard-observability", html)
+        self.assertIn("reports/dashboard-progress.json", html)
+
     def test_api_gateway_exposes_project_governance(self) -> None:
         status, project = api_gateway.route_post(
             "/v1/projects",
@@ -3318,9 +3879,14 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertTrue(Path(result["report"]).exists())
 
         payload = json.loads(Path(result["payload"]).read_text(encoding="utf-8"))
-        self.assertEqual("task-openclaw-dry-run", payload["company_kernel_task_id"])
-        self.assertEqual("openclaw-main", payload["company_kernel_source_agent"])
-        self.assertEqual("检查车辆任务", payload["summary"])
+        self.assertEqual("task-openclaw-dry-run", payload["task_id"])
+        self.assertEqual("openclaw-main", payload["source_agent"])
+        self.assertEqual("nestcar", payload["target_agent"])
+        self.assertEqual("检查车辆任务", payload["goal"])
+        self.assertEqual("openclaw-main", payload["reply_to_agent"])
+        self.assertEqual("company-kernel-message", payload["reply_surface"])
+        self.assertIn("claimed", payload["expected_receipts"])
+        self.assertIn("report_path", payload["evidence_required"])
 
         code, task = run_cli("task", "show", "--task-id", "task-openclaw-dry-run")
         self.assertEqual(code, 0, task)
@@ -3366,8 +3932,8 @@ class CompanyKernelCoreTest(unittest.TestCase):
         calls: list[list[str]] = []
 
         def fake_submit(source: str, target: str, priority: str, payload: dict) -> tuple[int, str, str]:
-            calls.append([source, target, priority, payload["company_kernel_task_id"]])
-            out = json.dumps({"ok": True, "file": str(self.root / "openclaw" / "ops" / "agent_bus" / f"{payload['company_kernel_task_id']}.json")}, ensure_ascii=False)
+            calls.append([source, target, priority, payload["task_id"]])
+            out = json.dumps({"ok": True, "file": str(self.root / "openclaw" / "ops" / "agent_bus" / f"{payload['task_id']}.json")}, ensure_ascii=False)
             return 0, out, ""
 
         executed_out = io.StringIO()

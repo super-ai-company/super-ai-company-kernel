@@ -76,12 +76,23 @@ def paths(agent: str, task_id: str) -> dict[str, Path]:
 
 def build_payload(task: sqlite3.Row) -> dict:
     return {
-        "summary": task["title"],
+        "task_id": task["id"],
+        "source_agent": task["source_agent"],
+        "target_agent": task["target_agent"],
+        "kind": "company_kernel_assignment",
+        "human_origin": True,
+        "reply_to_agent": task["source_agent"],
+        "reply_surface": "company-kernel-message",
+        "goal": task["title"],
         "description": task["description"],
-        "company_kernel_task_id": task["id"],
-        "company_kernel_source_agent": task["source_agent"],
+        "non_goals": ["do not silently treat this as a human chat only", "do not complete without evidence"],
+        "allowed_scope": ["target OpenClaw workspace only unless the task explicitly says otherwise"],
+        "verification": ["return exit_code/stdout/stderr or a report path for the executed check"],
+        "evidence_required": ["report_path", "exit_code", "stdout_stderr", "changed_files_or_none"],
+        "blocker_format": "status/blocker/tried/evidence/next_action",
+        "expected_receipts": ["claimed", "working or blocked", "done or blocked"],
         "expected_completion_evidence": "OpenClaw employee must return evidence path or blocker to Company Kernel.",
-        "next_action": "openclaw_employee_process_and_report",
+        "next_action": "openclaw_employee_claim_execute_or_block_and_report_to_source",
     }
 
 

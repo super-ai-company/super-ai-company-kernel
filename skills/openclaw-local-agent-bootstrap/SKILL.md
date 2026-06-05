@@ -36,6 +36,7 @@ When triggered, do this without waiting for the user to name every employee:
 - CLI employee skill names should follow `company-employee-cli-<runtime>` when the runtime has a direct command surface, for example Codex or Hermes.
 - GUI employee skill names should follow `company-employee-gui-<app>` when the runtime depends on an app or human GUI evidence, for example Antigravity.
 - OpenClaw workspace employees should follow `company-employee-openclaw-workspace`.
+- Hermes must be modeled as a first-class CLI supervisor employee with `skills/company-employee-cli-hermes/SKILL.md`; do not rely on generic OpenClaw rules for Hermes control.
 - Do not register an unsupported runtime as `active`. Discovery creates `candidate`; activation requires `bin/companyctl employee verify-direct --id <agent> --from main --rounds 3 --activate`.
 - GUI brief generation is not activation evidence. A GUI employee can be a candidate with a brief channel, but not active until a real reply path and completion/blocker evidence path are verified.
 
@@ -98,6 +99,9 @@ Use scanner output as a draft until direct smoke passes. `--apply` must not prom
 - When a service or route fails, ask whether another employee should assist and list active employee IDs as `@agent` options.
 - Use `@agent` mentions to create or reuse group conversations. Participants must include the human owner/requesting agent and all mentioned active employees.
 - Chat and mentions are coordination records only. Risky execution still requires an explicit task, approval, or adapter action.
+- OpenClaw workspace agents must use `skills/company-employee-openclaw-workspace/SKILL.md` for internal bus/inbox work. Human chat responsiveness is not proof that the agent drains agent-to-agent tasks.
+- Any agent-to-agent execution request must include a task envelope: task_id, source, target, goal, non-goals, allowed scope, reply_to_agent, verification, evidence_required, and blocker format. If missing, the receiver should return `blocked_missing_task_envelope`.
+- A direct/internal message that gets delivered but does not produce `claimed|working|done|blocked` back to the source is `no_receipt`, not success.
 
 ## Automatic Employee Handshake
 
