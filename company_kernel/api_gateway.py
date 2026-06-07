@@ -82,6 +82,8 @@ API_ENDPOINTS = [
     {"method": "GET", "path": "/v1/events", "summary": "List Company Kernel event ledger entries", "query": {"pending_only": "bool optional", "limit": "integer optional"}},
     {"method": "GET", "path": "/v1/events/stream", "summary": "Server-Sent Events stream for recent Company Kernel event ledger entries", "query": {"limit": "integer optional", "poll_seconds": "integer optional", "max_cycles": "integer optional"}},
     {"method": "GET", "path": "/v1/evidence", "summary": "List sanitized evidence records for Audit Hub", "query": {"task_id": "task id optional", "limit": "integer optional"}},
+    {"method": "GET", "path": "/v1/artifacts", "summary": "List sanitized artifact records for Audit Hub", "query": {"task_id": "task id optional", "limit": "integer optional"}},
+    {"method": "GET", "path": "/v1/handoffs", "summary": "List handoff contracts for Audit Hub", "query": {"task_id": "from or to task id optional", "limit": "integer optional"}},
     {"method": "GET", "path": "/v1/dashboard/communication-observability", "summary": "Dashboard-ready summary for direct messages, external mirror status, adapter-run progress, 5-layer progress heartbeat, and internal no-receipt watchdog"},
     {"method": "GET", "path": "/v1/dashboard/cockpit", "summary": "Dashboard-ready AI Employee Cockpit summary with long-task heartbeat/progress state and sanitized evidence"},
     {"method": "GET", "path": "/v1/dashboard/internal-watchdog", "summary": "Detect internal messages/tasks that were delivered but have no receipt, claim, or final evidence"},
@@ -376,6 +378,60 @@ def route_get(path: str, query: dict[str, list[str]]) -> tuple[int, dict]:
             item["display"] = companyctl.sanitize_evidence_path_for_display(raw_path)
             item["is_final"] = bool(item.get("is_final"))
         return HTTPStatus.OK, {"ok": True, "source": "/v1/evidence", "evidence": evidence}
+    if path == "/v1/artifacts":
+        limit_raw = query_value(query, "limit", "50")
+        limit = int(limit_raw) if str(limit_raw).isdigit() else 50
+        limit = max(1, min(limit, 200))
+        task_id = query_value(query, "task_id")
+        sql = """
+            SELECT artifact_id, trace_id, task_id, parent_task_id, employee_id, artifact_type,
+                   name, path, mime_type, stage, version, status, is_input, is_output, is_final,
+                   summary, checksum, metadata_json, created_at, updated_at
+            FROM artifacts
+        """
+        params: list[object] = []
+        if task_id:
+            sql += " WHERE task_id = ?"
+            params.append(task_id)
+        sql += " ORDER BY created_at DESC LIMIT ?"
+        params.append(limit)
+        conn = companyctl.connect_readonly()
+        try:
+            artifacts = companyctl.rows(conn, sql, tuple(params))
+        finally:
+            conn.close()
+        for item in artifacts:
+            raw_path = item.pop("path", "")
+            item["display"] = companyctl.sanitize_evidence_path_for_display(raw_path)
+            item["is_input"] = bool(item.get("is_input"))
+            item["is_output"] = bool(item.get("is_output"))
+            item["is_final"] = bool(item.get("is_final"))
+        return HTTPStatus.OK, {"ok": True, "source": "/v1/artifacts", "artifacts": artifacts}
+    if path == "/v1/handoffs":
+        limit_raw = query_value(query, "limit", "50")
+        limit = int(limit_raw) if str(limit_raw).isdigit() else 50
+        limit = max(1, min(limit, 200))
+        task_id = query_value(query, "task_id")
+        sql = """
+            SELECT handoff_id, trace_id, from_task_id, to_task_id, from_employee_id, to_employee_id,
+                   summary, artifacts_json, known_issues, next_steps, required_actions,
+                   acceptance_notes, status, created_at, updated_at
+            FROM handoffs
+        """
+        params: list[object] = []
+        if task_id:
+            sql += " WHERE from_task_id = ? OR to_task_id = ?"
+            params.extend([task_id, task_id])
+        sql += " ORDER BY created_at DESC LIMIT ?"
+        params.append(limit)
+        conn = companyctl.connect_readonly()
+        try:
+            handoffs = companyctl.rows(conn, sql, tuple(params))
+        finally:
+            conn.close()
+        for item in handoffs:
+            item["artifacts"] = companyctl.parse_json_arg(item.pop("artifacts_json", "") or "[]", [])
+        return HTTPStatus.OK, {"ok": True, "source": "/v1/handoffs", "handoffs": handoffs}
     if path == "/v1/dashboard/communication-observability":
         conn = companyctl.connect()
         try:
