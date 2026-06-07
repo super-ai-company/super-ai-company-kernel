@@ -2534,6 +2534,27 @@
       <!-- Governance Tab -->
       <div id="tab-governance" class="tab-pane">
         <div class="section-card">
+          <h2><i class="fa-solid fa-shield-halved"></i> Audit Hub</h2>
+          <div class="cockpit-list" id="audit-hub-links">
+            <div class="cockpit-row" onclick="switchTab('governance')">
+              <div><strong>Approvals</strong><span>Owner approve / deny / mock resolve decisions.</span></div>
+              <div class="long-task-state blocked">approval</div>
+            </div>
+            <div class="cockpit-row" onclick="switchTab('events')">
+              <div><strong>Event Ledger</strong><span>Company Event Ledger, adapter runs, and sanitized logs.</span></div>
+              <div class="long-task-state running">ledger</div>
+            </div>
+            <div class="cockpit-row" onclick="switchTab('telemetry')">
+              <div><strong>Trace Timeline</strong><span>Hermes -> Codex/Agy/OpenClaw supervision and execution spans.</span></div>
+              <div class="long-task-state running">trace</div>
+            </div>
+            <div class="cockpit-row" onclick="switchTab('tasks')">
+              <div><strong>Evidence Records</strong><span>Artifact, handoff, evidence, failure and task detail drawer.</span></div>
+              <div class="long-task-state success">evidence</div>
+            </div>
+          </div>
+        </div>
+        <div class="section-card">
           <h2 data-i18n="pending_approvals_title"><i class="fa-solid fa-scale-balanced"></i> Pending approvals & Requests</h2>
           <div class="table-container">
             <table>
