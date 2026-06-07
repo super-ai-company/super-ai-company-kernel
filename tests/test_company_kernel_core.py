@@ -1835,6 +1835,7 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertIn("counts.employees_online", html)
         self.assertIn("counts.employees_total", html)
         self.assertIn("counts.employees_abnormal", html)
+        self.assertIn("busy / candidate / active-limited / abnormal", html)
         self.assertEqual(5, html.count('class="nav-btn'))
         self.assertIn("Cockpit Console", html)
         self.assertIn("AI Fleet & Skills", html)
@@ -1936,6 +1937,7 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual(2, cockpit["counts"]["employees_online"])
         self.assertGreaterEqual(cockpit["counts"]["employees_abnormal"], 1)
         cockpit_employees = {item["id"]: item for item in cockpit["employees"]}
+        self.assertEqual("busy", cockpit_employees["codex-cockpit"]["status"])
         self.assertEqual("active_ready", cockpit_employees["codex-cockpit"]["readiness_level"])
         self.assertIn("runtime_evidence", cockpit_employees["codex-cockpit"]["readiness_reason"])
         self.assertEqual("abnormal", cockpit_employees["agy-cockpit"]["status"])
@@ -4959,6 +4961,7 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertTrue(attempt["finished_at"])
         self.assertEqual("", attempt["error_message"])
         done_event = next(item for item in shown["events"] if item["event_type"] == "task.done")
+        self.assertEqual(run["attempt"]["trace_id"], done_event["trace_id"])
         self.assertEqual(attempt_id, json.loads(done_event["payload_json"])["attempt_id"])
         evidence_record = next(item for item in shown["evidence_records"] if item["task_id"] == "task-done-closes-attempt")
         self.assertEqual(attempt_id, evidence_record["attempt_id"])

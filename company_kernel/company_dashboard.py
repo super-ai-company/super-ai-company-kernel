@@ -458,7 +458,11 @@ def build_cockpit_summary(summary: dict) -> dict:
     for employee in employees:
         status = str(employee.get("employee_status") or employee.get("status") or "")
         heartbeat = str(employee.get("heartbeat_status") or "missing")
-        active_state = "active-limited" if status == "active" and not employee.get("current_attempt") and employee.get("runtime") == "antigravity" else status
+        active_state = status
+        if status == "active" and employee.get("current_attempt"):
+            active_state = "busy"
+        elif status == "active" and employee.get("runtime") == "antigravity":
+            active_state = "active-limited"
         if heartbeat in {"stale", "missing", "offline"}:
             active_state = "abnormal" if status == "active" else status
         employee_states.append(
