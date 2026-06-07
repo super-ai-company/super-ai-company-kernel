@@ -1968,13 +1968,35 @@ def render(summary: dict) -> str:
         setEmployeeApiStatus(`Reassign failed: ${{err.message}}`, true);
       }}
     }}
+    function traceTimelineSummary(timeline) {{
+      const rows = Array.isArray(timeline) ? timeline : [];
+      if (!rows.length) return '-';
+      return rows.map(item => {{
+        const id = item.event_id || item.run_id || item.artifact_id || item.evidence_id || item.handoff_id || item.attempt_id || '';
+        const display = item.display && item.display.relative_path ? ` · ${{item.display.relative_path}}` : '';
+        const log = item.sanitized_log ? ` · ${{item.sanitized_log}}` : '';
+        return `${{item.at || '-'}} · ${{item.kind || '-'}} · ${{item.status || '-'}} · ${{item.task_id || '-'}} · ${{item.label || id}}${{display}}${{log}}`;
+      }}).join('\\n');
+    }}
     async function viewTaskTrace(traceId) {{
       if (!traceId) {{
         setEmployeeApiStatus('No trace_id for this task yet.', true);
         return;
       }}
-      setEmployeeApiStatus(`Trace ${{traceId}} is visible in the Traces panel/API.`, false);
-      location.hash = `trace-${{traceId}}`;
+      setEmployeeApiStatus(`Loading Trace Timeline ${{traceId}}...`, false);
+      try {{
+        const payload = await companyApiGet(`/v1/traces/${{encodeURIComponent(traceId)}}/timeline`);
+        renderDetails(`Trace Timeline: ${{traceId}}`, [
+          ['Trace ID', payload.trace_id || traceId],
+          ['Counts', payload.counts || {{}}],
+          ['Tasks', (payload.tasks || []).map(task => `${{task.id || '-'}} · ${{task.status || '-'}} · ${{task.target_agent || '-'}}`).join('\\n') || '-'],
+          ['Timeline', traceTimelineSummary(payload.timeline || [])],
+          ['Raw', payload],
+        ], payload);
+        setEmployeeApiStatus(`Trace Timeline loaded for ${{traceId}}.`, false);
+      }} catch (err) {{
+        setEmployeeApiStatus(`Trace Timeline failed: ${{err.message}}`, true);
+      }}
     }}
     window.addEventListener('DOMContentLoaded', checkCompanyApi);
   </script>
