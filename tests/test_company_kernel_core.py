@@ -2086,6 +2086,100 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertNotIn("id_rsa", failures_json)
         self.assertNotIn(".env", failures_json)
 
+    def test_cli_audit_ledgers_match_api_sanitized_records(self) -> None:
+        for employee_id, role in [("main", "operator"), ("writer", "writer"), ("qa", "qa"), ("codex", "developer")]:
+            code, created = run_cli("employee", "create", "--id", employee_id, "--name", employee_id, "--role", role, "--runtime", "local", "--workspace", str(self.root / "workspace" / employee_id))
+            self.assertEqual(0, code, created)
+            if employee_id != "main":
+                self.mark_active(employee_id)
+        code, source_task = run_cli("task", "submit", "--from", "main", "--to", "writer", "--task-id", "task-cli-audit-source", "--title", "CLI audit source")
+        self.assertEqual(0, code, source_task)
+        code, qa_task = run_cli("task", "submit", "--from", "main", "--to", "qa", "--task-id", "task-cli-audit-qa", "--title", "CLI audit qa")
+        self.assertEqual(0, code, qa_task)
+        code, failure_task = run_cli("task", "submit", "--from", "main", "--to", "codex", "--task-id", "task-cli-audit-failure", "--title", "CLI audit failure")
+        self.assertEqual(0, code, failure_task)
+        code, run = run_cli("task", "run", "--task-id", "task-cli-audit-failure", "--agent", "codex", "--by", "hermes")
+        self.assertEqual(0, code, run)
+        secret = "sk-cliAuditSECRET1234567890"
+        code, finished = run_cli("task", "attempt", "finish", "--attempt-id", run["attempt"]["attempt_id"], "--status", "failed", "--error", f"failed with token={secret} at {self.root / '.env'}")
+        self.assertEqual(0, code, finished)
+        code, blocked = run_cli("task", "block", "--agent", "codex", "--task-id", "task-cli-audit-failure", "--blocker", f"blocked with api_key={secret} /Users/owner/.ssh/id_rsa")
+        self.assertEqual(0, code, blocked)
+
+        conn = companyctl.connect()
+        try:
+            workspace = companyctl.ensure_task_workspace(conn, "task-cli-audit-source")
+            final_path = Path(workspace["path"]) / "final" / "delivery.md"
+            final_path.write_text("delivery\n", encoding="utf-8")
+            artifact = companyctl.register_artifact_internal(
+                conn,
+                task_id="task-cli-audit-source",
+                employee_id="writer",
+                path=str(final_path),
+                artifact_type="markdown",
+                summary="delivery artifact",
+                stage="final",
+                is_final=True,
+            )["artifact"]
+            handoff = companyctl.create_handoff_internal(
+                conn,
+                from_task_id="task-cli-audit-source",
+                to_task_id="task-cli-audit-qa",
+                from_employee_id="writer",
+                to_employee_id="qa",
+                summary="handoff for cli audit",
+                artifacts=[artifact["artifact_id"]],
+                next_steps="review",
+            )["handoff"]
+            evidence = companyctl.promote_artifact_to_evidence_internal(conn, artifact_id=artifact["artifact_id"], by="writer", summary="delivery evidence")["evidence"]
+            conn.execute(
+                """
+                INSERT INTO adapter_runs(id, trace_id, agent_id, task_id, command, ok, processed, attempt, result_json, created_at)
+                VALUES ('adapter-run-cli-audit-failure', ?, 'codex', 'task-cli-audit-failure', 'company-codex-adapter', 0, 0, 1, ?, ?)
+                """,
+                (
+                    failure_task["task"]["metadata"]["trace_id"],
+                    json.dumps({"stderr": f"api_key={secret} reading /Users/owner/.ssh/id_rsa", "stdout": "safe cli failure context"}, ensure_ascii=False),
+                    companyctl.now(),
+                ),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        for command, payload_key, api_path in [
+            ("evidence", "evidence", "/v1/evidence"),
+            ("artifacts", "artifacts", "/v1/artifacts"),
+            ("handoffs", "handoffs", "/v1/handoffs"),
+            ("failures", "failures", "/v1/failures"),
+        ]:
+            code, cli_payload = run_cli("audit", command, "--limit", "20")
+            self.assertEqual(0, code, cli_payload)
+            status, api_payload = api_gateway.route_get(api_path, {"limit": ["20"]})
+            self.assertEqual(200, status, api_payload)
+            self.assertEqual(api_payload[payload_key], cli_payload[payload_key])
+
+        code, cli_evidence = run_cli("audit", "evidence", "--task-id", "task-cli-audit-source", "--limit", "20")
+        self.assertEqual(0, code, cli_evidence)
+        self.assertEqual([evidence["evidence_id"]], [item["evidence_id"] for item in cli_evidence["evidence"]])
+        code, cli_artifacts = run_cli("audit", "artifacts", "--task-id", "task-cli-audit-source", "--limit", "20")
+        self.assertEqual(0, code, cli_artifacts)
+        self.assertEqual([artifact["artifact_id"]], [item["artifact_id"] for item in cli_artifacts["artifacts"]])
+        code, cli_handoffs = run_cli("audit", "handoffs", "--task-id", "task-cli-audit-source", "--limit", "20")
+        self.assertEqual(0, code, cli_handoffs)
+        self.assertEqual([handoff["handoff_id"]], [item["handoff_id"] for item in cli_handoffs["handoffs"]])
+        code, cli_failures = run_cli("audit", "failures", "--task-id", "task-cli-audit-failure", "--limit", "20")
+        self.assertEqual(0, code, cli_failures)
+        payload_json = json.dumps({**cli_evidence, **cli_artifacts, **cli_handoffs, **cli_failures}, ensure_ascii=False)
+        self.assertIn("task-cli-audit-source", payload_json)
+        self.assertIn("safe cli failure context", payload_json)
+        self.assertNotIn(str(self.root), payload_json)
+        self.assertNotIn(secret, payload_json)
+        self.assertNotIn("id_rsa", payload_json)
+        self.assertNotIn(".env", payload_json)
+        self.assertNotIn("path_or_url", payload_json)
+        self.assertNotIn("artifacts_json", payload_json)
+
     def test_api_gateway_streams_company_events_as_sse(self) -> None:
         conn = companyctl.connect()
         try:

@@ -354,200 +354,33 @@ def route_get(path: str, query: dict[str, list[str]]) -> tuple[int, dict]:
             events = list(reversed(recent_event_rows(limit=limit)))
         return HTTPStatus.OK, {"ok": True, "events": events, "pending_only": pending_only}
     if path == "/v1/evidence":
-        limit_raw = query_value(query, "limit", "50")
-        limit = int(limit_raw) if str(limit_raw).isdigit() else 50
-        limit = max(1, min(limit, 200))
-        task_id = query_value(query, "task_id")
-        sql = """
-            SELECT evidence_id, trace_id, task_id, attempt_id, employee_id, artifact_id,
-                   type, path_or_url, summary, checksum, is_final, metadata_json, created_at
-            FROM evidence
-        """
-        params: list[object] = []
-        if task_id:
-            sql += " WHERE task_id = ?"
-            params.append(task_id)
-        sql += " ORDER BY created_at DESC LIMIT ?"
-        params.append(limit)
         conn = companyctl.connect_readonly()
         try:
-            evidence = companyctl.rows(conn, sql, tuple(params))
+            evidence = companyctl.audit_evidence_records(conn, task_id=query_value(query, "task_id"), limit=query_value(query, "limit", "50"))
         finally:
             conn.close()
-        for item in evidence:
-            raw_path = item.pop("path_or_url", "")
-            item["display"] = companyctl.sanitize_evidence_path_for_display(raw_path)
-            item["is_final"] = bool(item.get("is_final"))
         return HTTPStatus.OK, {"ok": True, "source": "/v1/evidence", "evidence": evidence}
     if path == "/v1/artifacts":
-        limit_raw = query_value(query, "limit", "50")
-        limit = int(limit_raw) if str(limit_raw).isdigit() else 50
-        limit = max(1, min(limit, 200))
-        task_id = query_value(query, "task_id")
-        sql = """
-            SELECT artifact_id, trace_id, task_id, parent_task_id, employee_id, artifact_type,
-                   name, path, mime_type, stage, version, status, is_input, is_output, is_final,
-                   summary, checksum, metadata_json, created_at, updated_at
-            FROM artifacts
-        """
-        params: list[object] = []
-        if task_id:
-            sql += " WHERE task_id = ?"
-            params.append(task_id)
-        sql += " ORDER BY created_at DESC LIMIT ?"
-        params.append(limit)
         conn = companyctl.connect_readonly()
         try:
-            artifacts = companyctl.rows(conn, sql, tuple(params))
+            artifacts = companyctl.audit_artifact_records(conn, task_id=query_value(query, "task_id"), limit=query_value(query, "limit", "50"))
         finally:
             conn.close()
-        for item in artifacts:
-            raw_path = item.pop("path", "")
-            item["display"] = companyctl.sanitize_evidence_path_for_display(raw_path)
-            item["is_input"] = bool(item.get("is_input"))
-            item["is_output"] = bool(item.get("is_output"))
-            item["is_final"] = bool(item.get("is_final"))
         return HTTPStatus.OK, {"ok": True, "source": "/v1/artifacts", "artifacts": artifacts}
     if path == "/v1/handoffs":
-        limit_raw = query_value(query, "limit", "50")
-        limit = int(limit_raw) if str(limit_raw).isdigit() else 50
-        limit = max(1, min(limit, 200))
-        task_id = query_value(query, "task_id")
-        sql = """
-            SELECT handoff_id, trace_id, from_task_id, to_task_id, from_employee_id, to_employee_id,
-                   summary, artifacts_json, known_issues, next_steps, required_actions,
-                   acceptance_notes, status, created_at, updated_at
-            FROM handoffs
-        """
-        params: list[object] = []
-        if task_id:
-            sql += " WHERE from_task_id = ? OR to_task_id = ?"
-            params.extend([task_id, task_id])
-        sql += " ORDER BY created_at DESC LIMIT ?"
-        params.append(limit)
         conn = companyctl.connect_readonly()
         try:
-            handoffs = companyctl.rows(conn, sql, tuple(params))
+            handoffs = companyctl.audit_handoff_records(conn, task_id=query_value(query, "task_id"), limit=query_value(query, "limit", "50"))
         finally:
             conn.close()
-        for item in handoffs:
-            item["artifacts"] = companyctl.parse_json_arg(item.pop("artifacts_json", "") or "[]", [])
         return HTTPStatus.OK, {"ok": True, "source": "/v1/handoffs", "handoffs": handoffs}
     if path == "/v1/failures":
-        limit_raw = query_value(query, "limit", "50")
-        limit = int(limit_raw) if str(limit_raw).isdigit() else 50
-        limit = max(1, min(limit, 200))
-        task_id = query_value(query, "task_id")
         conn = companyctl.connect_readonly()
         try:
-            params: list[object] = []
-            task_clause = ""
-            if task_id:
-                task_clause = " AND id = ?"
-                params.append(task_id)
-            failed_tasks = companyctl.rows(
-                conn,
-                f"""
-                SELECT id, source_agent, target_agent, status, blocker, summary, updated_at
-                FROM tasks
-                WHERE (status IN ('blocked', 'failed', 'stale') OR blocker != '')
-                  {task_clause}
-                ORDER BY updated_at DESC
-                LIMIT ?
-                """,
-                tuple([*params, limit]),
-            )
-            params = []
-            attempt_clause = ""
-            if task_id:
-                attempt_clause = " AND task_id = ?"
-                params.append(task_id)
-            failed_attempts = companyctl.rows(
-                conn,
-                f"""
-                SELECT attempt_id, trace_id, task_id, employee_id, adapter_type, status,
-                       error_message, started_at, finished_at
-                FROM execution_attempts
-                WHERE status IN ('failed', 'stale', 'cancelled')
-                  {attempt_clause}
-                ORDER BY COALESCE(finished_at, started_at) DESC
-                LIMIT ?
-                """,
-                tuple([*params, limit]),
-            )
-            params = []
-            adapter_clause = ""
-            if task_id:
-                adapter_clause = " AND task_id = ?"
-                params.append(task_id)
-            failed_adapter_runs = companyctl.rows(
-                conn,
-                f"""
-                SELECT id, trace_id, agent_id, task_id, command, ok, processed, attempt,
-                       result_json, created_at, acknowledged_at, acknowledgement_reason
-                FROM adapter_runs
-                WHERE ok = 0
-                  {adapter_clause}
-                ORDER BY created_at DESC
-                LIMIT ?
-                """,
-                tuple([*params, limit]),
-            )
+            failures = companyctl.audit_failure_records(conn, task_id=query_value(query, "task_id"), limit=query_value(query, "limit", "50"))
         finally:
             conn.close()
-        failures = []
-        for item in failed_tasks:
-            failures.append(
-                {
-                    "kind": "task",
-                    "id": item["id"],
-                    "task_id": item["id"],
-                    "agent_id": item.get("target_agent", ""),
-                    "status": item.get("status", ""),
-                    "message": companyctl.sanitize_log_text(item.get("blocker") or item.get("summary") or ""),
-                    "created_at": item.get("updated_at", ""),
-                    "acknowledged": False,
-                }
-            )
-        for item in failed_attempts:
-            failures.append(
-                {
-                    "kind": "attempt",
-                    "id": item["attempt_id"],
-                    "attempt_id": item["attempt_id"],
-                    "trace_id": item.get("trace_id", ""),
-                    "task_id": item.get("task_id", ""),
-                    "agent_id": item.get("employee_id", ""),
-                    "status": item.get("status", ""),
-                    "message": companyctl.sanitize_log_text(item.get("error_message") or ""),
-                    "created_at": item.get("finished_at") or item.get("started_at") or "",
-                    "acknowledged": False,
-                }
-            )
-        for item in failed_adapter_runs:
-            raw_result_json = item.pop("result_json", "{}")
-            try:
-                result = json.loads(raw_result_json or "{}")
-            except json.JSONDecodeError:
-                result = {"raw": raw_result_json}
-            summary = companyctl.summarize_adapter_result(result)
-            failures.append(
-                {
-                    "kind": "adapter_run",
-                    "id": item["id"],
-                    "run_id": item["id"],
-                    "trace_id": item.get("trace_id", ""),
-                    "task_id": item.get("task_id", ""),
-                    "agent_id": item.get("agent_id", ""),
-                    "status": "failed",
-                    "message": summary.get("sanitized_log", ""),
-                    "created_at": item.get("created_at", ""),
-                    "acknowledged": bool(item.get("acknowledged_at")),
-                    "acknowledgement_reason": companyctl.sanitize_log_text(item.get("acknowledgement_reason") or ""),
-                }
-            )
-        failures.sort(key=lambda item: str(item.get("created_at") or ""), reverse=True)
-        return HTTPStatus.OK, {"ok": True, "source": "/v1/failures", "failures": failures[:limit]}
+        return HTTPStatus.OK, {"ok": True, "source": "/v1/failures", "failures": failures}
     if path == "/v1/dashboard/communication-observability":
         conn = companyctl.connect()
         try:

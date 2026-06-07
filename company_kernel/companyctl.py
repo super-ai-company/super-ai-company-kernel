@@ -3120,6 +3120,226 @@ def rows(conn: sqlite3.Connection, sql: str, params: tuple = ()) -> list[dict]:
     return [dict(r) for r in conn.execute(sql, params).fetchall()]
 
 
+def clamp_audit_limit(limit: int | str | None) -> int:
+    try:
+        value = int(limit or 50)
+    except (TypeError, ValueError):
+        value = 50
+    return max(1, min(value, 200))
+
+
+def audit_evidence_records(conn: sqlite3.Connection, *, task_id: str = "", limit: int | str | None = 50) -> list[dict]:
+    sql = """
+        SELECT evidence_id, trace_id, task_id, attempt_id, employee_id, artifact_id,
+               type, path_or_url, summary, checksum, is_final, metadata_json, created_at
+        FROM evidence
+    """
+    params: list[object] = []
+    if task_id:
+        sql += " WHERE task_id = ?"
+        params.append(task_id)
+    sql += " ORDER BY created_at DESC LIMIT ?"
+    params.append(clamp_audit_limit(limit))
+    evidence = rows(conn, sql, tuple(params))
+    for item in evidence:
+        raw_path = item.pop("path_or_url", "")
+        item["display"] = sanitize_evidence_path_for_display(raw_path)
+        item["is_final"] = bool(item.get("is_final"))
+    return evidence
+
+
+def audit_artifact_records(conn: sqlite3.Connection, *, task_id: str = "", limit: int | str | None = 50) -> list[dict]:
+    sql = """
+        SELECT artifact_id, trace_id, task_id, parent_task_id, employee_id, artifact_type,
+               name, path, mime_type, stage, version, status, is_input, is_output, is_final,
+               summary, checksum, metadata_json, created_at, updated_at
+        FROM artifacts
+    """
+    params: list[object] = []
+    if task_id:
+        sql += " WHERE task_id = ?"
+        params.append(task_id)
+    sql += " ORDER BY created_at DESC LIMIT ?"
+    params.append(clamp_audit_limit(limit))
+    artifacts = rows(conn, sql, tuple(params))
+    for item in artifacts:
+        raw_path = item.pop("path", "")
+        item["display"] = sanitize_evidence_path_for_display(raw_path)
+        item["is_input"] = bool(item.get("is_input"))
+        item["is_output"] = bool(item.get("is_output"))
+        item["is_final"] = bool(item.get("is_final"))
+    return artifacts
+
+
+def audit_handoff_records(conn: sqlite3.Connection, *, task_id: str = "", limit: int | str | None = 50) -> list[dict]:
+    sql = """
+        SELECT handoff_id, trace_id, from_task_id, to_task_id, from_employee_id, to_employee_id,
+               summary, artifacts_json, known_issues, next_steps, required_actions,
+               acceptance_notes, status, created_at, updated_at
+        FROM handoffs
+    """
+    params: list[object] = []
+    if task_id:
+        sql += " WHERE from_task_id = ? OR to_task_id = ?"
+        params.extend([task_id, task_id])
+    sql += " ORDER BY created_at DESC LIMIT ?"
+    params.append(clamp_audit_limit(limit))
+    handoffs = rows(conn, sql, tuple(params))
+    for item in handoffs:
+        item["artifacts"] = parse_json_arg(item.pop("artifacts_json", "") or "[]", [])
+    return handoffs
+
+
+def audit_failure_records(conn: sqlite3.Connection, *, task_id: str = "", limit: int | str | None = 50) -> list[dict]:
+    safe_limit = clamp_audit_limit(limit)
+    params: list[object] = []
+    task_clause = ""
+    if task_id:
+        task_clause = " AND id = ?"
+        params.append(task_id)
+    failed_tasks = rows(
+        conn,
+        f"""
+        SELECT id, source_agent, target_agent, status, blocker, summary, updated_at
+        FROM tasks
+        WHERE (status IN ('blocked', 'failed', 'stale') OR blocker != '')
+          {task_clause}
+        ORDER BY updated_at DESC
+        LIMIT ?
+        """,
+        tuple([*params, safe_limit]),
+    )
+    params = []
+    attempt_clause = ""
+    if task_id:
+        attempt_clause = " AND task_id = ?"
+        params.append(task_id)
+    failed_attempts = rows(
+        conn,
+        f"""
+        SELECT attempt_id, trace_id, task_id, employee_id, adapter_type, status,
+               error_message, started_at, finished_at
+        FROM execution_attempts
+        WHERE status IN ('failed', 'stale', 'cancelled')
+          {attempt_clause}
+        ORDER BY COALESCE(finished_at, started_at) DESC
+        LIMIT ?
+        """,
+        tuple([*params, safe_limit]),
+    )
+    params = []
+    adapter_clause = ""
+    if task_id:
+        adapter_clause = " AND task_id = ?"
+        params.append(task_id)
+    failed_adapter_runs = rows(
+        conn,
+        f"""
+        SELECT id, trace_id, agent_id, task_id, command, ok, processed, attempt,
+               result_json, created_at, acknowledged_at, acknowledgement_reason
+        FROM adapter_runs
+        WHERE ok = 0
+          {adapter_clause}
+        ORDER BY created_at DESC
+        LIMIT ?
+        """,
+        tuple([*params, safe_limit]),
+    )
+    failures = []
+    for item in failed_tasks:
+        failures.append(
+            {
+                "kind": "task",
+                "id": item["id"],
+                "task_id": item["id"],
+                "agent_id": item.get("target_agent", ""),
+                "status": item.get("status", ""),
+                "message": sanitize_log_text(item.get("blocker") or item.get("summary") or ""),
+                "created_at": item.get("updated_at", ""),
+                "acknowledged": False,
+            }
+        )
+    for item in failed_attempts:
+        failures.append(
+            {
+                "kind": "attempt",
+                "id": item["attempt_id"],
+                "attempt_id": item["attempt_id"],
+                "trace_id": item.get("trace_id", ""),
+                "task_id": item.get("task_id", ""),
+                "agent_id": item.get("employee_id", ""),
+                "status": item.get("status", ""),
+                "message": sanitize_log_text(item.get("error_message") or ""),
+                "created_at": item.get("finished_at") or item.get("started_at") or "",
+                "acknowledged": False,
+            }
+        )
+    for item in failed_adapter_runs:
+        raw_result_json = item.pop("result_json", "{}")
+        try:
+            result = json.loads(raw_result_json or "{}")
+        except json.JSONDecodeError:
+            result = {"raw": raw_result_json}
+        summary = summarize_adapter_result(result)
+        failures.append(
+            {
+                "kind": "adapter_run",
+                "id": item["id"],
+                "run_id": item["id"],
+                "trace_id": item.get("trace_id", ""),
+                "task_id": item.get("task_id", ""),
+                "agent_id": item.get("agent_id", ""),
+                "status": "failed",
+                "message": summary.get("sanitized_log", ""),
+                "created_at": item.get("created_at", ""),
+                "acknowledged": bool(item.get("acknowledged_at")),
+                "acknowledgement_reason": sanitize_log_text(item.get("acknowledgement_reason") or ""),
+            }
+        )
+    failures.sort(key=lambda item: str(item.get("created_at") or ""), reverse=True)
+    return failures[:safe_limit]
+
+
+def cmd_audit_evidence(args: argparse.Namespace) -> int:
+    conn = connect_readonly()
+    try:
+        evidence = audit_evidence_records(conn, task_id=args.task_id, limit=args.limit)
+    finally:
+        conn.close()
+    emit({"ok": True, "source": "companyctl audit evidence", "evidence": evidence})
+    return 0
+
+
+def cmd_audit_artifacts(args: argparse.Namespace) -> int:
+    conn = connect_readonly()
+    try:
+        artifacts = audit_artifact_records(conn, task_id=args.task_id, limit=args.limit)
+    finally:
+        conn.close()
+    emit({"ok": True, "source": "companyctl audit artifacts", "artifacts": artifacts})
+    return 0
+
+
+def cmd_audit_handoffs(args: argparse.Namespace) -> int:
+    conn = connect_readonly()
+    try:
+        handoffs = audit_handoff_records(conn, task_id=args.task_id, limit=args.limit)
+    finally:
+        conn.close()
+    emit({"ok": True, "source": "companyctl audit handoffs", "handoffs": handoffs})
+    return 0
+
+
+def cmd_audit_failures(args: argparse.Namespace) -> int:
+    conn = connect_readonly()
+    try:
+        failures = audit_failure_records(conn, task_id=args.task_id, limit=args.limit)
+    finally:
+        conn.close()
+    emit({"ok": True, "source": "companyctl audit failures", "failures": failures})
+    return 0
+
+
 def is_human_owner_employee(employee: dict) -> bool:
     return employee.get("id") == "owner" or employee.get("role") == "human-owner" or employee.get("runtime") == "human"
 
@@ -8655,6 +8875,25 @@ def build_parser() -> argparse.ArgumentParser:
     approval_resolve.add_argument("--reason", default="")
     approval_resolve.add_argument("--mock", action="store_true", help="record a dry-run/mock resolution without triggering external delivery")
     approval_resolve.set_defaults(func=cmd_approval_resolve)
+
+    audit_parser = sub.add_parser("audit")
+    audit_sub = audit_parser.add_subparsers(dest="audit_cmd", required=True)
+    audit_evidence = audit_sub.add_parser("evidence")
+    audit_evidence.add_argument("--task-id", default="")
+    audit_evidence.add_argument("--limit", type=int, default=50)
+    audit_evidence.set_defaults(func=cmd_audit_evidence)
+    audit_artifacts = audit_sub.add_parser("artifacts")
+    audit_artifacts.add_argument("--task-id", default="")
+    audit_artifacts.add_argument("--limit", type=int, default=50)
+    audit_artifacts.set_defaults(func=cmd_audit_artifacts)
+    audit_handoffs = audit_sub.add_parser("handoffs")
+    audit_handoffs.add_argument("--task-id", default="")
+    audit_handoffs.add_argument("--limit", type=int, default=50)
+    audit_handoffs.set_defaults(func=cmd_audit_handoffs)
+    audit_failures = audit_sub.add_parser("failures")
+    audit_failures.add_argument("--task-id", default="")
+    audit_failures.add_argument("--limit", type=int, default=50)
+    audit_failures.set_defaults(func=cmd_audit_failures)
 
     lock = sub.add_parser("lock")
     lock_sub = lock.add_subparsers(dest="lock_cmd", required=True)
