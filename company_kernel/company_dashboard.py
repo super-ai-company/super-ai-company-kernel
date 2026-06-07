@@ -332,6 +332,7 @@ def build_cockpit_summary(summary: dict) -> dict:
                 {**base, "id": "send_correction", "label": "Send correction", "api": f"/v1/tasks/{task_id}/correct"},
                 {**base, "id": "view_logs", "label": "View sanitized logs", "api": f"/v1/tasks/{task_id}"},
                 {**base, "id": "retry", "label": "Retry / reassign", "api": f"/v1/tasks/{task_id}/retry"},
+                {**base, "id": "reassign", "label": "Reassign employee", "api": f"/v1/tasks/{task_id}/reassign"},
             ]
         if kind == "approval":
             return [

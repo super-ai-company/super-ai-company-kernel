@@ -1834,6 +1834,8 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertIn("data-action-id", html)
         self.assertIn("correctTaskAttempt(taskId, attemptId)", html)
         self.assertIn("cancelTaskAttempt(taskId, attemptId)", html)
+        self.assertIn("retryTask(taskId)", html)
+        self.assertIn("reassignTask(taskId", html)
 
     def test_cockpit_api_sanitizes_evidence_and_exposes_long_task_state(self) -> None:
         code, created = run_cli("employee", "create", "--id", "main", "--name", "main", "--role", "operator", "--runtime", "openclaw", "--workspace", str(self.root / "workspace" / "main"))
@@ -1855,6 +1857,10 @@ class CompanyKernelCoreTest(unittest.TestCase):
         (verification_dir / "latest-runtime.json").write_text(json.dumps({"ok": True, "activation_allowed": True}, ensure_ascii=False), encoding="utf-8")
         code, submitted = run_cli("task", "submit", "--from", "main", "--to", "codex-cockpit", "--task-id", "task-cockpit-long", "--title", "Cockpit long task")
         self.assertEqual(0, code, submitted)
+        code, submitted_blocked = run_cli("task", "submit", "--from", "main", "--to", "codex-cockpit", "--task-id", "task-cockpit-blocked", "--title", "Cockpit blocked task")
+        self.assertEqual(0, code, submitted_blocked)
+        code, blocked = run_cli("task", "block", "--agent", "codex-cockpit", "--task-id", "task-cockpit-blocked", "--blocker", "needs owner input")
+        self.assertEqual(0, code, blocked)
         conn = companyctl.connect()
         try:
             workspace = companyctl.ensure_task_workspace(conn, "task-cockpit-long")
@@ -1908,6 +1914,9 @@ class CompanyKernelCoreTest(unittest.TestCase):
         )
         self.assertTrue(all(action["task_id"] == "task-cockpit-long" for action in attention["actions"]))
         self.assertTrue(all(action["attempt_id"] == attempt_id for action in attention["actions"]))
+        blocked_attention = next(item for item in cockpit["owner_attention"] if item["task_id"] == "task-cockpit-blocked" and item["kind"] == "blocked_task")
+        self.assertEqual(["send_correction", "view_logs", "retry", "reassign"], [action["id"] for action in blocked_attention["actions"]])
+        self.assertTrue(all(action["task_id"] == "task-cockpit-blocked" for action in blocked_attention["actions"]))
 
         status, shown = api_gateway.route_get("/v1/tasks/task-cockpit-long", {})
         self.assertEqual(200, status, shown)
