@@ -1275,6 +1275,43 @@ def latest_attempt_for_task(conn: sqlite3.Connection, task_id: str, employee_id:
     return dict(row) if row else None
 
 
+def long_task_state_for_attempt(attempt: dict, *, generated_at: str | None = None) -> dict:
+    policy = attempt_json_field(dict(attempt), "runtime_policy_json")
+    heartbeat_interval = int(policy.get("heartbeat_interval_seconds", DEFAULT_RUNTIME_POLICY["heartbeat_interval_seconds"]) or DEFAULT_RUNTIME_POLICY["heartbeat_interval_seconds"])
+    stale_after = int(policy.get("stale_after_seconds", DEFAULT_RUNTIME_POLICY["stale_after_seconds"]) or DEFAULT_RUNTIME_POLICY["stale_after_seconds"])
+    max_runtime = int(policy.get("max_runtime_seconds", DEFAULT_RUNTIME_POLICY["max_runtime_seconds"]) or DEFAULT_RUNTIME_POLICY["max_runtime_seconds"])
+    current = generated_at or now()
+    heartbeat_age = seconds_since(str(attempt.get("last_heartbeat_at") or attempt.get("started_at") or ""), current)
+    progress_age = seconds_since(str(attempt.get("last_progress_at") or attempt.get("started_at") or ""), current)
+    runtime_age = seconds_since(str(attempt.get("started_at") or ""), current)
+    heartbeat_warn_after = max(1, heartbeat_interval * 2)
+    heartbeat_state = "stale" if heartbeat_age >= heartbeat_warn_after else "fresh"
+    progress_state = "stagnant" if progress_age >= stale_after else "fresh"
+    status = str(attempt.get("status") or "")
+    if status == "correcting":
+        state = "correcting"
+    elif status in {"failed", "cancelled", "stale", "success"}:
+        state = status
+    elif heartbeat_state == "stale":
+        state = "heartbeat_stale"
+    elif progress_state == "stagnant":
+        state = "progress_stagnant"
+    else:
+        state = "running"
+    return {
+        "long_task_state": state,
+        "heartbeat_state": heartbeat_state,
+        "progress_state": progress_state,
+        "heartbeat_age_seconds": heartbeat_age,
+        "progress_age_seconds": progress_age,
+        "runtime_age_seconds": runtime_age,
+        "heartbeat_warn_after_seconds": heartbeat_warn_after,
+        "stale_after_seconds": stale_after,
+        "max_runtime_seconds": max_runtime,
+        "timeout_is_sync_wait_only": True,
+    }
+
+
 def start_execution_attempt_internal(
     conn: sqlite3.Connection,
     *,
@@ -6226,9 +6263,13 @@ def cmd_task_list(args: argparse.Namespace) -> int:
         where = "WHERE target_agent = ? OR source_agent = ? OR claimed_by = ?"
         params = (agent, agent, agent)
     tasks = rows(conn, f"SELECT * FROM tasks {where} ORDER BY created_at DESC", params)
+    generated_at = now()
     for task in tasks:
         attempt = latest_attempt_for_task(conn, task["id"])
-        task["current_attempt"] = hydrate_execution_attempt(attempt) if attempt else {}
+        hydrated_attempt = hydrate_execution_attempt(attempt) if attempt else {}
+        task["current_attempt"] = hydrated_attempt
+        if attempt:
+            task.update(long_task_state_for_attempt(hydrated_attempt, generated_at=generated_at))
     emit({"ok": True, "tasks": tasks})
     return 0
 

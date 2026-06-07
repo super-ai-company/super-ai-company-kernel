@@ -4705,13 +4705,18 @@
     const tasksTbody = document.getElementById('tasks-tbody');
     tasksTbody.innerHTML = summary.tasks.map(task => {
       const detailStr = JSON.stringify(task).replace(/'/g, "\'");
+      const taskState = task.long_task_state || task.status;
+      const taskStateMeta = task.long_task_state ? `task=${task.status || '-'} · heartbeat=${task.heartbeat_state || '-'} · progress=${task.progress_state || '-'}` : '';
       return `
         <tr data-status="${escapeHtml(task.status)}" onclick="showDetails('Task: ' + '${escapeHtml(task.id)}', ${detailStr})">
           <td style="font-family: monospace;">${escapeHtml(task.id)}</td>
           <td>${escapeHtml(task.source_agent)}</td>
           <td>${escapeHtml(task.target_agent)}</td>
           <td>${escapeHtml(task.priority)}</td>
-          <td><span class="badge ${escapeHtml(task.status)}">${escapeHtml(task.status)}</span></td>
+          <td>
+            <span class="long-task-state ${escapeHtml(taskState)}">${escapeHtml(taskState)}</span>
+            ${taskStateMeta ? `<div style="color: var(--text-muted); font-size: 10px; margin-top: 4px;">${escapeHtml(taskStateMeta)}</div>` : ''}
+          </td>
           <td>${escapeHtml(task.claimed_by || '-')}</td>
           <td>${task.evidence_path ? 'Yes' : 'No'}</td>
           <td style="color: var(--color-rose);">${escapeHtml(task.blocker || '-')}</td>

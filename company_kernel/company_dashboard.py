@@ -253,39 +253,7 @@ def build_traces(conn: sqlite3.Connection, *, limit: int = 20) -> list[dict]:
 
 
 def long_task_state(attempt: dict, *, generated_at: str) -> dict:
-    policy = companyctl.attempt_json_field(dict(attempt), "runtime_policy_json")
-    heartbeat_interval = int(policy.get("heartbeat_interval_seconds", companyctl.DEFAULT_RUNTIME_POLICY["heartbeat_interval_seconds"]) or companyctl.DEFAULT_RUNTIME_POLICY["heartbeat_interval_seconds"])
-    stale_after = int(policy.get("stale_after_seconds", companyctl.DEFAULT_RUNTIME_POLICY["stale_after_seconds"]) or companyctl.DEFAULT_RUNTIME_POLICY["stale_after_seconds"])
-    max_runtime = int(policy.get("max_runtime_seconds", companyctl.DEFAULT_RUNTIME_POLICY["max_runtime_seconds"]) or companyctl.DEFAULT_RUNTIME_POLICY["max_runtime_seconds"])
-    heartbeat_age = seconds_since(str(attempt.get("last_heartbeat_at") or attempt.get("started_at") or ""), generated_at)
-    progress_age = seconds_since(str(attempt.get("last_progress_at") or attempt.get("started_at") or ""), generated_at)
-    runtime_age = seconds_since(str(attempt.get("started_at") or ""), generated_at)
-    heartbeat_warn_after = max(1, heartbeat_interval * 2)
-    heartbeat_state = "unknown" if heartbeat_age is None else "stale" if heartbeat_age >= heartbeat_warn_after else "fresh"
-    progress_state = "unknown" if progress_age is None else "stagnant" if progress_age >= stale_after else "fresh"
-    status = str(attempt.get("status") or "")
-    if status == "correcting":
-        state = "correcting"
-    elif status in {"failed", "cancelled", "stale", "success"}:
-        state = status
-    elif heartbeat_state == "stale":
-        state = "heartbeat_stale"
-    elif progress_state == "stagnant":
-        state = "progress_stagnant"
-    else:
-        state = "running"
-    return {
-        "long_task_state": state,
-        "heartbeat_state": heartbeat_state,
-        "progress_state": progress_state,
-        "heartbeat_age_seconds": heartbeat_age,
-        "progress_age_seconds": progress_age,
-        "runtime_age_seconds": runtime_age,
-        "heartbeat_warn_after_seconds": heartbeat_warn_after,
-        "stale_after_seconds": stale_after,
-        "max_runtime_seconds": max_runtime,
-        "timeout_is_sync_wait_only": True,
-    }
+    return companyctl.long_task_state_for_attempt(attempt, generated_at=generated_at)
 
 
 def build_cockpit_summary(summary: dict) -> dict:
