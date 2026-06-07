@@ -1472,6 +1472,31 @@ def task_progress_events(events: list[dict]) -> list[dict]:
     return progress_events
 
 
+def task_correction_events(events: list[dict]) -> list[dict]:
+    correction_events = []
+    for event in events:
+        event_type = str(event.get("event_type", ""))
+        if event_type not in {"supervisor.correction_requested", "supervisor.correction_acknowledged"}:
+            continue
+        payload = parse_json_arg(event.get("payload_json", "{}") or "{}", {})
+        if not isinstance(payload, dict):
+            payload = {}
+        correction_events.append(
+            {
+                "event_id": event.get("id", ""),
+                "event_type": event_type,
+                "task_id": event.get("task_id", ""),
+                "trace_id": event.get("trace_id", ""),
+                "source_agent": event.get("source_agent", ""),
+                "attempt_id": str(payload.get("attempt_id", "") or ""),
+                "message": str(payload.get("message", "") or ""),
+                "ack": event_type == "supervisor.correction_acknowledged",
+                "created_at": event.get("created_at", ""),
+            }
+        )
+    return correction_events
+
+
 def latest_active_attempt_for_task(conn: sqlite3.Connection, task_id: str, employee_id: str) -> dict | None:
     placeholders = ",".join("?" for _ in MANAGED_ATTEMPT_ACTIVE_STATUSES)
     params = [task_id, employee_id, *sorted(MANAGED_ATTEMPT_ACTIVE_STATUSES)]
@@ -6975,6 +7000,7 @@ def cmd_task_show(args: argparse.Namespace) -> int:
             "hook_runs": hook_runs,
             "attempts": attempts,
             "progress_events": task_progress_events(events),
+            "correction_events": task_correction_events(events),
             "sanitized_logs": sanitized_logs,
             "supervisor_state": supervisor_state,
             "correction_summary": correction_summary,

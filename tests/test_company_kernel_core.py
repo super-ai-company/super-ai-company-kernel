@@ -1847,6 +1847,8 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertIn("Event Ledger", html)
         self.assertIn("Trace Timeline", html)
         self.assertIn("Correction State", html)
+        self.assertIn("Correction Events", html)
+        self.assertIn("correctionEventsSummary", html)
         self.assertIn("Supervisor State", html)
         self.assertIn("Latest Attempt", html)
         self.assertIn("Heartbeat / Progress", html)
@@ -4627,11 +4629,19 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual(1, shown["supervisor_state"]["corrections_acknowledged"])
         self.assertEqual("cancelled", shown["correction_summary"]["latest_attempt_status"])
         self.assertEqual(attempt_id, shown["correction_summary"]["latest_attempt_id"])
+        self.assertEqual(
+            ["supervisor.correction_requested", "supervisor.correction_acknowledged"],
+            [item["event_type"] for item in shown["correction_events"]],
+        )
+        self.assertEqual(["hermes", "codex"], [item["source_agent"] for item in shown["correction_events"]])
+        self.assertTrue(all(item["attempt_id"] == attempt_id for item in shown["correction_events"]))
+        self.assertEqual(["请回到 README 总结任务", "已收到纠偏"], [item["message"] for item in shown["correction_events"]])
 
         status, api_shown = api_gateway.route_get("/v1/tasks/task-long-managed", {})
         self.assertEqual(200, status, api_shown)
         self.assertEqual(shown["supervisor_state"], api_shown["supervisor_state"])
         self.assertEqual(shown["correction_summary"], api_shown["correction_summary"])
+        self.assertEqual(shown["correction_events"], api_shown["correction_events"])
 
     def test_managed_attempt_progress_refresh_prevents_stale_until_progress_stops(self) -> None:
         for employee_id, role in [("main", "operator"), ("hermes", "supervisor"), ("codex", "developer")]:

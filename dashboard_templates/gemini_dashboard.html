@@ -3445,6 +3445,15 @@
     }).join('\n');
   }
 
+  function correctionEventsSummary(events) {
+    const rows = Array.isArray(events) ? events : [];
+    if (!rows.length) return '-';
+    return rows.slice(-8).map(item => {
+      const direction = item.ack ? 'acknowledged' : 'requested';
+      return `${formatDate(item.created_at || '') || '-'} · ${direction} · ${item.source_agent || '-'} · attempt=${item.attempt_id || '-'} · ${item.message || ''}`;
+    }).join('\n');
+  }
+
   function sanitizedLogsSummary(logs) {
     const rows = Array.isArray(logs) ? logs : [];
     if (!rows.length) return '-';
@@ -3668,6 +3677,7 @@
       const attempts = payload.attempts || [];
       const events = payload.events || [];
       const progressEvents = payload.progress_events || [];
+      const correctionEvents = payload.correction_events || [];
       const sanitizedLogs = payload.sanitized_logs || [];
       const approvals = payload.approvals || [];
       const evidenceRecords = payload.evidence_records || [];
@@ -3686,6 +3696,7 @@
         ['Heartbeat / Progress', heartbeatProgressSummary(latestAttempt)],
         ['Runtime Policy', latestAttempt.runtime_policy || {}],
         ['Correction State', correctionSummary],
+        ['Correction Events', correctionEventsSummary(correctionEvents)],
         ['Supervisor State', supervisorState],
         ['Progress Events', progressEventsSummary(progressEvents)],
         ['Sanitized Logs', sanitizedLogsSummary(sanitizedLogs)],
