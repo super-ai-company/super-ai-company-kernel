@@ -110,6 +110,71 @@ def load_trace(conn: sqlite3.Connection, trace_id: str) -> dict:
     }
 
 
+def safe_trace_payload(trace: dict) -> dict:
+    evidence_by_id = {item.get("evidence_id", ""): item for item in trace.get("evidence", [])}
+    artifact_by_id = {item.get("artifact_id", ""): item for item in trace.get("artifacts", [])}
+    adapter_by_id = {item.get("id", ""): item for item in trace.get("adapter_runs", [])}
+    timeline = []
+    for raw_item in trace.get("timeline", []):
+        item = {
+            "kind": raw_item.get("kind", ""),
+            "at": raw_item.get("at", ""),
+            "status": raw_item.get("status", ""),
+            "label": companyctl.sanitize_log_text(raw_item.get("label", "")),
+            "task_id": raw_item.get("task_id", ""),
+        }
+        for key in ("event_id", "run_id", "artifact_id", "evidence_id", "handoff_id", "attempt_id", "attempt"):
+            if raw_item.get(key) not in {None, ""}:
+                item[key] = raw_item[key]
+        if item.get("evidence_id"):
+            evidence = evidence_by_id.get(item["evidence_id"], {})
+            display = companyctl.sanitize_evidence_path_for_display(str(evidence.get("path_or_url", "")))
+            item["display"] = display
+            item["label"] = companyctl.sanitize_log_text(evidence.get("summary") or display.get("relative_path") or display.get("basename") or item["label"])
+        if item.get("artifact_id"):
+            artifact = artifact_by_id.get(item["artifact_id"], {})
+            item["display"] = companyctl.sanitize_evidence_path_for_display(str(artifact.get("path", "")))
+        if item.get("run_id"):
+            adapter_run = adapter_by_id.get(item["run_id"], {})
+            try:
+                result = json.loads(adapter_run.get("result_json", "{}") or "{}")
+            except json.JSONDecodeError:
+                result = {"raw": adapter_run.get("result_json", "")}
+            summary = companyctl.summarize_adapter_result(result)
+            if summary.get("sanitized_log"):
+                item["sanitized_log"] = summary["sanitized_log"]
+        timeline.append(item)
+    return {
+        "ok": True,
+        "source": "trace.timeline",
+        "trace_id": trace.get("trace_id", ""),
+        "generated_at": trace.get("generated_at", ""),
+        "counts": {
+            "tasks": len(trace.get("tasks", [])),
+            "events": len(trace.get("events", [])),
+            "adapter_runs": len(trace.get("adapter_runs", [])),
+            "artifacts": len(trace.get("artifacts", [])),
+            "handoffs": len(trace.get("handoffs", [])),
+            "evidence": len(trace.get("evidence", [])),
+            "execution_attempts": len(trace.get("execution_attempts", [])),
+            "timeline": len(timeline),
+        },
+        "tasks": [
+            {
+                "id": item.get("id", ""),
+                "source_agent": item.get("source_agent", ""),
+                "target_agent": item.get("target_agent", ""),
+                "status": item.get("status", ""),
+                "title": item.get("title", ""),
+                "created_at": item.get("created_at", ""),
+                "updated_at": item.get("updated_at", ""),
+            }
+            for item in trace.get("tasks", [])
+        ],
+        "timeline": timeline,
+    }
+
+
 def render_html(trace: dict) -> str:
     rows_html = []
     for item in trace["timeline"]:

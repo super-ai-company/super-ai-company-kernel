@@ -4142,6 +4142,90 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual(trace_id, payload["trace_id"])
         self.assertGreaterEqual(len(payload["timeline"]), 3)
 
+    def test_api_and_cli_expose_sanitized_trace_timeline(self) -> None:
+        for employee_id, role in [("main", "operator"), ("hermes", "supervisor"), ("codex", "developer"), ("qa", "qa")]:
+            code, created = run_cli("employee", "create", "--id", employee_id, "--name", employee_id, "--role", role, "--runtime", "local", "--workspace", str(self.root / "workspace" / employee_id))
+            self.assertEqual(0, code, created)
+            if employee_id not in {"main", "hermes"}:
+                self.mark_active(employee_id)
+        code, submitted = run_cli("task", "submit", "--from", "main", "--to", "codex", "--task-id", "task-trace-api", "--title", "Trace API")
+        self.assertEqual(0, code, submitted)
+        trace_id = submitted["task"]["metadata"]["trace_id"]
+        code, qa_task = run_cli("task", "submit", "--from", "main", "--to", "qa", "--task-id", "task-trace-api-qa", "--title", "Trace API QA")
+        self.assertEqual(0, code, qa_task)
+        code, running = run_cli("task", "run", "--task-id", "task-trace-api", "--agent", "codex", "--by", "hermes")
+        self.assertEqual(0, code, running)
+        attempt_id = running["attempt"]["attempt_id"]
+        code, corrected = run_cli("task", "correct", "--task-id", "task-trace-api", "--attempt-id", attempt_id, "--by", "hermes", "--message", "请聚焦 evidence")
+        self.assertEqual(0, code, corrected)
+        code, acked = run_cli("task", "correct", "--task-id", "task-trace-api", "--attempt-id", attempt_id, "--by", "codex", "--message", "收到纠偏", "--ack")
+        self.assertEqual(0, code, acked)
+
+        conn = companyctl.connect()
+        secret = "sk-traceTimelineSECRET1234567890"
+        try:
+            workspace = companyctl.ensure_task_workspace(conn, "task-trace-api")
+            final_path = Path(workspace["path"]) / "final" / "trace-delivery.md"
+            final_path.write_text("trace delivery\n", encoding="utf-8")
+            artifact = companyctl.register_artifact_internal(
+                conn,
+                task_id="task-trace-api",
+                employee_id="codex",
+                path=str(final_path),
+                artifact_type="markdown",
+                summary="trace delivery",
+                stage="final",
+                is_final=True,
+            )["artifact"]
+            companyctl.create_handoff_internal(
+                conn,
+                from_task_id="task-trace-api",
+                to_task_id="task-trace-api-qa",
+                from_employee_id="codex",
+                to_employee_id="qa",
+                summary="handoff trace artifact",
+                artifacts=[artifact["artifact_id"]],
+            )
+            companyctl.promote_artifact_to_evidence_internal(conn, artifact_id=artifact["artifact_id"], by="codex", summary="")
+            conn.execute(
+                """
+                INSERT INTO adapter_runs(id, trace_id, agent_id, task_id, command, ok, processed, attempt, next_retry_at, result_json, created_at)
+                VALUES ('adapter-run-trace-api', ?, 'codex', 'task-trace-api', 'company-codex-adapter', 0, 1, 1, '', ?, ?)
+                """,
+                (
+                    trace_id,
+                    json.dumps({"stderr": f"api_key={secret} reading /Users/owner/.ssh/id_rsa", "stdout": "safe trace output"}, ensure_ascii=False),
+                    companyctl.now(),
+                ),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        status, api_payload = api_gateway.route_get(f"/v1/traces/{trace_id}/timeline", {})
+        self.assertEqual(HTTPStatus.OK, status, api_payload)
+        self.assertTrue(api_payload["ok"])
+        code, cli_payload = run_cli("trace", "timeline", "--trace-id", trace_id)
+        self.assertEqual(0, code, cli_payload)
+        self.assertEqual(api_payload["timeline"], cli_payload["timeline"])
+        self.assertEqual(api_payload["counts"], cli_payload["counts"])
+        timeline_kinds = [item["kind"] for item in api_payload["timeline"]]
+        self.assertIn("attempt", timeline_kinds)
+        self.assertIn("event", timeline_kinds)
+        self.assertIn("artifact", timeline_kinds)
+        self.assertIn("handoff", timeline_kinds)
+        self.assertIn("evidence", timeline_kinds)
+        correction_items = [item for item in api_payload["timeline"] if item.get("label") in {"supervisor.correction_requested", "supervisor.correction_acknowledged"}]
+        self.assertEqual(2, len(correction_items))
+        payload_json = json.dumps(api_payload, ensure_ascii=False)
+        self.assertIn("safe trace output", payload_json)
+        self.assertIn("trace-delivery.md", payload_json)
+        self.assertNotIn(str(self.root), payload_json)
+        self.assertNotIn(secret, payload_json)
+        self.assertNotIn("id_rsa", payload_json)
+        self.assertNotIn("path_or_url", payload_json)
+        self.assertNotIn("result_json", payload_json)
+
     def test_v3_workspace_artifact_handoff_attempt_and_trace_flow(self) -> None:
         for employee_id, role in [("manager", "supervisor"), ("writer", "copywriter"), ("qa", "qa")]:
             code, created = run_cli("employee", "create", "--id", employee_id, "--name", employee_id, "--role", role, "--runtime", "local", "--workspace", str(self.root / "workspace" / employee_id))

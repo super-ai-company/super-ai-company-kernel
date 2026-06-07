@@ -11,6 +11,7 @@ from urllib.parse import parse_qs, urlparse
 
 from . import companyctl
 from . import company_dashboard
+from . import company_trace
 
 
 API_VERSION = "v1"
@@ -85,6 +86,7 @@ API_ENDPOINTS = [
     {"method": "GET", "path": "/v1/artifacts", "summary": "List sanitized artifact records for Audit Hub", "query": {"task_id": "task id optional", "limit": "integer optional"}},
     {"method": "GET", "path": "/v1/handoffs", "summary": "List handoff contracts for Audit Hub", "query": {"task_id": "from or to task id optional", "limit": "integer optional"}},
     {"method": "GET", "path": "/v1/failures", "summary": "List sanitized task, attempt, and adapter failure records for Audit Hub", "query": {"task_id": "task id optional", "limit": "integer optional"}},
+    {"method": "GET", "path": "/v1/traces/{trace_id}/timeline", "summary": "Read sanitized trace timeline for dashboard trace view"},
     {"method": "GET", "path": "/v1/dashboard/communication-observability", "summary": "Dashboard-ready summary for direct messages, external mirror status, adapter-run progress, 5-layer progress heartbeat, and internal no-receipt watchdog"},
     {"method": "GET", "path": "/v1/dashboard/cockpit", "summary": "Dashboard-ready AI Employee Cockpit summary with long-task heartbeat/progress state and sanitized evidence"},
     {"method": "GET", "path": "/v1/dashboard/internal-watchdog", "summary": "Detect internal messages/tasks that were delivered but have no receipt, claim, or final evidence"},
@@ -381,6 +383,16 @@ def route_get(path: str, query: dict[str, list[str]]) -> tuple[int, dict]:
         finally:
             conn.close()
         return HTTPStatus.OK, {"ok": True, "source": "/v1/failures", "failures": failures}
+    if path.startswith("/v1/traces/") and path.endswith("/timeline"):
+        trace_id = path.removeprefix("/v1/traces/").removesuffix("/timeline").strip("/")
+        if not trace_id or "/" in trace_id:
+            return HTTPStatus.NOT_FOUND, {"ok": False, "error": "not found", "path": path}
+        conn = companyctl.connect_readonly()
+        try:
+            trace = company_trace.load_trace(conn, trace_id)
+            return HTTPStatus.OK, company_trace.safe_trace_payload(trace)
+        finally:
+            conn.close()
     if path == "/v1/dashboard/communication-observability":
         conn = companyctl.connect()
         try:
