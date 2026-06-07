@@ -3340,6 +3340,19 @@ def cmd_audit_failures(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_trace_timeline(args: argparse.Namespace) -> int:
+    from . import company_trace
+
+    conn = connect_readonly()
+    try:
+        trace_id = company_trace.resolve_trace_id(conn, args.trace_id, args.task_id)
+        trace = company_trace.load_trace(conn, trace_id)
+    finally:
+        conn.close()
+    emit(company_trace.safe_trace_payload(trace))
+    return 0
+
+
 def is_human_owner_employee(employee: dict) -> bool:
     return employee.get("id") == "owner-shift" or employee.get("role") == "human-owner" or employee.get("runtime") == "human"
 
@@ -8894,6 +8907,13 @@ def build_parser() -> argparse.ArgumentParser:
     audit_failures.add_argument("--task-id", default="")
     audit_failures.add_argument("--limit", type=int, default=50)
     audit_failures.set_defaults(func=cmd_audit_failures)
+
+    trace_parser = sub.add_parser("trace")
+    trace_sub = trace_parser.add_subparsers(dest="trace_cmd", required=True)
+    trace_timeline = trace_sub.add_parser("timeline")
+    trace_timeline.add_argument("--trace-id", default="")
+    trace_timeline.add_argument("--task-id", default="")
+    trace_timeline.set_defaults(func=cmd_trace_timeline)
 
     lock = sub.add_parser("lock")
     lock_sub = lock.add_subparsers(dest="lock_cmd", required=True)
