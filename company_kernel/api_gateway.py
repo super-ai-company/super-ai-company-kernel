@@ -84,6 +84,7 @@ API_ENDPOINTS = [
     {"method": "GET", "path": "/v1/evidence", "summary": "List sanitized evidence records for Audit Hub", "query": {"task_id": "task id optional", "limit": "integer optional"}},
     {"method": "GET", "path": "/v1/artifacts", "summary": "List sanitized artifact records for Audit Hub", "query": {"task_id": "task id optional", "limit": "integer optional"}},
     {"method": "GET", "path": "/v1/handoffs", "summary": "List handoff contracts for Audit Hub", "query": {"task_id": "from or to task id optional", "limit": "integer optional"}},
+    {"method": "GET", "path": "/v1/failures", "summary": "List sanitized task, attempt, and adapter failure records for Audit Hub", "query": {"task_id": "task id optional", "limit": "integer optional"}},
     {"method": "GET", "path": "/v1/dashboard/communication-observability", "summary": "Dashboard-ready summary for direct messages, external mirror status, adapter-run progress, 5-layer progress heartbeat, and internal no-receipt watchdog"},
     {"method": "GET", "path": "/v1/dashboard/cockpit", "summary": "Dashboard-ready AI Employee Cockpit summary with long-task heartbeat/progress state and sanitized evidence"},
     {"method": "GET", "path": "/v1/dashboard/internal-watchdog", "summary": "Detect internal messages/tasks that were delivered but have no receipt, claim, or final evidence"},
@@ -432,6 +433,121 @@ def route_get(path: str, query: dict[str, list[str]]) -> tuple[int, dict]:
         for item in handoffs:
             item["artifacts"] = companyctl.parse_json_arg(item.pop("artifacts_json", "") or "[]", [])
         return HTTPStatus.OK, {"ok": True, "source": "/v1/handoffs", "handoffs": handoffs}
+    if path == "/v1/failures":
+        limit_raw = query_value(query, "limit", "50")
+        limit = int(limit_raw) if str(limit_raw).isdigit() else 50
+        limit = max(1, min(limit, 200))
+        task_id = query_value(query, "task_id")
+        conn = companyctl.connect_readonly()
+        try:
+            params: list[object] = []
+            task_clause = ""
+            if task_id:
+                task_clause = " AND id = ?"
+                params.append(task_id)
+            failed_tasks = companyctl.rows(
+                conn,
+                f"""
+                SELECT id, source_agent, target_agent, status, blocker, summary, updated_at
+                FROM tasks
+                WHERE (status IN ('blocked', 'failed', 'stale') OR blocker != '')
+                  {task_clause}
+                ORDER BY updated_at DESC
+                LIMIT ?
+                """,
+                tuple([*params, limit]),
+            )
+            params = []
+            attempt_clause = ""
+            if task_id:
+                attempt_clause = " AND task_id = ?"
+                params.append(task_id)
+            failed_attempts = companyctl.rows(
+                conn,
+                f"""
+                SELECT attempt_id, trace_id, task_id, employee_id, adapter_type, status,
+                       error_message, started_at, finished_at
+                FROM execution_attempts
+                WHERE status IN ('failed', 'stale', 'cancelled')
+                  {attempt_clause}
+                ORDER BY COALESCE(finished_at, started_at) DESC
+                LIMIT ?
+                """,
+                tuple([*params, limit]),
+            )
+            params = []
+            adapter_clause = ""
+            if task_id:
+                adapter_clause = " AND task_id = ?"
+                params.append(task_id)
+            failed_adapter_runs = companyctl.rows(
+                conn,
+                f"""
+                SELECT id, trace_id, agent_id, task_id, command, ok, processed, attempt,
+                       result_json, created_at, acknowledged_at, acknowledgement_reason
+                FROM adapter_runs
+                WHERE ok = 0
+                  {adapter_clause}
+                ORDER BY created_at DESC
+                LIMIT ?
+                """,
+                tuple([*params, limit]),
+            )
+        finally:
+            conn.close()
+        failures = []
+        for item in failed_tasks:
+            failures.append(
+                {
+                    "kind": "task",
+                    "id": item["id"],
+                    "task_id": item["id"],
+                    "agent_id": item.get("target_agent", ""),
+                    "status": item.get("status", ""),
+                    "message": companyctl.sanitize_log_text(item.get("blocker") or item.get("summary") or ""),
+                    "created_at": item.get("updated_at", ""),
+                    "acknowledged": False,
+                }
+            )
+        for item in failed_attempts:
+            failures.append(
+                {
+                    "kind": "attempt",
+                    "id": item["attempt_id"],
+                    "attempt_id": item["attempt_id"],
+                    "trace_id": item.get("trace_id", ""),
+                    "task_id": item.get("task_id", ""),
+                    "agent_id": item.get("employee_id", ""),
+                    "status": item.get("status", ""),
+                    "message": companyctl.sanitize_log_text(item.get("error_message") or ""),
+                    "created_at": item.get("finished_at") or item.get("started_at") or "",
+                    "acknowledged": False,
+                }
+            )
+        for item in failed_adapter_runs:
+            raw_result_json = item.pop("result_json", "{}")
+            try:
+                result = json.loads(raw_result_json or "{}")
+            except json.JSONDecodeError:
+                result = {"raw": raw_result_json}
+            summary = companyctl.summarize_adapter_result(result)
+            failures.append(
+                {
+                    "kind": "adapter_run",
+                    "id": item["id"],
+                    "run_id": item["id"],
+                    "trace_id": item.get("trace_id", ""),
+                    "task_id": item.get("task_id", ""),
+                    "agent_id": item.get("agent_id", ""),
+                    "status": "failed",
+                    "message": summary.get("sanitized_log", ""),
+                    "created_at": item.get("created_at", ""),
+                    "acknowledged": bool(item.get("acknowledged_at")),
+                    "acknowledgement_reason": companyctl.sanitize_log_text(item.get("acknowledgement_reason") or ""),
+                }
+            )
+        failures.sort(key=lambda item: str(item.get("created_at") or ""), reverse=True)
+        return HTTPStatus.OK, {"ok": True, "source": "/v1/failures", "failures": failures[:limit]}
     if path == "/v1/dashboard/communication-observability":
         conn = companyctl.connect()
         try:
