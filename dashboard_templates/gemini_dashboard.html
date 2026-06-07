@@ -3356,6 +3356,7 @@
       const events = payload.events || [];
       const progressEvents = payload.progress_events || [];
       const approvals = payload.approvals || [];
+      const evidenceRecords = payload.evidence_records || [];
       const supervisorState = payload.supervisor_state || {};
       const correctionSummary = payload.correction_summary || {};
       const latestAttempt = latestAttemptDetail(attempts);
@@ -3365,6 +3366,7 @@
         ['Claimed By', task.claimed_by || '-'],
         ['Trace', (attempts[0] && attempts[0].trace_id) || task.trace_id || '-'],
         ['Evidence', payload.evidence || {}],
+        ['Evidence Records', evidenceRecords.map(item => `${item.evidence_id || '-'} · attempt=${item.attempt_id || '-'} · artifact=${item.artifact_id || '-'} · final=${item.is_final}`).join('\n') || '-'],
         ['Blocker', payload.blocker || '-'],
         ['Latest Attempt', latestAttemptSummary(latestAttempt)],
         ['Heartbeat / Progress', heartbeatProgressSummary(latestAttempt)],
