@@ -4449,6 +4449,11 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual(attempt_id, evidence_record["attempt_id"])
         self.assertEqual("codex", evidence_record["employee_id"])
         self.assertEqual(1, evidence_record["is_final"])
+        self.assertIn("display", evidence_record)
+        self.assertTrue(evidence_record["display"]["allowed"])
+        self.assertFalse(evidence_record["display"]["absolute_path_exposed"])
+        self.assertNotIn(str(self.root), json.dumps(evidence_record, ensure_ascii=False))
+        self.assertNotIn("path_or_url", evidence_record)
         with sqlite3.connect(self.root / "company.sqlite") as conn:
             conn.row_factory = sqlite3.Row
             evidence_row = conn.execute("SELECT * FROM evidence WHERE task_id = ? AND is_final = 1", ("task-done-closes-attempt",)).fetchone()

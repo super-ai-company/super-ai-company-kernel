@@ -1394,7 +1394,7 @@ def task_attempts(conn: sqlite3.Connection, task_id: str) -> list[dict]:
 
 
 def task_evidence_records(conn: sqlite3.Connection, task_id: str) -> list[dict]:
-    return rows(
+    records = rows(
         conn,
         """
         SELECT evidence_id, trace_id, task_id, attempt_id, employee_id, artifact_id,
@@ -1405,6 +1405,10 @@ def task_evidence_records(conn: sqlite3.Connection, task_id: str) -> list[dict]:
         """,
         (task_id,),
     )
+    for record in records:
+        raw_path = record.pop("path_or_url", "")
+        record["display"] = sanitize_evidence_path_for_display(raw_path)
+    return records
 
 
 def task_supervisor_state(attempts: list[dict]) -> tuple[dict, dict]:
