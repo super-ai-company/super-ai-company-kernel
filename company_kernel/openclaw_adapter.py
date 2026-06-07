@@ -65,6 +65,21 @@ def next_task(agent: str) -> sqlite3.Row | None:
         conn.close()
 
 
+def task_metadata(task_id: str) -> dict:
+    conn = connect()
+    try:
+        row = conn.execute("SELECT metadata_json FROM task_metadata WHERE task_id = ?", (task_id,)).fetchone()
+    finally:
+        conn.close()
+    if not row:
+        return {}
+    try:
+        parsed = json.loads(row["metadata_json"] or "{}")
+    except json.JSONDecodeError:
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
 def paths(agent: str, task_id: str) -> dict[str, Path]:
     base = ROOT / "employees" / agent / "reports" / task_id
     base.mkdir(parents=True, exist_ok=True)
@@ -128,8 +143,11 @@ def write_report(path: Path, task: sqlite3.Row, *, status: str, detail: str, pay
 
 
 def submit_openclaw(source: str, target: str, priority: str, payload: dict) -> tuple[int, str, str]:
+    oc_path = OPENCLAW_ROOT / "scripts" / "oc"
+    if not oc_path.exists():
+        return 127, "", f"OpenClaw executable not found at {oc_path}"
     cmd = [
-        str(OPENCLAW_ROOT / "scripts" / "oc"),
+        str(oc_path),
         "bus",
         "submit",
         "--source",
@@ -146,7 +164,12 @@ def submit_openclaw(source: str, target: str, priority: str, payload: dict) -> t
         "Company Kernel bridge task; rollback by closing or failing the generated OpenClaw bus task.",
     ]
     env = {**os.environ, "OPENCLAW_COMPANY_KERNEL_ROOT": str(ROOT), "OPENCLAW_ROOT": str(OPENCLAW_ROOT)}
-    cp = subprocess.run(cmd, cwd=str(OPENCLAW_ROOT), text=True, capture_output=True, env=env)
+    try:
+        cp = subprocess.run(cmd, cwd=str(OPENCLAW_ROOT), text=True, capture_output=True, env=env)
+    except FileNotFoundError as exc:
+        return 127, "", f"OpenClaw executable not found at {oc_path}: {exc}"
+    except OSError as exc:
+        return 1, "", f"OpenClaw bus submit failed before execution: {exc}"
     return cp.returncode, cp.stdout, cp.stderr
 
 
@@ -168,6 +191,16 @@ def process(args: argparse.Namespace) -> int:
         return 0
     artifact = paths(args.agent, task["id"])
     payload = build_payload(task)
+    metadata = task_metadata(task["id"])
+    task_type = str(metadata.get("task_type", "") or metadata.get("type", "") or "").strip()
+    approval_metadata = {
+        "adapter": "openclaw",
+        "task_id": task["id"],
+        "target_agent": args.agent,
+        "priority": task["priority"],
+    }
+    if task_type:
+        approval_metadata["task_type"] = task_type
     artifact["payload"].write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     claim_out = ""
     claim_err = ""
@@ -188,10 +221,10 @@ def process(args: argparse.Namespace) -> int:
         target=args.agent,
         action="external_send",
         reason=approval_reason(task),
-        risk="P1",
+        risk=task["priority"],
         evidence=str(artifact["payload"]),
         approval_id=args.approval_id,
-        metadata={"adapter": "openclaw", "task_id": task["id"], "target_agent": args.agent},
+        metadata=approval_metadata,
     )
     if not gate["allowed"]:
         detail = f"OpenClaw adapter execute blocked pending approval {gate['approval_request']['id']}."
@@ -209,12 +242,15 @@ def process(args: argparse.Namespace) -> int:
         write_report(artifact["report"], task, status="completed", detail=detail, payload_path=artifact["payload"], openclaw_file=openclaw_file)
         done_code, done_out, done_err = run_companyctl(["task", "done", "--agent", args.agent, "--task-id", task["id"], "--summary", detail, "--evidence", str(artifact["report"])])
     else:
-        detail = f"OpenClaw bus submit failed exit_code={code} stderr={err[:500]}"
+        blocker = err.strip() or out.strip() or f"OpenClaw bus submit failed exit_code={code}"
+        detail = f"OpenClaw bus submit failed exit_code={code} blocker={blocker[:500]}"
         write_report(artifact["report"], task, status="blocked", detail=detail, payload_path=artifact["payload"])
         done_code, done_out, done_err = run_companyctl(["task", "block", "--agent", args.agent, "--task-id", task["id"], "--blocker", detail])
     run_companyctl(["heartbeat", "--agent", args.agent])
-    emit({"ok": code == 0 and done_code == 0, "processed": 1, "executed": True, "task_id": task["id"], "openclaw_exit_code": code, "openclaw_stdout": out, "openclaw_stderr": err, "payload": str(artifact["payload"]), "report": str(artifact["report"]), "companyctl_stdout": done_out, "companyctl_stderr": done_err})
-    return done_code if done_code != 0 else code
+    emit({"ok": code == 0 and done_code == 0, "processed": 1, "executed": True, "status": "completed" if code == 0 else "blocked", "task_id": task["id"], "blocker": "" if code == 0 else detail, "openclaw_exit_code": code, "openclaw_stdout": out, "openclaw_stderr": err, "payload": str(artifact["payload"]), "report": str(artifact["report"]), "companyctl_stdout": done_out, "companyctl_stderr": done_err})
+    if done_code != 0:
+        return done_code
+    return 0 if code == 0 else 1
 
 
 def build_parser() -> argparse.ArgumentParser:

@@ -923,6 +923,7 @@ def load_summary(conn: sqlite3.Connection) -> dict:
         "runtime_health": {
             "daemon": companyctl.daemon_health(),
             "launchd": companyctl.launchd_health(),
+            "openclaw_inventory": companyctl.openclaw_runtime_inventory(conn),
         },
         "evidence_health": {
             "issues": companyctl.task_evidence_issues(conn),
@@ -1683,12 +1684,20 @@ def render(summary: dict) -> str:
 
 def advanced_summary(summary: dict) -> dict:
     prepared = dict(summary)
-    prepared["employees"] = employee_view_models(summary)
+    employees = employee_view_models(summary)
+    counts = dict(summary.get("counts", {}))
+    counts["employees"] = len(employees)
+    counts["active_employees"] = sum(1 for employee in employees if employee.get("employee_status") == "active")
+    counts["candidate_employees"] = sum(1 for employee in employees if employee.get("employee_status") == "candidate")
+    counts["archived_employees"] = sum(1 for employee in employees if employee.get("employee_status") == "archived")
+    prepared["counts"] = counts
+    prepared["employees"] = employees
     prepared["communication_observability"] = communication_observability_summary(summary)
+    prepared["openclaw_runtime_inventory"] = summary.get("runtime_health", {}).get("openclaw_inventory", {})
     return prepared
 
 
-def load_advanced_template(path: str = "", *, include_external: bool = False) -> tuple[Path | None, str]:
+def load_advanced_template(path: str = "") -> tuple[Path | None, str]:
     if path:
         candidates = [Path(path)]
     else:
@@ -1700,7 +1709,7 @@ def load_advanced_template(path: str = "", *, include_external: bool = False) ->
 
 
 def inject_advanced_dashboard(template: str, summary: dict, *, db_path: Path, api_base: str) -> str:
-    payload = json.dumps(advanced_summary(summary), ensure_ascii=False)
+    payload = json.dumps(summary, ensure_ascii=False)
     payload_b64 = base64.b64encode(payload.encode("utf-8")).decode("ascii")
     html_text = template
 
@@ -1742,17 +1751,23 @@ def run(args: argparse.Namespace) -> int:
     output.parent.mkdir(parents=True, exist_ok=True)
     template_path = None
     variant = args.variant
-    if variant == "advanced":
-        template_path, template = load_advanced_template(args.template, include_external=variant == "advanced")
+    if variant in {"auto", "advanced"}:
+        template_path, template = load_advanced_template(args.template)
         if template:
-            output.write_text(inject_advanced_dashboard(template, summary, db_path=DB_PATH, api_base=args.api_base), encoding="utf-8")
+            prepared_summary = advanced_summary(summary)
+            output.write_text(inject_advanced_dashboard(template, prepared_summary, db_path=DB_PATH, api_base=args.api_base), encoding="utf-8")
             variant = "advanced"
-        else:
+        elif variant == "advanced":
             raise SystemExit("advanced dashboard template not found")
+        else:
+            prepared_summary = summary
+            output.write_text(render(summary), encoding="utf-8")
+            variant = "basic"
     else:
+        prepared_summary = summary
         output.write_text(render(summary), encoding="utf-8")
         variant = "basic"
-    print(json.dumps({"ok": True, "output": str(output), "variant": variant, "template": str(template_path or ""), "counts": summary["counts"]}, ensure_ascii=False, indent=2))
+    print(json.dumps({"ok": True, "output": str(output), "variant": variant, "template": str(template_path or ""), "counts": prepared_summary["counts"]}, ensure_ascii=False, indent=2))
     return 0
 
 

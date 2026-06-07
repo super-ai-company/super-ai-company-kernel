@@ -22,21 +22,61 @@ from pathlib import Path
 from .db_paths import ensure_db_parent
 from .schema_migrations import ensure_schema_migrations
 
-ROOT = Path(os.environ.get("OPENCLAW_COMPANY_KERNEL_ROOT", Path(__file__).resolve().parents[1])).resolve()
+DEFAULT_ROOT = Path(__file__).resolve().parents[1]
+GLOBAL_CONFIG_PATH = Path("~/.gemini/antigravity/company_kernel_config.json")
+
+
+def load_global_config(path: Path | None = None) -> dict:
+    raw_path = str(os.environ.get("COMPANY_KERNEL_CONFIG_PATH", "") or "").strip()
+    config_path = path or (Path(raw_path).expanduser() if raw_path else GLOBAL_CONFIG_PATH.expanduser())
+    if not config_path.exists():
+        return {}
+    try:
+        payload = json.loads(config_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def resolve_kernel_paths(default_root: Path) -> dict[str, Path | int | dict]:
+    config = load_global_config()
+    env_root = str(os.environ.get("OPENCLAW_COMPANY_KERNEL_ROOT", "") or "").strip()
+    root_value = config.get("master_workspace_root") or env_root or str(default_root)
+    root = Path(str(root_value)).expanduser().resolve()
+    db_value = str(os.environ.get("COMPANY_KERNEL_DB_PATH", "") or config.get("database_path") or root / "company.sqlite")
+    log_value = str(config.get("log_dir") or root / "logs")
+    return {
+        "config": config,
+        "root": root,
+        "db_path": Path(db_value).expanduser().resolve(),
+        "employees_dir": root / "employees",
+        "state_dir": root / "state",
+        "rfc_dir": root / "rfcs",
+        "config_dir": root / "config",
+        "log_dir": Path(log_value).expanduser().resolve(),
+        "gateway_port": int(config.get("gateway_port", 0) or 0),
+    }
+
+
+_KERNEL_PATHS = resolve_kernel_paths(DEFAULT_ROOT)
+ROOT = Path(_KERNEL_PATHS["root"])
 
 
 def resolve_db_path() -> Path:
     override = str(os.environ.get("COMPANY_KERNEL_DB_PATH", "") or "").strip()
     if override:
         return Path(override).expanduser().resolve()
-    return ROOT / "company.sqlite"
+    config_db = load_global_config().get("database_path")
+    if config_db:
+        return Path(str(config_db)).expanduser().resolve()
+    return Path(_KERNEL_PATHS["db_path"])
 
 
 DB_PATH = resolve_db_path()
-EMPLOYEES_DIR = ROOT / "employees"
-STATE_DIR = ROOT / "state"
-RFC_DIR = ROOT / "rfcs"
-CONFIG_DIR = ROOT / "config"
+EMPLOYEES_DIR = Path(_KERNEL_PATHS["employees_dir"])
+STATE_DIR = Path(_KERNEL_PATHS["state_dir"])
+RFC_DIR = Path(_KERNEL_PATHS["rfc_dir"])
+CONFIG_DIR = Path(_KERNEL_PATHS["config_dir"])
 WORKFLOW_DIR = CONFIG_DIR / "workflows"
 LAUNCHD_LABEL = "ai.openclaw.company-kernel.daemon"
 LAUNCHD_TEMPLATE = CONFIG_DIR / "launchd" / f"{LAUNCHD_LABEL}.plist"
@@ -1718,6 +1758,11 @@ def resolve_notification_target(target: str) -> tuple[str, str]:
         if not chat_id:
             raise ValueError("telegram target chat id is required")
         return "telegram", chat_id
+    if raw.startswith("slack:"):
+        webhook_id = raw.split(":", 1)[1].strip()
+        if not webhook_id:
+            raise ValueError("slack webhook id is required")
+        return "slack", webhook_id
     if raw:
         return "telegram", raw
     raise ValueError("notification target is required")
@@ -1757,6 +1802,52 @@ def send_telegram_notification(*, token: str, chat_id: str, text: str, timeout: 
     }
 
 
+def send_slack_webhook(webhook_url: str, payload: dict, timeout: int = 20) -> dict:
+    if not webhook_url:
+        raise ValueError("slack webhook url is not configured")
+    data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    request = urllib.request.Request(webhook_url, data=data, method="POST")
+    request.add_header("Content-Type", "application/json")
+    with urllib.request.urlopen(request, timeout=timeout) as response:
+        body = response.read().decode("utf-8", errors="replace")
+    return {"ok": True, "platform": "slack", "message_id": body or "ok"}
+
+
+class NotificationDispatcher:
+    def __init__(self, settings: dict):
+        self.settings = settings or {}
+
+    def send_macos_alert(self, title: str, body: str, kind: str = "general") -> dict:
+        text = f"{title}\n{body}".strip() if title else body
+        return send_macos_notification(text=text, title=title or "Company Kernel", subtitle=kind)
+
+    def send_telegram_message(self, chat_id: str, text: str, account_id: str = "") -> dict:
+        accounts = self.settings.get("telegram_accounts", {}) if isinstance(self.settings.get("telegram_accounts"), dict) else {}
+        account = accounts.get(account_id, {}) if account_id else next(iter(accounts.values()), {})
+        token_env = str(account.get("bot_token_env", "") or "")
+        return send_telegram_notification(token=os.environ.get(token_env, ""), chat_id=chat_id, text=text)
+
+    def send_slack_webhook(self, webhook_url: str, payload: dict) -> dict:
+        return send_slack_webhook(webhook_url, payload)
+
+    def send(self, target: str, *, title: str = "", body: str = "", kind: str = "general", account_id: str = "", dry_run: bool = False) -> dict:
+        platform, address = resolve_notification_target(target)
+        text = f"{title}\n{body}".strip() if title else body
+        result = {"ok": True, "dry_run": dry_run, "platform": platform, "kind": kind, "target": target}
+        if dry_run:
+            return result
+        if platform == "macos":
+            return {**result, **self.send_macos_alert(title or "Company Kernel", body, kind)}
+        if platform == "telegram":
+            return {**result, **self.send_telegram_message(address, text, account_id)}
+        if platform == "slack":
+            webhooks = self.settings.get("slack_webhooks", {}) if isinstance(self.settings.get("slack_webhooks"), dict) else {}
+            hook = webhooks.get(address, {}) if isinstance(webhooks.get(address, {}), dict) else {}
+            webhook_env = str(hook.get("webhook_url_env", "") or "")
+            return {**result, **self.send_slack_webhook(os.environ.get(webhook_env, ""), {"text": text, "kind": kind})}
+        return {**result, "ok": False, "error": f"unsupported notification platform: {platform}"}
+
+
 def notification_send_result(*, message: str, target: str = "", account_id: str = "", subject: str = "", kind: str = "general", dry_run: bool = False) -> dict:
     settings = notification_settings()
     notifications = settings["employee_notifications"]
@@ -1778,24 +1869,10 @@ def notification_send_result(*, message: str, target: str = "", account_id: str 
     if platform != "macos" and not account:
         return {"ok": False, "error": "notification account is not configured", "account": account_id}
     if platform != "telegram":
-        if platform != "macos":
-            return {"ok": False, "error": f"unsupported notification platform: {platform}"}
-        text = f"{subject}\n{message}".strip() if subject else message
-        result = {
-            "ok": True,
-            "dry_run": dry_run,
-            "platform": platform,
-            "kind": kind,
-            "account": account_id,
-            "target": f"macos:{chat_id}",
-            "token_env": "",
-            "token_configured": True,
-        }
-        if dry_run:
-            return result
+        result = {"ok": True, "dry_run": dry_run, "platform": platform, "kind": kind, "account": account_id, "target": f"{platform}:{chat_id}", "token_env": "", "token_configured": True}
         try:
-            sent = send_macos_notification(text=text, title=subject or "Company Kernel", subtitle=kind)
-        except (OSError, subprocess.SubprocessError, TimeoutError) as exc:
+            sent = NotificationDispatcher(settings).send(f"{platform}:{chat_id}", title=subject or "Company Kernel", body=message, kind=kind, account_id=account_id, dry_run=dry_run)
+        except (ValueError, OSError, subprocess.SubprocessError, urllib.error.URLError, TimeoutError) as exc:
             return {**result, "ok": False, "error": str(exc)}
         return {**result, **sent}
     token_env = str(account.get("bot_token_env", "") or "")
@@ -2186,7 +2263,81 @@ def count_spool_files(spool_dir: Path) -> dict:
     }
 
 
-def openclaw_guard_health() -> dict:
+def openclaw_runtime_inventory(conn: sqlite3.Connection | None = None) -> dict:
+    root = openclaw_root()
+    agents_dir = root / "agents"
+    telegram_dir = root / "telegram"
+    registered = set()
+    if conn is not None:
+        registered = {str(row["id"]) for row in rows(conn, "SELECT id FROM employees")}
+    registered_aliases = set(registered)
+    for employee_id in registered:
+        registered_aliases.add(employee_id.replace("-", "_"))
+        registered_aliases.add(employee_id.replace("_", "-"))
+
+    def canonical_openclaw_id(value: str) -> str:
+        return value.replace("-", "_")
+
+    def is_registered_openclaw_id(value: str) -> bool:
+        canonical = canonical_openclaw_id(value)
+        return value in registered_aliases or canonical in registered_aliases or canonical.replace("_", "-") in registered_aliases
+
+    agent_dirs = {}
+    if agents_dir.exists():
+        for path in sorted(agents_dir.iterdir()):
+            if not path.is_dir() or path.name.startswith("."):
+                continue
+            session_file = path / "sessions" / "sessions.json"
+            session_payload = load_json_or_default(session_file, {})
+            session_count = len(session_payload) if isinstance(session_payload, dict) else 0
+            normalized_id = canonical_openclaw_id(path.name)
+            agent_dirs[path.name] = {
+                "id": path.name,
+                "normalized_id": normalized_id,
+                "path": str(path),
+                "session_file": str(session_file),
+                "session_file_exists": session_file.exists(),
+                "session_count": session_count,
+                "registered": is_registered_openclaw_id(path.name),
+            }
+    spools = {}
+    if telegram_dir.exists():
+        for spool_dir in sorted(telegram_dir.glob("ingress-spool-*")):
+            account = spool_dir.name.removeprefix("ingress-spool-")
+            normalized_id = canonical_openclaw_id(account)
+            profile = count_spool_files(spool_dir)
+            profile.update(
+                {
+                    "id": account,
+                    "normalized_id": normalized_id,
+                    "registered": is_registered_openclaw_id(account),
+                }
+            )
+            spools[account] = profile
+    discovered_ids = {canonical_openclaw_id(item["id"]) for item in agent_dirs.values()}
+    discovered_ids.update(canonical_openclaw_id(item["id"]) for item in spools.values())
+    discovered_ids.update(item["normalized_id"] for item in agent_dirs.values() if item.get("normalized_id"))
+    discovered_ids.update(item["normalized_id"] for item in spools.values() if item.get("normalized_id"))
+    missing = sorted(item for item in discovered_ids if item and not is_registered_openclaw_id(item))
+    return {
+        "openclaw_root": str(root),
+        "agents_dir": str(agents_dir),
+        "telegram_dir": str(telegram_dir),
+        "registered_employee_ids": sorted(registered),
+        "agent_dirs": agent_dirs,
+        "telegram_spools": spools,
+        "counts": {
+            "agent_dirs": len(agent_dirs),
+            "telegram_spools": len(spools),
+            "registered": len(registered),
+            "missing_registered": len(missing),
+        },
+        "missing_registered": missing,
+        "note": "Read-only inventory. It discovers OpenClaw runtime agents/spools and marks whether they are registered in Company Kernel; it does not onboard or modify them.",
+    }
+
+
+def openclaw_guard_health(conn: sqlite3.Connection | None = None) -> dict:
     root = openclaw_root()
     telegram_dir = root / "telegram"
     launch_agents = Path.home() / "Library" / "LaunchAgents"
@@ -2220,6 +2371,7 @@ def openclaw_guard_health() -> dict:
             "risk": "conflicts_with_openclaw_telegram_getupdates" if watcher_plist.exists() else "",
         },
         "telegram_spools": spools,
+        "runtime_inventory": openclaw_runtime_inventory(conn),
         "backlog_accounts": backlog_accounts,
         "note": "Read-only guard. It detects conditions that can break OpenClaw native Telegram routing; it does not start, stop, or poll Telegram.",
     }
@@ -3294,6 +3446,167 @@ def cmd_employee_import_openclaw(args: argparse.Namespace) -> int:
         role = "operator" if agent_id == "main" else "business-agent"
         imported.append(upsert_employee(conn, agent_id, name, role, "openclaw", workspace, dry_run=args.dry_run))
     emit({"ok": True, "dry_run": args.dry_run, "count": len(imported), "imported": imported})
+    return 0
+
+
+def load_openclaw_config_agents(config_path: Path) -> dict[str, dict]:
+    if not config_path.exists():
+        return {}
+    obj = json.loads(config_path.read_text(encoding="utf-8"))
+    agents = {}
+    for agent in obj.get("agents", {}).get("list", []):
+        agent_id = str(agent.get("id") or "").strip()
+        if not agent_id:
+            continue
+        agents[agent_id] = dict(agent)
+    return agents
+
+
+def openclaw_employee_sync_plan(config_path: Path) -> list[dict]:
+    config_agents = load_openclaw_config_agents(config_path)
+    inventory = openclaw_runtime_inventory()
+    planned: dict[str, dict] = {}
+    for agent_id, agent in config_agents.items():
+        name = str(agent.get("identityName") or agent.get("name") or agent_id)
+        workspace = str(agent.get("workspace") or openclaw_root())
+        planned[agent_id] = {
+            "id": agent_id,
+            "name": name,
+            "role": "operator" if agent_id == "main" else "business-agent",
+            "runtime": "openclaw",
+            "workspace": workspace,
+            "status": "active",
+            "source": "openclaw_config",
+        }
+    for agent in inventory.get("agent_dirs", {}).values():
+        agent_id = str(agent.get("id") or "").strip()
+        if not agent_id or agent_id in planned:
+            continue
+        planned[agent_id] = {
+            "id": agent_id,
+            "name": agent_id,
+            "role": "runtime-agent",
+            "runtime": "openclaw",
+            "workspace": str(Path(agent.get("path") or openclaw_root())),
+            "status": "candidate",
+            "source": "openclaw_runtime_dir",
+        }
+    return sorted(planned.values(), key=lambda item: (item["status"] != "active", item["id"]))
+
+
+def upsert_employee_with_status(conn: sqlite3.Connection, employee: dict, *, dry_run: bool) -> dict:
+    status = str(employee.get("status") or "candidate")
+    if status not in {"active", "candidate", "archived"}:
+        status = "candidate"
+    profile = {
+        "id": employee["id"],
+        "name": employee["name"],
+        "role": employee["role"],
+        "runtime": employee["runtime"],
+        "workspace": employee["workspace"],
+        "status": status,
+        "source": employee.get("source", ""),
+        "created_at": now(),
+    }
+    files = write_employee_files(employee["id"], profile, dry_run=dry_run)
+    if dry_run:
+        return {"employee": profile, "files": files}
+    ensure_runtime(conn, employee["runtime"])
+    ts = now()
+    conn.execute(
+        """
+        INSERT INTO employees(id, name, role, runtime, workspace, status, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET
+          name = excluded.name,
+          role = excluded.role,
+          runtime = excluded.runtime,
+          workspace = excluded.workspace,
+          status = CASE
+            WHEN excluded.status = 'active' THEN 'active'
+            WHEN employees.status = 'active' THEN employees.status
+            ELSE excluded.status
+          END,
+          updated_at = excluded.updated_at
+        """,
+        (employee["id"], employee["name"], employee["role"], employee["runtime"], employee["workspace"], status, ts, ts),
+    )
+    communication = sync_employee_name_alias(employee["id"], employee["name"], dry_run=False)
+    audit(conn, "companyctl", "employee.openclaw_sync", employee["id"], {**profile, "communication": communication})
+    return {"employee": profile, "files": files, "communication": communication}
+
+
+def cmd_employee_sync_openclaw_runtime(args: argparse.Namespace) -> int:
+    config_path = Path(args.config)
+    plan = openclaw_employee_sync_plan(config_path)
+    conn = connect()
+    synced = []
+    skipped = []
+    try:
+        existing = {row["id"]: dict(row) for row in conn.execute("SELECT * FROM employees")}
+        for employee in plan:
+            if args.active_only and employee["status"] != "active":
+                continue
+            current = existing.get(employee["id"])
+            if current and current.get("runtime") != "openclaw" and employee.get("source") == "openclaw_runtime_dir":
+                skipped.append({"id": employee["id"], "reason": f"existing_runtime_{current.get('runtime')}"})
+                continue
+            synced.append(upsert_employee_with_status(conn, employee, dry_run=args.dry_run))
+        if not args.dry_run:
+            conn.commit()
+    finally:
+        conn.close()
+    counts = {
+        "active": sum(1 for item in plan if item["status"] == "active"),
+        "candidate": sum(1 for item in plan if item["status"] == "candidate"),
+        "synced": len(synced),
+        "skipped": len(skipped),
+    }
+    emit({"ok": True, "dry_run": args.dry_run, "config": str(config_path), "counts": counts, "employees": [item["employee"] for item in synced], "skipped": skipped})
+    return 0
+
+
+def sync_openclaw_heartbeats(conn: sqlite3.Connection, *, dry_run: bool) -> dict:
+    inventory = openclaw_runtime_inventory(conn)
+    agent_dirs = inventory.get("agent_dirs", {})
+    spools = inventory.get("telegram_spools", {})
+    employees = rows(conn, "SELECT id, status FROM employees WHERE runtime = 'openclaw' ORDER BY id")
+    synced = []
+    skipped = []
+    for employee in employees:
+        employee_id = employee["id"]
+        if employee["status"] != "active":
+            skipped.append({"id": employee_id, "reason": f"status_{employee['status']}"})
+            continue
+        agent = agent_dirs.get(employee_id) or agent_dirs.get(employee_id.replace("_", "-"))
+        spool = spools.get(employee_id) or spools.get(employee_id.replace("-", "_"))
+        session_count = int((agent or {}).get("session_count", 0) or 0)
+        spool_exists = bool((spool or {}).get("exists"))
+        if not agent and not spool:
+            skipped.append({"id": employee_id, "reason": "openclaw_runtime_not_found"})
+            continue
+        metadata = {
+            "source": "openclaw-runtime-sync",
+            "runtime_agent_found": bool(agent),
+            "telegram_spool_found": spool_exists,
+            "session_count": session_count,
+            "spool_pending": int((spool or {}).get("pending", 0) or 0),
+            "spool_processing": int((spool or {}).get("processing", 0) or 0),
+            "note": "Read-only heartbeat derived from OpenClaw runtime inventory; it does not prove task completion.",
+        }
+        if not dry_run:
+            heartbeat_internal(conn, employee_id, metadata)
+        synced.append({"id": employee_id, **metadata})
+    return {"ok": True, "dry_run": dry_run, "synced": synced, "skipped": skipped, "counts": {"synced": len(synced), "skipped": len(skipped)}}
+
+
+def cmd_employee_sync_openclaw_heartbeats(args: argparse.Namespace) -> int:
+    conn = connect()
+    try:
+        result = sync_openclaw_heartbeats(conn, dry_run=args.dry_run)
+    finally:
+        conn.close()
+    emit(result)
     return 0
 
 
@@ -7184,23 +7497,28 @@ def cmd_doctor(args: argparse.Namespace) -> int:
             "failed_adapter_runs": conn.execute("SELECT COUNT(*) FROM adapter_runs WHERE ok = 0 AND acknowledged_at = ''").fetchone()[0],
         }
         heartbeat_cutoff = datetime.now(timezone.utc).astimezone() - timedelta(minutes=15)
+        active_ai_employee_filter = """
+            e.status = 'active'
+            AND COALESCE(e.runtime, '') != 'human'
+            AND COALESCE(e.role, '') NOT IN ('human-owner', 'owner')
+        """
         missing_heartbeats = rows(
             conn,
-            """
+            f"""
             SELECT e.id, e.runtime
             FROM employees e
             LEFT JOIN heartbeats h ON h.agent_id = e.id
-            WHERE e.status = 'active' AND h.agent_id IS NULL
+            WHERE {active_ai_employee_filter} AND h.agent_id IS NULL
             ORDER BY e.id
             """,
         )
         stale_heartbeats = []
         for row in conn.execute(
-            """
+            f"""
             SELECT e.id, e.runtime, h.last_seen_at
             FROM employees e
             JOIN heartbeats h ON h.agent_id = e.id
-            WHERE e.status = 'active'
+            WHERE {active_ai_employee_filter}
             ORDER BY e.id
             """
         ).fetchall():
@@ -7230,7 +7548,7 @@ def cmd_doctor(args: argparse.Namespace) -> int:
                 stale_locks.append(dict(lock))
         daemon = daemon_health()
         launchd = launchd_health()
-        openclaw_guard = openclaw_guard_health()
+        openclaw_guard = openclaw_guard_health(conn)
         issues = []
         if not daemon["ok"]:
             issues.append(daemon["reason"] or "daemon_unhealthy")
@@ -7398,6 +7716,14 @@ def build_parser() -> argparse.ArgumentParser:
     emp_import_openclaw.add_argument("--config", default=str(openclaw_root() / "openclaw.json"))
     emp_import_openclaw.add_argument("--dry-run", action="store_true")
     emp_import_openclaw.set_defaults(func=cmd_employee_import_openclaw)
+    emp_sync_openclaw = emp_sub.add_parser("sync-openclaw-runtime")
+    emp_sync_openclaw.add_argument("--config", default=str(openclaw_root() / "openclaw.json"))
+    emp_sync_openclaw.add_argument("--active-only", action="store_true", help="only sync agents declared in openclaw.json as active employees")
+    emp_sync_openclaw.add_argument("--dry-run", action="store_true")
+    emp_sync_openclaw.set_defaults(func=cmd_employee_sync_openclaw_runtime)
+    emp_sync_openclaw_hb = emp_sub.add_parser("sync-openclaw-heartbeats")
+    emp_sync_openclaw_hb.add_argument("--dry-run", action="store_true")
+    emp_sync_openclaw_hb.set_defaults(func=cmd_employee_sync_openclaw_heartbeats)
     emp_onboard = emp_sub.add_parser("onboard")
     emp_onboard.add_argument("--id", required=True)
     emp_onboard.add_argument("--name", required=True)

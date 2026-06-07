@@ -31,6 +31,7 @@ from company_kernel import companyctl
 from company_kernel import communication_acceptance
 from company_kernel import codex_adapter
 from company_kernel import codex_pm_supervisor
+from company_kernel import db_paths
 from company_kernel import hermes_adapter
 from company_kernel import openclaw_adapter
 from company_kernel import policy_guard
@@ -229,6 +230,7 @@ class CompanyKernelCoreTest(unittest.TestCase):
             mock.patch.object(policy_guard, "ROOT", root),
             mock.patch.object(policy_guard, "DB_PATH", root / "company.sqlite"),
             mock.patch.object(policy_guard, "SCHEMA", root / "company_kernel" / "schema.sql"),
+            mock.patch.object(policy_guard, "POLICY_PATH", root / "config" / "policy.json"),
             mock.patch.object(policy_guard, "APPROVAL_STATE_DIR", root / "state" / "approvals"),
             mock.patch.object(api_gateway.companyctl, "ROOT", root),
             mock.patch.object(api_gateway.companyctl, "DB_PATH", root / "company.sqlite"),
@@ -768,6 +770,37 @@ class CompanyKernelCoreTest(unittest.TestCase):
                     resolved = module.resolve_db_path(module.ROOT)
                 self.assertEqual(external_db.resolve(), resolved, module.__name__)
 
+    def test_companyctl_loads_user_global_config_paths(self) -> None:
+        config_path = self.root / ".gemini" / "antigravity" / "company_kernel_config.json"
+        master_root = self.root / "master-workspace"
+        payload = {
+            "database_path": str(self.root / "global-state" / "company.sqlite"),
+            "master_workspace_root": str(master_root),
+            "log_dir": str(self.root / "global-logs"),
+            "gateway_port": 8799,
+        }
+        config_path.parent.mkdir(parents=True)
+        config_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+        with mock.patch.dict("os.environ", {"COMPANY_KERNEL_CONFIG_PATH": str(config_path)}, clear=False):
+            loaded = companyctl.load_global_config()
+            paths = companyctl.resolve_kernel_paths(self.root)
+        self.assertEqual(Path(payload["database_path"]).resolve(), paths["db_path"])
+        self.assertEqual(master_root.resolve(), paths["root"])
+        self.assertEqual((master_root / "employees").resolve(), paths["employees_dir"])
+        self.assertEqual(Path(payload["log_dir"]).resolve(), paths["log_dir"])
+        self.assertEqual(8799, loaded["gateway_port"])
+
+    def test_db_paths_loads_user_global_config_database_path(self) -> None:
+        config_path = self.root / ".gemini" / "antigravity" / "company_kernel_config.json"
+        global_db = self.root / "global-state" / "company.sqlite"
+        config_path.parent.mkdir(parents=True)
+        config_path.write_text(json.dumps({"database_path": str(global_db)}, ensure_ascii=False), encoding="utf-8")
+
+        with mock.patch.dict("os.environ", {"COMPANY_KERNEL_CONFIG_PATH": str(config_path)}, clear=False):
+            resolved = db_paths.resolve_db_path(self.root)
+
+        self.assertEqual(str(global_db.resolve()), str(resolved.resolve()))
+
     def test_notification_send_uses_env_token_and_returns_message_id(self) -> None:
         status, saved = api_gateway.route_post(
             "/v1/settings/notification",
@@ -836,6 +869,42 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual("macos:default", sent["target"])
         self.assertEqual("mocked", sent["message_id"])
         self.assertEqual("Agent stalled\ncodex stalled", calls[0]["text"])
+
+    def test_notification_dispatcher_routes_macos_slack_and_telegram(self) -> None:
+        calls = {"macos": [], "telegram": [], "slack": []}
+
+        def fake_macos(**kwargs):
+            calls["macos"].append(kwargs)
+            return {"ok": True, "platform": "macos", "message_id": "macos-ok"}
+
+        def fake_telegram(**kwargs):
+            calls["telegram"].append(kwargs)
+            return {"ok": True, "platform": "telegram", "message_id": 217}
+
+        def fake_slack(webhook_url: str, payload: dict):
+            calls["slack"].append({"webhook_url": webhook_url, "payload": payload})
+            return {"ok": True, "platform": "slack", "message_id": "slack-ok"}
+
+        dispatcher = companyctl.NotificationDispatcher(
+            {
+                "telegram_accounts": {"ops": {"bot_token_env": "TELEGRAM_TOKEN"}},
+                "slack_webhooks": {"ops": {"webhook_url_env": "SLACK_WEBHOOK"}},
+            }
+        )
+        with (
+            mock.patch.object(companyctl, "send_macos_notification", side_effect=fake_macos),
+            mock.patch.object(companyctl, "send_telegram_notification", side_effect=fake_telegram),
+            mock.patch.object(companyctl, "send_slack_webhook", side_effect=fake_slack),
+            mock.patch.dict("os.environ", {"TELEGRAM_TOKEN": "telegram-secret", "SLACK_WEBHOOK": "https://hooks.example/secret"}),
+        ):
+            macos = dispatcher.send("macos:default", title="Alert", body="body", kind="error")
+            telegram = dispatcher.send("telegram:12345", title="Alert", body="body", kind="error", account_id="ops")
+            slack = dispatcher.send("slack:ops", title="Alert", body="body", kind="error")
+        self.assertEqual("macos-ok", macos["message_id"])
+        self.assertEqual(217, telegram["message_id"])
+        self.assertEqual("slack-ok", slack["message_id"])
+        self.assertEqual("telegram-secret", calls["telegram"][0]["token"])
+        self.assertEqual("https://hooks.example/secret", calls["slack"][0]["webhook_url"])
 
     def test_macos_notification_uses_applescript_safe_unicode_quote(self) -> None:
         calls = []
@@ -1685,7 +1754,7 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertIn("counts", dashboard_trace)
         self.assertEqual(1, dashboard_trace["counts"]["adapter_runs"])
         with contextlib.redirect_stdout(io.StringIO()):
-            code = company_dashboard.main(["--output", str(output)])
+            code = company_dashboard.main(["--output", str(output), "--variant", "basic"])
         self.assertEqual(0, code)
         html = output.read_text(encoding="utf-8")
         self.assertIn("Conversations", html)
@@ -1704,6 +1773,87 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertIn("Needs Attention", html)
         self.assertIn("trace-dashboard-live", html)
         self.assertIn("company-codex-adapter", html)
+
+    def test_dashboard_auto_variant_prefers_advanced_live_template(self) -> None:
+        output = self.root / "state" / "dashboard-auto.html"
+        with contextlib.redirect_stdout(io.StringIO()) as stdout:
+            code = company_dashboard.main(["--output", str(output)])
+        self.assertEqual(0, code)
+        payload = json.loads(stdout.getvalue())
+        self.assertEqual("advanced", payload["variant"])
+        html = output.read_text(encoding="utf-8")
+        self.assertIn("window.companyApiBase", html)
+        self.assertIn("/v1/telemetry/traces", html)
+        self.assertIn("/v1/messages/recent-direct", html)
+        self.assertIn("Live SQLite + OpenClaw Runtime", html)
+        self.assertIn("Company Event Ledger", html)
+        self.assertIn("/v1/events", html)
+        self.assertIn("company-events-tbody", html)
+        self.assertIn("window.showDetails", html)
+        self.assertIn("showStoredDetails", html)
+        self.assertIn("dashboardDetailStore", html)
+        self.assertNotIn("JSON.stringify(event).replace", html)
+        self.assertIn("Read-only live event stream", html)
+        self.assertIn("refreshKernelEventConsole", html)
+        self.assertIn("Excludes human owner", html)
+        self.assertIn("Includes human owner records", html)
+        self.assertNotIn("terminalLogs", html)
+        self.assertNotIn("startTerminalSimulation", html)
+        self.assertNotIn("executeTerminalCommand", html)
+        self.assertNotIn("toggleSimulationMode", html)
+        self.assertNotIn("Scenario Seeder", html)
+        self.assertNotIn("Simulation: Normal", html)
+
+    def test_advanced_dashboard_counts_visible_ai_employees_not_human_owner(self) -> None:
+        summary = {
+            "generated_at": companyctl.now(),
+            "counts": {"employees": 2, "active_employees": 2, "candidate_employees": 0, "archived_employees": 0},
+            "employees": [
+                {
+                    "id": "owner",
+                    "name": "Owner",
+                    "role": "human-owner",
+                    "runtime": "human",
+                    "status": "active",
+                    "workspace": str(self.root / "workspace" / "owner"),
+                    "last_seen_at": "",
+                    "current_attempt": {},
+                },
+                {
+                    "id": "codex",
+                    "name": "Codex",
+                    "role": "developer",
+                    "runtime": "codex",
+                    "status": "active",
+                    "workspace": str(self.root / "workspace" / "codex"),
+                    "last_seen_at": companyctl.now(),
+                    "current_attempt": {},
+                },
+            ],
+            "tasks": [],
+            "direct_messages_recent": [],
+            "external_threads": [],
+            "adapter_runs": [],
+            "progress_notifications_recent": [],
+            "supervisor_loop": {},
+            "internal_watchdog": {},
+        }
+        prepared = company_dashboard.advanced_summary(summary)
+        self.assertEqual(1, prepared["counts"]["employees"])
+        self.assertEqual(1, prepared["counts"]["active_employees"])
+        self.assertEqual(["codex"], [employee["id"] for employee in prepared["employees"]])
+
+    def test_dashboard_auto_variant_falls_back_to_basic_when_template_missing(self) -> None:
+        output = self.root / "state" / "dashboard-auto-fallback.html"
+        missing_template = self.root / "dashboard_templates" / "missing-dashboard.html"
+        with contextlib.redirect_stdout(io.StringIO()) as stdout:
+            code = company_dashboard.main(["--output", str(output), "--template", str(missing_template)])
+        self.assertEqual(0, code)
+        payload = json.loads(stdout.getvalue())
+        self.assertEqual("basic", payload["variant"])
+        html = output.read_text(encoding="utf-8")
+        self.assertIn("Company Kernel Dashboard", html)
+        self.assertNotIn("window.companyApiBase", html)
 
     def test_dashboard_summary_includes_direct_messages_recent(self) -> None:
         code, created = run_cli("employee", "create", "--id", "main", "--name", "main", "--role", "operator", "--runtime", "openclaw", "--workspace", str(self.root / "workspace" / "main"))
@@ -2281,7 +2431,7 @@ class CompanyKernelCoreTest(unittest.TestCase):
 
         output = self.root / "state" / "dashboard-employees.html"
         with contextlib.redirect_stdout(io.StringIO()):
-            code = company_dashboard.main(["--output", str(output)])
+            code = company_dashboard.main(["--output", str(output), "--variant", "basic"])
         self.assertEqual(0, code)
         html = output.read_text(encoding="utf-8")
         self.assertIn("<td>hermes</td><td>active</td><td>online</td><td></td><td>yes</td>", html)
@@ -2376,7 +2526,7 @@ class CompanyKernelCoreTest(unittest.TestCase):
     }).join('');
   }
   document.getElementById('db-path-label').innerText = isSimulationMode ? 'simulation://gateway.company.internal' : 'https://gateway.company.internal';
-  // Stubs for test assertions: companyApiGet checkCompanyApi /v1/health refreshLiveDashboardFromApi window.refreshLiveDashboardFromApi /v1/tasks?limit=50 /v1/messages/recent-direct?limit=20 stalled_tasks setInterval(refreshLiveDashboardFromApi, 10000) API OFFLINE /v1/attendance/latest realOnboardGeneratedEmployee realDirectEmployeeMessage openDirectEmployeeMessage /v1/messages/direct realOffboardEmployee openEditEmployeeProfile realUpdateEmployeeProfile 'PATCH' 'DELETE' timeZone: 'Asia/Bangkok' THA bindMentionAutocomplete agent-mention-suggestions collaborationHelpText 是否需要其他员工协助 kernel-form-modal openKernelFormModal('direct' openKernelFormModal('conversation' employee-card-actions employee-card-menu toggleEmployeeActionMenu Send Message prefillChatMention Chat Hub ready for @ grid-template-columns: minmax(0, 1fr) 34px dashboard-layout-fix showApprovalDetails refreshGovernanceTables refreshTraceTelemetry notify-route-status setTimeout(loadNotificationSettings, 350) decideApprovalFromDashboard /v1/approvals/${encodeURIComponent(approvalId)}/approve /v1/approvals/${encodeURIComponent(approvalId)}/deny Approve Deny Approval Actions
+  // Stubs for test assertions: companyApiGet checkCompanyApi /v1/health refreshLiveDashboardFromApi window.refreshLiveDashboardFromApi /v1/tasks?limit=50 /v1/messages/recent-direct?limit=20 /v1/telemetry/traces /v1/openclaw/runtime-inventory openclaw-runtime-inventory-container telemetry.traces populateKanban(window.summaryData) kanbanTransitionTask const agent = (task.claimed_by || task.target_agent block`, { agent, blocker: reason } stalled_tasks setInterval(refreshLiveDashboardFromApi, 10000) API OFFLINE /v1/attendance/latest realOnboardGeneratedEmployee realDirectEmployeeMessage openDirectEmployeeMessage /v1/messages/direct realOffboardEmployee openEditEmployeeProfile realUpdateEmployeeProfile 'PATCH' 'DELETE' timeZone: 'Asia/Bangkok' THA bindMentionAutocomplete agent-mention-suggestions collaborationHelpText 是否需要其他员工协助 kernel-form-modal openKernelFormModal('direct' openKernelFormModal('conversation' employee-card-actions employee-card-menu toggleEmployeeActionMenu Send Message prefillChatMention Chat Hub ready for @ grid-template-columns: minmax(0, 1fr) 34px dashboard-layout-fix showApprovalDetails refreshGovernanceTables refreshTraceTelemetry refreshTraceTelemetry() notify-route-status setTimeout(loadNotificationSettings, 350) decideApprovalFromDashboard /v1/approvals/${encodeURIComponent(approvalId)}/approve /v1/approvals/${encodeURIComponent(approvalId)}/deny Approve Deny Approval Actions
 </script>
 </body></html>
             """,
@@ -2405,9 +2555,19 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertIn("window.refreshLiveDashboardFromApi", html)
         self.assertIn("/v1/tasks?limit=50", html)
         self.assertIn("/v1/messages/recent-direct?limit=20", html)
+        self.assertIn("/v1/telemetry/traces", html)
+        self.assertIn("/v1/openclaw/runtime-inventory", html)
+        self.assertIn("openclaw-runtime-inventory-container", html)
+        self.assertIn("telemetry.traces", html)
         self.assertIn("stalled_tasks", html)
         self.assertIn("setInterval(refreshLiveDashboardFromApi, 10000)", html)
         self.assertNotIn("setInterval(() => {\n          location.reload();", html)
+        self.assertNotIn("setTimeout(() => location.reload(), 800)", html)
+        self.assertIn("populateKanban(window.summaryData)", html)
+        self.assertIn("refreshTraceTelemetry()", html)
+        self.assertIn("kanbanTransitionTask", html)
+        self.assertIn("const agent = (task.claimed_by || task.target_agent", html)
+        self.assertIn("block`, { agent, blocker: reason }", html)
         self.assertIn("API OFFLINE", html)
         self.assertIn("/v1/attendance/latest", html)
         self.assertIn("realOnboardGeneratedEmployee", html)
@@ -2506,7 +2666,7 @@ class CompanyKernelCoreTest(unittest.TestCase):
 
         output = self.root / "state" / "dashboard-tasks.html"
         with contextlib.redirect_stdout(io.StringIO()):
-            code = company_dashboard.main(["--output", str(output)])
+            code = company_dashboard.main(["--output", str(output), "--variant", "basic"])
         self.assertEqual(0, code)
         html = output.read_text(encoding="utf-8")
         self.assertIn("<th>evidence</th>", html)
@@ -2548,7 +2708,7 @@ class CompanyKernelCoreTest(unittest.TestCase):
 
         output = self.root / "state" / "dashboard-approval-metadata.html"
         with contextlib.redirect_stdout(io.StringIO()):
-            code = company_dashboard.main(["--output", str(output)])
+            code = company_dashboard.main(["--output", str(output), "--variant", "basic"])
         self.assertEqual(0, code)
         html = output.read_text(encoding="utf-8")
         self.assertIn("task-approval-metadata", html)
@@ -2656,7 +2816,7 @@ class CompanyKernelCoreTest(unittest.TestCase):
 
         output = self.root / "state" / "dashboard-projects.html"
         with contextlib.redirect_stdout(io.StringIO()):
-            code = company_dashboard.main(["--output", str(output)])
+            code = company_dashboard.main(["--output", str(output), "--variant", "basic"])
         self.assertEqual(0, code)
         html = output.read_text(encoding="utf-8")
         self.assertIn("<th>review</th>", html)
@@ -2848,6 +3008,23 @@ class CompanyKernelCoreTest(unittest.TestCase):
         for agent in ["video-ops", "video-creator", "video-publisher", "codex", "openclaw-main", "hermes", "nestcar"]:
             code, heartbeat = run_cli("heartbeat", "--agent", agent)
             self.assertEqual(code, 0, heartbeat)
+        code, runtime = run_cli("runtime", "register", "--runtime", "human", "--command", "manual-human-owner")
+        self.assertEqual(code, 0, runtime)
+        code, owner = run_cli(
+            "employee",
+            "create",
+            "--id",
+            "owner",
+            "--name",
+            "Owner",
+            "--role",
+            "human-owner",
+            "--runtime",
+            "human",
+            "--workspace",
+            str(self.root / "workspace" / "owner"),
+        )
+        self.assertEqual(code, 0, owner)
         daemon_state = self.root / "state" / "daemon" / "last-run.json"
         daemon_state.parent.mkdir(parents=True, exist_ok=True)
         daemon_state.write_text(json.dumps({"ok": True, "at": companyctl.now(), "results": []}, ensure_ascii=False), encoding="utf-8")
@@ -2876,6 +3053,8 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual([], healthy_summary["issues"])
         self.assertEqual(0, healthy_summary["heartbeat"]["missing"])
         self.assertEqual(0, healthy_summary["heartbeat"]["stale"])
+        self.assertNotIn("owner", healthy_summary["heartbeat"]["missing_agents"])
+        self.assertNotIn("owner", healthy_summary["heartbeat"]["stale_agents"])
         self.assertEqual(7, healthy_summary["counts"]["heartbeats"])
         self.assertEqual(0, healthy_summary["counts"]["capability_issues"])
         self.assertEqual(0, healthy_summary["counts"]["task_evidence_issues"])
@@ -2890,6 +3069,10 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertFalse(healthy_summary["launchd"]["matches_template"])
         self.assertTrue(healthy_summary["openclaw_guard"]["ok"])
         self.assertEqual([], healthy_summary["openclaw_guard"]["issues"])
+        self.assertIn("runtime_inventory", healthy_summary["openclaw_guard"])
+        self.assertIn("registered_employee_ids", healthy_summary["openclaw_guard"]["runtime_inventory"])
+        self.assertIn("codex", healthy_summary["openclaw_guard"]["runtime_inventory"]["registered_employee_ids"])
+        self.assertGreaterEqual(healthy_summary["openclaw_guard"]["runtime_inventory"]["counts"]["registered"], 1)
 
         openclaw_root = self.root / "openclaw"
         nestcar_spool = openclaw_root / "telegram" / "ingress-spool-nestcar"
@@ -3333,7 +3516,7 @@ class CompanyKernelCoreTest(unittest.TestCase):
 
         output = self.root / "state" / "dashboard-long-task.html"
         with contextlib.redirect_stdout(io.StringIO()):
-            code = company_dashboard.main(["--output", str(output)])
+            code = company_dashboard.main(["--output", str(output), "--variant", "basic"])
         self.assertEqual(code, 0)
         html = output.read_text(encoding="utf-8")
         self.assertIn("Long Task Delegation", html)
@@ -4062,7 +4245,7 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual(0, code, run)
         output = self.root / "state" / "dashboard-controls.html"
         with contextlib.redirect_stdout(io.StringIO()):
-            code = company_dashboard.main(["--output", str(output)])
+            code = company_dashboard.main(["--output", str(output), "--variant", "basic"])
         self.assertEqual(0, code)
         html = output.read_text(encoding="utf-8")
         self.assertIn("<th>attempt</th>", html)
@@ -4532,6 +4715,13 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual(200, status, failed)
         self.assertNotIn("adapter-run-api-retry", [item["id"] for item in failed["adapter_runs"]])
 
+        status, events = api_gateway.route_get("/v1/events", {"limit": ["5"]})
+        self.assertEqual(200, status, events)
+        self.assertGreaterEqual(len(events["events"]), 1)
+        self.assertIn("event_type", events["events"][0])
+        self.assertIn("source_agent", events["events"][0])
+        self.assertIn("processed_at", events["events"][0])
+
     def test_api_gateway_exposes_communication_observability_summary(self) -> None:
         code, sent_a = run_cli("message", "send", "--from", "openclaw-main", "--to", "codex", "--body", "请确认 adapter-run summary")
         self.assertEqual(code, 0, sent_a)
@@ -4617,6 +4807,109 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual("reports/adapter-progress.json", payload["adapter_runs"]["items"][0]["progress_file"])
         self.assertIn("internal_watchdog", payload)
         self.assertEqual(1, payload["internal_watchdog"]["counts"]["open_tasks"])
+
+    def test_api_gateway_exposes_live_telemetry_traces(self) -> None:
+        conn = companyctl.connect()
+        try:
+            conn.execute(
+                """
+                INSERT INTO adapter_runs(id, trace_id, agent_id, task_id, command, ok, processed, attempt, next_retry_at, result_json, created_at)
+                VALUES ('adapter-run-live-telemetry', 'trace-live-telemetry', 'codex', 'task-live-telemetry', 'company-codex-adapter', 1, 1, 1, '', '{}', ?)
+                """,
+                (companyctl.now(),),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        status, payload = api_gateway.route_get("/v1/telemetry/traces", {"limit": ["20"]})
+        self.assertEqual(HTTPStatus.OK, status, payload)
+        self.assertTrue(payload["ok"])
+        self.assertIn("trace-live-telemetry", [trace["trace_id"] for trace in payload["traces"]])
+
+    def test_api_gateway_exposes_openclaw_runtime_inventory(self) -> None:
+        (self.root / "openclaw" / "agents" / "market-agent" / "sessions").mkdir(parents=True)
+        (self.root / "openclaw" / "agents" / "market-agent" / "sessions" / "sessions.json").write_text('{"s1": {}}', encoding="utf-8")
+        spool = self.root / "openclaw" / "telegram" / "ingress-spool-market_agent"
+        spool.mkdir(parents=True)
+        status, payload = api_gateway.route_get("/v1/openclaw/runtime-inventory", {})
+        self.assertEqual(HTTPStatus.OK, status, payload)
+        self.assertTrue(payload["ok"])
+        self.assertEqual(1, payload["agent_dirs"]["market-agent"]["session_count"])
+        self.assertEqual(1, payload["counts"]["telegram_spools"])
+        self.assertIn("market_agent", payload["missing_registered"])
+        self.assertNotIn("market-agent", payload["missing_registered"])
+        self.assertEqual(1, payload["counts"]["missing_registered"])
+
+    def test_employee_sync_openclaw_runtime_registers_config_agents_and_runtime_candidates(self) -> None:
+        config = self.root / "openclaw" / "openclaw.json"
+        config.parent.mkdir(parents=True, exist_ok=True)
+        config.write_text(
+            json.dumps(
+                {
+                    "agents": {
+                        "list": [
+                            {"id": "main", "name": "main", "workspace": str(self.root / "workspace-xmanx")},
+                            {"id": "nestcar", "name": "car-rental", "workspace": str(self.root / "workspace-nestcar")},
+                        ]
+                    }
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        for agent_id in ("main", "nestcar", "runtime-only"):
+            sessions = self.root / "openclaw" / "agents" / agent_id / "sessions"
+            sessions.mkdir(parents=True, exist_ok=True)
+            (sessions / "sessions.json").write_text('{"s1": {}}', encoding="utf-8")
+
+        code, synced = run_cli("employee", "sync-openclaw-runtime", "--config", str(config))
+        self.assertEqual(0, code, synced)
+        self.assertEqual(2, synced["counts"]["active"])
+        self.assertEqual(1, synced["counts"]["candidate"])
+
+        conn = companyctl.connect_readonly()
+        try:
+            employees = {row["id"]: dict(row) for row in conn.execute("SELECT * FROM employees WHERE id IN ('main', 'nestcar', 'runtime-only')")}
+        finally:
+            conn.close()
+        self.assertEqual("active", employees["main"]["status"])
+        self.assertEqual("active", employees["nestcar"]["status"])
+        self.assertEqual("candidate", employees["runtime-only"]["status"])
+        self.assertEqual("openclaw", employees["nestcar"]["runtime"])
+
+        status, payload = api_gateway.route_get("/v1/openclaw/runtime-inventory", {})
+        self.assertEqual(HTTPStatus.OK, status, payload)
+        self.assertEqual(0, payload["counts"]["missing_registered"])
+        self.assertTrue(payload["agent_dirs"]["runtime-only"]["registered"])
+
+    def test_employee_sync_openclaw_heartbeats_marks_active_runtime_agents_seen(self) -> None:
+        config = self.root / "openclaw" / "openclaw.json"
+        config.parent.mkdir(parents=True, exist_ok=True)
+        config.write_text(
+            json.dumps({"agents": {"list": [{"id": "nestcar", "name": "car-rental", "workspace": str(self.root / "workspace-nestcar")}]}}),
+            encoding="utf-8",
+        )
+        sessions = self.root / "openclaw" / "agents" / "nestcar" / "sessions"
+        sessions.mkdir(parents=True, exist_ok=True)
+        (sessions / "sessions.json").write_text('{"s1": {}}', encoding="utf-8")
+        spool = self.root / "openclaw" / "telegram" / "ingress-spool-nestcar"
+        spool.mkdir(parents=True, exist_ok=True)
+
+        code, synced = run_cli("employee", "sync-openclaw-runtime", "--config", str(config))
+        self.assertEqual(0, code, synced)
+        code, heartbeat = run_cli("employee", "sync-openclaw-heartbeats")
+        self.assertEqual(0, code, heartbeat)
+        self.assertEqual(1, heartbeat["counts"]["synced"])
+
+        conn = companyctl.connect_readonly()
+        try:
+            row = conn.execute("SELECT metadata_json FROM heartbeats WHERE agent_id = 'nestcar'").fetchone()
+        finally:
+            conn.close()
+        self.assertIsNotNone(row)
+        metadata = json.loads(row["metadata_json"])
+        self.assertEqual("openclaw-runtime-sync", metadata["source"])
+        self.assertEqual(1, metadata["session_count"])
 
     def test_api_gateway_exposes_internal_watchdog_for_no_receipt_messages_and_open_tasks(self) -> None:
         code, sent = run_cli("message", "send", "--from", "openclaw-main", "--to", "nestcar", "--body", "请处理内部任务但没有回执")
@@ -4883,6 +5176,9 @@ class CompanyKernelCoreTest(unittest.TestCase):
         status, employees = api_gateway.route_get("/v1/employees", {})
         self.assertEqual(200, status, employees)
         self.assertIn("cursor-dev", [item["id"] for item in employees["employees"]])
+        self.assertIn("heartbeat_status", employees["employees"][0])
+        self.assertIn("last_seen_at", employees["employees"][0])
+        self.assertIn("kernel_state", employees["employees"][0])
         status, shown = api_gateway.route_get("/v1/employees/cursor-dev", {})
         self.assertEqual(200, status, shown)
         self.assertEqual("cursor", shown["employee"]["runtime"])
@@ -5278,6 +5574,49 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual(code, 0, submitted)
         self.assertEqual(approval_id, submitted["task"]["metadata"]["approval"]["id"])
 
+    def test_policy_auto_approval_allows_low_risk_openclaw_external_send(self) -> None:
+        policy_path = self.root / "config" / "policy.json"
+        policy_path.write_text(
+            json.dumps(
+                {
+                    "route_approval": {
+                        "actions": {"external_send": ["publish"]},
+                        "auto_approval_rules": [
+                            {
+                                "id": "nestcar-low-risk-fetch",
+                                "enabled": True,
+                                "action": "external_send",
+                                "source": "main",
+                                "target": "nestcar",
+                                "metadata": {"adapter": "openclaw", "task_type": "data_fetch"},
+                                "priority_not_in": ["P1"],
+                                "risk_not_in": ["P1"],
+                            }
+                        ],
+                    }
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        code, created = run_cli("employee", "create", "--id", "main", "--name", "main", "--role", "operator", "--runtime", "openclaw", "--workspace", str(self.root / "workspace" / "main"))
+        self.assertEqual(0, code, created)
+        with policy_guard.connect() as conn:
+            gate = policy_guard.require_approval(
+                source="main",
+                target="nestcar",
+                action="external_send",
+                reason="low risk data fetch",
+                risk="P3",
+                evidence="payload.json",
+                metadata={"adapter": "openclaw", "task_id": "task-auto-ok", "task_type": "data_fetch", "priority": "P3"},
+            )
+            rows = conn.execute("SELECT * FROM approvals WHERE status = 'approved' AND action = 'external_send'").fetchall()
+        self.assertTrue(gate["allowed"], gate)
+        self.assertEqual("auto_approved", gate["approval"]["detail"]["approval_mode"])
+        self.assertEqual("nestcar-low-risk-fetch", gate["approval"]["detail"]["auto_rule_id"])
+        self.assertEqual(1, len(rows))
+
     def test_custom_runtime_can_be_registered_and_onboarded_without_code_changes(self) -> None:
         with self.assertRaises(SystemExit):
             companyctl.main(["employee", "create", "--id", "cursor-agent", "--name", "Cursor", "--role", "developer", "--runtime", "cursor", "--workspace", str(self.root / "cursor")])
@@ -5591,6 +5930,114 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual("completed", task["task"]["status"])
         self.assertEqual(executed["report"], task["task"]["evidence_path"])
         self.assertIn("Submitted Company Kernel task to OpenClaw legacy bus", Path(executed["report"]).read_text(encoding="utf-8"))
+
+    def test_openclaw_adapter_execute_uses_auto_approval_for_low_risk_data_fetch(self) -> None:
+        (self.root / "config" / "policy.json").write_text(
+            json.dumps(
+                {
+                    "route_approval": {
+                        "auto_approval_rules": [
+                            {
+                                "id": "nestcar-low-risk-fetch",
+                                "enabled": True,
+                                "action": "external_send",
+                                "source": "main",
+                                "target": "nestcar",
+                                "metadata": {"adapter": "openclaw", "task_type": "data_fetch"},
+                                "priority_not_in": ["P1"],
+                                "risk_not_in": ["P1"],
+                            }
+                        ]
+                    }
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        task_id = "task-openclaw-auto-approval"
+        code, main = run_cli("employee", "create", "--id", "main", "--name", "main", "--role", "operator", "--runtime", "openclaw", "--workspace", str(self.root / "workspace" / "main"))
+        self.assertEqual(0, code, main)
+        code, submitted = run_cli(
+            "task",
+            "submit",
+            "--from",
+            "main",
+            "--to",
+            "nestcar",
+            "--task-id",
+            task_id,
+            "--title",
+            "低风险抓取",
+            "--description",
+            "data fetch through OpenClaw",
+            "--priority",
+            "P3",
+        )
+        self.assertEqual(0, code, submitted)
+        with companyctl.connect() as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO task_metadata(task_id, metadata_json, updated_at) VALUES (?, ?, ?)",
+                (task_id, json.dumps({"trace_id": submitted["task"]["metadata"]["trace_id"], "task_type": "data_fetch"}, ensure_ascii=False), companyctl.now()),
+            )
+            conn.commit()
+
+        calls: list[list[str]] = []
+
+        def fake_submit(source: str, target: str, priority: str, payload: dict) -> tuple[int, str, str]:
+            calls.append([source, target, priority, payload["task_id"]])
+            return 0, json.dumps({"ok": True, "file": str(self.root / "openclaw" / "bus" / f"{payload['task_id']}.json")}, ensure_ascii=False), ""
+
+        captured = io.StringIO()
+        with mock.patch.object(openclaw_adapter, "submit_openclaw", fake_submit), contextlib.redirect_stdout(captured):
+            code = openclaw_adapter.main(["--agent", "nestcar", "--execute"])
+        result = json.loads(captured.getvalue())
+        self.assertEqual(0, code, result)
+        self.assertTrue(result["ok"], result)
+        self.assertEqual([["main", "nestcar", "P3", task_id]], calls)
+        with policy_guard.connect() as conn:
+            approval = conn.execute("SELECT * FROM approvals WHERE source_agent = 'main' AND action = 'external_send' AND status = 'approved'").fetchone()
+        self.assertIsNotNone(approval)
+        self.assertEqual("auto_approved", json.loads(approval["reason"])["approval_mode"])
+
+    def test_openclaw_adapter_execute_reports_missing_oc_as_blocker(self) -> None:
+        task_id = "task-openclaw-missing-oc"
+        code, main = run_cli("employee", "create", "--id", "main", "--name", "main", "--role", "operator", "--runtime", "openclaw", "--workspace", str(self.root / "workspace" / "main"))
+        self.assertEqual(0, code, main)
+        code, submitted = run_cli(
+            "task",
+            "submit",
+            "--from",
+            "main",
+            "--to",
+            "nestcar",
+            "--task-id",
+            task_id,
+            "--title",
+            "Submit real OpenClaw task",
+            "--description",
+            "should block clearly when oc is missing",
+            "--priority",
+            "P3",
+        )
+        self.assertEqual(0, code, submitted)
+        code, approval = run_cli("approval", "request", "--from", "main", "--action", "external_send", "--target", "nestcar", "--risk", "P3", "--reason", "allow OpenClaw bridge")
+        self.assertEqual(0, code, approval)
+        code, approved = run_cli("approval", "approve", "--approval-id", approval["approval"]["id"], "--by", "main", "--reason", "test")
+        self.assertEqual(0, code, approved)
+
+        missing_oc = self.root / "openclaw" / "scripts" / "oc"
+        captured = io.StringIO()
+        with mock.patch.object(openclaw_adapter, "OPENCLAW_ROOT", self.root / "openclaw"), contextlib.redirect_stdout(captured):
+            code = openclaw_adapter.main(["--agent", "nestcar", "--execute", "--approval-id", approval["approval"]["id"]])
+        result = json.loads(captured.getvalue())
+        self.assertEqual(1, code, result)
+        self.assertFalse(result["ok"])
+        self.assertEqual("blocked", result["status"])
+        self.assertIn(str(missing_oc), result["blocker"])
+        self.assertIn("OpenClaw executable not found", result["blocker"])
+        code, task = run_cli("task", "show", "--task-id", task_id)
+        self.assertEqual(0, code, task)
+        self.assertEqual("blocked", task["task"]["status"])
 
     def test_codex_adapter_dry_run_writes_task_card_and_evidence(self) -> None:
         code, submitted = run_cli(
@@ -6382,6 +6829,35 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual([], onboard["scaffolded_files"])
         self.assertFalse((external / "AGENTS.md").exists())
 
+    def test_daemon_uses_global_config_master_workspace_root(self) -> None:
+        master_root = self.root / "master-daemon-root"
+        config_path = self.root / ".gemini" / "antigravity" / "company_kernel_config.json"
+        (master_root / "config").mkdir(parents=True)
+        (master_root / "logs").mkdir()
+        (master_root / "state" / "daemon").mkdir(parents=True)
+        (master_root / "config" / "daemon.json").write_text(json.dumps({"heartbeat_agents": ["main"]}), encoding="utf-8")
+        config_path.parent.mkdir(parents=True)
+        config_path.write_text(
+            json.dumps(
+                {
+                    "master_workspace_root": str(master_root),
+                    "database_path": str(master_root / "company.sqlite"),
+                    "log_dir": str(master_root / "logs"),
+                    "gateway_port": 8780,
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        with mock.patch.dict("os.environ", {"COMPANY_KERNEL_CONFIG_PATH": str(config_path)}, clear=False):
+            paths = company_daemon.resolve_daemon_paths()
+            loaded = company_daemon.load_config(paths["config_path"])
+        self.assertEqual(master_root.resolve(), paths["root"])
+        self.assertEqual((master_root / "config" / "daemon.json").resolve(), paths["config_path"])
+        self.assertEqual((master_root / "state" / "daemon").resolve(), paths["state_dir"])
+        self.assertEqual((master_root / "logs" / "daemon.log").resolve(), paths["log_path"])
+        self.assertEqual(["main"], loaded["heartbeat_agents"])
+
     def test_daemon_resolves_runtime_heartbeat_agents_without_duplicates(self) -> None:
         for employee_id in ["main", "nestcar"]:
             code, obj = run_cli(
@@ -6445,6 +6921,33 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertNotIn("retired", wildcard_agents)
         self.assertEqual(1, wildcard_agents.count("openclaw-main"))
 
+    def test_daemon_tick_can_sync_openclaw_runtime_and_heartbeats(self) -> None:
+        calls = []
+
+        def fake_run_companyctl(*args: str) -> dict:
+            calls.append(args)
+            return {"returncode": 0, "stdout": json.dumps({"ok": True}), "stderr": ""}
+
+        with mock.patch.object(company_daemon, "run_companyctl", side_effect=fake_run_companyctl):
+            state = company_daemon.tick(
+                {
+                    "sync_openclaw_runtime": True,
+                    "sync_openclaw_heartbeats": True,
+                    "run_repair": False,
+                    "run_scheduler": False,
+                    "run_supervisor_delivery_loop": False,
+                    "run_retries": False,
+                    "heartbeat_agents": [],
+                    "heartbeat_runtimes": [],
+                    "adapter_workers": [],
+                }
+            )
+        self.assertTrue(state["ok"])
+        self.assertEqual(("employee", "sync-openclaw-runtime"), calls[0])
+        self.assertEqual(("employee", "sync-openclaw-heartbeats"), calls[1])
+        summary = company_daemon.summarize_state(state)
+        self.assertEqual(2, summary["counts"]["openclaw_sync"])
+
     def test_daemon_records_adapter_runs_for_dashboard(self) -> None:
         code, submitted = run_cli("task", "submit", "--from", "openclaw-main", "--to", "codex", "--task-id", "task-adapter-run-dashboard", "--title", "adapter run dashboard")
         self.assertEqual(code, 0, submitted)
@@ -6495,7 +6998,7 @@ class CompanyKernelCoreTest(unittest.TestCase):
 
         output = self.root / "state" / "dashboard-adapter-runs.html"
         with contextlib.redirect_stdout(io.StringIO()):
-            code = company_dashboard.main(["--output", str(output)])
+            code = company_dashboard.main(["--output", str(output), "--variant", "basic"])
         self.assertEqual(0, code)
         html = output.read_text(encoding="utf-8")
         self.assertIn("Adapter Runs", html)
@@ -6964,7 +7467,7 @@ class CompanyKernelCoreTest(unittest.TestCase):
         }
         summary = company_daemon.summarize_state(state)
         self.assertFalse(summary["ok"])
-        self.assertEqual({"steps": 5, "heartbeats": 1, "adapters": 1, "repair": 1, "scheduler": 1, "supervisor": 1, "failed": 1}, summary["counts"])
+        self.assertEqual({"steps": 5, "heartbeats": 1, "adapters": 1, "repair": 1, "scheduler": 1, "supervisor": 1, "openclaw_sync": 0, "failed": 1}, summary["counts"])
         self.assertEqual(["main"], summary["heartbeat_agents"])
         self.assertEqual(["adapter.codex"], summary["failed_steps"])
         self.assertNotIn("results", summary)
