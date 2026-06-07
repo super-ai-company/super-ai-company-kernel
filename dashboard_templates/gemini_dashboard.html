@@ -446,6 +446,43 @@
       box-shadow: 0 0 10px rgba(245, 158, 11, 0.05);
     }
 
+    .status-cluster {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+    }
+
+    .sse-status-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 12px;
+      border-radius: 999px;
+      border: 1px solid rgba(99, 102, 241, 0.24);
+      background: rgba(15, 23, 42, 0.66);
+      color: var(--text-secondary);
+      font-size: 11px;
+      font-weight: 700;
+    }
+
+    .sse-status-chip.connected {
+      border-color: rgba(16, 185, 129, 0.32);
+      color: var(--color-green);
+    }
+
+    .sse-status-chip.fallback,
+    .sse-status-chip.disconnected {
+      border-color: rgba(245, 158, 11, 0.32);
+      color: var(--color-amber);
+    }
+
+    .sse-status-chip.off {
+      border-color: rgba(100, 116, 139, 0.32);
+      color: var(--text-muted);
+    }
+
     .status-dot {
       width: 8px;
       height: 8px;
@@ -2210,9 +2247,15 @@
         <p>API Gateway: <span id="db-path-label" style="font-family: monospace;">https://gateway.company.internal</span></p>
       </div>
       
-      <div id="top-status-badge" class="system-status">
-        <span class="status-dot"></span>
-        <span id="top-status-text">Operational</span>
+      <div class="status-cluster">
+        <div id="sse-status-chip" class="sse-status-chip off" title="SSE / REST fallback">
+          <i class="fa-solid fa-satellite-dish"></i>
+          <span id="sse-status-text">SSE / REST fallback: idle</span>
+        </div>
+        <div id="top-status-badge" class="system-status">
+          <span class="status-dot"></span>
+          <span id="top-status-text">Operational</span>
+        </div>
       </div>
     </header>
 
@@ -6030,26 +6073,39 @@
   let refreshInterval = null;
   let eventStream = null;
 
+  function setSseStatus(state, message) {
+    const chip = document.getElementById('sse-status-chip');
+    const text = document.getElementById('sse-status-text');
+    const normalized = state || 'off';
+    if (chip) chip.className = `sse-status-chip ${normalized}`;
+    if (text) text.innerText = message || 'SSE / REST fallback: idle';
+  }
+
   function stopEventStream() {
     if (eventStream) {
       eventStream.close();
       eventStream = null;
     }
+    setSseStatus('off', 'SSE / REST fallback: stopped');
   }
 
   function startEventStream() {
     if (!window.EventSource) {
       companyApiLog('SYSTEM', 'SSE unsupported; using 10s REST polling fallback.', 'normal');
+      setSseStatus('fallback', 'SSE unsupported · REST polling 10s');
       return false;
     }
     if (eventStream) return true;
     try {
       const url = `${getCompanyApiBase()}/v1/events/stream?poll_seconds=2&max_cycles=300&limit=20`;
+      setSseStatus('connecting', 'SSE connecting · 2s event stream');
       eventStream = new EventSource(url);
       eventStream.addEventListener('stream_status', (event) => {
         companyApiLog('SYSTEM', `SSE stream connected: ${event.data}`, 'success');
+        setSseStatus('connected', 'SSE connected · 2s events');
       });
       eventStream.addEventListener('company_event', () => {
+        setSseStatus('connected', 'SSE event received · refreshing');
         refreshLiveDashboardFromApi();
       });
       eventStream.addEventListener('heartbeat', () => {
@@ -6057,10 +6113,12 @@
         const text = document.getElementById('top-status-text');
         if (badge) badge.className = 'system-status ok';
         if (text) text.innerText = 'API ONLINE / SSE';
+        setSseStatus('connected', 'SSE heartbeat · 2s stream alive');
       });
       eventStream.onerror = () => {
         companyApiLog('ERROR', 'SSE stream disconnected; falling back to 10s REST polling.', 'error');
         stopEventStream();
+        setSseStatus('fallback', 'SSE disconnected · REST polling 10s');
         if (!refreshInterval) {
           refreshInterval = setInterval(refreshLiveDashboardFromApi, 10000);
         }
@@ -6069,6 +6127,7 @@
     } catch (err) {
       companyApiLog('ERROR', `SSE setup failed: ${err.message}; using REST polling fallback.`, 'error');
       stopEventStream();
+      setSseStatus('fallback', 'SSE setup failed · REST polling 10s');
       return false;
     }
   }
@@ -6081,6 +6140,7 @@
       refreshInterval = null;
       if (!startEventStream()) {
         refreshInterval = setInterval(refreshLiveDashboardFromApi, 10000);
+        setSseStatus('fallback', 'SSE / REST fallback: polling 10s');
       }
     } else {
       localStorage.setItem('dashboard-auto-refresh', 'false');
