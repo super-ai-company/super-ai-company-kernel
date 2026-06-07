@@ -3190,6 +3190,36 @@
     }).join('\n');
   }
 
+  function latestAttemptDetail(attempts) {
+    const rows = Array.isArray(attempts) ? attempts : [];
+    return rows.length ? rows[rows.length - 1] : {};
+  }
+
+  function heartbeatProgressSummary(attempt) {
+    if (!attempt || !Object.keys(attempt).length) return {};
+    return {
+      last_heartbeat_at: attempt.last_heartbeat_at || '',
+      last_progress_at: attempt.last_progress_at || '',
+      cancel_requested_at: attempt.cancel_requested_at || '',
+      finished_at: attempt.finished_at || '',
+      error_message: attempt.error_message || ''
+    };
+  }
+
+  function latestAttemptSummary(attempt) {
+    if (!attempt || !Object.keys(attempt).length) return {};
+    return {
+      attempt_id: attempt.attempt_id || '',
+      status: attempt.status || '',
+      employee_id: attempt.employee_id || '',
+      adapter_type: attempt.adapter_type || '',
+      runtime: attempt.runtime || '',
+      pid: attempt.pid || '',
+      session_key: attempt.session_key || '',
+      started_at: attempt.started_at || ''
+    };
+  }
+
   function currentTaskAttempt(task) {
     if (!task || typeof task !== 'object') return {};
     if (task.current_attempt && typeof task.current_attempt === 'object') return task.current_attempt;
@@ -3317,6 +3347,7 @@
       const approvals = payload.approvals || [];
       const supervisorState = payload.supervisor_state || {};
       const correctionSummary = payload.correction_summary || {};
+      const latestAttempt = latestAttemptDetail(attempts);
       renderDetails(`Task Detail: ${taskId}`, [
         ['Status', task.status || '-'],
         ['Target', task.target_agent || '-'],
@@ -3324,6 +3355,9 @@
         ['Trace', (attempts[0] && attempts[0].trace_id) || task.trace_id || '-'],
         ['Evidence', payload.evidence || {}],
         ['Blocker', payload.blocker || '-'],
+        ['Latest Attempt', latestAttemptSummary(latestAttempt)],
+        ['Heartbeat / Progress', heartbeatProgressSummary(latestAttempt)],
+        ['Runtime Policy', latestAttempt.runtime_policy || {}],
         ['Correction State', correctionSummary],
         ['Supervisor State', supervisorState],
         ['Attempt History', attemptHistorySummary(attempts)],

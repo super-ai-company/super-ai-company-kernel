@@ -1810,6 +1810,9 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertIn("AI Employee Cockpit", html)
         self.assertIn("Correction State", html)
         self.assertIn("Supervisor State", html)
+        self.assertIn("Latest Attempt", html)
+        self.assertIn("Heartbeat / Progress", html)
+        self.assertIn("Runtime Policy", html)
 
     def test_cockpit_api_sanitizes_evidence_and_exposes_long_task_state(self) -> None:
         code, created = run_cli("employee", "create", "--id", "main", "--name", "main", "--role", "operator", "--runtime", "openclaw", "--workspace", str(self.root / "workspace" / "main"))
