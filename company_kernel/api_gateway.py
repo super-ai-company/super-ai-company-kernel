@@ -51,6 +51,7 @@ API_ENDPOINTS = [
     {"method": "POST", "path": "/v1/employees/{employee_id}/capabilities", "summary": "Update employee capabilities", "body": {"set_skills": "comma-separated skills optional", "add_skill": "string/list optional", "set_tools": "comma-separated tools optional", "add_tool": "string/list optional", "set_task_types": "comma-separated task types optional"}},
     {"method": "POST", "path": "/v1/employees/{employee_id}/permissions", "summary": "Update employee permissions", "body": {"can_submit_tasks": "true/false/keep optional", "can_claim_tasks": "true/false/keep optional", "can_modify_kernel": "true/false/keep optional", "requires_approval_for": "comma-separated actions optional"}},
     {"method": "POST", "path": "/v1/employees/match", "summary": "Rank employees by capabilities for routing", "body": {"skills": "comma-separated skills optional", "tools": "comma-separated tools optional", "task_type": "string optional", "runtime": "runtime optional", "role": "role optional", "limit": "integer optional", "include_unavailable": "bool optional"}},
+    {"method": "GET", "path": "/v1/skills", "summary": "List local Skill Package manifests for AI Fleet & Skills"},
     {"method": "GET", "path": "/v1/settings/notification", "summary": "Read sanitized notification settings without secrets"},
     {"method": "POST", "path": "/v1/settings/notification", "summary": "Configure employee notification account without storing tokens", "body": {"telegram_account": "account id", "telegram_bot_token_env": "environment variable name containing token", "telegram_default_target": "chat/user target optional", "employee_notifications_enabled": "bool optional"}},
     {"method": "POST", "path": "/v1/notifications/send", "summary": "Send configured operator notification without exposing secrets", "body": {"message": "string required", "kind": "general/approval/error optional", "subject": "string optional", "target": "telegram target optional", "account": "account optional", "dry_run": "bool optional"}},
@@ -288,6 +289,8 @@ def route_get(path: str, query: dict[str, list[str]]) -> tuple[int, dict]:
             conn.close()
     if path == "/v1/employees/match":
         return HTTPStatus.METHOD_NOT_ALLOWED, {"ok": False, "error": "use POST", "path": path}
+    if path == "/v1/skills":
+        return HTTPStatus.OK, companyctl.skill_registry()
     if path == "/v1/settings/notification":
         return HTTPStatus.OK, companyctl.notification_settings()
     if path.startswith("/v1/employees/"):

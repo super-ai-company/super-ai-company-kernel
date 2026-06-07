@@ -2025,6 +2025,7 @@ def advanced_summary(summary: dict) -> dict:
     counts["archived_employees"] = sum(1 for employee in employees if employee.get("employee_status") == "archived")
     prepared["counts"] = counts
     prepared["employees"] = employees
+    prepared["skill_registry"] = companyctl.skill_registry()
     prepared["communication_observability"] = communication_observability_summary(summary)
     prepared["openclaw_runtime_inventory"] = summary.get("runtime_health", {}).get("openclaw_inventory", {})
     prepared["cockpit"] = build_cockpit_summary({**summary, "employees": employees})

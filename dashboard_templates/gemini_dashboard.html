@@ -2459,6 +2459,16 @@
         </div>
 
         <div class="section-card" style="margin-top: 20px;">
+          <h2><i class="fa-solid fa-toolbox"></i> Skill Registry</h2>
+          <p style="font-size: 12px; color: var(--text-secondary); margin-bottom: 12px;">
+            Read-only local Skill Packages. Execution still requires a Kernel task, authorized workspace, artifact registration, and evidence promotion.
+          </p>
+          <div class="employees-grid" id="skill-registry-container">
+            <!-- Populated by JS -->
+          </div>
+        </div>
+
+        <div class="section-card" style="margin-top: 20px;">
           <h2><i class="fa-solid fa-satellite-dish"></i> OpenClaw Runtime Discovery</h2>
           <p style="font-size: 12px; color: var(--text-secondary); margin-bottom: 12px;">
             Read-only view of local OpenClaw agent/session/spool directories. Missing entries are discovered on this Mac but not yet registered as Company Kernel employees.
@@ -3349,6 +3359,39 @@
         ${escapeHtml(isolation)} / ${escapeHtml(network)}
       </span>
     `;
+  }
+
+  function renderSkillRegistry(summary) {
+    const container = document.getElementById('skill-registry-container');
+    if (!container) return;
+    const registry = summary.skill_registry || {};
+    const skills = Array.isArray(registry.skills) ? registry.skills : [];
+    container.innerHTML = skills.length ? skills.map(skill => `
+      <div class="employee-card" onclick="showDetails('Skill Package: ' + '${escapeHtml(skill.id || '-')}', ${JSON.stringify(skill).replace(/'/g, "\'")})">
+        <div class="employee-card-header">
+          <div class="employee-identity">
+            <div class="employee-avatar"><i class="fa-solid fa-toolbox"></i></div>
+            <div>
+              <div class="employee-name">${escapeHtml(skill.name || skill.id || '-')}</div>
+              <div class="employee-role">${escapeHtml(skill.version || 'unversioned')}</div>
+            </div>
+          </div>
+          <span class="badge ${skill.ok === false ? 'blocked' : 'completed'}">${skill.ok === false ? 'invalid' : 'ready'}</span>
+        </div>
+        <div class="employee-meta" style="margin-top: 8px; font-size: 11px;">
+          <div><strong>ID:</strong> ${escapeHtml(skill.id || '-')}</div>
+          <div><strong>Runtime:</strong> ${escapeHtml(skill.runtime_type || '-')}</div>
+          <div><strong>Workspace:</strong> ${escapeHtml(skill.workspace_permission || '-')}</div>
+          <div><strong>Final:</strong> ${escapeHtml(skill.final_artifact || '-')}</div>
+          <div><strong>Price:</strong> ${escapeHtml(skill.pricing_amount || '-')} ${escapeHtml(skill.pricing_currency || '')} / ${escapeHtml(skill.pricing_unit || '-')}</div>
+        </div>
+        <div style="display: flex; flex-wrap: wrap; gap: 4px; margin-top: 10px; border-top: 1px solid rgba(255,255,255,0.05); padding-top: 8px;">
+          <span class="capability-tag">network=${escapeHtml(String(!!skill.network))}</span>
+          <span class="capability-tag">secrets=${escapeHtml(skill.secrets_count || 0)}</span>
+          <span class="capability-tag">evidence=${escapeHtml(String(!!skill.evidence_required))}</span>
+        </div>
+      </div>
+    `).join('') : '<div style="color: var(--text-secondary); font-size: 12px; padding: 10px 0;">No local Skill Packages found.</div>';
   }
 
   function attemptHistorySummary(attempts) {
@@ -5177,6 +5220,8 @@
         `;
       }).join('') : '<div style="color: var(--text-secondary); font-size: 12px; padding: 10px 0;">No candidate employees.</div>';
     }
+
+    renderSkillRegistry(summary);
 
     // Approvals Table
     refreshGovernanceTables();

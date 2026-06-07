@@ -253,6 +253,7 @@ class CompanyKernelCoreTest(unittest.TestCase):
             mock.patch.object(companyctl, "STATE_DIR", root / "state"),
             mock.patch.object(companyctl, "RFC_DIR", root / "rfcs"),
             mock.patch.object(companyctl, "CONFIG_DIR", root / "config"),
+            mock.patch.object(companyctl, "SKILL_PACKAGES_DIR", root / "skill-packages"),
             mock.patch.object(companyctl, "WORKFLOW_DIR", root / "config" / "workflows"),
             mock.patch.object(companyctl, "LAUNCHD_TEMPLATE", root / "config" / "launchd" / "ai.openclaw.company-kernel.daemon.plist"),
             mock.patch.object(companyctl, "HOOKS_PATH", root / "config" / "hooks.json"),
@@ -323,6 +324,25 @@ class CompanyKernelCoreTest(unittest.TestCase):
             )
             self.assertEqual(code, 0, obj)
         self.mark_active("video-ops", "video-creator", "video-publisher", "codex", "openclaw-main", "hermes", "nestcar")
+
+    def write_skill_manifest(self, skill_id: str = "ecommerce-copy-demo") -> Path:
+        package_dir = self.root / "skill-packages" / skill_id
+        package_dir.mkdir(parents=True, exist_ok=True)
+        manifest = {
+            "id": skill_id,
+            "name": "Ecommerce Copy Demo",
+            "version": "0.1.0",
+            "description": "Generate ecommerce listing copy inside the authorized task workspace.",
+            "input_schema": {"type": "object", "properties": {"product_name": {"type": "string"}}},
+            "output_schema": {"type": "object", "properties": {"summary_path": {"type": "string"}}, "required": ["summary_path"]},
+            "runtime": {"type": "local-script", "command": "python3 run.py"},
+            "permissions": {"workspace": "task", "network": False, "secrets": []},
+            "pricing": {"unit": "task", "amount": 10, "currency": "USD"},
+            "acceptance": {"final_artifact": "final/listing-summary.md", "evidence_required": True},
+        }
+        manifest_path = package_dir / "skill.json"
+        manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+        return manifest_path
 
     def mark_active(self, *employee_ids: str) -> None:
         conn = companyctl.connect()
@@ -5055,6 +5075,33 @@ class CompanyKernelCoreTest(unittest.TestCase):
             code = company_dashboard.main(["--output", str(output), "--variant", "advanced"])
         self.assertEqual(0, code)
         self.assertIn("sandbox-profile-chip", output.read_text(encoding="utf-8"))
+
+    def test_skill_registry_lists_packages_in_cli_api_and_dashboard(self) -> None:
+        manifest_path = self.write_skill_manifest()
+        code, listed = run_cli("skill", "list")
+        self.assertEqual(0, code, listed)
+        self.assertEqual([str(manifest_path)], [item["manifest_path"] for item in listed["skills"]])
+        skill = listed["skills"][0]
+        self.assertEqual("ecommerce-copy-demo", skill["id"])
+        self.assertEqual("Ecommerce Copy Demo", skill["name"])
+        self.assertEqual("local-script", skill["runtime_type"])
+        self.assertEqual("task", skill["workspace_permission"])
+        self.assertEqual("final/listing-summary.md", skill["final_artifact"])
+        self.assertEqual("task", skill["pricing_unit"])
+        self.assertTrue(skill["evidence_required"])
+
+        status, api_payload = api_gateway.route_get("/v1/skills", {})
+        self.assertEqual(HTTPStatus.OK, status, api_payload)
+        self.assertEqual(listed["skills"], api_payload["skills"])
+
+        output = self.root / "state" / "skill-registry-dashboard.html"
+        with contextlib.redirect_stdout(io.StringIO()):
+            code = company_dashboard.main(["--output", str(output), "--variant", "advanced"])
+        self.assertEqual(0, code)
+        html = output.read_text(encoding="utf-8")
+        self.assertIn("Skill Registry", html)
+        self.assertIn("skill-registry-container", html)
+        self.assertIn("ecommerce-copy-demo", html)
 
     def test_dashboard_renders_managed_task_control_buttons(self) -> None:
         for employee_id, role in [("main", "operator"), ("hermes", "supervisor"), ("codex", "developer")]:
