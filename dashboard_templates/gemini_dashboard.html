@@ -1178,6 +1178,46 @@
       align-self: flex-start;
     }
 
+    .chat-filter-toggle {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      color: var(--text-muted);
+      font-size: 11px;
+      cursor: pointer;
+      user-select: none;
+    }
+
+    .chat-filter-toggle input {
+      accent-color: var(--color-indigo);
+    }
+
+    .chat-hidden-notice {
+      color: var(--text-muted);
+      font-size: 12px;
+      padding: 10px 14px;
+      margin: 8px 0;
+      border: 1px dashed rgba(148, 163, 184, 0.22);
+      border-radius: 10px;
+      background: rgba(15, 23, 42, 0.34);
+      text-align: center;
+    }
+
+    .chat-task-context-pill {
+      display: inline-flex;
+      align-items: center;
+      margin-left: 6px;
+      padding: 2px 6px;
+      border-radius: 999px;
+      border: 1px solid rgba(59, 130, 246, 0.25);
+      background: rgba(59, 130, 246, 0.12);
+      color: #93c5fd;
+      font-size: 9px;
+      font-weight: 800;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+
     /* Modal styles */
     .modal {
       display: none;
@@ -2551,6 +2591,10 @@
             <div class="chat-toolbar">
               <button id="chat-create-btn" class="chat-tool-btn" onclick="window.openNewConversationComposer()"><i class="fa-solid fa-plus"></i> New</button>
               <button id="chat-refresh-btn" class="chat-tool-btn" onclick="window.refreshChatHub()"><i class="fa-solid fa-rotate"></i> Refresh</button>
+              <label class="chat-filter-toggle" title="Show greeting, handshake, and idle chatter hidden by default">
+                <input id="show-chat-handshakes-toggle" type="checkbox" onchange="window.toggleChatHandshakeVisibility(this.checked)">
+                Show handshakes
+              </label>
             </div>
             <div id="chat-threads-list">
               <!-- Threads lists by JS -->
@@ -3607,6 +3651,57 @@
     return conversationParticipants(conversation).includes(HUMAN_OWNER_ID);
   }
 
+  function chatHandshakesVisible() {
+    return localStorage.getItem('dashboard-show-chat-handshakes') === 'true';
+  }
+
+  window.toggleChatHandshakeVisibility = function(visible) {
+    localStorage.setItem('dashboard-show-chat-handshakes', visible ? 'true' : 'false');
+    renderRealChatMessages();
+    populateChatHub();
+  };
+
+  function extractTaskContext(messageOrConversation) {
+    const item = messageOrConversation || {};
+    const direct = item.task_id || item.taskId || '';
+    if (direct) return String(direct);
+    const text = [
+      item.title,
+      item.body,
+      item.evidence_path,
+      item.id,
+      item.conversation_id,
+    ].filter(Boolean).join(' ');
+    const match = text.match(/\b(task[-_:][a-zA-Z0-9._-]+|TASK[-_:][a-zA-Z0-9._-]+)\b/);
+    return match ? match[1] : '';
+  }
+
+  function isTaskBoundChatItem(item) {
+    return !!extractTaskContext(item);
+  }
+
+  function isLowSignalChatMessage(message) {
+    const body = String(message && message.body ? message.body : '').trim();
+    if (!body) return true;
+    if (isTaskBoundChatItem(message)) return false;
+    if (/(attempt_id|task_id|trace_id|evidence|artifact|handoff|progress|blocked|failed|completed|done|stale|correction|approval)/i.test(body)) return false;
+    if (body.length > 160) return false;
+    return /^(hi|hello|hey|ping|pong|ack|ok|okay|thanks|thank you|收到|在|在线|你好|谢谢|感谢|早上好|晚上好|direct channel opened|dashboard direct ui ping|rest ping|smoke|handshake|greeting|idle|round\s*\d+|direct_ok|message direct ok)[\s.!。！]*$/i.test(body)
+      || /\b(handshake|greeting|idle chatter|direct_ok|message direct ok)\b/i.test(body);
+  }
+
+  function visibleChatMessages(messages) {
+    const allMessages = messages || [];
+    if (chatHandshakesVisible()) return {visible: allMessages, hiddenCount: 0};
+    const visible = allMessages.filter(message => !isLowSignalChatMessage(message));
+    return {visible, hiddenCount: allMessages.length - visible.length};
+  }
+
+  function hiddenChatNotice(hiddenCount) {
+    if (!hiddenCount) return '';
+    return `<div class="chat-hidden-notice">Hidden greeting/handshake/idle messages: ${hiddenCount}. Toggle “Show handshakes” to inspect raw chatter.</div>`;
+  }
+
   function renderRealChatMessages() {
     const summary = getDashboardSummary();
     const activeId = getActiveConversationId();
@@ -3627,7 +3722,8 @@
     if (!conversation || !container) return;
     const participants = conversationParticipants(conversation);
     if (title) title.innerText = conversation.title || conversation.id;
-    if (members) members.innerText = `Participants: ${participants.join(', ') || '-'}`;
+    const taskContext = extractTaskContext(conversation);
+    if (members) members.innerText = `Participants: ${participants.join(', ') || '-'}${taskContext ? ` · Task-bound: ${taskContext}` : ''}`;
     if (joinButton) {
       joinButton.disabled = ownerInConversation(conversation);
       joinButton.innerHTML = ownerInConversation(conversation) ? '<i class="fa-solid fa-user-check"></i> Owner Inserted' : '<i class="fa-solid fa-user-plus"></i> Insert Owner';
@@ -3656,12 +3752,18 @@
     }
 
     const messages = conversation.messages || [];
+    const filtered = visibleChatMessages(messages);
+    const displayMessages = filtered.visible;
     if (!messages.length) {
       container.innerHTML = '<div style="color: var(--text-muted); font-size: 12px; padding: 28px; text-align: center;">No messages recorded in this conversation.</div>';
       return;
     }
+    if (!displayMessages.length) {
+      container.innerHTML = `${hiddenChatNotice(filtered.hiddenCount)}<div class="chat-direct-empty">Only greeting/handshake/idle messages are hidden in this conversation.</div>`;
+      return;
+    }
     
-    container.innerHTML = messages.map((message) => {
+    container.innerHTML = hiddenChatNotice(filtered.hiddenCount) + displayMessages.map((message) => {
       // Inline System Event Cards inside conversations
       if (message.source_agent === 'system' || message.source_agent === 'SYSTEM') {
         return `<div class="chat-system-log">${escapeHtml(message.body)}</div>`;
@@ -3669,11 +3771,12 @@
       
       const isOwner = message.source_agent === HUMAN_OWNER_ID;
       const avatarChar = String(message.source_agent || '--').slice(0, 2).toUpperCase();
+      const messageTask = extractTaskContext(message) || taskContext;
       return `
         <div class="chat-bubble-container ${isOwner ? 'sent' : ''}">
           <div class="chat-bubble-avatar">${escapeHtml(avatarChar)}</div>
           <div class="chat-bubble-wrapper">
-            <div class="chat-bubble-sender">${escapeHtml(message.source_agent || '-')}</div>
+            <div class="chat-bubble-sender">${escapeHtml(message.source_agent || '-')}${messageTask ? ` <span class="chat-task-context-pill">Task-bound ${escapeHtml(messageTask)}</span>` : ''}</div>
             <div class="chat-bubble-body">${escapeHtml(message.body || '')}</div>
             <div class="chat-bubble-time">${formatDate(message.created_at || message.time || '')}</div>
           </div>
@@ -3692,25 +3795,32 @@
     const banner = document.getElementById('chat-intercept-banner');
     const chatView = document.getElementById('chat-view-container');
     if (title) title.innerText = 'Recent Direct Messages';
-    if (members) members.innerText = 'Source: messages table · main/codex/antigravity/hermes';
+    if (members) members.innerText = 'Source: messages table · Task-bound messages stay visible; handshakes hidden by default';
     if (joinButton) joinButton.disabled = true;
     if (banner) banner.style.display = 'none';
     if (chatView) chatView.classList.remove('intercepted');
     if (!container) return;
     const messages = summary.direct_messages_recent || [];
+    const filtered = visibleChatMessages(messages);
+    const displayMessages = filtered.visible;
     if (!messages.length) {
       container.innerHTML = '<div class="chat-direct-empty">No direct messages found in the current summary.</div>';
       return;
     }
-    container.innerHTML = messages.slice().reverse().map(message => {
+    if (!displayMessages.length) {
+      container.innerHTML = `${hiddenChatNotice(filtered.hiddenCount)}<div class="chat-direct-empty">Only greeting/handshake/idle messages are hidden in the current direct-message feed.</div>`;
+      return;
+    }
+    container.innerHTML = hiddenChatNotice(filtered.hiddenCount) + displayMessages.slice().reverse().map(message => {
       const source = message.source_agent || '-';
       const target = message.target_agent || '-';
       const avatarChar = String(source || '--').slice(0, 2).toUpperCase();
+      const taskContext = extractTaskContext(message);
       return `
         <div class="chat-bubble-container">
           <div class="chat-bubble-avatar">${escapeHtml(avatarChar)}</div>
           <div class="chat-bubble-wrapper">
-            <div class="chat-bubble-sender">${escapeHtml(source)} → ${escapeHtml(target)} <span class="direct-message-pill">direct</span></div>
+            <div class="chat-bubble-sender">${escapeHtml(source)} → ${escapeHtml(target)} <span class="direct-message-pill">direct</span>${taskContext ? ` <span class="chat-task-context-pill">Task-bound ${escapeHtml(taskContext)}</span>` : ''}</div>
             <div class="chat-bubble-body">${escapeHtml(message.body || '')}</div>
             <div class="chat-bubble-time">${formatDate(message.created_at || '')}</div>
           </div>
@@ -5027,12 +5137,15 @@
     const listContainer = document.getElementById('chat-threads-list');
     
     const directMessages = summary.direct_messages_recent || [];
+    const directFiltered = visibleChatMessages(directMessages);
+    const directTaskBoundCount = directMessages.filter(isTaskBoundChatItem).length;
     const directThread = directMessages.length ? `
       <div class="chat-thread-item ${window.activeThreadId === 'direct-messages-recent' ? 'active' : ''}" onclick="selectChatThread('direct-messages-recent')">
-        <div class="chat-thread-name"><i class="fa-solid fa-envelope-open-text"></i> Recent Direct Messages</div>
+        <div class="chat-thread-name"><i class="fa-solid fa-envelope-open-text"></i> Recent Direct Messages ${directTaskBoundCount ? `<span class="chat-task-context-pill">Task-bound ${directTaskBoundCount}</span>` : ''}</div>
         <div class="chat-thread-meta">
-          <span>${directMessages.length} messages</span>
+          <span>${directFiltered.visible.length}/${directMessages.length} shown</span>
           <span>messages table</span>
+          ${directFiltered.hiddenCount ? `<span>${directFiltered.hiddenCount} hidden idle</span>` : ''}
         </div>
       </div>
     ` : '';
@@ -5042,15 +5155,21 @@
       return;
     }
 
-    const conversationThreads = (summary.conversations || []).map(c => `
+    const conversationThreads = (summary.conversations || []).map(c => {
+      const messages = c.messages || [];
+      const filtered = visibleChatMessages(messages);
+      const taskContext = extractTaskContext(c) || (messages.map(extractTaskContext).find(Boolean) || '');
+      return `
       <div class="chat-thread-item ${window.activeThreadId === c.id ? 'active' : ''}" onclick="selectChatThread('${c.id}')">
-        <div class="chat-thread-name"><i class="fa-solid fa-comments"></i> ${escapeHtml(c.title)}</div>
+        <div class="chat-thread-name"><i class="fa-solid fa-comments"></i> ${escapeHtml(c.title)} ${taskContext ? `<span class="chat-task-context-pill">Task-bound ${escapeHtml(taskContext)}</span>` : ''}</div>
         <div class="chat-thread-meta">
-          <span>${c.message_count} rounds</span>
+          <span>${filtered.visible.length}/${c.message_count || messages.length} shown</span>
           <span>${c.id}</span>
+          ${filtered.hiddenCount ? `<span>${filtered.hiddenCount} hidden idle</span>` : ''}
         </div>
       </div>
-    `).join('');
+    `;
+    }).join('');
     listContainer.innerHTML = directThread + conversationThreads;
 
     if (!window.activeThreadId) {
