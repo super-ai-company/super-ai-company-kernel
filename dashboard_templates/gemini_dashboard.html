@@ -252,6 +252,41 @@
       border-color: rgba(34, 197, 94, 0.28);
     }
 
+    .readiness-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      padding: 4px 7px;
+      border-radius: 999px;
+      font-size: 9px;
+      font-weight: 800;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      border: 1px solid rgba(255,255,255,0.12);
+    }
+
+    .readiness-active_ready {
+      color: #86efac;
+      background: rgba(34, 197, 94, 0.12);
+      border-color: rgba(34, 197, 94, 0.28);
+    }
+
+    .readiness-active-limited,
+    .readiness-online_only,
+    .readiness-candidate_only {
+      color: #fbbf24;
+      background: rgba(245, 158, 11, 0.12);
+      border-color: rgba(245, 158, 11, 0.28);
+    }
+
+    .readiness-unsafe,
+    .readiness-no_reply,
+    .readiness-task_unsupported {
+      color: #fca5a5;
+      background: rgba(239, 68, 68, 0.12);
+      border-color: rgba(239, 68, 68, 0.28);
+    }
+
     .sidebar-footer {
       border-top: 1px solid var(--border-color);
       padding-top: 20px;
@@ -2282,6 +2317,7 @@
                   <th>Blocker</th>
                   <th>Title</th>
                   <th>Updated</th>
+                  <th>Actions</th>
                 </tr>
               </thead>
               <tbody id="tasks-tbody">
@@ -3087,6 +3123,56 @@
     return oneLine.length > maxLength ? oneLine.slice(0, maxLength - 1) + '…' : oneLine;
   }
 
+  function readinessBadge(employee) {
+    const level = String(employee.readiness_level || employee.status || 'unknown');
+    const safeLevel = level.replace(/[^a-zA-Z0-9_-]/g, '-');
+    const reason = employee.readiness_reason || employee.kernel_state || '';
+    return `<span class="readiness-badge readiness-${escapeHtml(safeLevel)}" title="${escapeHtml(reason)}"><i class="fa-solid fa-id-badge"></i>${escapeHtml(level)}</span>`;
+  }
+
+  function attemptHistorySummary(attempts) {
+    const rows = Array.isArray(attempts) ? attempts : [];
+    if (!rows.length) return '-';
+    return rows.map((item, index) => {
+      const status = item.status || '-';
+      const attemptId = item.attempt_id || '-';
+      const employeeId = item.employee_id || '-';
+      const adapter = item.adapter_type || '-';
+      const started = formatDate(item.started_at || '') || '-';
+      const finished = formatDate(item.finished_at || '') || '-';
+      const error = item.error_message ? ` error=${item.error_message}` : '';
+      return `#${index + 1} ${status} · ${attemptId} · ${employeeId} · ${adapter} · started=${started} · finished=${finished}${error}`;
+    }).join('\n');
+  }
+
+  function currentTaskAttempt(task) {
+    if (!task || typeof task !== 'object') return {};
+    if (task.current_attempt && typeof task.current_attempt === 'object') return task.current_attempt;
+    if (Array.isArray(task.attempts) && task.attempts.length) return task.attempts[0];
+    const attempt = {};
+    if (task.attempt_id) attempt.attempt_id = task.attempt_id;
+    if (task.trace_id) attempt.trace_id = task.trace_id;
+    if (task.claimed_by || task.target_agent) attempt.employee_id = task.claimed_by || task.target_agent;
+    return attempt;
+  }
+
+  function taskActionButtons(task) {
+    const taskId = task && task.id ? String(task.id) : '';
+    if (!taskId) return '-';
+    const attempt = currentTaskAttempt(task);
+    const attemptId = attempt.attempt_id || '';
+    const target = task.claimed_by || task.target_agent || '';
+    const traceId = attempt.trace_id || task.trace_id || '';
+    return `
+      <button class="filter-tab" onclick="event.stopPropagation(); openTaskDetailDrawer('${escapeHtml(taskId)}')">Detail</button>
+      <button class="filter-tab" onclick="event.stopPropagation(); correctTaskAttempt('${escapeHtml(taskId)}', '${escapeHtml(attemptId)}')">Correct</button>
+      <button class="filter-tab" onclick="event.stopPropagation(); cancelTaskAttempt('${escapeHtml(taskId)}', '${escapeHtml(attemptId)}')">Cancel</button>
+      <button class="filter-tab" onclick="event.stopPropagation(); retryTask('${escapeHtml(taskId)}')">Retry</button>
+      <button class="filter-tab" onclick="event.stopPropagation(); reassignTask('${escapeHtml(taskId)}', '${escapeHtml(target)}')">Reassign</button>
+      <button class="filter-tab" onclick="event.stopPropagation(); viewTaskTrace('${escapeHtml(traceId)}')">Trace</button>
+    `;
+  }
+
   function approvalDetail(approval) {
     const detail = parseMaybeJson(approval && approval.reason, {});
     return detail && typeof detail === 'object' && !Array.isArray(detail) ? detail : {};
@@ -3191,7 +3277,7 @@
         ['Trace', (attempts[0] && attempts[0].trace_id) || task.trace_id || '-'],
         ['Evidence', payload.evidence || {}],
         ['Blocker', payload.blocker || '-'],
-        ['Attempts', attempts.map(item => `${item.status}:${item.attempt_id}`).join('\n') || '-'],
+        ['Attempt History', attemptHistorySummary(attempts)],
         ['Recent Events', events.slice(-8).map(item => `${item.created_at} ${item.event_type} ${item.id}`).join('\n') || '-'],
         ['Approvals', approvals.map(item => `${item.status}:${item.id || item.approval_id || ''}`).join('\n') || '-'],
         ['Raw', payload],
@@ -3201,6 +3287,79 @@
     }
   }
   window.openTaskDetailDrawer = openTaskDetailDrawer;
+
+  window.correctTaskAttempt = async function(taskId, attemptId) {
+    const by = prompt(`Supervisor correcting ${taskId}`, 'hermes');
+    if (by === null) return;
+    const message = prompt('Correction message', '请回到原任务目标，更新 progress，并说明 blocker/evidence。');
+    if (message === null) return;
+    companyApiLog('SYSTEM', `Sending correction for ${taskId}...`, 'normal');
+    try {
+      await companyApiPost(`/v1/tasks/${encodeURIComponent(taskId)}/correct`, {attempt_id: attemptId || '', by: by || 'hermes', message});
+      companyApiLog('SYSTEM', `Correction sent for ${taskId}.`, 'success');
+      await refreshLiveDashboardFromApi();
+    } catch (err) {
+      companyApiLog('ERROR', `Correction failed: ${err.message}`, 'error');
+    }
+  };
+
+  window.cancelTaskAttempt = async function(taskId, attemptId) {
+    const by = prompt(`Who cancels ${taskId}?`, 'hermes');
+    if (by === null) return;
+    const reason = prompt('Cancel reason', '用户停止或 supervisor 判定需要停止');
+    if (reason === null) return;
+    if (!confirm(`Cancel attempt ${attemptId || '-'} for task ${taskId}?`)) return;
+    companyApiLog('SYSTEM', `Cancelling ${taskId}...`, 'normal');
+    try {
+      await companyApiPost(`/v1/tasks/${encodeURIComponent(taskId)}/cancel`, {attempt_id: attemptId || '', by: by || 'hermes', reason});
+      companyApiLog('SYSTEM', `Cancelled ${taskId}.`, 'success');
+      await refreshLiveDashboardFromApi();
+    } catch (err) {
+      companyApiLog('ERROR', `Cancel failed: ${err.message}`, 'error');
+    }
+  };
+
+  window.retryTask = async function(taskId) {
+    const by = prompt(`Who retries ${taskId}?`, 'hermes');
+    if (by === null) return;
+    const reason = prompt('Retry reason', '修复后重试');
+    if (reason === null) return;
+    companyApiLog('SYSTEM', `Retrying ${taskId}...`, 'normal');
+    try {
+      await companyApiPost(`/v1/tasks/${encodeURIComponent(taskId)}/retry`, {by: by || 'hermes', reason});
+      companyApiLog('SYSTEM', `Retry attempt started for ${taskId}.`, 'success');
+      await refreshLiveDashboardFromApi();
+    } catch (err) {
+      companyApiLog('ERROR', `Retry failed: ${err.message}`, 'error');
+    }
+  };
+
+  window.reassignTask = async function(taskId, currentTarget) {
+    const by = prompt(`Who reassigns ${taskId}?`, 'hermes');
+    if (by === null) return;
+    const to = prompt('New employee id', currentTarget || 'codex');
+    if (to === null || !to.trim()) return;
+    const reason = prompt('Reassign reason', '更适合该员工执行');
+    if (reason === null) return;
+    companyApiLog('SYSTEM', `Reassigning ${taskId} to ${to}...`, 'normal');
+    try {
+      await companyApiPost(`/v1/tasks/${encodeURIComponent(taskId)}/reassign`, {by: by || 'hermes', to, reason});
+      companyApiLog('SYSTEM', `Reassigned ${taskId}.`, 'success');
+      await refreshLiveDashboardFromApi();
+    } catch (err) {
+      companyApiLog('ERROR', `Reassign failed: ${err.message}`, 'error');
+    }
+  };
+
+  window.viewTaskTrace = function(traceId) {
+    if (!traceId) {
+      companyApiLog('ERROR', 'No trace_id for this task yet.', 'error');
+      return;
+    }
+    companyApiLog('SYSTEM', `Trace ${traceId} is visible in the Trace Telemetry panel.`, 'normal');
+    switchTab('telemetry');
+    location.hash = `trace-${traceId}`;
+  };
 
   function guideCollaborationAfterFailure(prefix) {
     companyApiLog('SYSTEM', `${prefix} ${collaborationHelpText()}`, 'normal');
@@ -4394,6 +4553,7 @@
           <td style="color: var(--color-rose);">${escapeHtml(task.blocker || '-')}</td>
           <td style="max-width: 150px; overflow: hidden; text-overflow: ellipsis;">${escapeHtml(task.title)}</td>
           <td>${formatDate(task.updated_at)}</td>
+          <td><div style="display:flex;flex-wrap:wrap;gap:4px;">${taskActionButtons(task)}</div></td>
         </tr>
       `;
     }).join('');
@@ -4467,13 +4627,14 @@
               </div>
             </div>
           </div>
-          <div class="employee-meta" style="margin-top: 6px; font-size: 11px;">
-            <div style="margin-bottom: 4px; display: flex; align-items: center; justify-content: space-between;">
-              <span><strong>Sandbox:</strong> ${isolationBadge}</span>
-              <span class="badge ${hbStatus}">${hbStatus}</span>
+            <div class="employee-meta" style="margin-top: 6px; font-size: 11px;">
+              <div style="margin-bottom: 4px; display: flex; align-items: center; justify-content: space-between;">
+                <span><strong>Sandbox:</strong> ${isolationBadge}</span>
+                <span class="badge ${hbStatus}">${hbStatus}</span>
+              </div>
+              <div style="margin-bottom: 4px;"><strong>Readiness:</strong> ${readinessBadge(emp)}</div>
+              <div><strong>Last Active:</strong> ${formatDate(emp.last_seen_at) || 'Never'}</div>
             </div>
-            <div><strong>Last Active:</strong> ${formatDate(emp.last_seen_at) || 'Never'}</div>
-          </div>
           <div style="display: flex; flex-wrap: wrap; gap: 4px; margin-top: 10px; border-top: 1px solid rgba(255,255,255,0.05); padding-top: 8px;">
             ${skillsPills}
           </div>
@@ -4519,6 +4680,7 @@
                 <span><strong>Runtime:</strong> ${escapeHtml(emp.runtime || '-')}</span>
                 <span class="badge blocked">Candidate</span>
               </div>
+              <div style="margin-bottom: 4px;"><strong>Readiness:</strong> ${readinessBadge(emp)}</div>
               <div><strong>Last Active:</strong> ${formatDate(emp.last_seen_at) || 'Never'}</div>
             </div>
             <div style="display: flex; flex-wrap: wrap; gap: 4px; margin-top: 10px; border-top: 1px solid rgba(255,255,255,0.05); padding-top: 8px;">

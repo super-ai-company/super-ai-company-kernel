@@ -359,7 +359,8 @@ def route_get(path: str, query: dict[str, list[str]]) -> tuple[int, dict]:
         conn = companyctl.connect_readonly()
         try:
             summary = company_dashboard.load_summary(conn)
-            return HTTPStatus.OK, company_dashboard.build_cockpit_summary(summary)
+            employees = company_dashboard.employee_view_models(summary)
+            return HTTPStatus.OK, company_dashboard.build_cockpit_summary({**summary, "employees": employees})
         finally:
             conn.close()
     if path == "/v1/telemetry/traces":

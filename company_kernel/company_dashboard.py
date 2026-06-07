@@ -345,6 +345,9 @@ def build_cockpit_summary(summary: dict) -> dict:
                 "role": employee.get("role", ""),
                 "status": active_state,
                 "employee_status": status,
+                "readiness_level": employee.get("readiness_level", active_state),
+                "readiness_reason": employee.get("readiness_reason", ""),
+                "readiness_checks": employee.get("readiness_checks", {}),
                 "heartbeat_status": heartbeat,
                 "progress_layer": employee.get("progress_layer", ""),
                 "progress_state": employee.get("progress_state", ""),
@@ -1248,54 +1251,66 @@ def employee_view_models(summary: dict) -> list[dict]:
     employees = []
     communication_config = companyctl.load_communication_config()
     communication_profiles = communication_config.get("employees", {})
-    for employee in summary["employees"]:
-        if employee.get("id") == "owner" or employee.get("role") == "human-owner" or employee.get("runtime") == "human":
-            continue
-        capabilities = companyctl.load_json_or_default(companyctl.employee_paths(employee["id"])["capabilities"], {})
-        skills = capabilities.get("skills", [])
-        tools = capabilities.get("tools", [])
-        task_types = capabilities.get("preferred_task_types", [])
-        communication_profile = communication_profiles.get(employee["id"], {})
-        try:
-            heartbeat_metadata = json.loads(employee.get("heartbeat_metadata_json", "{}") or "{}")
-        except json.JSONDecodeError:
-            heartbeat_metadata = {}
-        heartbeat_progress = companyctl.extract_progress_payload(heartbeat_metadata)
-        age = minutes_since(employee.get("last_seen_at", ""), summary["generated_at"])
-        employee_status = employee.get("employee_status") or employee.get("status", "")
-        heartbeat_status = employee.get("heartbeat_status", "missing")
-        if employee_status != "active":
-            kernel_state = employee_status
-            schedulable = "no"
-        elif heartbeat_status == "missing":
-            kernel_state = "missing_heartbeat"
-            schedulable = "no"
-        elif age is not None and age > 15:
-            kernel_state = "stale_heartbeat"
-            schedulable = "no"
-        else:
-            kernel_state = "online"
-            schedulable = "yes"
-        employees.append(
-            {
-                **employee,
-                "status": employee_status,
-                "employee_status": employee_status,
-                "kernel_state": kernel_state,
-                "schedulable": schedulable,
-                "heartbeat_age_minutes": "" if age is None else age,
-                "communication_paused": bool(communication_profile.get("communication_paused")),
-                "communication_status": "paused" if communication_profile.get("communication_paused") else "enabled",
-                "backlog": f"{employee.get('submitted_tasks', 0)} submitted, {employee.get('claimed_tasks', 0)} claimed",
-                "progress_layer": heartbeat_progress.get("layer", ""),
-                "progress_state": heartbeat_progress.get("state", ""),
-                "progress_label": heartbeat_progress.get("label", ""),
-                "progress_display": f"{heartbeat_progress.get('layer', '')} / {heartbeat_progress.get('state', '')}".strip(" /") if heartbeat_progress.get("layer") or heartbeat_progress.get("state") else "",
-                "skills": ", ".join(str(item) for item in skills[:4]) if isinstance(skills, list) else "invalid",
-                "tools": ", ".join(str(item) for item in tools[:4]) if isinstance(tools, list) else "invalid",
-                "task_types": ", ".join(str(item) for item in task_types[:4]) if isinstance(task_types, list) else "invalid",
-            }
-        )
+    conn = companyctl.connect_readonly()
+    try:
+        for employee in summary["employees"]:
+            if employee.get("id") == "owner" or employee.get("role") == "human-owner" or employee.get("runtime") == "human":
+                continue
+            capabilities = companyctl.load_json_or_default(companyctl.employee_paths(employee["id"])["capabilities"], {})
+            skills = capabilities.get("skills", [])
+            tools = capabilities.get("tools", [])
+            task_types = capabilities.get("preferred_task_types", [])
+            communication_profile = communication_profiles.get(employee["id"], {})
+            try:
+                heartbeat_metadata = json.loads(employee.get("heartbeat_metadata_json", "{}") or "{}")
+            except json.JSONDecodeError:
+                heartbeat_metadata = {}
+            heartbeat_progress = companyctl.extract_progress_payload(heartbeat_metadata)
+            age = minutes_since(employee.get("last_seen_at", ""), summary["generated_at"])
+            employee_status = employee.get("employee_status") or employee.get("status", "")
+            heartbeat_status = employee.get("heartbeat_status", "missing")
+            if employee_status != "active":
+                kernel_state = employee_status
+                schedulable = "no"
+            elif heartbeat_status == "missing":
+                kernel_state = "missing_heartbeat"
+                schedulable = "no"
+            elif age is not None and age > 15:
+                kernel_state = "stale_heartbeat"
+                schedulable = "no"
+            else:
+                kernel_state = "online"
+                schedulable = "yes"
+            readiness = companyctl.classify_agent_matrix_row(
+                conn,
+                {"id": employee["id"], "name": employee.get("name", employee["id"]), "runtime": employee.get("runtime", ""), "status": employee_status},
+                {"status": "online" if kernel_state == "online" else "missing"},
+            )
+            employees.append(
+                {
+                    **employee,
+                    "status": employee_status,
+                    "employee_status": employee_status,
+                    "kernel_state": kernel_state,
+                    "schedulable": schedulable,
+                    "readiness_level": readiness.get("level", ""),
+                    "readiness_reason": readiness.get("reason", ""),
+                    "readiness_checks": readiness.get("checks", {}),
+                    "heartbeat_age_minutes": "" if age is None else age,
+                    "communication_paused": bool(communication_profile.get("communication_paused")),
+                    "communication_status": "paused" if communication_profile.get("communication_paused") else "enabled",
+                    "backlog": f"{employee.get('submitted_tasks', 0)} submitted, {employee.get('claimed_tasks', 0)} claimed",
+                    "progress_layer": heartbeat_progress.get("layer", ""),
+                    "progress_state": heartbeat_progress.get("state", ""),
+                    "progress_label": heartbeat_progress.get("label", ""),
+                    "progress_display": f"{heartbeat_progress.get('layer', '')} / {heartbeat_progress.get('state', '')}".strip(" /") if heartbeat_progress.get("layer") or heartbeat_progress.get("state") else "",
+                    "skills": ", ".join(str(item) for item in skills[:4]) if isinstance(skills, list) else "invalid",
+                    "tools": ", ".join(str(item) for item in tools[:4]) if isinstance(tools, list) else "invalid",
+                    "task_types": ", ".join(str(item) for item in task_types[:4]) if isinstance(task_types, list) else "invalid",
+                }
+            )
+    finally:
+        conn.close()
     return employees
 
 

@@ -1821,6 +1821,12 @@ class CompanyKernelCoreTest(unittest.TestCase):
             conn.commit()
         finally:
             conn.close()
+        for employee_id in ["main", "codex-cockpit"]:
+            code, heartbeat = run_cli("heartbeat", "--agent", employee_id)
+            self.assertEqual(0, code, heartbeat)
+        verification_dir = self.root / "state" / "employee-verification" / "codex-cockpit"
+        verification_dir.mkdir(parents=True)
+        (verification_dir / "latest-runtime.json").write_text(json.dumps({"ok": True, "activation_allowed": True}, ensure_ascii=False), encoding="utf-8")
         code, submitted = run_cli("task", "submit", "--from", "main", "--to", "codex-cockpit", "--task-id", "task-cockpit-long", "--title", "Cockpit long task")
         self.assertEqual(0, code, submitted)
         conn = companyctl.connect()
@@ -1850,6 +1856,9 @@ class CompanyKernelCoreTest(unittest.TestCase):
         status, cockpit = api_gateway.route_get("/v1/dashboard/cockpit", {})
         self.assertEqual(200, status, cockpit)
         self.assertTrue(cockpit["ok"])
+        cockpit_employees = {item["id"]: item for item in cockpit["employees"]}
+        self.assertEqual("active_ready", cockpit_employees["codex-cockpit"]["readiness_level"])
+        self.assertIn("runtime_evidence", cockpit_employees["codex-cockpit"]["readiness_reason"])
         long_task = next(item for item in cockpit["long_tasks"] if item["task_id"] == "task-cockpit-long")
         self.assertEqual("progress_stagnant", long_task["long_task_state"])
         self.assertEqual("fresh", long_task["heartbeat_state"])
@@ -4340,6 +4349,48 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual("starting", codex["current_attempt"]["status"])
         self.assertEqual(run["attempt"]["attempt_id"], codex["current_attempt"]["attempt_id"])
 
+    def test_dashboard_employee_view_models_include_readiness_badges(self) -> None:
+        for employee_id, role, runtime in [
+            ("main", "operator", "openclaw"),
+            ("codex", "developer", "codex"),
+            ("antigravity", "developer", "antigravity"),
+        ]:
+            code, created = run_cli("employee", "create", "--id", employee_id, "--name", employee_id, "--role", role, "--runtime", runtime, "--workspace", str(self.root / "workspace" / employee_id))
+            self.assertEqual(0, code, created)
+            self.mark_active(employee_id)
+            code, heartbeat = run_cli("heartbeat", "--agent", employee_id)
+            self.assertEqual(0, code, heartbeat)
+        verification_dir = self.root / "state" / "employee-verification" / "codex"
+        verification_dir.mkdir(parents=True)
+        (verification_dir / "latest-runtime.json").write_text(json.dumps({"ok": True, "activation_allowed": True}, ensure_ascii=False), encoding="utf-8")
+        attendance_dir = self.root / "state" / "attendance"
+        attendance_dir.mkdir(parents=True)
+        (attendance_dir / "latest.json").write_text(
+            json.dumps(
+                {
+                    "ok": True,
+                    "employees": [
+                        {"agent": "main", "status": "online"},
+                        {"agent": "codex", "status": "online"},
+                        {"agent": "antigravity", "status": "online"},
+                    ],
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        conn = companyctl.connect()
+        try:
+            summary = company_dashboard.load_summary(conn)
+            models = company_dashboard.employee_view_models(summary)
+        finally:
+            conn.close()
+        by_id = {item["id"]: item for item in models}
+        self.assertEqual("active_ready", by_id["codex"]["readiness_level"])
+        self.assertEqual("online_only", by_id["main"]["readiness_level"])
+        self.assertEqual("online_only", by_id["antigravity"]["readiness_level"])
+        self.assertIn("runtime_evidence", by_id["codex"]["readiness_reason"])
+
     def test_dashboard_renders_managed_task_control_buttons(self) -> None:
         for employee_id, role in [("main", "operator"), ("hermes", "supervisor"), ("codex", "developer")]:
             code, created = run_cli("employee", "create", "--id", employee_id, "--name", employee_id, "--role", role, "--runtime", "local", "--workspace", str(self.root / "workspace" / employee_id))
@@ -4351,21 +4402,24 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual(0, code, run)
         output = self.root / "state" / "dashboard-controls.html"
         with contextlib.redirect_stdout(io.StringIO()):
-            code = company_dashboard.main(["--output", str(output), "--variant", "basic"])
+            code = company_dashboard.main(["--output", str(output), "--variant", "advanced"])
         self.assertEqual(0, code)
         html = output.read_text(encoding="utf-8")
-        self.assertIn("<th>attempt</th>", html)
+        self.assertIn("Tasks & Workflows", html)
+        self.assertIn("openTaskDetailDrawer", html)
         self.assertIn("task-dashboard-controls", html)
         self.assertIn(run["attempt"]["attempt_id"], html)
-        self.assertIn("correctTaskAttempt('task-dashboard-controls'", html)
-        self.assertIn("cancelTaskAttempt('task-dashboard-controls'", html)
-        self.assertIn("retryTask('task-dashboard-controls'", html)
-        self.assertIn("reassignTask('task-dashboard-controls'", html)
+        self.assertIn("correctTaskAttempt", html)
+        self.assertIn("cancelTaskAttempt", html)
+        self.assertIn("retryTask", html)
+        self.assertIn("reassignTask", html)
         self.assertIn("viewTaskTrace('", html)
         self.assertIn("/v1/tasks/${encodeURIComponent(taskId)}/correct", html)
         self.assertIn("/v1/tasks/${encodeURIComponent(taskId)}/cancel", html)
         self.assertIn("/v1/tasks/${encodeURIComponent(taskId)}/retry", html)
         self.assertIn("/v1/tasks/${encodeURIComponent(taskId)}/reassign", html)
+        self.assertIn("Attempt History", html)
+        self.assertIn("readiness-badge", html)
 
     def test_agent_matrix_reports_employee_readiness_levels(self) -> None:
         for employee_id, role, runtime, status in [
