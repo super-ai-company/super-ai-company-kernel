@@ -415,6 +415,8 @@ class CompanyKernelCoreTest(unittest.TestCase):
             self.assertIn("next_retry_at", adapter_columns)
             event_columns = {row["name"] for row in conn.execute("PRAGMA table_info(company_events)").fetchall()}
             self.assertIn("trace_id", event_columns)
+            evidence_columns = {row["name"] for row in conn.execute("PRAGMA table_info(evidence)").fetchall()}
+            self.assertIn("attempt_id", evidence_columns)
             backfilled = conn.execute("SELECT task_id FROM adapter_runs WHERE id = 'adapter-run-backfill-task'").fetchone()
             self.assertEqual("task-backfilled-adapter-run", backfilled["task_id"])
             migrations = conn.execute("SELECT id FROM schema_migrations ORDER BY id").fetchall()
@@ -439,6 +441,7 @@ class CompanyKernelCoreTest(unittest.TestCase):
                     "20260607_execution_attempts_session_key",
                     "20260607_execution_attempts_supervisor_state_json",
                     "20260607_v3_file_flow_tables",
+                    "20260608_evidence_attempt_id",
                 ],
                 [row["id"] for row in migrations],
             )
@@ -3953,6 +3956,8 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual(1, trace["counts"]["handoffs"])
         self.assertEqual(1, trace["counts"]["evidence"])
         self.assertEqual(1, trace["counts"]["execution_attempts"])
+        evidence_span = next(span for span in trace["spans"] if span["name"].startswith("evidence."))
+        self.assertIn("attempt_id", evidence_span)
 
     def test_v3_handoff_reject_scan_and_recovery_attempts(self) -> None:
         for employee_id, role in [("manager", "supervisor"), ("writer", "copywriter"), ("qa", "qa"), ("backup", "copywriter")]:
@@ -4439,6 +4444,11 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual("", attempt["error_message"])
         done_event = next(item for item in shown["events"] if item["event_type"] == "task.done")
         self.assertEqual(attempt_id, json.loads(done_event["payload_json"])["attempt_id"])
+        with sqlite3.connect(self.root / "company.sqlite") as conn:
+            conn.row_factory = sqlite3.Row
+            evidence_row = conn.execute("SELECT * FROM evidence WHERE task_id = ? AND is_final = 1", ("task-done-closes-attempt",)).fetchone()
+        self.assertIsNotNone(evidence_row)
+        self.assertEqual(attempt_id, evidence_row["attempt_id"])
 
     def test_managed_attempt_api_control_endpoints(self) -> None:
         for employee_id, role in [("main", "operator"), ("hermes", "supervisor"), ("codex", "developer")]:

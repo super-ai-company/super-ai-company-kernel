@@ -1030,7 +1030,7 @@ def use_artifact_internal(conn: sqlite3.Connection, *, task_id: str, artifact_id
     return {"artifact": artifact, "event_id": event["id"]}
 
 
-def promote_artifact_to_evidence_internal(conn: sqlite3.Connection, *, artifact_id: str, by: str, summary: str = "", evidence_type: str = "") -> dict:
+def promote_artifact_to_evidence_internal(conn: sqlite3.Connection, *, artifact_id: str, by: str, summary: str = "", evidence_type: str = "", attempt_id: str = "") -> dict:
     require_employee(conn, by)
     artifact = row_by_id(conn, "artifacts", "artifact_id", artifact_id)
     if artifact["status"] in {"rejected", "superseded"}:
@@ -1041,6 +1041,7 @@ def promote_artifact_to_evidence_internal(conn: sqlite3.Connection, *, artifact_
         "evidence_id": evidence_id,
         "trace_id": artifact["trace_id"],
         "task_id": artifact["task_id"],
+        "attempt_id": attempt_id,
         "employee_id": by,
         "artifact_id": artifact_id,
         "type": evidence_type or artifact["artifact_type"],
@@ -1053,14 +1054,14 @@ def promote_artifact_to_evidence_internal(conn: sqlite3.Connection, *, artifact_
     }
     conn.execute(
         """
-        INSERT INTO evidence(evidence_id, trace_id, task_id, employee_id, artifact_id, type, path_or_url, summary, checksum, is_final, metadata_json, created_at)
-        VALUES (:evidence_id, :trace_id, :task_id, :employee_id, :artifact_id, :type, :path_or_url, :summary, :checksum, :is_final, :metadata_json, :created_at)
+        INSERT INTO evidence(evidence_id, trace_id, task_id, attempt_id, employee_id, artifact_id, type, path_or_url, summary, checksum, is_final, metadata_json, created_at)
+        VALUES (:evidence_id, :trace_id, :task_id, :attempt_id, :employee_id, :artifact_id, :type, :path_or_url, :summary, :checksum, :is_final, :metadata_json, :created_at)
         """,
         evidence,
     )
     conn.execute("UPDATE artifacts SET is_final = 1, updated_at = ? WHERE artifact_id = ?", (ts, artifact_id))
     conn.commit()
-    event = record_event(conn, "artifact.promoted_to_evidence", by, task_id=artifact["task_id"], trace_id=artifact["trace_id"], payload={"artifact_id": artifact_id, "evidence_id": evidence_id, "path": artifact["path"]})
+    event = record_event(conn, "artifact.promoted_to_evidence", by, task_id=artifact["task_id"], trace_id=artifact["trace_id"], payload={"artifact_id": artifact_id, "evidence_id": evidence_id, "path": artifact["path"], "attempt_id": attempt_id})
     return {"evidence": evidence, "event_id": event["id"]}
 
 
@@ -4448,6 +4449,10 @@ def complete_task_internal(
         conn.execute(
             "UPDATE execution_attempts SET status = 'success', finished_at = ?, error_message = '' WHERE attempt_id = ?",
             (now(), completed_attempt_id),
+        )
+        conn.execute(
+            "UPDATE evidence SET attempt_id = ? WHERE task_id = ? AND is_final = 1 AND attempt_id = ''",
+            (completed_attempt_id, task_id),
         )
     conn.execute("DELETE FROM locks WHERE resource_key = ?", (f"task:{task_id}",))
     synced_plan_items = sync_project_plan_for_task(conn, task_id=task_id, task_status="completed", actor=agent)

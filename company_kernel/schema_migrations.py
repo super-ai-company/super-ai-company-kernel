@@ -127,6 +127,12 @@ CREATE TABLE IF NOT EXISTS task_workspaces (
         "column": "supervisor_state_json",
         "sql": "ALTER TABLE execution_attempts ADD COLUMN supervisor_state_json TEXT NOT NULL DEFAULT '{}'",
     },
+    {
+        "id": "20260608_evidence_attempt_id",
+        "table": "evidence",
+        "column": "attempt_id",
+        "sql": "ALTER TABLE evidence ADD COLUMN attempt_id TEXT NOT NULL DEFAULT ''",
+    },
 )
 
 
@@ -220,6 +226,7 @@ CREATE TABLE IF NOT EXISTS evidence (
   evidence_id TEXT PRIMARY KEY,
   trace_id TEXT NOT NULL DEFAULT '',
   task_id TEXT NOT NULL,
+  attempt_id TEXT NOT NULL DEFAULT '',
   employee_id TEXT NOT NULL,
   artifact_id TEXT NOT NULL DEFAULT '',
   type TEXT NOT NULL DEFAULT '',
