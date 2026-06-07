@@ -117,7 +117,7 @@ def build_traces(conn: sqlite3.Connection, *, limit: int = 20) -> list[dict]:
         event_rows = rows(
             conn,
             """
-            SELECT id, event_type, source_agent, task_id, created_at, processed_at
+            SELECT id, event_type, source_agent, task_id, payload_json, created_at, processed_at
             FROM company_events
             WHERE trace_id = ?
             ORDER BY created_at ASC
@@ -147,20 +147,38 @@ def build_traces(conn: sqlite3.Connection, *, limit: int = 20) -> list[dict]:
         end = max([*(item.get("processed_at") for item in event_rows if item.get("processed_at")), *timestamps])
         duration = max(1, milliseconds_between(start, end))
         spans = []
-        for event in event_rows:
+        for event_index, event in enumerate(event_rows):
             span_start = milliseconds_between(start, event["created_at"])
             span_duration = milliseconds_between(event["created_at"], event.get("processed_at") or event["created_at"])
+            event_name = event["event_type"]
+            correction_direction = ""
+            if event_name == "supervisor.correction_requested":
+                event_name = "supervisor.correction.requested"
+                correction_direction = "supervisor_to_worker"
+            elif event_name == "supervisor.correction_acknowledged":
+                event_name = "supervisor.correction.acknowledged"
+                correction_direction = "worker_to_supervisor"
+            span = {
+                "name": event_name,
+                "service": event["source_agent"] or "event",
+                "duration_ms": max(12, span_duration),
+                "start_ms": span_start,
+                "event_id": event["id"],
+                "task_id": event["task_id"],
+                "created_at": event["created_at"],
+                "processed_at": event.get("processed_at", ""),
+                "event_sequence": event_index,
+            }
+            if correction_direction:
+                try:
+                    payload = json.loads(event.get("payload_json", "{}") or "{}")
+                except json.JSONDecodeError:
+                    payload = {}
+                span["attempt_id"] = str(payload.get("attempt_id", "") or "")
+                span["correction_direction"] = correction_direction
+                span["label"] = str(payload.get("message", "") or event["event_type"])
             spans.append(
-                {
-                    "name": event["event_type"],
-                    "service": event["source_agent"] or "event",
-                    "duration_ms": max(12, span_duration),
-                    "start_ms": span_start,
-                    "event_id": event["id"],
-                    "task_id": event["task_id"],
-                    "created_at": event["created_at"],
-                    "processed_at": event.get("processed_at", ""),
-                }
+                span
             )
         for run in run_rows:
             span_start = milliseconds_between(start, run["created_at"])
@@ -230,7 +248,7 @@ def build_traces(conn: sqlite3.Connection, *, limit: int = 20) -> list[dict]:
                     "label": attempt["adapter_type"],
                 }
             )
-        spans.sort(key=lambda item: (item.get("start_ms", 0), item.get("name", "")))
+        spans.sort(key=lambda item: (item.get("start_ms", 0), item.get("event_sequence", 999999), item.get("name", "")))
         first = spans[0] if spans else {}
         traces.append(
             {

@@ -3960,6 +3960,33 @@ class CompanyKernelCoreTest(unittest.TestCase):
         evidence_span = next(span for span in trace["spans"] if span["name"].startswith("evidence."))
         self.assertIn("attempt_id", evidence_span)
 
+    def test_dashboard_trace_spans_highlight_supervisor_corrections(self) -> None:
+        for employee_id, role in [("main", "operator"), ("hermes", "supervisor"), ("codex", "developer")]:
+            code, created = run_cli("employee", "create", "--id", employee_id, "--name", employee_id, "--role", role, "--runtime", "local", "--workspace", str(self.root / "workspace" / employee_id))
+            self.assertEqual(code, 0, created)
+        self.mark_active("codex")
+        code, submitted = run_cli("task", "submit", "--from", "main", "--to", "codex", "--task-id", "task-trace-correction", "--title", "Trace correction")
+        self.assertEqual(0, code, submitted)
+        code, running = run_cli("task", "run", "--task-id", "task-trace-correction", "--agent", "codex", "--by", "hermes")
+        self.assertEqual(0, code, running)
+        attempt_id = running["attempt"]["attempt_id"]
+        code, corrected = run_cli("task", "correct", "--task-id", "task-trace-correction", "--attempt-id", attempt_id, "--by", "hermes", "--message", "请只交付 evidence，不要继续闲聊")
+        self.assertEqual(0, code, corrected)
+        code, acked = run_cli("task", "correct", "--task-id", "task-trace-correction", "--attempt-id", attempt_id, "--by", "codex", "--message", "收到纠偏", "--ack")
+        self.assertEqual(0, code, acked)
+
+        conn = companyctl.connect()
+        try:
+            summary = company_dashboard.load_summary(conn)
+        finally:
+            conn.close()
+        trace = next(item for item in summary["traces"] if item["trace_id"] == submitted["task"]["metadata"]["trace_id"])
+        correction_spans = [span for span in trace["spans"] if span["name"].startswith("supervisor.correction.")]
+        self.assertEqual(["supervisor.correction.requested", "supervisor.correction.acknowledged"], [span["name"] for span in correction_spans])
+        self.assertEqual(["hermes", "codex"], [span["service"] for span in correction_spans])
+        self.assertTrue(all(span["attempt_id"] == attempt_id for span in correction_spans))
+        self.assertTrue(all("correction_direction" in span for span in correction_spans))
+
     def test_v3_handoff_reject_scan_and_recovery_attempts(self) -> None:
         for employee_id, role in [("manager", "supervisor"), ("writer", "copywriter"), ("qa", "qa"), ("backup", "copywriter")]:
             code, created = run_cli("employee", "create", "--id", employee_id, "--name", employee_id, "--role", role, "--runtime", "local", "--workspace", str(self.root / "workspace" / employee_id))
