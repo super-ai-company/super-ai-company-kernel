@@ -33,7 +33,9 @@
     "Hermes": "hermes",
     "Claude": "claude",
     "Trae": "trae",
-    "Antigravity": "antigravity"
+    "Antigravity": "antigravity",
+    "Codex": "codex",
+    "Ecommerce Copy Skill": "ecommerce-copy-skill"
   },
   "employees": {
     "video-ops": {
@@ -594,6 +596,9 @@
         "video-publisher"
       ],
       "handoff_mode": "task_or_hook"
+    },
+    "ecommerce-copy-skill": {
+      "display_name": "Ecommerce Copy Skill"
     }
   },
   "channels": {

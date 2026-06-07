@@ -1601,6 +1601,143 @@
     }
 
     /* Split-Pane Chat Hub */
+    .direct-message-pill {
+      border: 1px solid rgba(34, 197, 94, 0.28);
+      background: rgba(34, 197, 94, 0.08);
+      color: #86efac;
+      border-radius: 999px;
+      padding: 2px 8px;
+      font-size: 10px;
+      font-weight: 700;
+      letter-spacing: 0.02em;
+      text-transform: uppercase;
+    }
+
+    .chat-direct-empty {
+      color: var(--text-muted);
+      font-size: 12px;
+      padding: 20px;
+      text-align: center;
+      border: 1px dashed rgba(148, 163, 184, 0.24);
+      border-radius: 12px;
+      background: rgba(15, 23, 42, 0.42);
+    }
+
+    .observability-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 18px;
+    }
+
+    .observability-panel {
+      background: linear-gradient(180deg, rgba(15, 23, 42, 0.94), rgba(8, 12, 24, 0.92));
+      border: 1px solid rgba(51, 65, 85, 0.92);
+      border-radius: 14px;
+      padding: 18px;
+      min-height: 280px;
+      box-shadow: 0 10px 30px rgba(2, 6, 23, 0.45);
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+    }
+
+    .observability-header {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 10px;
+    }
+
+    .observability-title {
+      font-family: 'Fira Code', monospace;
+      font-size: 14px;
+      font-weight: 600;
+      color: #f8fafc;
+      letter-spacing: 0.02em;
+    }
+
+    .observability-subtitle {
+      font-size: 11px;
+      color: var(--text-muted);
+      margin-top: 4px;
+      line-height: 1.5;
+    }
+
+    .observability-statline {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+
+    .observability-chip {
+      border-radius: 999px;
+      padding: 4px 10px;
+      font-size: 10px;
+      font-weight: 700;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      border: 1px solid rgba(129, 140, 248, 0.22);
+      background: rgba(30, 41, 59, 0.68);
+      color: #cbd5e1;
+    }
+
+    .observability-chip.good {
+      border-color: rgba(34, 197, 94, 0.35);
+      background: rgba(34, 197, 94, 0.1);
+      color: #86efac;
+    }
+
+    .observability-chip.warn {
+      border-color: rgba(245, 158, 11, 0.35);
+      background: rgba(245, 158, 11, 0.1);
+      color: #fcd34d;
+    }
+
+    .observability-list {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      min-height: 0;
+    }
+
+    .observability-item {
+      border: 1px solid rgba(51, 65, 85, 0.65);
+      background: rgba(15, 23, 42, 0.78);
+      border-radius: 12px;
+      padding: 12px 13px;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    .observability-item-top {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+    }
+
+    .observability-route {
+      font-family: 'Fira Code', monospace;
+      font-size: 11px;
+      color: #e2e8f0;
+    }
+
+    .observability-body {
+      font-size: 12px;
+      color: #cbd5e1;
+      line-height: 1.55;
+      word-break: break-word;
+    }
+
+    .observability-meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px 10px;
+      font-size: 10px;
+      color: var(--text-muted);
+    }
+
     .chat-toolbar {
       display: grid;
       grid-template-columns: 1fr 1fr;
@@ -1940,6 +2077,13 @@
                 </marker>
               </defs>
             </svg>
+          </div>
+        </div>
+
+        <div class="section-card">
+          <h2><i class="fa-solid fa-satellite-dish"></i> Communication Observatory</h2>
+          <div class="observability-grid" id="communication-observability-grid">
+            <!-- Populated by JS -->
           </div>
         </div>
         
@@ -2619,6 +2763,41 @@
     }
   }
 
+  function mergeLiveSummaryPatch(patch) {
+    const current = window.summaryData || window.kernelSummary || {};
+    window.summaryData = Object.assign({}, current, patch);
+    summaryData = window.summaryData;
+    return window.summaryData;
+  }
+
+  async function refreshLiveDashboardFromApi() {
+    try {
+      const [health, tasks, recentDirect] = await Promise.all([
+        companyApiGet('/v1/health'),
+        companyApiGet('/v1/tasks?limit=50'),
+        companyApiGet('/v1/messages/recent-direct?limit=20')
+      ]);
+      const taskRows = tasks.tasks || tasks.items || [];
+      const stalledTasks = taskRows.filter(task => ['stale', 'blocked', 'failed'].includes(String(task.status || '').toLowerCase()) || task.blocker);
+      mergeLiveSummaryPatch({
+        runtime_health: health,
+        tasks: taskRows,
+        stalled_tasks: stalledTasks,
+        direct_messages_recent: recentDirect.direct_messages_recent || []
+      });
+      refreshDashboardPresentation();
+      refreshChatHub();
+      if (typeof window.populateTasks === 'function') window.populateTasks();
+      if (typeof window.populateEmployees === 'function') window.populateEmployees(window.summaryData);
+      companyApiLog('SYSTEM', `Live refresh ok: tasks=${taskRows.length} stalled=${stalledTasks.length}`, 'success');
+      return true;
+    } catch (err) {
+      companyApiLog('ERROR', `Live refresh failed: ${err.message}`, 'error');
+      return false;
+    }
+  }
+  window.refreshLiveDashboardFromApi = refreshLiveDashboardFromApi;
+
   async function companyApiRequest(path, payload, method) {
     const res = await fetch(getCompanyApiBase() + path, {
       method: method || 'POST',
@@ -2639,7 +2818,9 @@
   function getDashboardSummary() {
     window.summaryData = window.summaryData || window.kernelSummary || {conversations: [], employees: []};
     window.summaryData.conversations = window.summaryData.conversations || [];
+    window.summaryData.direct_messages_recent = window.summaryData.direct_messages_recent || [];
     window.summaryData.employees = window.summaryData.employees || [];
+    window.summaryData.communication_observability = window.summaryData.communication_observability || {direct_messages: {counts: {}, items: []}, external_mirror: {counts: {}, threads: []}, adapter_runs: {counts: {}, items: []}};
     return window.summaryData;
   }
 
@@ -3009,7 +3190,12 @@
 
   function renderRealChatMessages() {
     const summary = getDashboardSummary();
-    const conversation = summary.conversations.find(conv => conv.id === getActiveConversationId());
+    const activeId = getActiveConversationId();
+    const conversation = summary.conversations.find(conv => conv.id === activeId);
+    if (!conversation && activeId === 'direct-messages-recent') {
+      renderDirectMessagesRecent();
+      return;
+    }
     const title = document.getElementById('chat-header-title');
     const members = document.getElementById('chat-header-members');
     const joinButton = document.getElementById('chat-join-btn');
@@ -3071,6 +3257,43 @@
             <div class="chat-bubble-sender">${escapeHtml(message.source_agent || '-')}</div>
             <div class="chat-bubble-body">${escapeHtml(message.body || '')}</div>
             <div class="chat-bubble-time">${formatDate(message.created_at || message.time || '')}</div>
+          </div>
+        </div>
+      `;
+    }).join('');
+    container.scrollTop = container.scrollHeight;
+  }
+
+  function renderDirectMessagesRecent() {
+    const summary = getDashboardSummary();
+    const title = document.getElementById('chat-header-title');
+    const members = document.getElementById('chat-header-members');
+    const joinButton = document.getElementById('chat-join-btn');
+    const container = document.getElementById('chat-messages-container');
+    const banner = document.getElementById('chat-intercept-banner');
+    const chatView = document.getElementById('chat-view-container');
+    if (title) title.innerText = 'Recent Direct Messages';
+    if (members) members.innerText = 'Source: messages table · main/codex/antigravity/hermes';
+    if (joinButton) joinButton.disabled = true;
+    if (banner) banner.style.display = 'none';
+    if (chatView) chatView.classList.remove('intercepted');
+    if (!container) return;
+    const messages = summary.direct_messages_recent || [];
+    if (!messages.length) {
+      container.innerHTML = '<div class="chat-direct-empty">No direct messages found in the current summary.</div>';
+      return;
+    }
+    container.innerHTML = messages.slice().reverse().map(message => {
+      const source = message.source_agent || '-';
+      const target = message.target_agent || '-';
+      const avatarChar = String(source || '--').slice(0, 2).toUpperCase();
+      return `
+        <div class="chat-bubble-container">
+          <div class="chat-bubble-avatar">${escapeHtml(avatarChar)}</div>
+          <div class="chat-bubble-wrapper">
+            <div class="chat-bubble-sender">${escapeHtml(source)} → ${escapeHtml(target)} <span class="direct-message-pill">direct</span></div>
+            <div class="chat-bubble-body">${escapeHtml(message.body || '')}</div>
+            <div class="chat-bubble-time">${formatDate(message.created_at || '')}</div>
           </div>
         </div>
       `;
@@ -3802,6 +4025,8 @@
       locksList.innerHTML = `<div style="color: var(--text-muted); font-size: 13px; text-align: center; padding: 20px;">No locks found.</div>`;
     }
 
+    renderCommunicationObservability(summary.communication_observability || {});
+
     // Tasks Table
     const tasksTbody = document.getElementById('tasks-tbody');
     tasksTbody.innerHTML = summary.tasks.map(task => {
@@ -3996,6 +4221,207 @@
     }).join('');
   }
 
+  function renderCommunicationObservability(observability) {
+    const grid = document.getElementById('communication-observability-grid');
+    if (!grid) return;
+
+    const direct = observability.direct_messages || {counts: {}, items: []};
+    const mirror = observability.external_mirror || {counts: {}, threads: []};
+    const adapter = observability.adapter_runs || {counts: {}, items: []};
+    const progressNotifications = observability.progress_notifications || {counts: {}, items: []};
+    const supervisorLoop = observability.supervisor_loop || {counts: {}, latest_result: {}};
+    const watchdog = observability.internal_watchdog || {counts: {}, no_receipt_messages: [], open_tasks: []};
+
+    const directItems = (direct.items || []).map(item => `
+      <div class="observability-item">
+        <div class="observability-item-top">
+          <div class="observability-route">${escapeHtml(item.source_agent)} → ${escapeHtml(item.target_agent)}</div>
+          <span class="observability-chip">${formatDate(item.created_at)}</span>
+        </div>
+        <div class="observability-body">${escapeHtml(item.body || '(empty)')}</div>
+      </div>
+    `).join('') || `<div class="chat-direct-empty">No direct messages captured in current snapshot.</div>`;
+
+    const mirrorItems = (mirror.threads || []).map(item => `
+      <div class="observability-item">
+        <div class="observability-item-top">
+          <div class="observability-route">${escapeHtml(item.platform || 'external')} · ${escapeHtml(item.id)}</div>
+          <span class="observability-chip">${escapeHtml(item.cursor || 'no-cursor')}</span>
+        </div>
+        <div class="observability-body">${escapeHtml(item.external_title || '(untitled thread)')}</div>
+        <div class="observability-meta">
+          <span>owner=${escapeHtml(item.owner_agent || '-')}</span>
+          <span>bridge=${escapeHtml(item.bridge_agent || '-')}</span>
+          <span>last=${formatDate(item.last_message_at)}</span>
+        </div>
+      </div>
+    `).join('') || `<div class="chat-direct-empty">No external mirror threads imported yet.</div>`;
+
+    const adapterItems = (adapter.items || []).map(item => `
+      <div class="observability-item">
+        <div class="observability-item-top">
+          <div class="observability-route">${escapeHtml(item.command || 'adapter.run')} · ${escapeHtml(item.task_id || item.id)}</div>
+          <span class="observability-chip ${item.ok ? 'good' : 'warn'}">${item.ok ? 'ok' : 'needs-review'}</span>
+        </div>
+        <div class="observability-body">${escapeHtml(item.progress_file || item.state_file || item.summary || 'No repo-local progress path')}</div>
+        <div class="observability-meta">
+          <span>progress=${escapeHtml(item.progress_layer || 'unknown')}</span>
+          <span>state=${escapeHtml(item.progress_state || 'unknown')}</span>
+          <span>agent=${escapeHtml(item.agent_id || '-')}</span>
+          <span>attempt=${escapeHtml(item.attempt)}</span>
+          <span>created=${formatDate(item.created_at)}</span>
+        </div>
+      </div>
+    `).join('') || `<div class="chat-direct-empty">No adapter runs captured in current snapshot.</div>`;
+
+    const progressItems = (progressNotifications.items || []).map(item => `
+      <div class="observability-item">
+        <div class="observability-item-top">
+          <div class="observability-route">${escapeHtml(item.agent_id || item.source_agent || '-')} · ${escapeHtml(item.from_layer || '?')} → ${escapeHtml(item.to_layer || '?')}</div>
+          <span class="observability-chip ${item.pending ? 'warn' : 'good'}">${escapeHtml(item.delivery_status || (item.pending ? 'pending' : 'recorded'))}</span>
+        </div>
+        <div class="observability-body">${escapeHtml(item.message || '(empty)')}</div>
+        <div class="observability-meta">
+          <span>reason=${escapeHtml(item.reason || '-')}</span>
+          <span>state=${escapeHtml(item.from_state || '?')} → ${escapeHtml(item.to_state || '?')}</span>
+          <span>decision=${escapeHtml(item.supervisor_decision || '-')}</span>
+          <span>attempts=${escapeHtml(item.supervisor_attempts ?? 0)}</span>
+          <span>delivered=${formatDate(item.delivered_at || '')}</span>
+          <span>${escapeHtml(item.delivery_error || '-')}</span>
+          <span>created=${formatDate(item.created_at)}</span>
+        </div>
+      </div>
+    `).join('') || `<div class="chat-direct-empty">No progress transitions captured in current snapshot.</div>`;
+
+    const watchdogMessageItems = (watchdog.no_receipt_messages || []).map(item => `
+      <div class="observability-item">
+        <div class="observability-item-top">
+          <div class="observability-route">${escapeHtml(item.source_agent)} → ${escapeHtml(item.target_agent)}</div>
+          <span class="observability-chip warn">no_receipt</span>
+        </div>
+        <div class="observability-body">${escapeHtml(item.body || '(empty)')}</div>
+        <div class="observability-meta">
+          <span>age=${escapeHtml(item.age_min ?? '-')}m</span>
+          <span>${escapeHtml(item.reason || '-')}</span>
+        </div>
+      </div>
+    `).join('');
+    const watchdogTaskItems = (watchdog.open_tasks || []).map(item => `
+      <div class="observability-item">
+        <div class="observability-item-top">
+          <div class="observability-route">${escapeHtml(item.id)} · ${escapeHtml(item.target_agent)}</div>
+          <span class="observability-chip warn">${escapeHtml(item.watchdog_status || item.status || 'open')}</span>
+        </div>
+        <div class="observability-body">${escapeHtml(item.title || '(untitled task)')}</div>
+        <div class="observability-meta">
+          <span>age=${escapeHtml(item.age_min ?? '-')}m</span>
+          <span>${escapeHtml(item.reason || '-')}</span>
+        </div>
+      </div>
+    `).join('');
+    const watchdogItems = watchdogMessageItems + watchdogTaskItems || `<div class="chat-direct-empty">No missing receipts or open internal tasks in current snapshot.</div>`;
+
+    grid.innerHTML = `
+      <div class="observability-panel">
+        <div class="observability-header">
+          <div>
+            <div class="observability-title">Direct Message Feed</div>
+            <div class="observability-subtitle">Human-readable employee private chat stream from the repo-local messages table.</div>
+          </div>
+        </div>
+        <div class="observability-statline">
+          <span class="observability-chip good">total ${escapeHtml(direct.counts && direct.counts.total || 0)}</span>
+          <span class="observability-chip">shown ${escapeHtml(direct.counts && direct.counts.shown || 0)}</span>
+        </div>
+        <div class="observability-list">${directItems}</div>
+      </div>
+      <div class="observability-panel">
+        <div class="observability-header">
+          <div>
+            <div class="observability-title">External Mirror Sync</div>
+            <div class="observability-subtitle">Telegram and external bridge ownership, cursor, and last sync visibility.</div>
+          </div>
+        </div>
+        <div class="observability-statline">
+          <span class="observability-chip good">threads ${escapeHtml(mirror.counts && mirror.counts.threads || 0)}</span>
+          <span class="observability-chip">messages ${escapeHtml(mirror.counts && mirror.counts.messages || 0)}</span>
+        </div>
+        <div class="observability-list">${mirrorItems}</div>
+      </div>
+      <div class="observability-panel">
+        <div class="observability-header">
+          <div>
+            <div class="observability-title">Adapter Run Summary</div>
+            <div class="observability-subtitle">Repo-local progress/state entrypoints distilled from adapter-run summary payloads.</div>
+          </div>
+        </div>
+        <div class="observability-statline">
+          <span class="observability-chip good">ok ${escapeHtml(adapter.counts && adapter.counts.ok || 0)}</span>
+          <span class="observability-chip warn">failed ${escapeHtml(adapter.counts && adapter.counts.failed || 0)}</span>
+          <span class="observability-chip">5-layer progress</span>
+        </div>
+        <div class="observability-list">${adapterItems}</div>
+      </div>
+      <div class="observability-panel">
+        <div class="observability-header">
+          <div>
+            <div class="observability-title">Progress Transition Notifications</div>
+            <div class="observability-subtitle">User-facing progress messages generated when heartbeat progress changes layer.</div>
+          </div>
+        </div>
+        <div class="observability-statline">
+          <span class="observability-chip">shown ${escapeHtml(progressNotifications.counts && progressNotifications.counts.shown || 0)}</span>
+          <span class="observability-chip warn">pending ${escapeHtml(progressNotifications.counts && progressNotifications.counts.pending || 0)}</span>
+          <span class="observability-chip good">sent ${escapeHtml(progressNotifications.counts && progressNotifications.counts.sent || 0)}</span>
+          <span class="observability-chip">skipped ${escapeHtml(progressNotifications.counts && progressNotifications.counts.skipped || 0)}</span>
+          <span class="observability-chip warn">failed ${escapeHtml(progressNotifications.counts && progressNotifications.counts.failed || 0)}</span>
+        </div>
+        <div class="observability-list">${progressItems}</div>
+      </div>
+      <div class="observability-panel">
+        <div class="observability-header">
+          <div>
+            <div class="observability-title">Autonomous Supervisor Loop</div>
+            <div class="observability-subtitle">主动轮询 progress 通知，并给出重试或升级决策。</div>
+          </div>
+        </div>
+        <div class="observability-statline">
+          <span class="observability-chip">scanned ${escapeHtml(supervisorLoop.counts && supervisorLoop.counts.scanned || 0)}</span>
+          <span class="observability-chip good">sent ${escapeHtml(supervisorLoop.counts && supervisorLoop.counts.sent || 0)}</span>
+          <span class="observability-chip warn">failed ${escapeHtml(supervisorLoop.counts && supervisorLoop.counts.failed || 0)}</span>
+          <span class="observability-chip">retry ${escapeHtml(supervisorLoop.counts && supervisorLoop.counts.retry_ready || 0)}</span>
+          <span class="observability-chip warn">escalate ${escapeHtml(supervisorLoop.counts && supervisorLoop.counts.escalate_ready || 0)}</span>
+        </div>
+        <div class="observability-list">
+          <div class="observability-item">
+            <div class="observability-item-top">
+              <div class="observability-route">latest supervisor loop result</div>
+              <span class="observability-chip">${formatDate(supervisorLoop.latest_result && supervisorLoop.latest_result.completed_at || '')}</span>
+            </div>
+            <div class="observability-body">${escapeHtml(supervisorLoop.latest_result && supervisorLoop.latest_result.actor || 'supervisor-loop')}</div>
+            <div class="observability-meta">
+              <span>retry_ready=${escapeHtml(supervisorLoop.counts && supervisorLoop.counts.retry_ready || 0)}</span>
+              <span>escalate_ready=${escapeHtml(supervisorLoop.counts && supervisorLoop.counts.escalate_ready || 0)}</span>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="observability-panel">
+        <div class="observability-header">
+          <div>
+            <div class="observability-title">Internal Receipt Watchdog</div>
+            <div class="observability-subtitle">Flags delivered agent-to-agent messages with no reverse receipt, plus open claimed/submitted tasks.</div>
+          </div>
+        </div>
+        <div class="observability-statline">
+          <span class="observability-chip warn">no receipts ${escapeHtml(watchdog.counts && watchdog.counts.no_receipt_messages || 0)}</span>
+          <span class="observability-chip warn">open tasks ${escapeHtml(watchdog.counts && watchdog.counts.open_tasks || 0)}</span>
+        </div>
+        <div class="observability-list">${watchdogItems}</div>
+      </div>
+    `;
+  }
+
   // Populate Kanban columns
   function populateKanban() {
     const summary = summaryData;
@@ -4059,12 +4485,23 @@
     const summary = summaryData;
     const listContainer = document.getElementById('chat-threads-list');
     
-    if (!summary.conversations || summary.conversations.length === 0) {
+    const directMessages = summary.direct_messages_recent || [];
+    const directThread = directMessages.length ? `
+      <div class="chat-thread-item ${window.activeThreadId === 'direct-messages-recent' ? 'active' : ''}" onclick="selectChatThread('direct-messages-recent')">
+        <div class="chat-thread-name"><i class="fa-solid fa-envelope-open-text"></i> Recent Direct Messages</div>
+        <div class="chat-thread-meta">
+          <span>${directMessages.length} messages</span>
+          <span>messages table</span>
+        </div>
+      </div>
+    ` : '';
+
+    if ((!summary.conversations || summary.conversations.length === 0) && directMessages.length === 0) {
       listContainer.innerHTML = `<div style="color: var(--text-muted); font-size: 12px; padding: 20px; text-align: center;">No dialogues active</div>`;
       return;
     }
 
-    listContainer.innerHTML = summary.conversations.map(c => `
+    const conversationThreads = (summary.conversations || []).map(c => `
       <div class="chat-thread-item ${window.activeThreadId === c.id ? 'active' : ''}" onclick="selectChatThread('${c.id}')">
         <div class="chat-thread-name"><i class="fa-solid fa-comments"></i> ${escapeHtml(c.title)}</div>
         <div class="chat-thread-meta">
@@ -4073,9 +4510,11 @@
         </div>
       </div>
     `).join('');
+    listContainer.innerHTML = directThread + conversationThreads;
 
-    if (!window.activeThreadId && summary.conversations.length > 0) {
-      selectChatThread(summary.conversations[0].id);
+    if (!window.activeThreadId) {
+      if (directMessages.length > 0) selectChatThread('direct-messages-recent');
+      else if ((summary.conversations || []).length > 0) selectChatThread(summary.conversations[0].id);
     } else if (window.activeThreadId) {
       renderRealChatMessages();
     }
@@ -4086,7 +4525,10 @@
     document.querySelectorAll('.chat-thread-item').forEach(item => {
       item.classList.toggle('active', item.getAttribute('onclick').includes(threadId));
     });
-    
+    if (threadId === 'direct-messages-recent') {
+      renderDirectMessagesRecent();
+      return;
+    }
     populateChatHub();
   }
 
@@ -4441,9 +4883,8 @@
   function toggleAutoRefresh(checkbox) {
     if (checkbox.checked) {
       localStorage.setItem('dashboard-auto-refresh', 'true');
-      refreshInterval = setInterval(() => {
-        location.reload();
-      }, 10000);
+      refreshLiveDashboardFromApi();
+      refreshInterval = setInterval(refreshLiveDashboardFromApi, 10000);
     } else {
       localStorage.setItem('dashboard-auto-refresh', 'false');
       if (refreshInterval) clearInterval(refreshInterval);
@@ -4664,9 +5105,8 @@
     if (toggle) {
       toggle.checked = isAutoRefresh;
       if (isAutoRefresh) {
-        refreshInterval = setInterval(() => {
-          location.reload();
-        }, 10000);
+        refreshLiveDashboardFromApi();
+        refreshInterval = setInterval(refreshLiveDashboardFromApi, 10000);
       }
     }
     

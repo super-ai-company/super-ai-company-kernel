@@ -1,0 +1,46 @@
+{
+  "id": "ecommerce-copy-demo",
+  "name": "Ecommerce Copy Demo",
+  "version": "0.1.0",
+  "description": "Local demo Skill Package that produces a simple ecommerce listing summary inside the authorized task workspace.",
+  "input_schema": {
+    "type": "object",
+    "properties": {
+      "product_name": {
+        "type": "string"
+      },
+      "audience": {
+        "type": "string"
+      }
+    }
+  },
+  "output_schema": {
+    "type": "object",
+    "properties": {
+      "summary_path": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "summary_path"
+    ]
+  },
+  "runtime": {
+    "type": "local-script",
+    "command": "python3 run.py"
+  },
+  "permissions": {
+    "workspace": "task",
+    "network": false,
+    "secrets": []
+  },
+  "pricing": {
+    "unit": "task",
+    "amount": 10,
+    "currency": "USD"
+  },
+  "acceptance": {
+    "final_artifact": "final/listing-summary.md",
+    "evidence_required": true
+  }
+}

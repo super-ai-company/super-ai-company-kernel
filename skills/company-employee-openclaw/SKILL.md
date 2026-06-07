@@ -7,6 +7,8 @@ description: Use when onboarding or operating an OpenClaw runtime employee such 
 
 OpenClaw employees bridge Company Kernel tasks into OpenClaw workspaces and legacy bus. Keep discovery and routing strict.
 
+Reference contract: `docs/OPENCLAW_COMPANY_BRIDGE.md`.
+
 ## One-Sentence Onboarding
 
 “Onboard this workspace as an OpenClaw employee, verify direct reply, keep external sends approval-gated, and mark unresolved targets as blocked.”
@@ -42,11 +44,15 @@ After scan/apply, OpenClaw must run or output the 2-4 round handshake plan as th
 
 - Dry-run adapter writes `employees/<agent>/reports/<task-id>/openclaw-adapter-report.md`.
 - `--execute` submits to OpenClaw bus and requires `external_send` approval.
+- Company Kernel is a separate communication layer. Do not replace or mutate OpenClaw native internal bus, sessions, bot bindings, hooks, skills, or memories from this skill.
+- Treat OpenClaw native agent-to-agent failures as blockers, not as permission prompts to wait on forever.
 - Supported legacy bus employees include `main`, `nestcar`, `chindahotpot`, `invest`, `video-creator`, `video-publisher`, `video-ops`, `krothong`.
 - Do not write directly to business inboxes. Use the adapter and approval gates.
 - If default reply target/account/alias is missing, reply only to current initiating conversation.
 - Every received request must produce an ACK or blocker reply to the sender. If OpenClaw cannot execute, send status, blocker, evidence path, and next action back through Company Kernel.
 - For human-originated work, close the loop: human-facing channel -> OpenClaw employee -> target employee -> OpenClaw employee -> human-facing channel.
+- Human-facing messages must be short. Report `completed` or one real `blocked` reason. Do not send raw queue counters, long monitor tables, or internal debug dumps to normal chats.
+- `ACK`, `submitted`, `delegated`, `receipt`, and monitor heartbeat are process state only. They are not completion.
 - When blocked by route/config/service failure, ask whether to involve another active employee and list `@agent` options instead of silently stopping.
 - If `sessions_send` fails with `Agent-to-agent messaging denied by tools.agentToAgent.allow` or `sessions_spawn` fails with `agentId is not allowed ... (allowed: main)`, do not wait for a popup. This is a tool-policy blocker, not a macOS/sudo/user approval prompt. Immediately report it:
 

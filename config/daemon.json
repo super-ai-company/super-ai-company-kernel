@@ -5,6 +5,7 @@
   "heartbeat_runtimes": ["*"],
   "run_repair": true,
   "run_scheduler": true,
+  "run_supervisor_delivery_loop": true,
   "run_retries": true,
   "max_retries_per_tick": 5,
   "adapter_workers": [

@@ -11,6 +11,25 @@ employees/*/heartbeat.json
 employees/*/inbox/
 employees/*/outbox/
 employees/*/reports/
+employees/ecommerce-copy-skill/
+
+.ops/
+design-system/
+reports/heartbeats/
+reports/communication-acceptance/
+reports/tmp-chrome-profile/
+reports/*.log
+reports/antigravity-runs/
+reports/backend-runs/
+reports/codex-plans/
+reports/codex-runs/
+reports/frontend-runs/
+reports/progress_*.json
+reports/*-202606*.md
+
+# One-off local patch generators whose effects are already committed.
+scripts/patch_chat_hub_direct_messages.py
+scripts/patch_external_mirror.py
 
 .pytest_cache/
 .coverage

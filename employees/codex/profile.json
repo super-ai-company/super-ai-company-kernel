@@ -1,8 +1,10 @@
 {
   "id": "codex",
   "name": "Codex",
-  "role": "developer",
+  "role": "backend-developer",
   "runtime": "codex",
-  "workspace": "/Users/owner/openclaw/workspace-xmanx/projects/openclaw-codex-controller",
-  "created_at": "2026-06-03T15:26:46+07:00"
+  "workspace": "/Users/owner/openclaw/workspace-xmanx/projects/super-ai-company-kernel",
+  "status": "active",
+  "created_at": "2026-06-04T20:44:49+07:00",
+  "updated_at": "2026-06-04T20:45:13+07:00"
 }

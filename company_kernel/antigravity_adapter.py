@@ -37,6 +37,15 @@ def run_companyctl(args: list[str]) -> tuple[int, str, str]:
     return cp.returncode, cp.stdout, cp.stderr
 
 
+def run_companyctl_json(args: list[str]) -> tuple[int, dict, str]:
+    code, out, err = run_companyctl(args)
+    try:
+        payload = json.loads(out or "{}")
+    except json.JSONDecodeError:
+        payload = {"ok": False, "raw": out}
+    return code, payload, err
+
+
 def employee(agent: str) -> sqlite3.Row | None:
     conn = connect()
     try:
@@ -158,6 +167,30 @@ def build_guarded_task_prompt(message: str) -> str:
     )
 
 
+def build_managed_task_prompt(task: sqlite3.Row) -> str:
+    base = build_guarded_task_prompt(
+        "\n".join(
+            [
+                f"task_id: {task['id']}",
+                f"title: {task['title']}",
+                "description:",
+                task["description"] or "",
+            ]
+        )
+    )
+    return "\n".join(
+        [
+            base,
+            "",
+            "Managed attempt evidence contract:",
+            "- verification_run must be a concrete command actually run plus result; never use '-' for status done.",
+            "- For read-only dashboard/code inspection, run at least: python3 -m py_compile company_kernel/company_dashboard.py",
+            "- If you cannot run a verification command, return status: blocked and explain the blocker.",
+            "- Do not claim done unless current_action and verification_run are both concrete.",
+        ]
+    )
+
+
 def validate_agy_reply(*, message: str, reply: str, before_files: list[str], after_files: list[str]) -> dict:
     token = expected_direct_token(message)
     if is_lightweight_direct_message(message):
@@ -167,7 +200,7 @@ def validate_agy_reply(*, message: str, reply: str, before_files: list[str], aft
                 "ok": ok,
                 "mode": "lightweight",
                 "status": "working" if ok else "blocked",
-                "activation_eligible": ok,
+                "activation_eligible": False,
                 "blocker": "" if ok else f"expected exact token {token!r}, got {reply.strip()!r}",
                 "fields": {},
                 "changed_files": [],
@@ -176,7 +209,7 @@ def validate_agy_reply(*, message: str, reply: str, before_files: list[str], aft
             "ok": bool(reply.strip()),
             "mode": "lightweight",
             "status": "working" if reply.strip() else "blocked",
-            "activation_eligible": bool(reply.strip()),
+            "activation_eligible": False,
             "blocker": "" if reply.strip() else "empty Antigravity reply",
             "fields": {},
             "changed_files": [],
@@ -190,8 +223,9 @@ def validate_agy_reply(*, message: str, reply: str, before_files: list[str], aft
     status = fields.get("status", "").lower()
     placeholder_changed = fields.get("changed_files", "").strip() in {"", "-", "n/a", "none"}
     placeholder_verification = fields.get("verification_run", "").strip() in {"", "-", "n/a", "none"}
-    done_without_evidence = status == "done" and (placeholder_changed or placeholder_verification)
-    ok = not stale_hit and not missing and status in {"working", "done", "blocked"} and not done_without_evidence
+    done_without_evidence = status == "done" and placeholder_verification
+    has_execution_evidence = not placeholder_verification and fields.get("current_action", "").strip() not in {"", "-"}
+    ok = not stale_hit and not missing and status in {"working", "done", "blocked"} and not done_without_evidence and has_execution_evidence
     blocker = ""
     if stale_hit:
         blocker = f"blocked_context_mismatch: reply contains stale marker {stale_hit}"
@@ -200,14 +234,16 @@ def validate_agy_reply(*, message: str, reply: str, before_files: list[str], aft
     elif status not in {"working", "done", "blocked"}:
         blocker = f"invalid status: {fields.get('status', '')}"
     elif done_without_evidence:
-        blocker = "status done requires concrete changed_files and verification_run"
+        blocker = "status done requires concrete verification_run"
+    elif not has_execution_evidence:
+        blocker = "execution validation requires concrete current_action and verification_run"
     elif status == "blocked":
         blocker = fields.get("blocker", "blocked")
     return {
         "ok": ok and status != "blocked",
         "mode": "execution",
         "status": status if status in {"working", "done", "blocked"} else "blocked",
-        "activation_eligible": False,
+        "activation_eligible": bool(ok and status != "blocked" and has_execution_evidence),
         "blocker": blocker,
         "fields": fields,
         "changed_files": changed_files,
@@ -220,6 +256,34 @@ def run_agy_print(message: str, timeout: int) -> tuple[int, str, str]:
         return 127, "", "agy command not found"
     cp = subprocess.run([command, "--print", message, "--print-timeout", f"{timeout}s"], cwd=str(ROOT), text=True, capture_output=True, timeout=timeout + 10)
     return cp.returncode, cp.stdout.strip(), cp.stderr.strip()
+
+
+def attendance_probe(args: argparse.Namespace) -> int:
+    emp = employee(args.agent)
+    if not emp:
+        emit({"ok": False, "error": "unknown employee", "agent": args.agent})
+        return 1
+    if emp["runtime"] != "antigravity":
+        emit({"ok": False, "error": "employee runtime is not antigravity", "agent": args.agent, "runtime": emp["runtime"]})
+        return 1
+    expected = f"{args.agent} 在岗"
+    run_companyctl(["heartbeat", "--agent", args.agent])
+    code, reply, err = run_agy_print(f"只回复 {expected}", args.timeout)
+    ok = code == 0 and reply == expected
+    emit(
+        {
+            "ok": ok,
+            "processed": 0,
+            "agent": args.agent,
+            "attendance_probe": True,
+            "reply": reply,
+            "expected": expected,
+            "agy_exit_code": code,
+            "agy_stderr": err[-1000:],
+            "blocker": "" if ok else (err or f"expected exact reply {expected!r}, got {reply!r}"),
+        }
+    )
+    return 0 if ok else 1
 
 
 def write_direct_brief(agent: str, source: str, session_key: str, message: str, reply: str, validation: dict | None = None) -> dict[str, Path]:
@@ -298,6 +362,9 @@ def send_source_status(agent: str, source: str, body: str) -> dict:
         payload = json.loads(out or "{}")
     except json.JSONDecodeError:
         payload = {}
+    event_id = str(payload.get("event_id") or "")
+    if event_id:
+        run_companyctl(["scheduler", "skip-event", "--event-id", event_id, "--by", agent, "--reason", "direct status notification handled by adapter"])
     return {"ok": code == 0, "exit_code": code, "message_id": message_id, "payload": payload, "stderr": err[-1000:]}
 
 
@@ -359,6 +426,89 @@ def write_report(path: Path, task: sqlite3.Row, *, executed: bool, status: str, 
     )
 
 
+def managed_attempt_report_path(agent: str, task_id: str) -> Path:
+    artifact = paths(agent, task_id)
+    return artifact["base"] / f"antigravity-managed-attempt-{datetime.now().strftime('%Y%m%d-%H%M%S')}.json"
+
+
+def process_managed_attempt(args: argparse.Namespace, emp: sqlite3.Row) -> int:
+    task = task_by_id(args.task_id) if args.task_id else next_task(args.agent)
+    if not task:
+        run_companyctl(["heartbeat", "--agent", args.agent])
+        emit({"ok": True, "processed": 0, "agent": args.agent, "managed_attempt": True, "note": "no submitted Antigravity task"})
+        return 0
+    if task["target_agent"] != args.agent and task["claimed_by"] != args.agent:
+        emit({"ok": False, "error": "task not assigned to agent", "task_id": task["id"], "agent": args.agent})
+        return 1
+    artifact = paths(args.agent, task["id"])
+    prompt = build_managed_task_prompt(task)
+    artifact["brief"].write_text(build_brief(task) + "\n## Managed Prompt\n\n" + prompt + "\n", encoding="utf-8")
+    run_code, run_payload, run_err = run_companyctl_json(
+        [
+            "task",
+            "run",
+            "--task-id",
+            task["id"],
+            "--agent",
+            args.agent,
+            "--by",
+            args.by,
+            "--adapter-type",
+            "antigravity",
+            "--session-key",
+            f"agent:{args.agent}:{args.by}",
+            "--max-runtime-seconds",
+            str(args.max_runtime_seconds),
+            "--heartbeat-interval-seconds",
+            str(args.heartbeat_interval_seconds),
+            "--progress-interval-seconds",
+            str(args.progress_interval_seconds),
+            "--stale-after-seconds",
+            str(args.stale_after_seconds),
+        ]
+    )
+    if run_code != 0:
+        emit({"ok": False, "processed": 0, "agent": args.agent, "managed_attempt": True, "task_id": task["id"], "error": "task run failed", "companyctl": run_payload, "stderr": run_err[-1000:]})
+        return run_code
+    attempt = run_payload["attempt"]
+    attempt_id = attempt["attempt_id"]
+    run_companyctl_json(["task", "progress", "--task-id", task["id"], "--agent", args.agent, "--attempt-id", attempt_id, "--state", "acknowledged", "--message", "Antigravity managed attempt acknowledged", "--progress", "5"])
+    before_files = git_changed_files()
+    agy_code, agy_reply, agy_err = run_agy_print(prompt, args.timeout)
+    after_files = git_changed_files()
+    validation = validate_agy_reply(message=prompt, reply=agy_reply, before_files=before_files, after_files=after_files)
+    report_path = managed_attempt_report_path(args.agent, task["id"])
+    report = {
+        "ok": agy_code == 0 and bool(validation["ok"]),
+        "managed_attempt": True,
+        "agent": args.agent,
+        "task_id": task["id"],
+        "attempt_id": attempt_id,
+        "reply": agy_reply,
+        "validation": validation,
+        "agy_exit_code": agy_code,
+        "agy_stderr": agy_err[-1000:],
+        "created_at": now(),
+    }
+    report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    if report["ok"]:
+        run_companyctl_json(["task", "progress", "--task-id", task["id"], "--agent", args.agent, "--attempt-id", attempt_id, "--state", "in_progress", "--message", validation["fields"].get("current_action", "Antigravity structured execution in progress"), "--progress", "80", "--payload", json.dumps({"validation": validation, "report": str(report_path)}, ensure_ascii=False)])
+        summary = validation["fields"].get("current_action") or "Antigravity managed attempt completed"
+        done_code, done_payload, done_err = run_companyctl_json(["task", "done", "--agent", args.agent, "--task-id", task["id"], "--summary", summary, "--evidence", str(report_path)])
+        finish_code, finish_payload, finish_err = run_companyctl_json(["task", "attempt", "finish", "--attempt-id", attempt_id, "--status", "success"])
+        run_companyctl(["heartbeat", "--agent", args.agent])
+        shown_code, shown_payload, _shown_err = run_companyctl_json(["task", "show", "--task-id", task["id"]])
+        emit({"ok": done_code == 0 and finish_code == 0, "processed": 1, "managed_attempt": True, "task_id": task["id"], "agent": emp["id"], "attempt": finish_payload.get("attempt", attempt), "task": shown_payload.get("task", {}) if shown_code == 0 else {}, "evidence": str(report_path), "report": str(report_path), "validation": validation, "companyctl_done": done_payload, "companyctl_done_stderr": done_err[-1000:], "companyctl_finish_stderr": finish_err[-1000:]})
+        return 0 if done_code == 0 and finish_code == 0 else 1
+    blocker = validation["blocker"] or agy_err or "Antigravity managed attempt failed validation"
+    run_companyctl_json(["task", "progress", "--task-id", task["id"], "--agent", args.agent, "--attempt-id", attempt_id, "--state", "blocked_on_input_or_dependency", "--message", blocker, "--progress", "50", "--payload", json.dumps({"validation": validation, "report": str(report_path)}, ensure_ascii=False)])
+    block_code, block_payload, block_err = run_companyctl_json(["task", "block", "--agent", args.agent, "--task-id", task["id"], "--blocker", blocker])
+    finish_code, finish_payload, finish_err = run_companyctl_json(["task", "attempt", "finish", "--attempt-id", attempt_id, "--status", "failed", "--error", blocker])
+    run_companyctl(["heartbeat", "--agent", args.agent])
+    emit({"ok": False, "processed": 1 if block_code == 0 else 0, "managed_attempt": True, "task_id": task["id"], "agent": emp["id"], "attempt": finish_payload.get("attempt", attempt), "status": "blocked", "blocker": blocker, "report": str(report_path), "validation": validation, "companyctl_block": block_payload, "companyctl_block_stderr": block_err[-1000:], "companyctl_finish_stderr": finish_err[-1000:]})
+    return 1 if finish_code == 0 else finish_code
+
+
 def return_result(args: argparse.Namespace, emp: sqlite3.Row) -> int:
     if not args.task_id:
         emit({"ok": False, "error": "task id is required for result return"})
@@ -391,6 +541,8 @@ def return_result(args: argparse.Namespace, emp: sqlite3.Row) -> int:
 
 
 def process(args: argparse.Namespace) -> int:
+    if args.attendance_probe:
+        return attendance_probe(args)
     emp = employee(args.agent)
     if not emp:
         emit({"ok": False, "error": "unknown employee", "agent": args.agent})
@@ -398,6 +550,8 @@ def process(args: argparse.Namespace) -> int:
     if emp["runtime"] != "antigravity":
         emit({"ok": False, "error": "employee runtime is not antigravity", "agent": args.agent, "runtime": emp["runtime"]})
         return 1
+    if args.managed_attempt:
+        return process_managed_attempt(args, emp)
     if args.direct_message:
         run_companyctl(["heartbeat", "--agent", args.agent])
         before_files = git_changed_files()
@@ -481,6 +635,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--direct-source", default="", help="source employee for direct GUI request")
     parser.add_argument("--direct-session-key", default="", help="session key for direct GUI request")
     parser.add_argument("--timeout", type=int, default=120, help="timeout seconds for direct CLI replies")
+    parser.add_argument("--attendance-probe", action="store_true", help="send exact Antigravity CLI attendance probe")
+    parser.add_argument("--managed-attempt", action="store_true", help="run a submitted task through Kernel-managed attempt/progress/evidence")
+    parser.add_argument("--by", default="hermes", help="supervisor employee for --managed-attempt")
+    parser.add_argument("--max-runtime-seconds", type=int, default=36000)
+    parser.add_argument("--heartbeat-interval-seconds", type=int, default=60)
+    parser.add_argument("--progress-interval-seconds", type=int, default=300)
+    parser.add_argument("--stale-after-seconds", type=int, default=900)
     result = parser.add_mutually_exclusive_group()
     result.add_argument("--complete", action="store_true", help="return completed GUI result to Company Kernel")
     result.add_argument("--block", action="store_true", help="return blocked GUI result to Company Kernel")

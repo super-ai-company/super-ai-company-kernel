@@ -52,6 +52,25 @@ Then run or output the 2-4 round handshake plan with `--installer-agent hermes -
 - If another employee should help, list active options as `@agent` mentions and ask the sender whether to add them to a group conversation.
 - For human-originated requests, route the result back through the requesting agent so the human operator receives a clear success/blocker notification.
 
+## Codex Project Manager Supervision
+
+When Hermes manages Codex as a developer, Hermes must not treat one adapter call as completion.
+Use the PM supervisor loop:
+
+```bash
+bin/company-codex-pm-supervisor --agent codex --stale-minutes 15
+```
+
+Rules:
+
+- Codex `acknowledged` and `in_progress` are process states, not completion.
+- Hermes accepts completion only after a `progress_completed_*.json` evidence file exists in the Codex workspace and its `task_id` matches the active Company Kernel task.
+- If Codex stays `acknowledged` or `in_progress` beyond the stale window, Hermes marks it `stalled` and owns the follow-up.
+- Human-facing notifications must be short event messages, not metrics tables.
+- Completion message format: `完成了 Codex 的 <short task> 任务`.
+- Blocker message format: `Codex 卡住：<short task>，owner=hermes`.
+- Detailed evidence stays in `employees/hermes/reports/codex-pm/*.json`.
+
 ## Execution Rules
 
 - Default adapter mode is dry-run: writes a `hermes -z` oneshot prompt and evidence.

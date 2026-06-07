@@ -61,12 +61,21 @@ def load_trace(conn: sqlite3.Connection, trace_id: str) -> dict:
             task_ids.add(row["task_id"])
     task_ids.update(row["task_id"] for row in rows(conn, "SELECT DISTINCT task_id FROM company_events WHERE trace_id = ? AND task_id != ''", (trace_id,)))
     task_ids.update(row["task_id"] for row in rows(conn, "SELECT DISTINCT task_id FROM adapter_runs WHERE trace_id = ? AND task_id != ''", (trace_id,)))
+    task_ids.update(row["task_id"] for row in rows(conn, "SELECT DISTINCT task_id FROM artifacts WHERE trace_id = ? AND task_id != ''", (trace_id,)))
+    task_ids.update(row["task_id"] for row in rows(conn, "SELECT DISTINCT task_id FROM evidence WHERE trace_id = ? AND task_id != ''", (trace_id,)))
+    task_ids.update(row["from_task_id"] for row in rows(conn, "SELECT DISTINCT from_task_id FROM handoffs WHERE trace_id = ? AND from_task_id != ''", (trace_id,)))
+    task_ids.update(row["to_task_id"] for row in rows(conn, "SELECT DISTINCT to_task_id FROM handoffs WHERE trace_id = ? AND to_task_id != ''", (trace_id,)))
+    task_ids.update(row["task_id"] for row in rows(conn, "SELECT DISTINCT task_id FROM execution_attempts WHERE trace_id = ? AND task_id != ''", (trace_id,)))
     tasks = []
     if task_ids:
         placeholders = ",".join("?" for _ in task_ids)
         tasks = rows(conn, f"SELECT * FROM tasks WHERE id IN ({placeholders}) ORDER BY created_at ASC", tuple(sorted(task_ids)))
     events = rows(conn, "SELECT * FROM company_events WHERE trace_id = ? ORDER BY created_at ASC", (trace_id,))
     adapter_runs = rows(conn, "SELECT * FROM adapter_runs WHERE trace_id = ? ORDER BY created_at ASC", (trace_id,))
+    artifacts = rows(conn, "SELECT * FROM artifacts WHERE trace_id = ? ORDER BY created_at ASC", (trace_id,))
+    evidence = rows(conn, "SELECT * FROM evidence WHERE trace_id = ? ORDER BY created_at ASC", (trace_id,))
+    handoffs = rows(conn, "SELECT * FROM handoffs WHERE trace_id = ? ORDER BY created_at ASC", (trace_id,))
+    execution_attempts = rows(conn, "SELECT * FROM execution_attempts WHERE trace_id = ? ORDER BY started_at ASC", (trace_id,))
     timeline = []
     for task in tasks:
         timeline.append({"kind": "task", "at": task["created_at"], "label": f"task {task['id']} submitted to {task['target_agent']}", "status": task["status"], "task_id": task["id"]})
@@ -76,8 +85,29 @@ def load_trace(conn: sqlite3.Connection, trace_id: str) -> dict:
         timeline.append({"kind": "event", "at": event["created_at"], "label": event["event_type"], "status": "processed" if event.get("processed_at") else "pending", "event_id": event["id"], "task_id": event.get("task_id", "")})
     for run in adapter_runs:
         timeline.append({"kind": "adapter", "at": run["created_at"], "label": f"{run['agent_id']} {run['command']}", "status": "ok" if run.get("ok") else "failed", "run_id": run["id"], "task_id": run.get("task_id", ""), "attempt": run.get("attempt", 1)})
+    for artifact in artifacts:
+        timeline.append({"kind": "artifact", "at": artifact["created_at"], "label": f"{artifact['name']} v{artifact['version']} {artifact['stage']}", "status": artifact["status"], "artifact_id": artifact["artifact_id"], "task_id": artifact["task_id"]})
+    for item in evidence:
+        timeline.append({"kind": "evidence", "at": item["created_at"], "label": item["summary"] or item["path_or_url"], "status": "final" if item.get("is_final") else "created", "evidence_id": item["evidence_id"], "task_id": item["task_id"]})
+    for handoff in handoffs:
+        timeline.append({"kind": "handoff", "at": handoff["created_at"], "label": f"{handoff['from_task_id']} -> {handoff['to_task_id']}: {handoff['summary']}", "status": handoff["status"], "handoff_id": handoff["handoff_id"], "task_id": handoff["from_task_id"]})
+    for attempt in execution_attempts:
+        timeline.append({"kind": "attempt", "at": attempt["started_at"], "label": f"{attempt['employee_id']} via {attempt['adapter_type']}", "status": attempt["status"], "attempt_id": attempt["attempt_id"], "task_id": attempt["task_id"]})
+        if attempt.get("finished_at"):
+            timeline.append({"kind": "attempt", "at": attempt["finished_at"], "label": f"{attempt['attempt_id']} finished", "status": attempt["status"], "attempt_id": attempt["attempt_id"], "task_id": attempt["task_id"]})
     timeline.sort(key=lambda item: item.get("at", ""))
-    return {"trace_id": trace_id, "generated_at": now(), "tasks": tasks, "events": events, "adapter_runs": adapter_runs, "timeline": timeline}
+    return {
+        "trace_id": trace_id,
+        "generated_at": now(),
+        "tasks": tasks,
+        "events": events,
+        "adapter_runs": adapter_runs,
+        "artifacts": artifacts,
+        "evidence": evidence,
+        "handoffs": handoffs,
+        "execution_attempts": execution_attempts,
+        "timeline": timeline,
+    }
 
 
 def render_html(trace: dict) -> str:
@@ -111,7 +141,7 @@ def render_html(trace: dict) -> str:
 </head>
 <body>
   <h1>Trace {e(trace['trace_id'])}</h1>
-  <div class="meta">generated_at={e(trace['generated_at'])}; tasks={len(trace['tasks'])}; events={len(trace['events'])}; adapter_runs={len(trace['adapter_runs'])}</div>
+  <div class="meta">generated_at={e(trace['generated_at'])}; tasks={len(trace['tasks'])}; events={len(trace['events'])}; adapter_runs={len(trace['adapter_runs'])}; artifacts={len(trace.get('artifacts', []))}; handoffs={len(trace.get('handoffs', []))}; evidence={len(trace.get('evidence', []))}; attempts={len(trace.get('execution_attempts', []))}</div>
   <table>
     <thead><tr><th>time</th><th>kind</th><th>status</th><th>timeline</th><th>task</th><th>id</th></tr></thead>
     <tbody>{''.join(rows_html)}</tbody>
@@ -147,7 +177,27 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps({"ok": True, **trace}, ensure_ascii=False, indent=2))
         return 0
     files = write_outputs(trace, Path(args.output) if args.output else None)
-    print(json.dumps({"ok": True, "trace_id": trace_id, "files": files, "counts": {"tasks": len(trace["tasks"]), "events": len(trace["events"]), "adapter_runs": len(trace["adapter_runs"]), "timeline": len(trace["timeline"])}}, ensure_ascii=False, indent=2))
+    print(
+        json.dumps(
+            {
+                "ok": True,
+                "trace_id": trace_id,
+                "files": files,
+                "counts": {
+                    "tasks": len(trace["tasks"]),
+                    "events": len(trace["events"]),
+                    "adapter_runs": len(trace["adapter_runs"]),
+                    "artifacts": len(trace.get("artifacts", [])),
+                    "handoffs": len(trace.get("handoffs", [])),
+                    "evidence": len(trace.get("evidence", [])),
+                    "execution_attempts": len(trace.get("execution_attempts", [])),
+                    "timeline": len(trace["timeline"]),
+                },
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+    )
     return 0
 
 

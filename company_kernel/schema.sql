@@ -135,6 +135,58 @@ CREATE TABLE IF NOT EXISTS conversation_messages (
   FOREIGN KEY(conversation_id) REFERENCES conversations(id)
 );
 
+
+CREATE TABLE IF NOT EXISTS external_threads (
+  id TEXT PRIMARY KEY,
+  platform TEXT NOT NULL,
+  account_id TEXT NOT NULL DEFAULT '',
+  external_user_id TEXT NOT NULL DEFAULT '',
+  external_chat_id TEXT NOT NULL DEFAULT '',
+  owner_agent TEXT NOT NULL DEFAULT '',
+  bridge_agent TEXT NOT NULL DEFAULT '',
+  title TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL DEFAULT 'open',
+  last_message_at TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  metadata_json TEXT NOT NULL DEFAULT '{}'
+);
+
+CREATE TABLE IF NOT EXISTS external_messages (
+  id TEXT PRIMARY KEY,
+  thread_id TEXT NOT NULL,
+  direction TEXT NOT NULL DEFAULT '',
+  platform TEXT NOT NULL,
+  sender_kind TEXT NOT NULL DEFAULT '',
+  sender_id TEXT NOT NULL DEFAULT '',
+  body TEXT NOT NULL DEFAULT '',
+  raw_excerpt TEXT NOT NULL DEFAULT '',
+  evidence_path TEXT NOT NULL DEFAULT '',
+  source_event_id TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  metadata_json TEXT NOT NULL DEFAULT '{}',
+  FOREIGN KEY(thread_id) REFERENCES external_threads(id)
+);
+
+CREATE TABLE IF NOT EXISTS external_ingest_cursors (
+  id TEXT PRIMARY KEY,
+  platform TEXT NOT NULL,
+  account_id TEXT NOT NULL DEFAULT '',
+  bridge_agent TEXT NOT NULL DEFAULT '',
+  cursor_value TEXT NOT NULL DEFAULT '',
+  last_seen_at TEXT NOT NULL DEFAULT '',
+  state_json TEXT NOT NULL DEFAULT '{}',
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS external_message_links (
+  external_message_id TEXT NOT NULL,
+  company_message_id TEXT NOT NULL DEFAULT '',
+  conversation_message_id TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  PRIMARY KEY(external_message_id, company_message_id, conversation_message_id)
+);
+
 CREATE TABLE IF NOT EXISTS locks (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   resource_key TEXT NOT NULL UNIQUE,
@@ -208,5 +260,100 @@ CREATE TABLE IF NOT EXISTS adapter_runs (
   acknowledged_at TEXT NOT NULL DEFAULT '',
   acknowledged_by TEXT NOT NULL DEFAULT '',
   acknowledgement_reason TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS task_workspaces (
+  task_id TEXT PRIMARY KEY,
+  trace_id TEXT NOT NULL DEFAULT '',
+  path TEXT NOT NULL,
+  manifest_path TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS artifacts (
+  artifact_id TEXT PRIMARY KEY,
+  trace_id TEXT NOT NULL DEFAULT '',
+  task_id TEXT NOT NULL,
+  parent_task_id TEXT NOT NULL DEFAULT '',
+  employee_id TEXT NOT NULL,
+  artifact_type TEXT NOT NULL DEFAULT '',
+  name TEXT NOT NULL,
+  path TEXT NOT NULL,
+  mime_type TEXT NOT NULL DEFAULT '',
+  stage TEXT NOT NULL DEFAULT 'draft',
+  version INTEGER NOT NULL DEFAULT 1,
+  status TEXT NOT NULL DEFAULT 'created',
+  is_input INTEGER NOT NULL DEFAULT 0,
+  is_output INTEGER NOT NULL DEFAULT 1,
+  is_final INTEGER NOT NULL DEFAULT 0,
+  summary TEXT NOT NULL DEFAULT '',
+  checksum TEXT NOT NULL DEFAULT '',
+  metadata_json TEXT NOT NULL DEFAULT '{}',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS evidence (
+  evidence_id TEXT PRIMARY KEY,
+  trace_id TEXT NOT NULL DEFAULT '',
+  task_id TEXT NOT NULL,
+  employee_id TEXT NOT NULL,
+  artifact_id TEXT NOT NULL DEFAULT '',
+  type TEXT NOT NULL DEFAULT '',
+  path_or_url TEXT NOT NULL,
+  summary TEXT NOT NULL DEFAULT '',
+  checksum TEXT NOT NULL DEFAULT '',
+  is_final INTEGER NOT NULL DEFAULT 1,
+  metadata_json TEXT NOT NULL DEFAULT '{}',
+  created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS handoffs (
+  handoff_id TEXT PRIMARY KEY,
+  trace_id TEXT NOT NULL DEFAULT '',
+  from_task_id TEXT NOT NULL,
+  to_task_id TEXT NOT NULL,
+  from_employee_id TEXT NOT NULL,
+  to_employee_id TEXT NOT NULL DEFAULT '',
+  summary TEXT NOT NULL DEFAULT '',
+  artifacts_json TEXT NOT NULL DEFAULT '[]',
+  known_issues TEXT NOT NULL DEFAULT '',
+  next_steps TEXT NOT NULL DEFAULT '',
+  required_actions TEXT NOT NULL DEFAULT '',
+  acceptance_notes TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL DEFAULT 'created',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS execution_attempts (
+  attempt_id TEXT PRIMARY KEY,
+  trace_id TEXT NOT NULL DEFAULT '',
+  task_id TEXT NOT NULL,
+  employee_id TEXT NOT NULL,
+  adapter_type TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL DEFAULT 'running',
+  runtime TEXT NOT NULL DEFAULT '',
+  pid TEXT NOT NULL DEFAULT '',
+  session_key TEXT NOT NULL DEFAULT '',
+  runtime_policy_json TEXT NOT NULL DEFAULT '{}',
+  last_heartbeat_at TEXT NOT NULL DEFAULT '',
+  last_progress_at TEXT NOT NULL DEFAULT '',
+  cancel_requested_at TEXT NOT NULL DEFAULT '',
+  supervisor_state_json TEXT NOT NULL DEFAULT '{}',
+  started_at TEXT NOT NULL,
+  finished_at TEXT NOT NULL DEFAULT '',
+  error_message TEXT NOT NULL DEFAULT '',
+  metadata_json TEXT NOT NULL DEFAULT '{}'
+);
+
+CREATE TABLE IF NOT EXISTS task_context_packages (
+  context_id TEXT PRIMARY KEY,
+  trace_id TEXT NOT NULL DEFAULT '',
+  task_id TEXT NOT NULL,
+  employee_id TEXT NOT NULL,
+  context_json TEXT NOT NULL DEFAULT '{}',
   created_at TEXT NOT NULL
 );

@@ -87,6 +87,14 @@ def build_traces(conn: sqlite3.Connection, *, limit: int = 20) -> list[dict]:
               SELECT trace_id, created_at FROM company_events WHERE trace_id != ''
               UNION ALL
               SELECT trace_id, created_at FROM adapter_runs WHERE trace_id != ''
+              UNION ALL
+              SELECT trace_id, created_at FROM artifacts WHERE trace_id != ''
+              UNION ALL
+              SELECT trace_id, created_at FROM evidence WHERE trace_id != ''
+              UNION ALL
+              SELECT trace_id, created_at FROM handoffs WHERE trace_id != ''
+              UNION ALL
+              SELECT trace_id, started_at AS created_at FROM execution_attempts WHERE trace_id != ''
             )
             GROUP BY trace_id
             ORDER BY last_seen DESC
@@ -117,7 +125,13 @@ def build_traces(conn: sqlite3.Connection, *, limit: int = 20) -> list[dict]:
             """,
             (trace_id,),
         )
-        timestamps = [item["created_at"] for item in [*event_rows, *run_rows] if item.get("created_at")]
+        artifact_rows = rows(conn, "SELECT artifact_id, task_id, employee_id, name, stage, status, version, created_at FROM artifacts WHERE trace_id = ? ORDER BY created_at ASC", (trace_id,))
+        evidence_rows = rows(conn, "SELECT evidence_id, task_id, employee_id, summary, path_or_url, is_final, created_at FROM evidence WHERE trace_id = ? ORDER BY created_at ASC", (trace_id,))
+        handoff_rows = rows(conn, "SELECT handoff_id, from_task_id, to_task_id, from_employee_id, status, summary, created_at FROM handoffs WHERE trace_id = ? ORDER BY created_at ASC", (trace_id,))
+        attempt_rows = rows(conn, "SELECT attempt_id, task_id, employee_id, adapter_type, status, started_at, finished_at FROM execution_attempts WHERE trace_id = ? ORDER BY started_at ASC", (trace_id,))
+        timestamps = [item["created_at"] for item in [*event_rows, *run_rows, *artifact_rows, *evidence_rows, *handoff_rows] if item.get("created_at")]
+        timestamps.extend(item["started_at"] for item in attempt_rows if item.get("started_at"))
+        timestamps.extend(item["finished_at"] for item in attempt_rows if item.get("finished_at"))
         if not timestamps:
             continue
         start = min(timestamps)
@@ -154,6 +168,58 @@ def build_traces(conn: sqlite3.Connection, *, limit: int = 20) -> list[dict]:
                     "created_at": run["created_at"],
                 }
             )
+        for artifact in artifact_rows:
+            spans.append(
+                {
+                    "name": f"artifact.{artifact['status']}",
+                    "service": artifact["employee_id"] or "artifact",
+                    "duration_ms": 24,
+                    "start_ms": milliseconds_between(start, artifact["created_at"]),
+                    "artifact_id": artifact["artifact_id"],
+                    "task_id": artifact["task_id"],
+                    "created_at": artifact["created_at"],
+                    "label": f"{artifact['name']} v{artifact['version']} {artifact['stage']}",
+                }
+            )
+        for item in evidence_rows:
+            spans.append(
+                {
+                    "name": "evidence.final" if item.get("is_final") else "evidence.created",
+                    "service": item["employee_id"] or "evidence",
+                    "duration_ms": 24,
+                    "start_ms": milliseconds_between(start, item["created_at"]),
+                    "evidence_id": item["evidence_id"],
+                    "task_id": item["task_id"],
+                    "created_at": item["created_at"],
+                    "label": item["summary"] or item["path_or_url"],
+                }
+            )
+        for handoff in handoff_rows:
+            spans.append(
+                {
+                    "name": f"handoff.{handoff['status']}",
+                    "service": handoff["from_employee_id"] or "handoff",
+                    "duration_ms": 24,
+                    "start_ms": milliseconds_between(start, handoff["created_at"]),
+                    "handoff_id": handoff["handoff_id"],
+                    "task_id": handoff["from_task_id"],
+                    "created_at": handoff["created_at"],
+                    "label": f"{handoff['from_task_id']} -> {handoff['to_task_id']}: {handoff['summary']}",
+                }
+            )
+        for attempt in attempt_rows:
+            spans.append(
+                {
+                    "name": f"attempt.{attempt['status']}",
+                    "service": attempt["employee_id"] or "attempt",
+                    "duration_ms": milliseconds_between(attempt["started_at"], attempt.get("finished_at") or attempt["started_at"]) if attempt.get("finished_at") else 24,
+                    "start_ms": milliseconds_between(start, attempt["started_at"]),
+                    "attempt_id": attempt["attempt_id"],
+                    "task_id": attempt["task_id"],
+                    "created_at": attempt["started_at"],
+                    "label": attempt["adapter_type"],
+                }
+            )
         spans.sort(key=lambda item: (item.get("start_ms", 0), item.get("name", "")))
         first = spans[0] if spans else {}
         traces.append(
@@ -162,6 +228,14 @@ def build_traces(conn: sqlite3.Connection, *, limit: int = 20) -> list[dict]:
                 "title": first.get("task_id") or first.get("name") or trace_id,
                 "duration_ms": max(duration, max((span["start_ms"] + span["duration_ms"] for span in spans), default=1)),
                 "spans": spans,
+                "counts": {
+                    "events": len(event_rows),
+                    "adapter_runs": len(run_rows),
+                    "artifacts": len(artifact_rows),
+                    "handoffs": len(handoff_rows),
+                    "evidence": len(evidence_rows),
+                    "execution_attempts": len(attempt_rows),
+                },
                 "started_at": start,
                 "updated_at": end,
             }
@@ -169,7 +243,608 @@ def build_traces(conn: sqlite3.Connection, *, limit: int = 20) -> list[dict]:
     return traces
 
 
+def recent_direct_messages(conn: sqlite3.Connection, *, limit: int = 20) -> list[dict]:
+    return rows(
+        conn,
+        """
+        SELECT id,
+               source_agent,
+               target_agent,
+               body,
+               '' AS evidence_path,
+               created_at
+        FROM messages
+        ORDER BY created_at DESC, id DESC
+        LIMIT ?
+        """,
+        (limit,),
+    )
+
+
+def internal_communication_watchdog(conn: sqlite3.Connection, *, generated_at: str, limit: int = 20) -> dict:
+    """Find internal messages/tasks that were delivered but have no visible work receipt yet."""
+    message_rows = rows(
+        conn,
+        """
+        SELECT m.id,
+               m.source_agent,
+               m.target_agent,
+               m.body,
+               m.created_at,
+               COALESCE((
+                 SELECT r.id
+                 FROM messages r
+                 WHERE r.source_agent = m.target_agent
+                   AND r.target_agent = m.source_agent
+                   AND r.created_at >= m.created_at
+                   AND (
+                     r.id = m.id || '-receipt'
+                     OR r.body LIKE '%original_message_id: ' || m.id || '%'
+                   )
+                 ORDER BY r.created_at ASC, r.id ASC
+                 LIMIT 1
+               ), '') AS receipt_id,
+               COALESCE((
+                 SELECT r.created_at
+                 FROM messages r
+                 WHERE r.source_agent = m.target_agent
+                   AND r.target_agent = m.source_agent
+                   AND r.created_at >= m.created_at
+                   AND (
+                     r.id = m.id || '-receipt'
+                     OR r.body LIKE '%original_message_id: ' || m.id || '%'
+                   )
+                 ORDER BY r.created_at ASC, r.id ASC
+                 LIMIT 1
+               ), '') AS receipt_at
+        FROM messages m
+        WHERE m.source_agent != m.target_agent
+        ORDER BY m.created_at DESC, m.id DESC
+        LIMIT ?
+        """,
+        (limit,),
+    )
+    no_receipt = []
+    for item in message_rows:
+        if item.get("receipt_id"):
+            continue
+        age = minutes_since(str(item.get("created_at", "")), generated_at)
+        item["age_min"] = age
+        item["status"] = "no_receipt"
+        item["reason"] = "message_delivered_but_no_reverse_receipt"
+        no_receipt.append(item)
+
+    task_rows = rows(
+        conn,
+        """
+        SELECT id, source_agent, target_agent, title, status, claimed_by, evidence_path, created_at, updated_at
+        FROM tasks
+        WHERE status IN ('submitted', 'claimed')
+        ORDER BY updated_at DESC, created_at DESC
+        LIMIT ?
+        """,
+        (limit,),
+    )
+    stalled_tasks = []
+    for task in task_rows:
+        age = minutes_since(str(task.get("updated_at") or task.get("created_at") or ""), generated_at)
+        task["age_min"] = age
+        if task.get("status") == "submitted":
+            task["watchdog_status"] = "unclaimed"
+            task["reason"] = "task_submitted_but_not_claimed"
+        else:
+            task["watchdog_status"] = "claimed_no_final_receipt"
+            task["reason"] = "task_claimed_but_not_done_or_blocked"
+        stalled_tasks.append(task)
+
+    return {
+        "counts": {
+            "messages_checked": len(message_rows),
+            "no_receipt_messages": len(no_receipt),
+            "open_tasks": len(stalled_tasks),
+            "remediation_candidates": len(no_receipt) + len(stalled_tasks),
+        },
+        "no_receipt_messages": no_receipt[:8],
+        "open_tasks": stalled_tasks[:8],
+    }
+
+
+def remediation_followup_exists(followup_id: str) -> bool:
+    return any((companyctl.followup_paths(status) / f"{followup_id}.json").exists() for status in ("pending", "answered", "cancelled"))
+
+
+def parse_key_value_text(text: str) -> dict:
+    parsed = {}
+    for line in str(text or "").splitlines():
+        if ":" not in line:
+            continue
+        key, value = line.split(":", 1)
+        normalized = key.strip().lower().replace("-", "_").replace(" ", "_")
+        if normalized:
+            parsed[normalized] = value.strip()
+    return parsed
+
+
+def reroute_candidate_from_followup(followup: dict) -> str:
+    answer = parse_key_value_text(str(followup.get("answer", "")))
+    if answer.get("new_owner"):
+        return answer["new_owner"]
+    if answer.get("candidate_new_owner"):
+        return answer["candidate_new_owner"]
+    try:
+        context = json.loads(followup.get("context", "{}") or "{}")
+    except json.JSONDecodeError:
+        context = {}
+    candidate = context.get("candidate_new_owner")
+    if candidate:
+        return str(candidate)
+    parent = context.get("parent_action", {}) if isinstance(context, dict) else {}
+    if isinstance(parent, dict) and parent.get("candidate_new_owner"):
+        return str(parent["candidate_new_owner"])
+    return "codex"
+
+
+def original_task_or_message_from_followup(followup: dict) -> tuple[str, str, dict]:
+    try:
+        context = json.loads(followup.get("context", "{}") or "{}")
+    except json.JSONDecodeError:
+        context = {}
+    item = context.get("watchdog_item", {}) if isinstance(context, dict) else {}
+    if not isinstance(item, dict):
+        item = {}
+    if item.get("id") and item.get("title") is not None:
+        return "task", str(item.get("id", "")), item
+    if item.get("id"):
+        return "message", str(item.get("id", "")), item
+    answer = parse_key_value_text(str(followup.get("answer", "")))
+    if answer.get("task_id"):
+        return "task", answer["task_id"], item
+    if answer.get("original_message_id"):
+        return "message", answer["original_message_id"], item
+    return "unknown", "", item
+
+
+def apply_reroute_decisions(conn: sqlite3.Connection, *, by: str = "hermes", dry_run: bool = True) -> dict:
+    actions = []
+    for followup in companyctl.list_followups("answered"):
+        followup_id = str(followup.get("id", ""))
+        if not followup_id.startswith("reroute-"):
+            continue
+        answer = parse_key_value_text(str(followup.get("answer", "")))
+        decision = str(answer.get("decision", "")).strip().lower()
+        if decision != "reroute":
+            actions.append({"followup_id": followup_id, "decision": decision or "missing", "status": "skipped"})
+            continue
+        new_owner = companyctl.resolve_employee_alias(answer.get("new_owner") or reroute_candidate_from_followup(followup))
+        item_kind, original_id, item = original_task_or_message_from_followup(followup)
+        if not original_id:
+            actions.append({"followup_id": followup_id, "decision": decision, "status": "blocked", "reason": "missing_original_id"})
+            continue
+        new_task_id = f"rerouted-{original_id}".replace("/", "-")
+        existing = conn.execute("SELECT * FROM tasks WHERE id = ?", (new_task_id,)).fetchone()
+        title = f"Rerouted: {item.get('title') or item.get('body') or original_id}"[:180]
+        description = "\n".join(
+            [
+                "# Rerouted Internal Work",
+                f"- original_kind: {item_kind}",
+                f"- original_id: {original_id}",
+                f"- stalled_target: {item.get('target_agent', '')}",
+                f"- reroute_decision_followup: {followup_id}",
+                f"- reason: {answer.get('reason', followup.get('answer', ''))}",
+                "",
+                "## Original Context",
+                json.dumps(item, ensure_ascii=False, indent=2),
+            ]
+        )
+        action = {
+            "followup_id": followup_id,
+            "decision": decision,
+            "original_kind": item_kind,
+            "original_id": original_id,
+            "new_owner": new_owner,
+            "new_task_id": new_task_id,
+            "dry_run": dry_run,
+            "already_exists": bool(existing),
+        }
+        if not dry_run and not existing:
+            submitted = companyctl.submit_task_internal(
+                conn,
+                source=by,
+                target=new_owner,
+                title=title,
+                description=description,
+                priority="P2",
+                task_id=new_task_id,
+                metadata={"rerouted_from": original_id, "reroute_followup_id": followup_id, "original_kind": item_kind},
+            )
+            action["new_task"] = submitted["task"]
+            action["file"] = submitted["file"]
+            if item_kind == "task":
+                ts = now()
+                conn.execute(
+                    "UPDATE tasks SET status = 'blocked', blocker = ?, updated_at = ? WHERE id = ? AND status IN ('submitted', 'claimed')",
+                    (f"rerouted_to:{new_owner}; new_task:{new_task_id}; followup:{followup_id}", ts, original_id),
+                )
+                companyctl.update_task_metadata(conn, original_id, {"rerouted_to": new_owner, "rerouted_task_id": new_task_id, "reroute_followup_id": followup_id})
+                companyctl.sync_project_plan_for_task(conn, task_id=original_id, task_status="blocked", actor=by)
+                conn.commit()
+        actions.append(action)
+    return {
+        "ok": True,
+        "dry_run": dry_run,
+        "by": by,
+        "actions": actions,
+        "actions_planned": len(actions),
+        "reroutes_applied": len([action for action in actions if action.get("new_task")]),
+    }
+
+
+def remediate_internal_watchdog(
+    conn: sqlite3.Connection,
+    *,
+    source_agent: str = "main",
+    dry_run: bool = True,
+    deliver: bool = False,
+    escalate_to: str = "hermes",
+    escalate_existing: bool = True,
+    reroute_to: str = "codex",
+    create_reroute_plan: bool = True,
+) -> dict:
+    generated_at = now()
+    watchdog = internal_communication_watchdog(conn, generated_at=generated_at, limit=20)
+    actions = []
+
+    def maybe_escalate(original_action: dict, item: dict) -> None:
+        if not original_action.get("already_exists") or not escalate_existing:
+            return
+        escalation_id = f"escalate-{original_action['followup_id']}"
+        escalation_exists = remediation_followup_exists(escalation_id)
+        escalation_question = "\n".join(
+            [
+                "status: watchdog_escalation",
+                f"stalled_followup_id: {original_action['followup_id']}",
+                f"stalled_target: {original_action.get('to', '')}",
+                f"reason: {original_action.get('reason', '')}",
+                "required_action: 请监督/改派/阻断该内部任务；返回 owner、next_action、evidence_path。",
+                f"context: {json.dumps(item, ensure_ascii=False)}",
+            ]
+        )
+        escalation = {
+            "kind": "escalation",
+            "reason": "existing_followup_still_unresolved",
+            "followup_id": escalation_id,
+            "from": source_agent,
+            "to": escalate_to,
+            "question": escalation_question,
+            "already_exists": escalation_exists,
+            "parent_followup_id": original_action["followup_id"],
+        }
+        if not dry_run and not escalation_exists:
+            followup = {
+                "id": escalation_id,
+                "source_agent": source_agent,
+                "target_agent": escalate_to,
+                "question": escalation_question,
+                "context": json.dumps({"watchdog_item": item, "parent_action": original_action}, ensure_ascii=False),
+                "deliver": bool(deliver),
+                "reply_channel": "",
+                "reply_account": "",
+                "reply_to": "",
+                "created_at": generated_at,
+                "answered_at": "",
+                "answer": "",
+                "response_message_id": "",
+            }
+            path = companyctl.save_followup(followup, "pending")
+            escalation["file"] = str(path)
+        actions.append(escalation)
+
+        if create_reroute_plan:
+            reroute_id = f"reroute-{original_action['followup_id']}"
+            reroute_exists = remediation_followup_exists(reroute_id)
+            reroute_question = "\n".join(
+                [
+                    "status: reroute_decision_required",
+                    f"stalled_followup_id: {original_action['followup_id']}",
+                    f"stalled_target: {original_action.get('to', '')}",
+                    f"candidate_new_owner: {reroute_to}",
+                    "decision_required: continue_original | reroute | block | ask_human",
+                    "required_output: decision/new_owner/reason/evidence_path/next_action/rollback.",
+                    f"context: {json.dumps(item, ensure_ascii=False)}",
+                ]
+            )
+            reroute = {
+                "kind": "reroute_decision",
+                "reason": "stalled_after_followup_needs_owner_decision",
+                "followup_id": reroute_id,
+                "from": source_agent,
+                "to": escalate_to,
+                "candidate_new_owner": reroute_to,
+                "question": reroute_question,
+                "already_exists": reroute_exists,
+                "parent_followup_id": original_action["followup_id"],
+            }
+            if not dry_run and not reroute_exists:
+                followup = {
+                    "id": reroute_id,
+                    "source_agent": source_agent,
+                    "target_agent": escalate_to,
+                    "question": reroute_question,
+                    "context": json.dumps({"watchdog_item": item, "parent_action": original_action, "candidate_new_owner": reroute_to}, ensure_ascii=False),
+                    "deliver": bool(deliver),
+                    "reply_channel": "",
+                    "reply_account": "",
+                    "reply_to": "",
+                    "created_at": generated_at,
+                    "answered_at": "",
+                    "answer": "",
+                    "response_message_id": "",
+                }
+                path = companyctl.save_followup(followup, "pending")
+                reroute["file"] = str(path)
+            actions.append(reroute)
+
+    for item in watchdog.get("no_receipt_messages", []):
+        message_id = str(item.get("id", "message")).replace("/", "-")
+        followup_id = f"remediate-no-receipt-{message_id}"
+        question = "\n".join(
+            [
+                "status: no_receipt_followup",
+                f"original_message_id: {item.get('id', '')}",
+                f"from: {item.get('source_agent', '')}",
+                f"to: {item.get('target_agent', '')}",
+                "required_reply: 请返回 claimed/working/done/blocked；如果不能执行，返回 blocker/tried/evidence/next_action。",
+                f"original_body: {item.get('body', '')}",
+            ]
+        )
+        action = {"kind": "followup", "reason": item.get("reason", "no_receipt"), "followup_id": followup_id, "from": source_agent, "to": item.get("target_agent", ""), "question": question, "already_exists": remediation_followup_exists(followup_id)}
+        if not dry_run and not action["already_exists"]:
+            followup = {
+                "id": followup_id,
+                "source_agent": source_agent,
+                "target_agent": item.get("target_agent", ""),
+                "question": question,
+                "context": json.dumps({"watchdog_item": item}, ensure_ascii=False),
+                "deliver": bool(deliver),
+                "reply_channel": "",
+                "reply_account": "",
+                "reply_to": "",
+                "created_at": generated_at,
+                "answered_at": "",
+                "answer": "",
+                "response_message_id": "",
+            }
+            path = companyctl.save_followup(followup, "pending")
+            action["file"] = str(path)
+        actions.append(action)
+        maybe_escalate(action, item)
+
+    for task in watchdog.get("open_tasks", []):
+        task_id = str(task.get("id", "task")).replace("/", "-")
+        followup_id = f"remediate-open-task-{task_id}"
+        question = "\n".join(
+            [
+                "status: open_task_followup",
+                f"task_id: {task.get('id', '')}",
+                f"task_status: {task.get('status', '')}",
+                f"watchdog_status: {task.get('watchdog_status', '')}",
+                "required_reply: claim/start/finish or block this task; return evidence_path, exit_code/stdout/stderr, and next_action.",
+                f"title: {task.get('title', '')}",
+            ]
+        )
+        action = {"kind": "followup", "reason": task.get("reason", "open_task"), "followup_id": followup_id, "from": source_agent, "to": task.get("target_agent", ""), "question": question, "already_exists": remediation_followup_exists(followup_id)}
+        if not dry_run and not action["already_exists"]:
+            followup = {
+                "id": followup_id,
+                "source_agent": source_agent,
+                "target_agent": task.get("target_agent", ""),
+                "question": question,
+                "context": json.dumps({"watchdog_item": task}, ensure_ascii=False),
+                "deliver": bool(deliver),
+                "reply_channel": "",
+                "reply_account": "",
+                "reply_to": "",
+                "created_at": generated_at,
+                "answered_at": "",
+                "answer": "",
+                "response_message_id": "",
+            }
+            path = companyctl.save_followup(followup, "pending")
+            action["file"] = str(path)
+        actions.append(action)
+        maybe_escalate(action, task)
+
+    return {
+        "ok": True,
+        "dry_run": dry_run,
+        "deliver": deliver,
+        "source_agent": source_agent,
+        "escalate_to": escalate_to,
+        "escalate_existing": escalate_existing,
+        "reroute_to": reroute_to,
+        "create_reroute_plan": create_reroute_plan,
+        "generated_at": generated_at,
+        "watchdog_counts": watchdog.get("counts", {}),
+        "actions": actions,
+        "actions_created": len([action for action in actions if action.get("file")]),
+        "actions_planned": len(actions),
+        "escalations_planned": len([action for action in actions if action.get("kind") == "escalation"]),
+        "escalations_created": len([action for action in actions if action.get("kind") == "escalation" and action.get("file")]),
+        "reroutes_planned": len([action for action in actions if action.get("kind") == "reroute_decision"]),
+        "reroutes_created": len([action for action in actions if action.get("kind") == "reroute_decision" and action.get("file")]),
+    }
+
+
+def safe_repo_relative_path(value: str) -> str:
+    if not value:
+        return ""
+    try:
+        path = Path(value)
+    except (TypeError, ValueError):
+        return ""
+    if path.is_absolute():
+        try:
+            resolved = path.resolve(strict=False)
+            root_resolved = ROOT.resolve(strict=False)
+            relative = resolved.relative_to(root_resolved)
+            return relative.as_posix()
+        except (RuntimeError, ValueError):
+            return ""
+    normalized = path.as_posix().lstrip("./")
+    if normalized.startswith(".."):
+        return ""
+    return normalized
+
+
+def progress_from_report_path(report_path: str) -> dict[str, str]:
+    if not report_path:
+        return companyctl.extract_progress_payload({})
+    try:
+        resolved = Path(report_path).expanduser().resolve()
+        resolved.relative_to(ROOT.resolve(strict=False))
+        payload = json.loads(resolved.read_text(encoding="utf-8"))
+        if isinstance(payload, dict):
+            return companyctl.extract_progress_payload(payload.get("report", payload))
+    except (OSError, ValueError, json.JSONDecodeError):
+        return companyctl.extract_progress_payload({})
+    return companyctl.extract_progress_payload({})
+
+
+def communication_observability_summary(summary: dict) -> dict:
+    direct_items = []
+    for item in summary.get("direct_messages_recent", [])[:8]:
+        direct_items.append(
+            {
+                "id": item.get("id", ""),
+                "source_agent": item.get("source_agent", ""),
+                "target_agent": item.get("target_agent", ""),
+                "body": item.get("body", ""),
+                "created_at": item.get("created_at", ""),
+            }
+        )
+
+    external_threads = []
+    for thread in summary.get("external_threads", [])[:8]:
+        external_threads.append(
+            {
+                "id": thread.get("id", ""),
+                "platform": thread.get("platform", ""),
+                "owner_agent": thread.get("owner_agent", ""),
+                "bridge_agent": thread.get("bridge_agent", ""),
+                "external_title": thread.get("external_title", ""),
+                "cursor": thread.get("cursor", ""),
+                "last_message_at": thread.get("last_message_at", ""),
+            }
+        )
+
+    adapter_items = []
+    ok_count = 0
+    failed_count = 0
+    for run in summary.get("adapter_runs", [])[:8]:
+        try:
+            result = json.loads(run.get("result_json", "{}") or "{}")
+        except json.JSONDecodeError:
+            result = {}
+        parsed_runs = result.get("runs", []) if isinstance(result, dict) else []
+        first_parsed = parsed_runs[0] if parsed_runs and isinstance(parsed_runs[0], dict) else {}
+        parsed_stdout = first_parsed.get("parsed_stdout", {}) if isinstance(first_parsed, dict) else {}
+        report_path = str(parsed_stdout.get("report", "")) if isinstance(parsed_stdout, dict) else ""
+        progress = progress_from_report_path(report_path)
+        if run.get("ok"):
+            ok_count += 1
+        else:
+            failed_count += 1
+        adapter_items.append(
+            {
+                "id": run.get("id", ""),
+                "agent_id": run.get("agent_id", ""),
+                "task_id": run.get("task_id", ""),
+                "command": run.get("command", ""),
+                "ok": bool(run.get("ok")),
+                "processed": bool(run.get("processed")),
+                "attempt": run.get("attempt", 0),
+                "created_at": run.get("created_at", ""),
+                "next_retry_at": run.get("next_retry_at", ""),
+                "state_file": safe_repo_relative_path(result.get("state_file", "") if isinstance(result, dict) else ""),
+                "progress_file": safe_repo_relative_path(parsed_stdout.get("progress_file", "") if isinstance(parsed_stdout, dict) else ""),
+                "progress_layer": progress.get("layer", ""),
+                "progress_state": progress.get("state", ""),
+                "progress_label": progress.get("label", ""),
+                "summary": parsed_stdout.get("summary", "") if isinstance(parsed_stdout, dict) else "",
+            }
+        )
+
+    progress_items = []
+    pending_count = 0
+    sent_count = 0
+    skipped_count = 0
+    failed_count = 0
+    recent_progress = summary.get("progress_notifications_recent", [])[:8]
+    for item in recent_progress:
+        if item.get("pending"):
+            pending_count += 1
+        status = str(item.get("delivery_status", "") or "")
+        if status == "sent":
+            sent_count += 1
+        elif status == "skipped":
+            skipped_count += 1
+        elif status == "failed":
+            failed_count += 1
+        progress_items.append(
+            {
+                "event_id": item.get("event_id", ""),
+                "agent_id": item.get("agent_id", ""),
+                "from_layer": item.get("from_layer", ""),
+                "from_state": item.get("from_state", ""),
+                "to_layer": item.get("to_layer", ""),
+                "to_state": item.get("to_state", ""),
+                "message": item.get("message", ""),
+                "reason": item.get("reason", ""),
+                "delivery_status": item.get("delivery_status", ""),
+                "delivery_error": item.get("delivery_error", ""),
+                "delivered_at": item.get("delivered_at", ""),
+                "created_at": item.get("created_at", ""),
+                "pending": bool(item.get("pending")),
+                "supervisor_decision": item.get("supervisor_decision", ""),
+                "supervisor_attempts": item.get("supervisor_attempts", 0),
+                "supervisor_summary": item.get("supervisor_summary", ""),
+            }
+        )
+
+    supervisor_loop = summary.get("supervisor_loop", {}) if isinstance(summary.get("supervisor_loop", {}), dict) else {}
+
+    return {
+        "generated_at": summary.get("generated_at", ""),
+        "direct_messages": {
+            "counts": {"total": len(summary.get("direct_messages_recent", [])), "shown": len(direct_items)},
+            "items": direct_items,
+        },
+        "external_mirror": {
+            "counts": {
+                "threads": len(summary.get("external_threads", [])),
+                "messages": len(summary.get("external_messages_recent", [])),
+            },
+            "threads": external_threads,
+        },
+        "adapter_runs": {
+            "counts": {"total": len(summary.get("adapter_runs", [])), "shown": len(adapter_items), "ok": ok_count, "failed": failed_count},
+            "items": adapter_items,
+        },
+        "progress_notifications": {
+            "counts": {"total": len(summary.get("progress_notifications_recent", [])), "pending": pending_count, "sent": sent_count, "skipped": skipped_count, "failed": failed_count, "shown": len(progress_items)},
+            "items": progress_items,
+        },
+        "supervisor_loop": {
+            "latest_result": supervisor_loop,
+            "counts": supervisor_loop.get("counts", {}) if isinstance(supervisor_loop, dict) else {},
+        },
+        "internal_watchdog": summary.get("internal_watchdog", {"counts": {}, "no_receipt_messages": [], "open_tasks": []}),
+    }
+
+
 def load_summary(conn: sqlite3.Connection) -> dict:
+    generated_at = now()
+    direct_messages_recent = recent_direct_messages(conn, limit=20)
     conversation_rows = rows(
         conn,
         """
@@ -196,8 +871,54 @@ def load_summary(conn: sqlite3.Connection) -> dict:
             """,
             (conversation["id"],),
         )
+    employee_rows = rows(
+        conn,
+        """
+        SELECT e.id, e.name, e.role, e.runtime, e.status AS employee_status, e.workspace,
+               COALESCE(h.status, 'missing') AS heartbeat_status,
+               COALESCE(h.last_seen_at, '') AS last_seen_at,
+               COALESCE(h.metadata_json, '{}') AS heartbeat_metadata_json,
+               COALESCE(
+                 (SELECT COUNT(*) FROM tasks t WHERE t.target_agent = e.id AND t.status = 'submitted'),
+                 0
+               ) AS submitted_tasks,
+               COALESCE(
+                 (SELECT COUNT(*) FROM tasks t WHERE t.target_agent = e.id AND t.status = 'claimed'),
+                 0
+               ) AS claimed_tasks
+        FROM employees e
+        LEFT JOIN heartbeats h ON h.agent_id = e.id
+        ORDER BY
+          CASE e.status WHEN 'active' THEN 0 WHEN 'candidate' THEN 1 ELSE 2 END,
+          e.id
+        """,
+    )
+    for employee in employee_rows:
+        try:
+            heartbeat_metadata = json.loads(employee.get("heartbeat_metadata_json", "{}") or "{}")
+        except json.JSONDecodeError:
+            heartbeat_metadata = {}
+        progress = companyctl.extract_progress_payload(heartbeat_metadata)
+        employee["progress_layer"] = progress.get("layer", "")
+        employee["progress_state"] = progress.get("state", "")
+        employee["progress_label"] = progress.get("label", "")
+        employee["progress_summary"] = progress.get("summary", "")
+        current_attempt = conn.execute(
+            """
+            SELECT attempt_id, trace_id, task_id, employee_id, adapter_type, runtime, pid, session_key,
+                   status, last_heartbeat_at, last_progress_at, started_at, finished_at, error_message
+            FROM execution_attempts
+            WHERE employee_id = ?
+              AND status IN ('starting', 'running', 'correcting')
+            ORDER BY started_at DESC
+            LIMIT 1
+            """,
+            (employee["id"],),
+        ).fetchone()
+        employee["current_attempt"] = dict(current_attempt) if current_attempt else {}
+
     return {
-        "generated_at": now(),
+        "generated_at": generated_at,
         "runtime_health": {
             "daemon": companyctl.daemon_health(),
             "launchd": companyctl.launchd_health(),
@@ -230,28 +951,13 @@ def load_summary(conn: sqlite3.Connection) -> dict:
         "project_status": status_counts(conn, "projects"),
         "approval_status": status_counts(conn, "approvals"),
         "rfc_status": status_counts(conn, "rfcs"),
-        "employees": rows(
-            conn,
-            """
-            SELECT e.id, e.name, e.role, e.runtime, e.status AS employee_status, e.workspace,
-                   COALESCE(h.status, 'missing') AS heartbeat_status,
-                   COALESCE(h.last_seen_at, '') AS last_seen_at,
-                   COALESCE(h.metadata_json, '{}') AS heartbeat_metadata_json,
-                   COALESCE(
-                     (SELECT COUNT(*) FROM tasks t WHERE t.target_agent = e.id AND t.status = 'submitted'),
-                     0
-                   ) AS submitted_tasks,
-                   COALESCE(
-                     (SELECT COUNT(*) FROM tasks t WHERE t.target_agent = e.id AND t.status = 'claimed'),
-                     0
-                   ) AS claimed_tasks
-            FROM employees e
-            LEFT JOIN heartbeats h ON h.agent_id = e.id
-            ORDER BY
-              CASE e.status WHEN 'active' THEN 0 WHEN 'candidate' THEN 1 ELSE 2 END,
-              e.id
-            """,
-        ),
+        "direct_messages_recent": direct_messages_recent,
+        "progress_notifications_recent": companyctl.list_progress_notifications(conn, limit=20),
+        "supervisor_loop": companyctl.load_latest_supervisor_loop_result(),
+        "internal_watchdog": internal_communication_watchdog(conn, generated_at=generated_at, limit=20),
+        "external_threads": rows(conn, "SELECT * FROM external_threads ORDER BY last_message_at DESC, updated_at DESC LIMIT 20"),
+        "external_messages_recent": rows(conn, "SELECT * FROM external_messages ORDER BY created_at DESC, id DESC LIMIT 20"),
+        "employees": employee_rows,
         "projects": rows(
             conn,
             """
@@ -326,6 +1032,17 @@ def load_summary(conn: sqlite3.Connection) -> dict:
         "pending_events": rows(conn, "SELECT * FROM company_events WHERE processed_at = '' ORDER BY created_at ASC LIMIT 20"),
         "events": rows(conn, "SELECT * FROM company_events ORDER BY created_at DESC LIMIT 20"),
         "adapter_runs": rows(conn, "SELECT * FROM adapter_runs ORDER BY created_at DESC LIMIT 20"),
+        "active_attempts": rows(
+            conn,
+            """
+            SELECT attempt_id, trace_id, task_id, employee_id, adapter_type, runtime, pid, session_key,
+                   status, last_heartbeat_at, last_progress_at, started_at, finished_at, error_message
+            FROM execution_attempts
+            WHERE status IN ('starting', 'running', 'correcting')
+            ORDER BY started_at DESC
+            LIMIT 50
+            """,
+        ),
         "locks": rows(conn, "SELECT * FROM locks ORDER BY updated_at DESC"),
         "traces": build_traces(conn),
     }
@@ -344,8 +1061,8 @@ def render_table(headers: list[str], items: list[dict], fields: list[str]) -> st
 
 
 def render_employee_table(items: list[dict]) -> str:
-    headers = ["id", "status", "kernel_state", "schedulable", "role", "runtime", "heartbeat", "age_min", "backlog", "skills", "tools", "task_types", "last_seen", "actions"]
-    fields = ["id", "employee_status", "kernel_state", "schedulable", "role", "runtime", "heartbeat_status", "heartbeat_age_minutes", "backlog", "skills", "tools", "task_types", "last_seen_at"]
+    headers = ["id", "status", "kernel_state", "progress", "schedulable", "role", "runtime", "heartbeat", "age_min", "backlog", "skills", "tools", "task_types", "last_seen", "actions"]
+    fields = ["id", "employee_status", "kernel_state", "progress_display", "schedulable", "role", "runtime", "heartbeat_status", "heartbeat_age_minutes", "backlog", "skills", "tools", "task_types", "last_seen_at"]
     head = "".join(f"<th>{e(header)}</th>" for header in headers)
     body = []
     for item in items:
@@ -356,6 +1073,36 @@ def render_employee_table(items: list[dict]) -> str:
             f"<button type='button' onclick=\"directMessageEmployee('{employee_id}')\">Direct</button> "
             f"<button type='button' onclick=\"editEmployee('{employee_id}')\">Edit</button> "
             f"<button class='danger-button' type='button' onclick=\"offboardEmployee('{employee_id}', false)\">Archive</button>"
+            "</td>"
+        )
+        body.append(f"<tr>{cells}{actions}</tr>")
+    return f"<table><thead><tr>{head}</tr></thead><tbody>{''.join(body)}</tbody></table>"
+
+
+def render_task_table(items: list[dict]) -> str:
+    headers = ["id", "source", "target", "priority", "status", "claimed_by", "attempt", "evidence", "blocker", "approvals", "title", "updated", "actions"]
+    fields = ["id", "source_agent", "target_agent", "priority", "status", "claimed_by", "attempt_display", "evidence", "blocker_detail", "approval_count", "title", "updated_at"]
+    head = "".join(f"<th>{e(header)}</th>" for header in headers)
+    body = []
+    for item in items:
+        task_id = e(item.get("id", ""))
+        attempt_id = e(item.get("attempt_id", ""))
+        trace_id = e(item.get("attempt_trace_id", "") or item.get("trace_id", ""))
+        target = e(item.get("target_agent", ""))
+        cells = "".join(f"<td>{e(item.get(field, ''))}</td>" for field in fields)
+        if attempt_id:
+            managed_actions = (
+                f"<button type='button' onclick=\"correctTaskAttempt('{task_id}', '{attempt_id}')\">Correct</button> "
+                f"<button class='danger-button' type='button' onclick=\"cancelTaskAttempt('{task_id}', '{attempt_id}')\">Cancel</button> "
+            )
+        else:
+            managed_actions = ""
+        actions = (
+            "<td>"
+            f"{managed_actions}"
+            f"<button type='button' onclick=\"retryTask('{task_id}')\">Retry</button> "
+            f"<button type='button' onclick=\"reassignTask('{task_id}', '{target}')\">Reassign</button> "
+            f"<button type='button' onclick=\"viewTaskTrace('{trace_id}')\">Trace</button>"
             "</td>"
         )
         body.append(f"<tr>{cells}{actions}</tr>")
@@ -374,6 +1121,11 @@ def employee_view_models(summary: dict) -> list[dict]:
         tools = capabilities.get("tools", [])
         task_types = capabilities.get("preferred_task_types", [])
         communication_profile = communication_profiles.get(employee["id"], {})
+        try:
+            heartbeat_metadata = json.loads(employee.get("heartbeat_metadata_json", "{}") or "{}")
+        except json.JSONDecodeError:
+            heartbeat_metadata = {}
+        heartbeat_progress = companyctl.extract_progress_payload(heartbeat_metadata)
         age = minutes_since(employee.get("last_seen_at", ""), summary["generated_at"])
         employee_status = employee.get("employee_status") or employee.get("status", "")
         heartbeat_status = employee.get("heartbeat_status", "missing")
@@ -400,6 +1152,10 @@ def employee_view_models(summary: dict) -> list[dict]:
                 "communication_paused": bool(communication_profile.get("communication_paused")),
                 "communication_status": "paused" if communication_profile.get("communication_paused") else "enabled",
                 "backlog": f"{employee.get('submitted_tasks', 0)} submitted, {employee.get('claimed_tasks', 0)} claimed",
+                "progress_layer": heartbeat_progress.get("layer", ""),
+                "progress_state": heartbeat_progress.get("state", ""),
+                "progress_label": heartbeat_progress.get("label", ""),
+                "progress_display": f"{heartbeat_progress.get('layer', '')} / {heartbeat_progress.get('state', '')}".strip(" /") if heartbeat_progress.get("layer") or heartbeat_progress.get("state") else "",
                 "skills": ", ".join(str(item) for item in skills[:4]) if isinstance(skills, list) else "invalid",
                 "tools": ", ".join(str(item) for item in tools[:4]) if isinstance(tools, list) else "invalid",
                 "task_types": ", ".join(str(item) for item in task_types[:4]) if isinstance(task_types, list) else "invalid",
@@ -480,13 +1236,22 @@ def render(summary: dict) -> str:
             }
         )
     tasks = []
+    attempts_by_task = {str(item.get("task_id", "")): item for item in summary.get("active_attempts", [])}
     for task in summary["tasks"]:
+        attempt = attempts_by_task.get(str(task["id"]), {})
+        attempt_display = ""
+        if attempt:
+            attempt_display = f"{attempt.get('status', '')}: {attempt.get('attempt_id', '')}"
         tasks.append(
             {
                 **task,
                 "evidence": "yes" if task.get("evidence_path") else "",
                 "blocker_detail": task.get("blocker", ""),
                 "approval_count": approval_counts.get(str(task["id"]), 0),
+                "attempt_id": attempt.get("attempt_id", ""),
+                "attempt_status": attempt.get("status", ""),
+                "attempt_trace_id": attempt.get("trace_id", ""),
+                "attempt_display": attempt_display,
             }
         )
     task_delegations = []
@@ -523,7 +1288,21 @@ def render(summary: dict) -> str:
             result = json.loads(run.get("result_json", "{}") or "{}")
         except json.JSONDecodeError:
             result = {}
-        adapter_runs.append({**run, "ok_text": "yes" if run.get("ok") else "no", "state_file": result.get("state_file", "")})
+        progress = companyctl.extract_progress_payload({})
+        parsed_runs = result.get("runs", []) if isinstance(result, dict) else []
+        first_parsed = parsed_runs[0] if parsed_runs and isinstance(parsed_runs[0], dict) else {}
+        parsed_stdout = first_parsed.get("parsed_stdout", {}) if isinstance(first_parsed, dict) else {}
+        report_path = str(parsed_stdout.get("report", "")) if isinstance(parsed_stdout, dict) else ""
+        progress = progress_from_report_path(report_path)
+        adapter_runs.append(
+            {
+                **run,
+                "ok_text": "yes" if run.get("ok") else "no",
+                "state_file": result.get("state_file", ""),
+                "progress_layer": progress.get("layer", ""),
+                "progress_state": progress.get("state", ""),
+            }
+        )
     runtime_health = [
         {"name": "daemon", "path": summary["runtime_health"]["daemon"].get("state_file", ""), **summary["runtime_health"]["daemon"]},
         {"name": "launchd", "path": summary["runtime_health"]["launchd"].get("template", ""), **summary["runtime_health"]["launchd"]},
@@ -652,7 +1431,7 @@ def render(summary: dict) -> str:
     <h2>Projects</h2>
     {render_table(["id", "owner", "status", "review", "plan", "open_plan", "accepted", "goal", "acceptance", "retro", "title", "updated"], projects, ["id", "owner_agent", "status", "review_state", "plan", "open_plan_items", "acceptance_count", "goal", "acceptance", "latest_acceptance_summary", "title", "updated_at"])}
     <h2>Recent Tasks</h2>
-    {render_table(["id", "source", "target", "priority", "status", "claimed_by", "evidence", "blocker", "approvals", "title", "updated"], tasks, ["id", "source_agent", "target_agent", "priority", "status", "claimed_by", "evidence", "blocker_detail", "approval_count", "title", "updated_at"])}
+    {render_task_table(tasks)}
     <h2>Long Task Delegation</h2>
     {render_table(["parent", "owner", "status", "review", "progress", "open/blocked", "children", "latest_child_update"], task_delegations, ["parent_id", "parent_owner", "parent_status", "review_state", "progress", "open_blocked", "child_summary", "latest_child_update"])}
     <h2>Conversations</h2>
@@ -669,7 +1448,7 @@ def render(summary: dict) -> str:
     <h2>Recent Events</h2>
     {render_table(["id", "trace", "type", "source", "task", "processed_at", "created"], summary["events"], ["id", "trace_id", "event_type", "source_agent", "task_id", "processed_at", "created_at"])}
     <h2>Adapter Runs</h2>
-    {render_table(["id", "trace", "agent", "task", "command", "ok", "processed", "attempt", "next_retry", "ack_by", "ack_reason", "state_file", "created"], adapter_runs, ["id", "trace_id", "agent_id", "task_id", "command", "ok_text", "processed", "attempt", "next_retry_at", "acknowledged_by", "acknowledgement_reason", "state_file", "created_at"])}
+    {render_table(["id", "trace", "agent", "task", "command", "ok", "progress_layer", "progress_state", "processed", "attempt", "next_retry", "ack_by", "ack_reason", "state_file", "created"], adapter_runs, ["id", "trace_id", "agent_id", "task_id", "command", "ok_text", "progress_layer", "progress_state", "processed", "attempt", "next_retry_at", "acknowledged_by", "acknowledgement_reason", "state_file", "created_at"])}
     <h2>Locks</h2>
     {render_table(["resource", "owner", "lease_until", "updated"], summary["locks"], ["resource_key", "owner_agent", "lease_until", "updated_at"])}
   </main>
@@ -827,6 +1606,73 @@ def render(summary: dict) -> str:
         setEmployeeApiStatus(`Offboard failed: ${{err.message}}`, true);
       }}
     }}
+    async function correctTaskAttempt(taskId, attemptId) {{
+      const by = prompt(`Supervisor correcting ${{taskId}}`, 'hermes');
+      if (by === null) return;
+      const message = prompt('Correction message', '请回到原任务目标，更新 progress，并说明 blocker/evidence。');
+      if (message === null) return;
+      setEmployeeApiStatus(`Sending correction for ${{taskId}}...`, false);
+      try {{
+        await callCompanyApi(`/v1/tasks/${{encodeURIComponent(taskId)}}/correct`, {{attempt_id: attemptId, by: by || 'hermes', message}}, 'POST');
+        setEmployeeApiStatus(`Correction sent for ${{taskId}}. Reloading dashboard...`, false);
+        setTimeout(() => location.reload(), 800);
+      }} catch (err) {{
+        setEmployeeApiStatus(`Correction failed: ${{err.message}}`, true);
+      }}
+    }}
+    async function cancelTaskAttempt(taskId, attemptId) {{
+      const by = prompt(`Who cancels ${{taskId}}?`, 'hermes');
+      if (by === null) return;
+      const reason = prompt('Cancel reason', '用户停止或 supervisor 判定需要停止');
+      if (reason === null) return;
+      if (!confirm(`Cancel attempt ${{attemptId}} for task ${{taskId}}?`)) return;
+      setEmployeeApiStatus(`Cancelling ${{taskId}}...`, false);
+      try {{
+        await callCompanyApi(`/v1/tasks/${{encodeURIComponent(taskId)}}/cancel`, {{attempt_id: attemptId, by: by || 'hermes', reason}}, 'POST');
+        setEmployeeApiStatus(`Cancelled ${{taskId}}. Reloading dashboard...`, false);
+        setTimeout(() => location.reload(), 800);
+      }} catch (err) {{
+        setEmployeeApiStatus(`Cancel failed: ${{err.message}}`, true);
+      }}
+    }}
+    async function retryTask(taskId) {{
+      const by = prompt(`Who retries ${{taskId}}?`, 'hermes');
+      if (by === null) return;
+      const reason = prompt('Retry reason', '修复后重试');
+      if (reason === null) return;
+      setEmployeeApiStatus(`Retrying ${{taskId}}...`, false);
+      try {{
+        await callCompanyApi(`/v1/tasks/${{encodeURIComponent(taskId)}}/retry`, {{by: by || 'hermes', reason}}, 'POST');
+        setEmployeeApiStatus(`Retry attempt started for ${{taskId}}. Reloading dashboard...`, false);
+        setTimeout(() => location.reload(), 800);
+      }} catch (err) {{
+        setEmployeeApiStatus(`Retry failed: ${{err.message}}`, true);
+      }}
+    }}
+    async function reassignTask(taskId, currentTarget) {{
+      const by = prompt(`Who reassigns ${{taskId}}?`, 'hermes');
+      if (by === null) return;
+      const to = prompt('New employee id', currentTarget || 'codex');
+      if (to === null || !to.trim()) return;
+      const reason = prompt('Reassign reason', '更适合该员工执行');
+      if (reason === null) return;
+      setEmployeeApiStatus(`Reassigning ${{taskId}} to ${{to}}...`, false);
+      try {{
+        await callCompanyApi(`/v1/tasks/${{encodeURIComponent(taskId)}}/reassign`, {{by: by || 'hermes', to, reason}}, 'POST');
+        setEmployeeApiStatus(`Reassigned ${{taskId}}. Reloading dashboard...`, false);
+        setTimeout(() => location.reload(), 800);
+      }} catch (err) {{
+        setEmployeeApiStatus(`Reassign failed: ${{err.message}}`, true);
+      }}
+    }}
+    async function viewTaskTrace(traceId) {{
+      if (!traceId) {{
+        setEmployeeApiStatus('No trace_id for this task yet.', true);
+        return;
+      }}
+      setEmployeeApiStatus(`Trace ${{traceId}} is visible in the Traces panel/API.`, false);
+      location.hash = `trace-${{traceId}}`;
+    }}
     window.addEventListener('DOMContentLoaded', checkCompanyApi);
   </script>
 </body>
@@ -837,6 +1683,7 @@ def render(summary: dict) -> str:
 def advanced_summary(summary: dict) -> dict:
     prepared = dict(summary)
     prepared["employees"] = employee_view_models(summary)
+    prepared["communication_observability"] = communication_observability_summary(summary)
     return prepared
 
 
@@ -894,18 +1741,16 @@ def run(args: argparse.Namespace) -> int:
     output.parent.mkdir(parents=True, exist_ok=True)
     template_path = None
     variant = args.variant
-    if variant in {"advanced", "auto"}:
+    if variant == "advanced":
         template_path, template = load_advanced_template(args.template, include_external=variant == "advanced")
         if template:
             output.write_text(inject_advanced_dashboard(template, summary, db_path=DB_PATH, api_base=args.api_base), encoding="utf-8")
             variant = "advanced"
-        elif variant == "advanced":
-            raise SystemExit("advanced dashboard template not found")
         else:
-            output.write_text(render(summary), encoding="utf-8")
-            variant = "basic"
+            raise SystemExit("advanced dashboard template not found")
     else:
         output.write_text(render(summary), encoding="utf-8")
+        variant = "basic"
     print(json.dumps({"ok": True, "output": str(output), "variant": variant, "template": str(template_path or ""), "counts": summary["counts"]}, ensure_ascii=False, indent=2))
     return 0
 

@@ -9,6 +9,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
 from . import companyctl
+from . import company_dashboard
 
 
 API_VERSION = "v1"
@@ -28,6 +29,7 @@ API_CAPABILITIES = [
     "employees",
     "runtimes",
     "settings",
+    "external_mirror",
 ]
 API_ENDPOINTS = [
     {"method": "GET", "path": "/v1/health", "summary": "Company Kernel health summary"},
@@ -47,6 +49,9 @@ API_ENDPOINTS = [
     {"method": "GET", "path": "/v1/settings/notification", "summary": "Read sanitized notification settings without secrets"},
     {"method": "POST", "path": "/v1/settings/notification", "summary": "Configure employee notification account without storing tokens", "body": {"telegram_account": "account id", "telegram_bot_token_env": "environment variable name containing token", "telegram_default_target": "chat/user target optional", "employee_notifications_enabled": "bool optional"}},
     {"method": "POST", "path": "/v1/notifications/send", "summary": "Send configured operator notification without exposing secrets", "body": {"message": "string required", "kind": "general/approval/error optional", "subject": "string optional", "target": "telegram target optional", "account": "account optional", "dry_run": "bool optional"}},
+    {"method": "GET", "path": "/v1/progress/notifications", "summary": "Read pending or recent progress transition notifications", "query": {"pending_only": "bool optional", "limit": "integer optional"}},
+    {"method": "GET", "path": "/v1/supervisor/delivery-loop", "summary": "Read latest autonomous supervisor delivery-loop result"},
+    {"method": "POST", "path": "/v1/supervisor/delivery-loop", "summary": "Run autonomous supervisor delivery-loop once", "body": {"limit": "integer optional", "by": "actor optional"}},
     {"method": "POST", "path": "/v1/policy-blocks/report", "summary": "Report non-popup tool-policy blockers and notify operator", "body": {"source": "employee optional", "target": "employee optional", "tool": "tool name optional", "operation": "operation optional", "error": "error text required", "dry_run": "bool optional"}},
     {"method": "GET", "path": "/v1/runtimes", "summary": "List runtimes"},
     {"method": "POST", "path": "/v1/runtimes", "summary": "Register runtime", "body": {"runtime": "runtime id", "command": "command optional", "status": "registered/disabled optional", "notes": "string optional"}},
@@ -58,10 +63,21 @@ API_ENDPOINTS = [
     {"method": "POST", "path": "/v1/tasks/{task_id}/done", "summary": "Complete task", "body": {"agent": "employee id", "summary": "string", "evidence": "path"}},
     {"method": "POST", "path": "/v1/tasks/{task_id}/block", "summary": "Block task", "body": {"agent": "employee id", "blocker": "string"}},
     {"method": "POST", "path": "/v1/tasks/{task_id}/reopen", "summary": "Reopen blocked/interrupted task", "body": {"by": "employee id", "reason": "string", "status": "submitted/claimed optional"}},
+    {"method": "POST", "path": "/v1/tasks/{task_id}/retry", "summary": "Retry failed/stale/cancelled managed task with a new attempt", "body": {"by": "employee id", "reason": "string"}},
     {"method": "POST", "path": "/v1/tasks/{task_id}/reassign", "summary": "Reassign task to another employee", "body": {"by": "employee id", "to": "employee id", "reason": "string"}},
+    {"method": "POST", "path": "/v1/tasks/{task_id}/run", "summary": "Start managed long-running attempt", "body": {"agent": "employee id", "by": "employee id", "max_runtime_seconds": "integer optional", "stale_after_seconds": "integer optional", "session_key": "string optional", "pid": "string optional"}},
+    {"method": "POST", "path": "/v1/tasks/{task_id}/progress", "summary": "Record managed attempt progress and refresh stale clock", "body": {"agent": "employee id", "attempt_id": "attempt id optional", "state": "progress state optional", "message": "string", "progress": "integer optional", "payload": "object optional"}},
+    {"method": "POST", "path": "/v1/tasks/{task_id}/correct", "summary": "Send supervisor correction or correction ack", "body": {"attempt_id": "attempt id", "by": "employee id", "message": "string", "ack": "bool optional"}},
+    {"method": "POST", "path": "/v1/tasks/{task_id}/cancel", "summary": "Cancel managed long-running attempt", "body": {"attempt_id": "attempt id", "by": "employee id", "reason": "string"}},
+    {"method": "GET", "path": "/v1/tasks/{task_id}/attempts", "summary": "List managed execution attempts"},
     {"method": "GET", "path": "/v1/tasks/{task_id}/conversations", "summary": "List task-bound conversations"},
     {"method": "POST", "path": "/v1/tasks/{task_id}/conversations", "summary": "Start task-bound conversation", "body": {"from": "employee id optional", "participants": "comma-separated extra participants optional", "title": "string optional", "body": "string optional", "conversation_id": "string optional", "evidence": "path optional"}},
     {"method": "GET", "path": "/v1/messages", "summary": "List messages", "query": {"agent": "employee id required"}},
+    {"method": "GET", "path": "/v1/messages/recent-direct", "summary": "Dashboard-ready recent direct messages feed", "query": {"limit": "integer optional"}},
+    {"method": "GET", "path": "/v1/dashboard/communication-observability", "summary": "Dashboard-ready summary for direct messages, external mirror status, adapter-run progress, 5-layer progress heartbeat, and internal no-receipt watchdog"},
+    {"method": "GET", "path": "/v1/dashboard/internal-watchdog", "summary": "Detect internal messages/tasks that were delivered but have no receipt, claim, or final evidence"},
+    {"method": "POST", "path": "/v1/dashboard/internal-watchdog/remediate", "summary": "Create or dry-run follow-up/escalation/reroute-decision actions for no-receipt messages and open internal tasks", "body": {"source": "employee id optional", "dry_run": "bool optional default true", "deliver": "bool optional", "escalate_to": "employee id optional default hermes", "escalate_existing": "bool optional", "reroute_to": "employee id optional default codex", "create_reroute_plan": "bool optional"}},
+    {"method": "POST", "path": "/v1/dashboard/internal-watchdog/apply-reroutes", "summary": "Apply answered reroute decisions by creating new tasks and blocking original stalled tasks", "body": {"by": "employee id optional default hermes", "dry_run": "bool optional default true"}},
     {"method": "POST", "path": "/v1/messages", "summary": "Send message", "body": {"from": "employee id", "to": "employee id", "body": "string", "message_id": "string optional"}},
     {"method": "POST", "path": "/v1/messages/direct", "summary": "Directly invoke target employee runtime and record message evidence", "body": {"from": "employee id", "to": "employee id", "body": "string", "message_id": "string optional", "session_key": "string optional", "timeout": "integer optional", "deliver": "bool optional", "reply_channel": "string optional", "reply_to": "string optional", "reply_account": "string optional"}},
     {"method": "GET", "path": "/v1/followups", "summary": "List followups", "query": {"status": "pending/answered/cancelled/all optional"}},
@@ -71,6 +87,10 @@ API_ENDPOINTS = [
     {"method": "GET", "path": "/v1/conversations", "summary": "List conversations for an agent", "query": {"agent": "employee id required"}},
     {"method": "POST", "path": "/v1/conversations", "summary": "Start conversation", "body": {"from": "employee id", "participants": "comma-separated employee ids", "title": "string", "body": "string", "conversation_id": "string optional", "evidence": "path optional"}},
     {"method": "GET", "path": "/v1/conversations/{conversation_id}", "summary": "Show conversation"},
+    {"method": "GET", "path": "/v1/external-threads", "summary": "List sanitized external mirror threads", "query": {"platform": "platform optional", "owner_agent": "owner agent optional", "limit": "integer optional"}},
+    {"method": "GET", "path": "/v1/external-threads/{thread_id}", "summary": "Show sanitized external mirror thread and messages"},
+    {"method": "GET", "path": "/v1/external-threads/{thread_id}/messages", "summary": "List sanitized external mirror messages"},
+    {"method": "POST", "path": "/v1/external-mirror/import", "summary": "Import sanitized external mirror payload without secrets", "body": {"thread": "sanitized thread object", "messages": "sanitized messages list"}},
     {"method": "POST", "path": "/v1/conversations/{conversation_id}/join", "summary": "Join an existing conversation as Human Owner or another employee", "body": {"agent": "employee id optional, defaults owner"}},
     {"method": "POST", "path": "/v1/conversations/{conversation_id}/reply", "summary": "Reply to conversation", "body": {"from": "employee id", "body": "string", "message_id": "string optional", "evidence": "path optional"}},
     {"method": "GET", "path": "/v1/approvals", "summary": "List approvals", "query": {"status": "pending/approved/denied/all optional", "agent": "employee id optional", "action": "approval action optional", "limit": "integer optional"}},
@@ -81,6 +101,7 @@ API_ENDPOINTS = [
     {"method": "POST", "path": "/v1/heartbeats", "summary": "Write employee heartbeat", "body": {"agent": "employee id"}},
     {"method": "GET", "path": "/v1/attendance/latest", "summary": "Read latest persisted attendance sweep report"},
     {"method": "POST", "path": "/v1/attendance/sweep", "summary": "Run attendance sweep with optional exact agent reply probes", "body": {"source": "source employee optional", "agents": "comma-separated employees optional", "sweep_id": "string optional", "include_candidates": "bool optional", "stale_minutes": "integer optional", "probe_replies": "bool optional", "reply_timeout": "integer optional"}},
+    {"method": "GET", "path": "/v1/agent-matrix", "summary": "Read layered employee readiness matrix", "query": {"agents": "comma-separated employees optional"}},
     {"method": "GET", "path": "/v1/projects", "summary": "List projects", "query": {"status": "active/paused/completed/blocked/all optional"}},
     {"method": "POST", "path": "/v1/projects", "summary": "Create project", "body": {"project_id": "string optional", "title": "string", "goal": "string optional", "owner": "employee id", "status": "active/paused/completed/blocked optional", "acceptance": "semicolon-separated criteria optional"}},
     {"method": "GET", "path": "/v1/projects/{project_id}", "summary": "Show project with linked tasks and plan items"},
@@ -238,6 +259,10 @@ def route_get(path: str, query: dict[str, list[str]]) -> tuple[int, dict]:
         task_id = path.removeprefix("/v1/tasks/").removesuffix("/conversations").strip("/")
         code, payload = run_companyctl(["task", "conversations", "--task-id", task_id])
         return (HTTPStatus.OK if code == 0 else HTTPStatus.BAD_REQUEST), {"exit_code": code, **payload}
+    if path.startswith("/v1/tasks/") and path.endswith("/attempts"):
+        task_id = path.removeprefix("/v1/tasks/").removesuffix("/attempts").strip("/")
+        code, payload = run_companyctl(["task", "attempts", "--task-id", task_id])
+        return (HTTPStatus.OK if code == 0 else HTTPStatus.BAD_REQUEST), {"exit_code": code, **payload}
     if path.startswith("/v1/tasks/"):
         task_id = path.removeprefix("/v1/tasks/").strip("/")
         code, payload = run_companyctl(["task", "show", "--task-id", task_id])
@@ -248,6 +273,60 @@ def route_get(path: str, query: dict[str, list[str]]) -> tuple[int, dict]:
             return HTTPStatus.BAD_REQUEST, {"ok": False, "error": "missing query: agent"}
         code, payload = run_companyctl(["message", "list", "--agent", agent])
         return (HTTPStatus.OK if code == 0 else HTTPStatus.BAD_REQUEST), {"exit_code": code, **payload}
+    if path == "/v1/messages/recent-direct":
+        conn = companyctl.connect()
+        try:
+            limit_raw = query_value(query, "limit", "20")
+            limit = int(limit_raw) if str(limit_raw).isdigit() else 20
+            return HTTPStatus.OK, {"ok": True, "direct_messages_recent": company_dashboard.recent_direct_messages(conn, limit=limit)}
+        finally:
+            conn.close()
+    if path == "/v1/dashboard/communication-observability":
+        conn = companyctl.connect()
+        try:
+            summary = company_dashboard.load_summary(conn)
+            return HTTPStatus.OK, {"ok": True, **company_dashboard.communication_observability_summary(summary)}
+        finally:
+            conn.close()
+    if path == "/v1/progress/notifications":
+        conn = companyctl.connect()
+        try:
+            limit_raw = query_value(query, "limit", "20")
+            limit = int(limit_raw) if str(limit_raw).isdigit() else 20
+            pending_only = truthy(query_value(query, "pending_only"))
+            items = companyctl.list_progress_notifications(conn, pending_only=pending_only, limit=limit)
+            total_items = companyctl.list_progress_notifications(conn, pending_only=False, limit=200)
+            return HTTPStatus.OK, {
+                "ok": True,
+                "counts": {
+                    "total": len(total_items),
+                    "pending": sum(1 for item in items if item.get("pending")),
+                    "sent": sum(1 for item in total_items if item.get("delivery_status") == "sent"),
+                    "skipped": sum(1 for item in total_items if item.get("delivery_status") == "skipped"),
+                    "failed": sum(1 for item in total_items if item.get("delivery_status") == "failed"),
+                    "shown": len(items),
+                },
+                "items": items,
+            }
+        finally:
+            conn.close()
+    if path == "/v1/agent-matrix":
+        argv = ["agent-matrix"]
+        agents = query_value(query, "agents")
+        if agents:
+            argv.extend(["--agents", agents])
+        code, payload = run_companyctl(argv)
+        return (HTTPStatus.OK if code == 0 else HTTPStatus.BAD_REQUEST), {"exit_code": code, **payload}
+    if path == "/v1/supervisor/delivery-loop":
+        latest = companyctl.load_latest_supervisor_loop_result()
+        return HTTPStatus.OK, {"ok": True, "latest_result": latest}
+    if path == "/v1/dashboard/internal-watchdog":
+        conn = companyctl.connect()
+        try:
+            summary = company_dashboard.load_summary(conn)
+            return HTTPStatus.OK, {"ok": True, "generated_at": summary.get("generated_at", ""), "internal_watchdog": summary.get("internal_watchdog", {})}
+        finally:
+            conn.close()
     if path == "/v1/followups":
         argv = ["followup", "list"]
         status = query_value(query, "status")
@@ -269,6 +348,27 @@ def route_get(path: str, query: dict[str, list[str]]) -> tuple[int, dict]:
         conversation_id = path.removeprefix("/v1/conversations/").strip("/")
         code, payload = run_companyctl(["conversation", "show", "--conversation-id", conversation_id])
         return (HTTPStatus.OK if code == 0 else HTTPStatus.BAD_REQUEST), {"exit_code": code, **payload}
+    if path == "/v1/external-threads":
+        conn = companyctl.connect()
+        try:
+            limit_raw = query_value(query, "limit", "50")
+            limit = int(limit_raw) if str(limit_raw).isdigit() else 50
+            return HTTPStatus.OK, {"ok": True, "threads": companyctl.list_external_threads(conn, platform=query_value(query, "platform"), owner_agent=query_value(query, "owner_agent"), limit=limit)}
+        finally:
+            conn.close()
+    if path.startswith("/v1/external-threads/"):
+        tail = path.removeprefix("/v1/external-threads/").strip("/")
+        thread_id = tail.removesuffix("/messages").strip("/")
+        conn = companyctl.connect()
+        try:
+            payload = companyctl.show_external_thread(conn, thread_id)
+            if not payload.get("ok"):
+                return HTTPStatus.NOT_FOUND, payload
+            if tail.endswith("/messages"):
+                return HTTPStatus.OK, {"ok": True, "thread_id": thread_id, "messages": payload["messages"]}
+            return HTTPStatus.OK, payload
+        finally:
+            conn.close()
     if path == "/v1/approvals":
         argv = ["approval", "list"]
         status = query_value(query, "status", "all")
@@ -430,6 +530,48 @@ def route_post(path: str, body: dict) -> tuple[int, dict]:
             argv.append("--dry-run")
         code, payload = run_companyctl(argv)
         return (HTTPStatus.OK if code == 0 else HTTPStatus.BAD_REQUEST), {"exit_code": code, **payload}
+    if path == "/v1/supervisor/delivery-loop":
+        argv = ["supervisor", "delivery-loop"]
+        if body.get("limit") not in {None, ""}:
+            argv.extend(["--limit", str(body["limit"])])
+        if body.get("by"):
+            argv.extend(["--by", str(body["by"])])
+        code, payload = run_companyctl(argv)
+        return (HTTPStatus.OK if code == 0 else HTTPStatus.BAD_REQUEST), {"exit_code": code, **payload, "latest_result": payload}
+    if path == "/v1/external-mirror/import":
+        conn = companyctl.connect()
+        try:
+            result = companyctl.import_external_mirror(conn, body)
+            return (HTTPStatus.CREATED if result.get("ok") else HTTPStatus.BAD_REQUEST), result
+        finally:
+            conn.close()
+    if path == "/v1/dashboard/internal-watchdog/remediate":
+        conn = companyctl.connect()
+        try:
+            result = company_dashboard.remediate_internal_watchdog(
+                conn,
+                source_agent=str(body.get("source", "main") or "main"),
+                dry_run=truthy(body.get("dry_run", True)),
+                deliver=truthy(body.get("deliver")),
+                escalate_to=str(body.get("escalate_to", "hermes") or "hermes"),
+                escalate_existing=truthy(body.get("escalate_existing", True)),
+                reroute_to=str(body.get("reroute_to", "codex") or "codex"),
+                create_reroute_plan=truthy(body.get("create_reroute_plan", True)),
+            )
+            return HTTPStatus.OK, result
+        finally:
+            conn.close()
+    if path == "/v1/dashboard/internal-watchdog/apply-reroutes":
+        conn = companyctl.connect()
+        try:
+            result = company_dashboard.apply_reroute_decisions(
+                conn,
+                by=str(body.get("by", "hermes") or "hermes"),
+                dry_run=truthy(body.get("dry_run", True)),
+            )
+            return HTTPStatus.OK, result
+        finally:
+            conn.close()
     if path == "/v1/employees/onboard":
         argv = [
             "employee",
@@ -657,6 +799,47 @@ def route_post(path: str, body: dict) -> tuple[int, dict]:
                 argv.extend([flag, str(body[key])])
         code, payload = run_companyctl(argv)
         return (HTTPStatus.CREATED if code == 0 else HTTPStatus.BAD_REQUEST), {"exit_code": code, **payload}
+    if path.startswith("/v1/tasks/") and path.endswith("/run"):
+        task_id = path.removeprefix("/v1/tasks/").removesuffix("/run").strip("/")
+        argv = ["task", "run", "--task-id", task_id, "--agent", str(body.get("agent", "")), "--by", str(body.get("by", ""))]
+        for key, flag in [
+            ("adapter_type", "--adapter-type"),
+            ("pid", "--pid"),
+            ("session_key", "--session-key"),
+            ("max_runtime_seconds", "--max-runtime-seconds"),
+            ("heartbeat_interval_seconds", "--heartbeat-interval-seconds"),
+            ("progress_interval_seconds", "--progress-interval-seconds"),
+            ("stale_after_seconds", "--stale-after-seconds"),
+            ("supervisor_check_interval_seconds", "--supervisor-check-interval-seconds"),
+            ("max_corrections", "--max-corrections"),
+            ("max_retries", "--max-retries"),
+        ]:
+            if body.get(key) not in {None, ""}:
+                argv.extend([flag, str(body[key])])
+        code, payload = run_companyctl(argv)
+        return (HTTPStatus.OK if code == 0 else HTTPStatus.BAD_REQUEST), {"exit_code": code, **payload}
+    if path.startswith("/v1/tasks/") and path.endswith("/correct"):
+        task_id = path.removeprefix("/v1/tasks/").removesuffix("/correct").strip("/")
+        argv = ["task", "correct", "--task-id", task_id, "--attempt-id", str(body.get("attempt_id", "")), "--by", str(body.get("by", "")), "--message", str(body.get("message", ""))]
+        if truthy(body.get("ack")):
+            argv.append("--ack")
+        code, payload = run_companyctl(argv)
+        return (HTTPStatus.OK if code == 0 else HTTPStatus.BAD_REQUEST), {"exit_code": code, **payload}
+    if path.startswith("/v1/tasks/") and path.endswith("/progress"):
+        task_id = path.removeprefix("/v1/tasks/").removesuffix("/progress").strip("/")
+        argv = ["task", "progress", "--task-id", task_id, "--agent", str(body.get("agent", "")), "--message", str(body.get("message", ""))]
+        for key, flag in [("attempt_id", "--attempt-id"), ("state", "--state"), ("progress", "--progress"), ("at", "--at")]:
+            if body.get(key) not in {None, ""}:
+                argv.extend([flag, str(body[key])])
+        payload_body = body.get("payload")
+        if payload_body is not None and payload_body != "":
+            argv.extend(["--payload", json.dumps(payload_body, ensure_ascii=False) if isinstance(payload_body, dict) else str(payload_body)])
+        code, payload = run_companyctl(argv)
+        return (HTTPStatus.OK if code == 0 else HTTPStatus.BAD_REQUEST), {"exit_code": code, **payload}
+    if path.startswith("/v1/tasks/") and path.endswith("/cancel"):
+        task_id = path.removeprefix("/v1/tasks/").removesuffix("/cancel").strip("/")
+        code, payload = run_companyctl(["task", "cancel", "--task-id", task_id, "--attempt-id", str(body.get("attempt_id", "")), "--by", str(body.get("by", "")), "--reason", str(body.get("reason", ""))])
+        return (HTTPStatus.OK if code == 0 else HTTPStatus.BAD_REQUEST), {"exit_code": code, **payload}
     if path.startswith("/v1/tasks/") and path.endswith("/claim"):
         task_id = path.removeprefix("/v1/tasks/").removesuffix("/claim").strip("/")
         argv = ["task", "claim", "--agent", str(body.get("agent", "")), "--task-id", task_id]
@@ -678,6 +861,10 @@ def route_post(path: str, body: dict) -> tuple[int, dict]:
         if body.get("status"):
             argv.extend(["--status", str(body["status"])])
         code, payload = run_companyctl(argv)
+        return (HTTPStatus.OK if code == 0 else HTTPStatus.BAD_REQUEST), {"exit_code": code, **payload}
+    if path.startswith("/v1/tasks/") and path.endswith("/retry"):
+        task_id = path.removeprefix("/v1/tasks/").removesuffix("/retry").strip("/")
+        code, payload = run_companyctl(["task", "retry", "--task-id", task_id, "--by", str(body.get("by", "")), "--reason", str(body.get("reason", ""))])
         return (HTTPStatus.OK if code == 0 else HTTPStatus.BAD_REQUEST), {"exit_code": code, **payload}
     if path.startswith("/v1/tasks/") and path.endswith("/reassign"):
         task_id = path.removeprefix("/v1/tasks/").removesuffix("/reassign").strip("/")

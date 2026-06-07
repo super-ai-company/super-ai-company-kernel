@@ -10,6 +10,12 @@
 
 本地环境、隐藏目录和 Skill 启用规范见：[docs/LOCAL_ENVIRONMENT_AND_SKILLS.md](docs/LOCAL_ENVIRONMENT_AND_SKILLS.md)
 
+Hermes 管理 Codex 项目开发的 PM 监督闭环见：[docs/CODEX_HERMES_PM_SUPERVISION.md](docs/CODEX_HERMES_PM_SUPERVISION.md)
+
+各类员工逐步接入规则见：[docs/EMPLOYEE_INTEGRATION_MATRIX.md](docs/EMPLOYEE_INTEGRATION_MATRIX.md)
+
+OpenClaw 员工与 Company Kernel 的桥接边界见：[docs/OPENCLAW_COMPANY_BRIDGE.md](docs/OPENCLAW_COMPANY_BRIDGE.md)
+
 ## Quick Start
 
 ```bash
@@ -27,6 +33,30 @@ python3 -m company_kernel.companyctl runtime verify-adapters --agents hermes,cod
 ```bash
 python3 -m unittest discover -s tests -v
 ```
+
+## v3 File Flow Kernel
+
+任务提交会自动创建授权 workspace：`state/task-workspaces/task_<task-id>/`，包含 `input/`、`work/`、`artifacts/`、`evidence/`、`final/` 和 `manifest.json`。员工产物必须登记为 Artifact，不能只靠聊天或随机路径交接文件；同名产物再次登记会生成新 version，并把旧版本标记为 `superseded`。
+
+最小链路：
+
+```bash
+bin/companyctl task artifact register --task-id <task-id> --employee <agent> --path <workspace-file> --type json --summary "产物说明"
+bin/companyctl task artifact scan --task-id <task-id> --employee <agent> --dir <workspace-dir> --type json --summary "自动登记目录产物"
+bin/companyctl task artifact approve --artifact-id <artifact-id> --by <agent>
+bin/companyctl task handoff create --from-task <task-a> --to-task <task-b> --from-employee <agent-a> --to-employee <agent-b> --summary "交接说明" --artifact <artifact-id>
+bin/companyctl task handoff accept --handoff-id <handoff-id> --by <agent-b>
+bin/companyctl task handoff reject --handoff-id <handoff-id> --by <agent-b> --reason "交接不完整"
+bin/companyctl task context --task-id <task-b> --employee <agent-b>
+bin/companyctl task artifact use --task-id <task-b> --employee <agent-b> --artifact-id <artifact-id> --summary "读取用途"
+bin/companyctl task attempt start --task-id <task-id> --employee <agent> --adapter-type local
+bin/companyctl task attempt finish --attempt-id <attempt-id> --status success
+bin/companyctl task retry --task-id <task-id> --by <agent> --reason "补齐后重试"
+bin/companyctl task evidence promote --artifact-id <artifact-id> --employee <agent> --summary "最终证据"
+bin/company-trace --task-id <task-id>
+```
+
+Trace JSON/HTML 与 dashboard trace summary 现在包含 tasks、events、adapter_runs、artifacts、handoffs、evidence、execution_attempts 和完整 timeline/counts。进入 v3 文件流的任务，`task done` 必须使用 promoted final evidence。
 
 ## Local Usability Smoke
 
@@ -61,6 +91,7 @@ python3 -m company_kernel.companyctl runtime test --runtime hermes
 bin/company-adapter-worker --agent codex --dry-run
 bin/company-codex-adapter
 bin/company-codex-adapter --execute --sandbox read-only
+bin/company-codex-pm-supervisor --agent codex --stale-minutes 15
 bin/company-openclaw-adapter --agent nestcar
 bin/company-openclaw-adapter --agent nestcar --execute
 bin/company-hermes-adapter
@@ -75,6 +106,177 @@ bin/company-api-gateway --host 127.0.0.1 --port 8765
 bin/company-api-rpc --host 127.0.0.1 --port 8766
 bin/company-api-grpc --host 127.0.0.1 --port 8767
 ```
+
+## Direct Messages Dashboard Feed
+
+Dashboard-ready recent direct messages are available without hard-coded employee IDs:
+
+```bash
+curl 'http://127.0.0.1:8765/v1/messages/recent-direct?limit=20'
+```
+
+`/v1/messages?agent=<id>` remains the per-agent inbox/outbox query. `/v1/messages/recent-direct` is the aggregate feed used by dashboard summary and Chat Hub style views.
+
+## Progress Heartbeat Protocol
+
+Supervisor-facing progress is now normalized into 5 machine-readable layers:
+
+- `received` -> `received|acknowledged|claimed`
+- `working` -> `working|in_progress|actively_progressing`
+- `waiting` -> `waiting|blocked_on_input_or_dependency`
+- `blocked` -> `blocked|failed_to_progress`
+- `done` -> `done|verified_complete|completed`
+
+Write the progress payload inside heartbeat metadata or repo-local progress JSON:
+
+```json
+{
+  "progress": {
+    "state": "blocked_on_input_or_dependency",
+    "summary": "waiting for Shift reply"
+  }
+}
+```
+
+Stable read paths:
+
+- `POST /v1/heartbeats`: persists the progress payload into heartbeat metadata.
+- `GET /v1/dashboard/communication-observability`: returns adapter-run `progress_layer/progress_state`.
+- `POST /v1/supervisor/delivery-loop`: runs one autonomous supervisor pass over pending progress notifications.
+- `GET /v1/supervisor/delivery-loop`: reads the latest supervisor loop result from `state/supervisor/latest_delivery_loop.json`.
+- dashboard employee/adapter views: show normalized progress layer/state from heartbeat or repo-local progress reports.
+
+Minimal autonomous supervisor loop:
+
+```bash
+python3 -m company_kernel.companyctl supervisor delivery-loop --limit 20
+curl -X POST http://127.0.0.1:8765/v1/supervisor/delivery-loop -H 'Content-Type: application/json' -d '{"limit":20}'
+curl http://127.0.0.1:8765/v1/supervisor/delivery-loop
+```
+
+Returned counts:
+
+- `scanned`
+- `sent`
+- `skipped`
+- `failed`
+- `retry_ready`
+- `escalate_ready`
+
+## Sanitized External Mirror
+
+Hermes/Telegram or other outside-chat history must enter Company Kernel as a sanitized mirror payload only. Do not pass bot tokens, API keys, passwords, cookies, or raw secret-bearing records.
+
+Required minimal payload:
+
+```json
+{
+  "thread": {
+    "id": "ext-telegram-hermes-001",
+    "platform": "telegram",
+    "account_id": "home",
+    "external_chat_id": "CHAT_ID_PLACEHOLDER",
+    "owner_agent": "hermes",
+    "bridge_agent": "telegram-bridge",
+    "title": "Shift ↔ Hermes"
+  },
+  "cursor": {
+    "id": "telegram-home-hermes",
+    "value": "cursor-or-message-offset",
+    "state": {"sanitized": true}
+  },
+  "messages": [
+    {
+      "id": "ext-msg-001",
+      "direction": "inbound",
+      "platform": "telegram",
+      "sender_kind": "user",
+      "sender_id": "shift",
+      "body": "sanitized message text",
+      "created_at": "2026-06-05T01:45:00+07:00"
+    }
+  ]
+}
+```
+
+Import/query:
+
+```bash
+bin/companyctl external import --file /path/to/sanitized-payload.json
+curl 'http://127.0.0.1:8765/v1/external-threads?platform=telegram&owner_agent=hermes'
+curl 'http://127.0.0.1:8765/v1/external-threads/ext-telegram-hermes-001/messages'
+```
+
+Repeated imports are idempotent by external message id and update `external_ingest_cursors`.
+
+## Adapter Progress Evidence
+
+`runtime adapter-run show --summary` returns compact `result_summary.runs[]` fields including parsed `report`, `progress_state`, and `progress_task_id` when the adapter stdout points to a repo-local progress JSON.
+
+```bash
+bin/companyctl runtime adapter-run show --run-id <run-id> --summary
+```
+
+## Internal Communication Watchdog Runbook
+
+Use this when agents appear to talk but do not execute. The goal is to distinguish delivered messages from real work receipts.
+
+Detect missing receipts and open internal tasks:
+
+```bash
+curl 'http://127.0.0.1:8765/v1/dashboard/internal-watchdog'
+```
+
+Plan follow-up actions without writing state:
+
+```bash
+curl -X POST 'http://127.0.0.1:8765/v1/dashboard/internal-watchdog/remediate' \
+  -H 'Content-Type: application/json' \
+  -d '{"source":"openclaw-main","dry_run":true,"escalate_existing":false}'
+```
+
+Create first follow-ups to stalled targets:
+
+```bash
+curl -X POST 'http://127.0.0.1:8765/v1/dashboard/internal-watchdog/remediate' \
+  -H 'Content-Type: application/json' \
+  -d '{"source":"openclaw-main","dry_run":false,"escalate_existing":false}'
+```
+
+If the same stalled item remains after a follow-up already exists, escalate to Hermes/main and create a reroute decision envelope:
+
+```bash
+curl -X POST 'http://127.0.0.1:8765/v1/dashboard/internal-watchdog/remediate' \
+  -H 'Content-Type: application/json' \
+  -d '{"source":"openclaw-main","dry_run":false,"escalate_to":"hermes","reroute_to":"codex"}'
+```
+
+Hermes/main should answer the generated `reroute-*` follow-up with:
+
+```text
+decision: reroute
+new_owner: codex
+reason: target stalled
+evidence_path: state/watchdog.json
+next_action: create rerouted task
+rollback: close rerouted task
+```
+
+Apply answered reroute decisions:
+
+```bash
+curl -X POST 'http://127.0.0.1:8765/v1/dashboard/internal-watchdog/apply-reroutes' \
+  -H 'Content-Type: application/json' \
+  -d '{"by":"hermes","dry_run":false}'
+```
+
+Effects:
+
+- creates `rerouted-<original_task_id>` for the new owner;
+- blocks the original stalled task with `rerouted_to:<agent>` evidence;
+- keeps all follow-up/escalation/reroute records repo-local under `state/followups/`;
+- dashboard Communication Observatory shows no-receipt/open-task watchdog state.
+- direct API coverage now includes `/v1/dashboard/internal-watchdog`, `/v1/dashboard/internal-watchdog/remediate`, and `/v1/dashboard/internal-watchdog/apply-reroutes`.
 
 ## Boundary
 
@@ -510,6 +712,47 @@ bin/companyctl project list --status active
 
 `companyctl` 和 `company-dashboard` 会自动执行轻量 SQLite 迁移，并把已应用迁移记录到 `schema_migrations`。
 
+## Communication Observability Dashboard
+
+如果要在网页里看员工私聊、external mirror 同步状态、adapter-run summary，使用 advanced dashboard：
+
+```bash
+bin/company-dashboard --variant advanced
+open $OPENCLAW_COMPANY_KERNEL_ROOT/state/dashboard.html
+```
+
+只读聚合接口：
+
+```bash
+curl 'http://127.0.0.1:8765/v1/dashboard/communication-observability'
+```
+
+返回三块摘要：
+
+- `direct_messages.items[]`: 最近员工 direct messages，给 dashboard 的人类可读面板使用。
+- `external_mirror.threads[]`: external thread 的 `platform/owner_agent/bridge_agent/cursor/last_message_at`。
+- `adapter_runs.items[]`: adapter run 的 `command/task_id`，以及 repo 内安全相对路径的 `progress_file/state_file`。
+- `progress_notifications.items[]`: heartbeat 进度层级变化生成的用户向通知项，包含 `from_layer/to_layer/message/reason/delivery_status/delivery_error/delivered_at`。
+
+`progress_file` / `state_file` 只会暴露 repo-local 路径；repo 外绝对路径会被清空，避免 dashboard 泄露运行态边界外文件。
+
+额外只读接口：
+
+```bash
+curl 'http://127.0.0.1:8765/v1/progress/notifications?pending_only=true'
+```
+
+progress notification 复用 `company_events` 的 `event_type=progress.notification`。heartbeat 先落一条 pending，再由 repo 内 delivery 闭环复用现有 notification settings / send 机制，把结果写回同一事件：
+
+- 会发什么：短句 `message`
+- 为什么发：`reason`
+- 由谁触发：`triggered_by`
+- 何时触发：heartbeat 写入时检测到 `progress layer/state` 变化
+- 发得怎样：`delivery_status=pending/sent/skipped/failed`
+- 若发送失败：`delivery_error`
+
+同一 agent 的同一层级切换（如 `working -> waiting`）会按 repo 内 fingerprint 去重，避免重复骚扰。
+
 ## Adapter Worker
 
 `bin/company-adapter-worker` 是第二阶段的最小 worker。它会领取指定员工的一个待处理任务，写入 evidence report，并通过 `companyctl task done/block` 回写状态。
@@ -535,6 +778,8 @@ bin/company-codex-adapter --execute --sandbox read-only
 ## OpenClaw Adapter
 
 `bin/company-openclaw-adapter` 会领取指定 OpenClaw 员工的 Company Kernel 任务，转换成 OpenClaw 旧 `ops/agent_bus` payload。
+
+Company Kernel 不替换 OpenClaw 原生内部通信。OpenClaw 员工只能通过 adapter bridge 接收 Company Kernel 任务，完成必须回 evidence 或 blocker；普通聊天只发短摘要，不发 raw queue counters。
 
 默认不写真实 OpenClaw bus：
 
@@ -601,6 +846,8 @@ bin/company-trae-adapter --execute
 ## Antigravity Adapter
 
 `bin/company-antigravity-adapter` 会领取 `antigravity` 员工的 Company Kernel 任务，生成 GUI task brief，并写入 evidence。
+
+如果本机存在 `agy` CLI，direct message 会用 `agy --print` 做真实回复校验，attendance sweep 会通过 `bin/company-antigravity-adapter --attendance-probe` 要求精确返回 `antigravity 在岗`。exact-token smoke 只证明通信，不证明 GUI/代码执行；复杂任务必须通过 `--complete` 或 `--block` 回写证据。
 
 默认不打开 Antigravity：
 

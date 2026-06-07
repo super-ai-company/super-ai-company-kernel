@@ -42,13 +42,42 @@ After scan/apply, Codex must run or output the 2-4 round handshake plan as the i
 - The Codex direct path runs `company-codex-adapter --direct-message` and returns an immediate adapter reply.
 - If OpenClaw sends with record-only `message send`, the expected state is pending inbox until a daemon/adapter/human explicitly processes it.
 - Execution-class direct messages must not stop at receipt. The adapter must write repo-local progress files and send a status message back to the source.
-- Required states are `acknowledged`, `in_progress`, `blocked`, and `completed`. `acknowledged` is not work evidence.
+- Required progress protocol layers are `received`, `working`, `waiting`, `blocked`, and `done`.
+- Preferred states are `acknowledged`, `actively_progressing`, `blocked_on_input_or_dependency`, `failed_to_progress`, and `verified_complete`.
+- 当 heartbeat 让 layer/state 变化时，Codex 侧结果会被 Kernel 记录成 `progress.notification`，并由 repo 内 delivery 闭环回写 `pending/sent/skipped/failed`；不要把 `pending` 当成已送达。
+- 如果 supervisor loop 把该通知标成 `retry_ready` 或 `escalate_ready`，说明是通知闭环问题，不等于 Codex 已完成或失败；仍要看最终 `done|blocked` receipt。
 - A valid execution smoke must produce both:
   - source inbox message containing `status: working`;
   - final receipt containing `status: done` or `status: blocked`.
 - Codex must reply at least once to every received employee request. If blocked or rejected, reply to the sender with status, blocker, evidence path, and the next action.
 - If another employee is needed, name active collaborators as `@agent` options and ask the sender whether to add them.
 - For human-facing requests, close the loop back to the requesting agent so it can notify the human operator; do not leave the human waiting on an internal inbox record.
+
+## Postmortem: 2026-06-04 Why Codex Was Not Continuously Controllable
+
+Observed failure:
+
+- Company Kernel could create Codex inbox records and task cards, but this was sometimes reported like Codex was actually working.
+- Some requests stopped after `acknowledged`; the human-facing loop did not always receive `in_progress` and final `done|blocked` receipts.
+- A dry-run or policy-gated task was confused with implementation progress.
+- Codex attempted to use a missing `scripts/progress_report.py` helper in one flow, so there was no standardized progress artifact for the supervisor to read.
+- Kernel-change tasks could be blocked by approval policy. That was correct safety behavior, but without a structured blocker reply it looked like Codex had gone silent.
+
+Root causes:
+
+1. `message send` was record-only; it did not invoke `company-codex-adapter --direct-message`.
+2. Heartbeat/employee existence was treated as liveness/control evidence.
+3. The adapter did not always enforce a two-phase progress receipt (`working` then `done|blocked`).
+4. Progress evidence location was not standardized enough for dashboard/Hermes summaries.
+5. The requesting agent did not always close the result back to the human.
+
+Preventive rules for future installs/customers:
+
+- Use `message direct` for control probes; never accept inbox files as proof.
+- Keep Codex `candidate` until 2-4 direct rounds pass and a sender-visible receipt exists for every round.
+- Execution tasks must write repo-local progress JSON under `reports/` and send a final receipt.
+- If approval/policy blocks execution, Codex must return `status: blocked`, the policy reason, evidence path, and the next required action.
+- Hermes/main must verify changed files, tests, and progress artifacts before telling the human Codex completed work.
 
 ## Verified Direct Execution Loop
 
@@ -71,12 +100,106 @@ Pass criteria:
 - Codex workspace contains `reports/progress_acknowledged_*.json`, `reports/progress_in_progress_*.json`, and final `progress_completed_*.json` or `progress_blocked_*.json`.
 - The final reply includes concrete `changed_files`, `verification_run`, `blocker`, and `eta`; echoing the prompt is failure.
 
+## Hermes PM Supervision Contract
+
+When Codex is managed by Hermes as project manager, Codex must continuously expose state in the canonical workspace `reports/` directory:
+
+```text
+progress_acknowledged_*.json
+progress_in_progress_*.json
+progress_completed_*.json
+progress_blocked_*.json
+```
+
+Required semantics:
+
+- `acknowledged`: Codex received and understood the task.
+- `in_progress`: Codex is actively implementing or verifying.
+- `completed`: Codex finished and included verification evidence.
+- `blocked`: Codex cannot continue and wrote one concrete blocker.
+
+Each progress file must include the active Company Kernel `task_id`. Hermes ignores unrelated old progress files.
+
+Hermes will poll through:
+
+```bash
+bin/company-codex-pm-supervisor --agent codex --stale-minutes 15
+```
+
+Codex must not rely on chat text alone. If no matching progress file is written, Hermes will treat the task as stalled.
+
 ## Main/Codex Role Boundary
 
 - Main/OpenClaw owns project registration, scope, acceptance, sequencing, GitHub finalization, and human-facing status.
 - Codex owns bounded implementation/review inside the assigned repo.
 - Main must verify `git status`, `git diff --stat`, changed files, tests, runtime/browser evidence, and artifacts before accepting Codex output.
 - Codex must not redefine the product goal, touch unrelated business workspaces, or turn pending/candidate states into success.
+
+## Codex Mode Router
+
+Codex is not one generic executor. Main/Hermes must select the mode before dispatch and write it into the task card.
+
+- **目标模式 / Target Mode**: clear bounded implementation or bugfix; one objective; one verification gate; exit after result.
+- **计划模式 / Plan Mode**: unknown root cause, high-risk schema/API/security, unfamiliar code; read-only; no edits.
+- **列队模式 / Queue Mode**: multiple backlog items; Hermes owns order, queue state, isolation, and verification between items.
+- **引导模式 / Guided Mode**: long or drift-prone task; checkpoints; Hermes monitors process/log/diff and steers.
+
+Required task card fields:
+
+```text
+模式：目标 / 计划 / 列队 / 引导
+目标：one objective
+上下文：repo, branch, relevant facts
+允许范围：paths/files/tools
+禁止事项：secrets, production writes, unrelated refactors, destructive ops
+验收标准：exact commands/tests/browser checks
+输出格式：changed_files, commands_run, verification_run, evidence_path, blocker, risks
+停止条件：when to stop/report/ask
+```
+
+## Codex CLI Patterns
+
+Planning, read-only:
+
+```bash
+codex exec -C /absolute/repo -s read-only '计划模式：只读分析，禁止修改。目标：<goal>。输出 relevant files, plan, risks, verification gates。'
+```
+
+Bounded implementation:
+
+```bash
+codex exec --full-auto -C /absolute/repo '目标模式：完成 <goal>。允许范围：<paths>。禁止：<forbidden>。验收：<commands>。输出 changed_files/verification/blocker。'
+```
+
+Frontend/UI implementation must include UI/UX Pro Max:
+
+```text
+前端 UI/UX 强制规则：
+1. 先读取 /Users/owner/.codex/skills/ui-ux-pro-max/SKILL.md。
+2. 在目标项目运行：python3 /Users/owner/.codex/skills/ui-ux-pro-max/scripts/search.py "<product style>" --design-system --persist -p "<Project>" -f markdown
+3. 具体页面加 --page "<page-name>"。
+4. 实现前读取 design-system/MASTER.md 和 page override。
+5. 输出设计系统路径、修改文件、验证命令、截图/DOM/browser 检查结果。
+```
+
+## Hermes Acceptance Gate for Codex
+
+Main must verify, not trust claims:
+
+```bash
+git status --short
+git diff --stat
+git diff -- <relevant paths>
+python3 -m unittest discover -s tests -v
+```
+
+Completion requires:
+
+- expected files changed only;
+- tests/verification command exit_code 0;
+- report under `reports/codex-runs/` or relevant project report dir;
+- queue item updated only after Hermes verification;
+- GitHub delivery is not claimed until commit/push/PR/merge evidence exists.
 
 ## Execution Rules
 

@@ -123,13 +123,15 @@ def workspace_progress_dir(workspace: Path) -> Path:
     return path
 
 
-def write_workspace_progress(workspace: Path, *, state: str, project: str, action: str, checking: str = "", risks: str = "", blocked_on: str = "", tried: str = "", needs_action_from: str = "") -> Path:
+def write_workspace_progress(workspace: Path, *, state: str, project: str, action: str, checking: str = "", risks: str = "", blocked_on: str = "", tried: str = "", needs_action_from: str = "", task_id: str = "") -> Path:
     out_dir = workspace_progress_dir(workspace)
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-    path = out_dir / f"progress_{state}_{stamp}.json"
+    resolved_task_id = task_id.strip() or f"direct-{stamp}"
+    safe_task_id = "".join(ch if ch.isalnum() or ch in {"-", "_"} else "_" for ch in resolved_task_id).strip("_") or "direct"
+    path = out_dir / f"progress_{state}_{safe_task_id}_{stamp}.json"
     payload = {
         "ok": True,
-        "task_id": f"direct-{stamp}",
+        "task_id": resolved_task_id,
         "report": {
             "state": state,
             "project": project,
@@ -169,6 +171,9 @@ def send_source_progress(agent: str, source: str, body: str) -> dict:
         payload = json.loads(out or "{}")
     except json.JSONDecodeError:
         payload = {}
+    event_id = str(payload.get("event_id") or "")
+    if event_id:
+        run_companyctl(["scheduler", "skip-event", "--event-id", event_id, "--by", agent, "--reason", "direct progress notification handled by adapter"])
     return {"ok": code == 0, "exit_code": code, "message_id": message_id, "payload": payload, "stderr": err[-1000:]}
 
 
@@ -428,6 +433,7 @@ def process(args: argparse.Namespace) -> int:
             project=workspace.name,
             action=f"received direct task from {args.direct_source or 'unknown'}",
             checking=f"task card {artifact['task_card']}",
+            task_id=args.direct_session_key or "",
         )
         in_progress = write_workspace_progress(
             workspace,
@@ -435,6 +441,7 @@ def process(args: argparse.Namespace) -> int:
             project=workspace.name,
             action="started direct Codex execution",
             checking=f"running codex exec for {args.direct_source or 'unknown'}",
+            task_id=args.direct_session_key or "",
         )
         working_reply = status_reply_text(
             status="working",
@@ -453,6 +460,7 @@ def process(args: argparse.Namespace) -> int:
                 project=workspace.name,
                 action="completed direct Codex execution",
                 checking=compact_output(artifact["last_message"], max_chars=600) or "codex exec exit_code=0",
+                task_id=args.direct_session_key or "",
             )
             state = "completed"
         else:
@@ -465,6 +473,7 @@ def process(args: argparse.Namespace) -> int:
                 blocked_on=f"codex exec exit_code={run_code}",
                 tried=cmd,
                 needs_action_from="operator",
+                task_id=args.direct_session_key or "",
             )
             state = "blocked"
         detail = execution_detail(cmd, artifact["last_message"], exit_code=run_code, success=run_code == 0)
@@ -547,6 +556,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--direct-message", default="", help="reply to a direct reachability message without claiming tasks")
     parser.add_argument("--direct-source", default="", help="source employee for direct reachability messages")
     parser.add_argument("--direct-session-key", default="", help="session key used by the company direct message resolver")
+    parser.add_argument("--timeout", type=int, default=120, help="timeout seconds for direct replies")
     return parser
 
 

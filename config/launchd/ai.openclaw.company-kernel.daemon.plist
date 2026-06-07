@@ -11,7 +11,7 @@
     <string>--summary</string>
   </array>
   <key>StartInterval</key>
-  <integer>300</integer>
+  <integer>180</integer>
   <key>WorkingDirectory</key>
   <string>__COMPANY_KERNEL_ROOT__</string>
   <key>StandardOutPath</key>

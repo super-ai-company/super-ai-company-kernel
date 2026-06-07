@@ -15,6 +15,7 @@ from .sandboxing import wrap_command
 
 ROOT = Path(os.environ.get("OPENCLAW_COMPANY_KERNEL_ROOT", Path(__file__).resolve().parents[1])).resolve()
 DB_PATH = ROOT / "company.sqlite"
+CODEX_AGENT = "codex"
 DEFAULT_WORKSPACE = Path(
     os.environ.get("OPENCLAW_HERMES_WORKSPACE", str(Path.home() / ".hermes"))
 ).expanduser().resolve()
@@ -40,6 +41,44 @@ def run_companyctl(args: list[str]) -> tuple[int, str, str]:
     env = {**os.environ, "OPENCLAW_COMPANY_KERNEL_ROOT": str(ROOT)}
     cp = subprocess.run([str(ROOT / "bin" / "companyctl"), *args], cwd=str(ROOT), text=True, capture_output=True, env=env)
     return cp.returncode, cp.stdout, cp.stderr
+
+
+def employee_workspace(agent: str) -> Path | None:
+    row = employee(agent)
+    if not row:
+        return None
+    workspace = str(row["workspace"] or "").strip()
+    if not workspace:
+        return None
+    return Path(workspace).expanduser().resolve()
+
+
+def run_codex_pm_supervisor() -> tuple[int, str, str]:
+    workspace = employee_workspace(CODEX_AGENT)
+    if workspace is None:
+        return 1, "", f"missing workspace for {CODEX_AGENT}"
+    env = {**os.environ, "OPENCLAW_COMPANY_KERNEL_ROOT": str(ROOT)}
+    cmd = [
+        str(ROOT / "bin" / "company-codex-pm-supervisor"),
+        "--agent",
+        CODEX_AGENT,
+        "--db-path",
+        str(DB_PATH),
+        "--workspace",
+        str(workspace),
+        "--report-root",
+        str(ROOT),
+    ]
+    cp = subprocess.run(cmd, cwd=str(ROOT), text=True, capture_output=True, env=env)
+    return cp.returncode, cp.stdout, cp.stderr
+
+
+def parse_json_output(raw: str) -> dict:
+    try:
+        parsed = json.loads(raw or "{}")
+    except json.JSONDecodeError:
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
 
 
 def employee(agent: str) -> sqlite3.Row | None:
@@ -140,20 +179,51 @@ def run_hermes(prompt: Path, output: Path, workspace: Path, model: str, provider
 
 
 def process(args: argparse.Namespace) -> int:
+    pm_code, pm_out, pm_err = run_codex_pm_supervisor()
+    pm_result = parse_json_output(pm_out)
     emp = employee(args.agent)
     if not emp:
-        emit({"ok": False, "error": "unknown employee", "agent": args.agent})
+        emit(
+            {
+                "ok": False,
+                "error": "unknown employee",
+                "agent": args.agent,
+                "codex_pm_supervisor": {"exit_code": pm_code, "stdout": pm_out, "stderr": pm_err, "result": pm_result},
+            }
+        )
         return 1
     if emp["runtime"] != "hermes":
-        emit({"ok": False, "error": "employee runtime is not hermes", "agent": args.agent, "runtime": emp["runtime"]})
+        emit(
+            {
+                "ok": False,
+                "error": "employee runtime is not hermes",
+                "agent": args.agent,
+                "runtime": emp["runtime"],
+                "codex_pm_supervisor": {"exit_code": pm_code, "stdout": pm_out, "stderr": pm_err, "result": pm_result},
+            }
+        )
         return 1
     if args.execute and not shutil.which("hermes"):
-        emit({"ok": False, "error": "hermes command not found"})
+        emit(
+            {
+                "ok": False,
+                "error": "hermes command not found",
+                "codex_pm_supervisor": {"exit_code": pm_code, "stdout": pm_out, "stderr": pm_err, "result": pm_result},
+            }
+        )
         return 1
     task = next_task(args.agent)
     if not task:
         run_companyctl(["heartbeat", "--agent", args.agent])
-        emit({"ok": True, "processed": 0, "agent": args.agent, "note": "no submitted Hermes task"})
+        emit(
+            {
+                "ok": True,
+                "processed": 0,
+                "agent": args.agent,
+                "note": "no submitted Hermes task",
+                "codex_pm_supervisor": {"exit_code": pm_code, "stdout": pm_out, "stderr": pm_err, "result": pm_result},
+            }
+        )
         return 0
     workspace = Path(args.workspace or emp["workspace"] or DEFAULT_WORKSPACE).expanduser()
     artifact = paths(args.agent, task["id"])
@@ -167,7 +237,19 @@ def process(args: argparse.Namespace) -> int:
         write_report(artifact["report"], task, executed=False, status="completed", detail=detail, prompt=artifact["prompt"], output=artifact["output"])
         done_code, done_out, done_err = run_companyctl(["task", "done", "--agent", args.agent, "--task-id", task["id"], "--summary", detail, "--evidence", str(artifact["report"])])
         run_companyctl(["heartbeat", "--agent", args.agent])
-        emit({"ok": done_code == 0, "processed": 1, "executed": False, "task_id": task["id"], "prompt": str(artifact["prompt"]), "report": str(artifact["report"]), "companyctl_stdout": done_out, "companyctl_stderr": done_err})
+        emit(
+            {
+                "ok": done_code == 0,
+                "processed": 1,
+                "executed": False,
+                "task_id": task["id"],
+                "prompt": str(artifact["prompt"]),
+                "report": str(artifact["report"]),
+                "companyctl_stdout": done_out,
+                "companyctl_stderr": done_err,
+                "codex_pm_supervisor": {"exit_code": pm_code, "stdout": pm_out, "stderr": pm_err, "result": pm_result},
+            }
+        )
         return done_code
     code, cmd = run_hermes(artifact["prompt"], artifact["output"], workspace, args.model, args.provider, args.isolation, args.sandbox_profile)
     if code == 0:
@@ -179,7 +261,21 @@ def process(args: argparse.Namespace) -> int:
         write_report(artifact["report"], task, executed=True, status="blocked", detail=detail, prompt=artifact["prompt"], output=artifact["output"])
         done_code, done_out, done_err = run_companyctl(["task", "block", "--agent", args.agent, "--task-id", task["id"], "--blocker", detail])
     run_companyctl(["heartbeat", "--agent", args.agent])
-    emit({"ok": code == 0 and done_code == 0, "processed": 1, "executed": True, "task_id": task["id"], "hermes_exit_code": code, "prompt": str(artifact["prompt"]), "output": str(artifact["output"]), "report": str(artifact["report"]), "companyctl_stdout": done_out, "companyctl_stderr": done_err})
+    emit(
+        {
+            "ok": code == 0 and done_code == 0,
+            "processed": 1,
+            "executed": True,
+            "task_id": task["id"],
+            "hermes_exit_code": code,
+            "prompt": str(artifact["prompt"]),
+            "output": str(artifact["output"]),
+            "report": str(artifact["report"]),
+            "companyctl_stdout": done_out,
+            "companyctl_stderr": done_err,
+            "codex_pm_supervisor": {"exit_code": pm_code, "stdout": pm_out, "stderr": pm_err, "result": pm_result},
+        }
+    )
     return done_code if done_code != 0 else code
 
 
