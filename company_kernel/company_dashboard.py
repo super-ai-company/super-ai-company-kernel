@@ -321,6 +321,7 @@ def build_cockpit_summary(summary: dict) -> dict:
             }
         )
     pending_approvals = [item for item in summary.get("approvals", []) if str(item.get("status", "")).lower() == "pending"]
+    approval_details = {}
     pending_approval_task_ids = set()
     for approval in pending_approvals:
         raw = approval.get("reason", "")
@@ -329,6 +330,7 @@ def build_cockpit_summary(summary: dict) -> dict:
         except json.JSONDecodeError:
             detail = {}
         if isinstance(detail, dict):
+            approval_details[str(approval.get("id", ""))] = detail
             metadata = detail.get("metadata", {})
             if isinstance(metadata, dict) and metadata.get("task_id"):
                 pending_approval_task_ids.add(str(metadata["task_id"]))
@@ -385,7 +387,10 @@ def build_cockpit_summary(summary: dict) -> dict:
                 {
                     "kind": "stagnant_task",
                     "state": state,
+                    "approval_id": "",
                     "task_id": task_id,
+                    "approval_action": "",
+                    "risk": "",
                     "title": item.get("title", ""),
                     "target_agent": item.get("target_agent", ""),
                     "attempt_id": attempt_id,
@@ -402,7 +407,10 @@ def build_cockpit_summary(summary: dict) -> dict:
                 {
                     "kind": "blocked_task",
                     "state": state,
+                    "approval_id": "",
                     "task_id": task_id,
+                    "approval_action": "",
+                    "risk": "",
                     "title": item.get("title", ""),
                     "target_agent": item.get("target_agent", ""),
                     "attempt_id": attempt_id,
@@ -420,7 +428,10 @@ def build_cockpit_summary(summary: dict) -> dict:
                 {
                     "kind": "blocked_task",
                     "state": status,
+                    "approval_id": "",
                     "task_id": task_id,
+                    "approval_action": "",
+                    "risk": "",
                     "title": task.get("title", ""),
                     "target_agent": task.get("target_agent", ""),
                     "attempt_id": "",
@@ -432,19 +443,27 @@ def build_cockpit_summary(summary: dict) -> dict:
             )
     for item in pending_approvals[:10]:
         approval_id = str(item.get("id", ""))
+        detail = approval_details.get(approval_id, {})
+        metadata = detail.get("metadata", {}) if isinstance(detail.get("metadata", {}), dict) else {}
+        task_id = str(metadata.get("task_id") or item.get("task_id", "") or "")
+        target_agent = str(detail.get("target") or item.get("target_agent", "") or "")
+        risk = str(detail.get("risk") or item.get("risk", "") or "")
+        request_reason = str(detail.get("request_reason") or item.get("reason", "") or "")
         owner_attention.append(
             {
                 "kind": "approval",
                 "state": "blocked",
                 "approval_id": approval_id,
-                "task_id": item.get("task_id", ""),
+                "task_id": task_id,
+                "approval_action": item.get("action", ""),
+                "risk": risk,
                 "title": item.get("action") or item.get("id", ""),
-                "target_agent": item.get("target_agent", ""),
+                "target_agent": target_agent,
                 "attempt_id": "",
                 "trace_id": "",
-                "message": "需要 owner approval；真实外部发送保持 dry-run，直到人工批准。",
+                "message": f"需要 owner approval；真实外部发送保持 dry-run，直到人工批准。{request_reason}".strip(),
                 "updated_at": item.get("updated_at", ""),
-                "actions": attention_actions("approval", task_id=str(item.get("task_id", "")), approval_id=approval_id),
+                "actions": attention_actions("approval", task_id=task_id, approval_id=approval_id),
             }
         )
     for item in recent_evidence[:10]:
@@ -453,7 +472,10 @@ def build_cockpit_summary(summary: dict) -> dict:
             {
                 "kind": "evidence",
                 "state": "success",
+                "approval_id": "",
                 "task_id": task_id,
+                "approval_action": "",
+                "risk": "",
                 "title": item.get("title", ""),
                 "target_agent": item.get("target_agent", ""),
                 "attempt_id": "",

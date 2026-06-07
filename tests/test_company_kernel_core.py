@@ -1873,6 +1873,8 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertIn("long_task_state || task.status", html)
         self.assertIn("handleOwnerAttentionAction", html)
         self.assertIn("data-action-id", html)
+        self.assertIn("approval_action", html)
+        self.assertIn("risk=${item.risk}", html)
         self.assertIn("correctTaskAttempt(taskId, attemptId)", html)
         self.assertIn("cancelTaskAttempt(taskId, attemptId)", html)
         self.assertIn("retryTask(taskId)", html)
@@ -1920,6 +1922,8 @@ class CompanyKernelCoreTest(unittest.TestCase):
             "approval bound to cockpit task",
             "--target",
             "codex-cockpit",
+            "--risk",
+            "P1",
             "--task-id",
             "task-cockpit-awaiting-approval",
             "--approval-id",
@@ -1998,6 +2002,16 @@ class CompanyKernelCoreTest(unittest.TestCase):
         blocked_attention = next(item for item in cockpit["owner_attention"] if item["task_id"] == "task-cockpit-blocked" and item["kind"] == "blocked_task")
         self.assertEqual(["send_correction", "view_logs", "retry", "reassign"], [action["id"] for action in blocked_attention["actions"]])
         self.assertTrue(all(action["task_id"] == "task-cockpit-blocked" for action in blocked_attention["actions"]))
+        approval_attention = next(item for item in cockpit["owner_attention"] if item["approval_id"] == "approval-cockpit-awaiting")
+        self.assertEqual("approval", approval_attention["kind"])
+        self.assertEqual("task-cockpit-awaiting-approval", approval_attention["task_id"])
+        self.assertEqual("codex-cockpit", approval_attention["target_agent"])
+        self.assertEqual("external_send", approval_attention["approval_action"])
+        self.assertEqual("P1", approval_attention["risk"])
+        self.assertIn("approval bound to cockpit task", approval_attention["message"])
+        self.assertEqual(["approve", "deny", "mock_resolve"], [action["id"] for action in approval_attention["actions"]])
+        self.assertTrue(all(action["task_id"] == "task-cockpit-awaiting-approval" for action in approval_attention["actions"]))
+        self.assertTrue(all(action["approval_id"] == "approval-cockpit-awaiting" for action in approval_attention["actions"]))
 
         status, shown = api_gateway.route_get("/v1/tasks/task-cockpit-long", {})
         self.assertEqual(200, status, shown)
