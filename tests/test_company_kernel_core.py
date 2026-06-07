@@ -1813,6 +1813,7 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertIn("Latest Attempt", html)
         self.assertIn("Heartbeat / Progress", html)
         self.assertIn("Runtime Policy", html)
+        self.assertIn("Progress Events", html)
 
     def test_cockpit_api_sanitizes_evidence_and_exposes_long_task_state(self) -> None:
         code, created = run_cli("employee", "create", "--id", "main", "--name", "main", "--role", "operator", "--runtime", "openclaw", "--workspace", str(self.root / "workspace" / "main"))
@@ -4132,6 +4133,15 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual(attempt_id, payload["attempt_id"])
         self.assertEqual("in_progress", payload["progress_state"])
         self.assertEqual(25, payload["progress"])
+        code, shown = run_cli("task", "show", "--task-id", "task-progress-managed")
+        self.assertEqual(0, code, shown)
+        self.assertEqual(attempt_id, shown["progress_events"][0]["attempt_id"])
+        self.assertEqual("in_progress", shown["progress_events"][0]["progress_state"])
+        self.assertEqual(25, shown["progress_events"][0]["progress"])
+        self.assertEqual("已完成第一段读取", shown["progress_events"][0]["message"])
+        status, api_shown = api_gateway.route_get("/v1/tasks/task-progress-managed", {})
+        self.assertEqual(200, status, api_shown)
+        self.assertEqual(shown["progress_events"], api_shown["progress_events"])
 
     def test_retry_after_stale_starts_new_managed_attempt_with_same_trace(self) -> None:
         for employee_id, role in [("main", "operator"), ("hermes", "supervisor"), ("codex", "developer")]:

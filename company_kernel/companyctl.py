@@ -1387,6 +1387,33 @@ def task_supervisor_state(attempts: list[dict]) -> tuple[dict, dict]:
     return state, summary
 
 
+def task_progress_events(events: list[dict]) -> list[dict]:
+    progress_events = []
+    for event in events:
+        if event.get("event_type") != "task.progress":
+            continue
+        payload = parse_json_arg(event.get("payload_json", "{}") or "{}", {})
+        if not isinstance(payload, dict):
+            payload = {}
+        progress_events.append(
+            {
+                "event_id": event.get("id", ""),
+                "trace_id": event.get("trace_id", ""),
+                "task_id": event.get("task_id", ""),
+                "employee_id": payload.get("employee_id") or event.get("source_agent", ""),
+                "attempt_id": payload.get("attempt_id", ""),
+                "progress_state": payload.get("progress_state", ""),
+                "progress_layer": payload.get("progress_layer", ""),
+                "progress_label": payload.get("progress_label", ""),
+                "message": payload.get("message", ""),
+                "progress": payload.get("progress"),
+                "payload": payload.get("payload", {}),
+                "created_at": event.get("created_at", ""),
+            }
+        )
+    return progress_events
+
+
 def latest_active_attempt_for_task(conn: sqlite3.Connection, task_id: str, employee_id: str) -> dict | None:
     placeholders = ",".join("?" for _ in MANAGED_ATTEMPT_ACTIVE_STATUSES)
     params = [task_id, employee_id, *sorted(MANAGED_ATTEMPT_ACTIVE_STATUSES)]
@@ -6275,6 +6302,7 @@ def cmd_task_show(args: argparse.Namespace) -> int:
             "events": events,
             "hook_runs": hook_runs,
             "attempts": attempts,
+            "progress_events": task_progress_events(events),
             "supervisor_state": supervisor_state,
             "correction_summary": correction_summary,
             "approvals": task_approvals(conn, task_id),
