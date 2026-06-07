@@ -3190,6 +3190,15 @@
     }).join('\n');
   }
 
+  function progressEventsSummary(events) {
+    const rows = Array.isArray(events) ? events : [];
+    if (!rows.length) return '-';
+    return rows.slice(-8).map(item => {
+      const progress = item.progress === null || item.progress === undefined ? '-' : `${item.progress}%`;
+      return `${formatDate(item.created_at || '') || '-'} · ${item.employee_id || '-'} · ${item.progress_state || '-'} · ${progress} · ${item.message || ''}`;
+    }).join('\n');
+  }
+
   function latestAttemptDetail(attempts) {
     const rows = Array.isArray(attempts) ? attempts : [];
     return rows.length ? rows[rows.length - 1] : {};
@@ -3344,6 +3353,7 @@
       const task = payload.task || {};
       const attempts = payload.attempts || [];
       const events = payload.events || [];
+      const progressEvents = payload.progress_events || [];
       const approvals = payload.approvals || [];
       const supervisorState = payload.supervisor_state || {};
       const correctionSummary = payload.correction_summary || {};
@@ -3360,6 +3370,7 @@
         ['Runtime Policy', latestAttempt.runtime_policy || {}],
         ['Correction State', correctionSummary],
         ['Supervisor State', supervisorState],
+        ['Progress Events', progressEventsSummary(progressEvents)],
         ['Attempt History', attemptHistorySummary(attempts)],
         ['Recent Events', events.slice(-8).map(item => `${item.created_at} ${item.event_type} ${item.id}`).join('\n') || '-'],
         ['Approvals', approvals.map(item => `${item.status}:${item.id || item.approval_id || ''}`).join('\n') || '-'],
