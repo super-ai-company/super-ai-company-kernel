@@ -1407,6 +1407,15 @@ def employee_view_models(summary: dict) -> list[dict]:
             if employee.get("id") == "owner" or employee.get("role") == "human-owner" or employee.get("runtime") == "human":
                 continue
             capabilities = companyctl.load_json_or_default(companyctl.employee_paths(employee["id"])["capabilities"], {})
+            permissions = companyctl.load_json_or_default(
+                companyctl.employee_paths(employee["id"])["permissions"],
+                {
+                    "can_submit_tasks": True,
+                    "can_claim_tasks": True,
+                    "can_modify_kernel": False,
+                    "requires_approval_for": ["payment", "compensation", "salary", "penalty", "external_send"],
+                },
+            )
             skills = capabilities.get("skills", [])
             tools = capabilities.get("tools", [])
             task_types = capabilities.get("preferred_task_types", [])
@@ -1446,6 +1455,7 @@ def employee_view_models(summary: dict) -> list[dict]:
                     "readiness_level": readiness.get("level", ""),
                     "readiness_reason": readiness.get("reason", ""),
                     "readiness_checks": readiness.get("checks", {}),
+                    "sandbox_profile": companyctl.employee_sandbox_profile(employee, permissions),
                     "heartbeat_age_minutes": "" if age is None else age,
                     "communication_paused": bool(communication_profile.get("communication_paused")),
                     "communication_status": "paused" if communication_profile.get("communication_paused") else "enabled",

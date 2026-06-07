@@ -3336,6 +3336,21 @@
     return `<span class="readiness-badge readiness-${escapeHtml(safeLevel)}" title="${escapeHtml(reason)}"><i class="fa-solid fa-id-badge"></i>${escapeHtml(level)}</span>`;
   }
 
+  function sandboxProfileChip(employee) {
+    const profile = employee.sandbox_profile || {};
+    const source = profile.source || 'runtime_fallback';
+    const isolation = profile.isolation || 'none';
+    const network = profile.network || 'default';
+    const approvalList = ((profile.permissions || {}).requires_approval_for || []).slice(0, 3).join(', ') || 'none';
+    const sourceClass = source === 'configured' ? 'completed' : 'blocked';
+    return `
+      <span class="badge ${sourceClass} sandbox-profile-chip" title="network=${escapeHtml(network)} · approvals=${escapeHtml(approvalList)}">
+        <i class="fa-solid fa-shield-halved"></i>
+        ${escapeHtml(isolation)} / ${escapeHtml(network)}
+      </span>
+    `;
+  }
+
   function attemptHistorySummary(attempts) {
     const rows = Array.isArray(attempts) ? attempts : [];
     if (!rows.length) return '-';
@@ -5059,18 +5074,7 @@
     empContainer.innerHTML = summary.employees.filter(emp => (emp.employee_status || emp.status) === 'active').map(emp => {
       const hbStatus = emp.heartbeat_status || 'missing';
       const commPaused = !!emp.communication_paused;
-      let isolationBadge = '';
-      if (emp.runtime === 'antigravity') {
-        isolationBadge = '<span class="badge completed" style="background: rgba(236, 72, 153, 0.15); border-color: rgba(236, 72, 153, 0.3); color: #ec4899; font-size: 9px; vertical-align: middle;"><i class="fa-solid fa-wand-magic-sparkles"></i> Antigravity GUI</span>';
-      } else if (emp.runtime === 'trae') {
-        isolationBadge = '<span class="badge completed" style="background: rgba(168, 85, 247, 0.15); border-color: rgba(168, 85, 247, 0.3); color: #a855f7; font-size: 9px; vertical-align: middle;"><i class="fa-solid fa-bolt"></i> Trae IDE</span>';
-      } else if (emp.runtime === 'docker' || emp.id === 'video-creator') {
-        isolationBadge = '<span class="badge completed" style="background: rgba(16, 185, 129, 0.15); border-color: rgba(16, 185, 129, 0.3); color: #10b981; font-size: 9px; vertical-align: middle;"><i class="fa-solid fa-cube"></i> Docker/gVisor</span>';
-      } else if (emp.runtime === 'firejail' || emp.runtime === 'codex' || emp.runtime === 'hermes' || emp.id === 'codex' || emp.id === 'hermes') {
-        isolationBadge = '<span class="badge claimed" style="background: rgba(99, 102, 241, 0.15); border-color: rgba(99, 102, 241, 0.3); color: #818cf8; font-size: 9px; vertical-align: middle;"><i class="fa-solid fa-shield-halved"></i> Firejail Sandbox</span>';
-      } else {
-        isolationBadge = '<span class="badge blocked" style="background: rgba(245, 158, 11, 0.1); border-color: rgba(245, 158, 11, 0.2); color: #f59e0b; font-size: 9px; vertical-align: middle;"><i class="fa-solid fa-user-shield"></i> Local Exec</span>';
-      }
+      const sandboxBadge = sandboxProfileChip(emp);
       
       const skills = emp.skills || '';
       const skillsPills = skills ? skills.split(',').map(s => `<span class="capability-tag" style="font-size: 9px; padding: 2px 5px; margin-top: 4px;">${escapeHtml(s.trim())}</span>`).join(' ') : '';
@@ -5106,7 +5110,7 @@
           </div>
             <div class="employee-meta" style="margin-top: 6px; font-size: 11px;">
               <div style="margin-bottom: 4px; display: flex; align-items: center; justify-content: space-between;">
-                <span><strong>Sandbox:</strong> ${isolationBadge}</span>
+                <span><strong>Sandbox:</strong> ${sandboxBadge}</span>
                 <span class="badge ${hbStatus}">${hbStatus}</span>
               </div>
               <div style="margin-bottom: 4px;"><strong>Readiness:</strong> ${readinessBadge(emp)}</div>
@@ -5131,6 +5135,7 @@
       candidateContainer.innerHTML = candidates.length ? candidates.map(emp => {
         const skills = emp.skills || '';
         const skillsPills = skills ? skills.split(',').map(s => `<span class="capability-tag" style="font-size: 9px; padding: 2px 5px; margin-top: 4px;">${escapeHtml(s.trim())}</span>`).join(' ') : '';
+        const sandboxBadge = sandboxProfileChip(emp);
         return `
           <div class="employee-card" onclick="showDetails('Candidate employee: ' + '${escapeHtml(emp.id)}', ${JSON.stringify(emp).replace(/'/g, "\'")})">
             <div class="employee-card-header">
@@ -5154,7 +5159,7 @@
             </div>
             <div class="employee-meta" style="margin-top: 6px; font-size: 11px;">
               <div style="margin-bottom: 4px; display: flex; align-items: center; justify-content: space-between;">
-                <span><strong>Runtime:</strong> ${escapeHtml(emp.runtime || '-')}</span>
+                <span><strong>Sandbox:</strong> ${sandboxBadge}</span>
                 <span class="badge blocked">Candidate</span>
               </div>
               <div style="margin-bottom: 4px;"><strong>Readiness:</strong> ${readinessBadge(emp)}</div>

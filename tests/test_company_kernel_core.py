@@ -5036,6 +5036,25 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual("online_only", by_id["main"]["readiness_level"])
         self.assertEqual("online_only", by_id["antigravity"]["readiness_level"])
         self.assertIn("runtime_evidence", by_id["codex"]["readiness_reason"])
+        self.assertEqual("default", by_id["codex"]["sandbox_profile"]["profile"])
+        self.assertEqual("none", by_id["codex"]["sandbox_profile"]["isolation"])
+        self.assertEqual("none", by_id["codex"]["sandbox_profile"]["network"])
+        self.assertEqual("workspace_only", by_id["codex"]["sandbox_profile"]["workspace_scope"])
+        self.assertTrue(by_id["codex"]["sandbox_profile"]["permissions"]["can_claim_tasks"])
+        self.assertIn("external_send", by_id["codex"]["sandbox_profile"]["permissions"]["requires_approval_for"])
+        self.assertEqual("runtime_fallback", by_id["antigravity"]["sandbox_profile"]["source"])
+        code, shown = run_cli("employee", "show", "--id", "codex")
+        self.assertEqual(0, code, shown)
+        self.assertEqual(by_id["codex"]["sandbox_profile"], shown["sandbox_profile"])
+        status, employees_payload = api_gateway.route_get("/v1/employees", {})
+        self.assertEqual(HTTPStatus.OK, status, employees_payload)
+        api_codex = next(item for item in employees_payload["employees"] if item["id"] == "codex")
+        self.assertEqual(by_id["codex"]["sandbox_profile"], api_codex["sandbox_profile"])
+        output = self.root / "state" / "sandbox-dashboard.html"
+        with contextlib.redirect_stdout(io.StringIO()):
+            code = company_dashboard.main(["--output", str(output), "--variant", "advanced"])
+        self.assertEqual(0, code)
+        self.assertIn("sandbox-profile-chip", output.read_text(encoding="utf-8"))
 
     def test_dashboard_renders_managed_task_control_buttons(self) -> None:
         for employee_id, role in [("main", "operator"), ("hermes", "supervisor"), ("codex", "developer")]:

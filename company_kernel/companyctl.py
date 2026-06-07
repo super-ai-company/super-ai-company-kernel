@@ -21,6 +21,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from .db_paths import ensure_db_parent
+from . import sandboxing
 from .schema_migrations import ensure_schema_migrations
 
 DEFAULT_ROOT = Path(__file__).resolve().parents[1]
@@ -3540,6 +3541,37 @@ def cmd_employee_update(args: argparse.Namespace) -> int:
     return 0
 
 
+def employee_sandbox_profile(employee: dict, permissions: dict, profile_name: str = "default") -> dict:
+    runtime = str(employee.get("runtime") or "")
+    safe_profile = str(employee.get("sandbox_profile") or profile_name or "default")
+    config = sandboxing.load_profiles()
+    runtime_profiles = config.get("profiles", {}).get(runtime, {})
+    configured = safe_profile in runtime_profiles or "default" in runtime_profiles
+    profile = sandboxing.profile_for(runtime, safe_profile, config)
+    requires_approval_for = permissions.get("requires_approval_for", [])
+    if not isinstance(requires_approval_for, list):
+        requires_approval_for = []
+    readonly_paths = profile.get("readonly_paths", [])
+    writable_paths = profile.get("writable_paths", [])
+    return {
+        "runtime": runtime,
+        "profile": safe_profile,
+        "source": "configured" if configured else "runtime_fallback",
+        "isolation": str(profile.get("isolation") or "none"),
+        "network": str(profile.get("network") or "default"),
+        "image": str(profile.get("image") or ""),
+        "workspace_scope": "workspace_only",
+        "readonly_paths_count": len(readonly_paths) if isinstance(readonly_paths, list) else 0,
+        "writable_paths_count": len(writable_paths) if isinstance(writable_paths, list) else 0,
+        "permissions": {
+            "can_submit_tasks": bool(permissions.get("can_submit_tasks", True)),
+            "can_claim_tasks": bool(permissions.get("can_claim_tasks", True)),
+            "can_modify_kernel": bool(permissions.get("can_modify_kernel", False)),
+            "requires_approval_for": [str(item) for item in requires_approval_for],
+        },
+    }
+
+
 def employee_file_bundle(conn: sqlite3.Connection, employee_id: str) -> dict:
     employee_id = resolve_employee_alias(employee_id)
     row = conn.execute("SELECT * FROM employees WHERE id = ?", (employee_id,)).fetchone()
@@ -3560,11 +3592,13 @@ def employee_file_bundle(conn: sqlite3.Connection, employee_id: str) -> dict:
         },
     )
     heartbeat = load_json_or_default(paths["heartbeat"], {})
+    sandbox_profile = employee_sandbox_profile(profile, permissions)
     return {
         "employee": profile,
         "profile": file_profile,
         "capabilities": capabilities,
         "permissions": permissions,
+        "sandbox_profile": sandbox_profile,
         "heartbeat": heartbeat,
         "files": {key: str(value) for key, value in paths.items()},
     }
