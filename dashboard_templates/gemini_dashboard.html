@@ -2495,6 +2495,31 @@
         </div>
 
         <div class="section-card" style="margin-top: 20px;">
+          <h2><i class="fa-solid fa-shield-halved"></i> Sandbox Profile Matrix</h2>
+          <p style="font-size: 12px; color: var(--text-secondary); margin-bottom: 12px;">
+            Read-only visualization of each employee sandbox profile: isolation, network, workspace_scope, and requires_approval_for.
+          </p>
+          <div class="table-container">
+            <table>
+              <thead>
+                <tr>
+                  <th>Employee</th>
+                  <th>Readiness</th>
+                  <th>Isolation</th>
+                  <th>Network</th>
+                  <th>Workspace Scope</th>
+                  <th>Requires Approval For</th>
+                  <th>Source</th>
+                </tr>
+              </thead>
+              <tbody id="sandbox-profile-matrix-tbody">
+                <!-- Populated by JS -->
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <div class="section-card" style="margin-top: 20px;">
           <h2><i class="fa-solid fa-user-clock"></i> Candidate Employees</h2>
           <div class="employees-grid" id="candidate-employees-container">
             <!-- Populated by JS -->
@@ -3443,6 +3468,36 @@
         ${escapeHtml(isolation)} / ${escapeHtml(network)}
       </span>
     `;
+  }
+
+  function renderSandboxProfileMatrix(summary) {
+    const tbody = document.getElementById('sandbox-profile-matrix-tbody');
+    if (!tbody) return;
+    const employees = Array.isArray(summary.employees) ? summary.employees : [];
+    tbody.innerHTML = employees.length ? employees.map(emp => {
+      const profile = emp.sandbox_profile || {};
+      const permissions = profile.permissions || {};
+      const approvals = Array.isArray(permissions.requires_approval_for) ? permissions.requires_approval_for : [];
+      const isolation = profile.isolation || 'none';
+      const network = profile.network || 'default';
+      const workspaceScope = profile.workspace_scope || 'unknown';
+      const source = profile.source || 'runtime_fallback';
+      const badgeClass = source === 'configured' ? 'completed' : 'blocked';
+      return `
+        <tr onclick="showDetails('Sandbox profile: ' + '${escapeHtml(emp.id || '-')}', ${JSON.stringify(profile).replace(/'/g, "\'")})">
+          <td>
+            <div style="font-weight: 700;">${escapeHtml(emp.name || emp.id || '-')}</div>
+            <div style="font-family: monospace; color: var(--text-muted); font-size: 11px;">${escapeHtml(emp.id || '-')} · ${escapeHtml(emp.runtime || '-')}</div>
+          </td>
+          <td>${readinessBadge(emp)}</td>
+          <td><span class="long-task-state ${isolation === 'none' ? 'running' : 'success'}">${escapeHtml(isolation)}</span></td>
+          <td><span class="long-task-state ${network === 'none' ? 'success' : 'progress_stagnant'}">${escapeHtml(network)}</span></td>
+          <td style="font-family: monospace;">${escapeHtml(workspaceScope)}</td>
+          <td>${escapeHtml(approvals.join(', ') || 'none')}</td>
+          <td><span class="badge ${badgeClass}">${escapeHtml(source)}</span></td>
+        </tr>
+      `;
+    }).join('') : '<tr><td colspan="7" style="color:var(--text-muted);text-align:center;padding:24px;">No sandbox profiles.</td></tr>';
   }
 
   function renderSkillRegistry(summary) {
@@ -5401,6 +5456,7 @@
       }).join('') : '<div style="color: var(--text-secondary); font-size: 12px; padding: 10px 0;">No candidate employees.</div>';
     }
 
+    renderSandboxProfileMatrix(summary);
     renderSkillRegistry(summary);
 
     // Approvals Table
