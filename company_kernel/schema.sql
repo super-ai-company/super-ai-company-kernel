@@ -299,6 +299,7 @@ CREATE TABLE IF NOT EXISTS evidence (
   evidence_id TEXT PRIMARY KEY,
   trace_id TEXT NOT NULL DEFAULT '',
   task_id TEXT NOT NULL,
+  attempt_id TEXT NOT NULL DEFAULT '',
   employee_id TEXT NOT NULL,
   artifact_id TEXT NOT NULL DEFAULT '',
   type TEXT NOT NULL DEFAULT '',
