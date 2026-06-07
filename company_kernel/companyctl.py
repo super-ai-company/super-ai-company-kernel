@@ -3449,6 +3449,167 @@ def cmd_employee_import_openclaw(args: argparse.Namespace) -> int:
     return 0
 
 
+def load_openclaw_config_agents(config_path: Path) -> dict[str, dict]:
+    if not config_path.exists():
+        return {}
+    obj = json.loads(config_path.read_text(encoding="utf-8"))
+    agents = {}
+    for agent in obj.get("agents", {}).get("list", []):
+        agent_id = str(agent.get("id") or "").strip()
+        if not agent_id:
+            continue
+        agents[agent_id] = dict(agent)
+    return agents
+
+
+def openclaw_employee_sync_plan(config_path: Path) -> list[dict]:
+    config_agents = load_openclaw_config_agents(config_path)
+    inventory = openclaw_runtime_inventory()
+    planned: dict[str, dict] = {}
+    for agent_id, agent in config_agents.items():
+        name = str(agent.get("identityName") or agent.get("name") or agent_id)
+        workspace = str(agent.get("workspace") or openclaw_root())
+        planned[agent_id] = {
+            "id": agent_id,
+            "name": name,
+            "role": "operator" if agent_id == "main" else "business-agent",
+            "runtime": "openclaw",
+            "workspace": workspace,
+            "status": "active",
+            "source": "openclaw_config",
+        }
+    for agent in inventory.get("agent_dirs", {}).values():
+        agent_id = str(agent.get("id") or "").strip()
+        if not agent_id or agent_id in planned:
+            continue
+        planned[agent_id] = {
+            "id": agent_id,
+            "name": agent_id,
+            "role": "runtime-agent",
+            "runtime": "openclaw",
+            "workspace": str(Path(agent.get("path") or openclaw_root())),
+            "status": "candidate",
+            "source": "openclaw_runtime_dir",
+        }
+    return sorted(planned.values(), key=lambda item: (item["status"] != "active", item["id"]))
+
+
+def upsert_employee_with_status(conn: sqlite3.Connection, employee: dict, *, dry_run: bool) -> dict:
+    status = str(employee.get("status") or "candidate")
+    if status not in {"active", "candidate", "archived"}:
+        status = "candidate"
+    profile = {
+        "id": employee["id"],
+        "name": employee["name"],
+        "role": employee["role"],
+        "runtime": employee["runtime"],
+        "workspace": employee["workspace"],
+        "status": status,
+        "source": employee.get("source", ""),
+        "created_at": now(),
+    }
+    files = write_employee_files(employee["id"], profile, dry_run=dry_run)
+    if dry_run:
+        return {"employee": profile, "files": files}
+    ensure_runtime(conn, employee["runtime"])
+    ts = now()
+    conn.execute(
+        """
+        INSERT INTO employees(id, name, role, runtime, workspace, status, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET
+          name = excluded.name,
+          role = excluded.role,
+          runtime = excluded.runtime,
+          workspace = excluded.workspace,
+          status = CASE
+            WHEN excluded.status = 'active' THEN 'active'
+            WHEN employees.status = 'active' THEN employees.status
+            ELSE excluded.status
+          END,
+          updated_at = excluded.updated_at
+        """,
+        (employee["id"], employee["name"], employee["role"], employee["runtime"], employee["workspace"], status, ts, ts),
+    )
+    communication = sync_employee_name_alias(employee["id"], employee["name"], dry_run=False)
+    audit(conn, "companyctl", "employee.openclaw_sync", employee["id"], {**profile, "communication": communication})
+    return {"employee": profile, "files": files, "communication": communication}
+
+
+def cmd_employee_sync_openclaw_runtime(args: argparse.Namespace) -> int:
+    config_path = Path(args.config)
+    plan = openclaw_employee_sync_plan(config_path)
+    conn = connect()
+    synced = []
+    skipped = []
+    try:
+        existing = {row["id"]: dict(row) for row in conn.execute("SELECT * FROM employees")}
+        for employee in plan:
+            if args.active_only and employee["status"] != "active":
+                continue
+            current = existing.get(employee["id"])
+            if current and current.get("runtime") != "openclaw" and employee.get("source") == "openclaw_runtime_dir":
+                skipped.append({"id": employee["id"], "reason": f"existing_runtime_{current.get('runtime')}"})
+                continue
+            synced.append(upsert_employee_with_status(conn, employee, dry_run=args.dry_run))
+        if not args.dry_run:
+            conn.commit()
+    finally:
+        conn.close()
+    counts = {
+        "active": sum(1 for item in plan if item["status"] == "active"),
+        "candidate": sum(1 for item in plan if item["status"] == "candidate"),
+        "synced": len(synced),
+        "skipped": len(skipped),
+    }
+    emit({"ok": True, "dry_run": args.dry_run, "config": str(config_path), "counts": counts, "employees": [item["employee"] for item in synced], "skipped": skipped})
+    return 0
+
+
+def sync_openclaw_heartbeats(conn: sqlite3.Connection, *, dry_run: bool) -> dict:
+    inventory = openclaw_runtime_inventory(conn)
+    agent_dirs = inventory.get("agent_dirs", {})
+    spools = inventory.get("telegram_spools", {})
+    employees = rows(conn, "SELECT id, status FROM employees WHERE runtime = 'openclaw' ORDER BY id")
+    synced = []
+    skipped = []
+    for employee in employees:
+        employee_id = employee["id"]
+        if employee["status"] != "active":
+            skipped.append({"id": employee_id, "reason": f"status_{employee['status']}"})
+            continue
+        agent = agent_dirs.get(employee_id) or agent_dirs.get(employee_id.replace("_", "-"))
+        spool = spools.get(employee_id) or spools.get(employee_id.replace("-", "_"))
+        session_count = int((agent or {}).get("session_count", 0) or 0)
+        spool_exists = bool((spool or {}).get("exists"))
+        if not agent and not spool:
+            skipped.append({"id": employee_id, "reason": "openclaw_runtime_not_found"})
+            continue
+        metadata = {
+            "source": "openclaw-runtime-sync",
+            "runtime_agent_found": bool(agent),
+            "telegram_spool_found": spool_exists,
+            "session_count": session_count,
+            "spool_pending": int((spool or {}).get("pending", 0) or 0),
+            "spool_processing": int((spool or {}).get("processing", 0) or 0),
+            "note": "Read-only heartbeat derived from OpenClaw runtime inventory; it does not prove task completion.",
+        }
+        if not dry_run:
+            heartbeat_internal(conn, employee_id, metadata)
+        synced.append({"id": employee_id, **metadata})
+    return {"ok": True, "dry_run": dry_run, "synced": synced, "skipped": skipped, "counts": {"synced": len(synced), "skipped": len(skipped)}}
+
+
+def cmd_employee_sync_openclaw_heartbeats(args: argparse.Namespace) -> int:
+    conn = connect()
+    try:
+        result = sync_openclaw_heartbeats(conn, dry_run=args.dry_run)
+    finally:
+        conn.close()
+    emit(result)
+    return 0
+
+
 def update_employee_communication_profile(
     *,
     employee_id: str,
@@ -7550,6 +7711,14 @@ def build_parser() -> argparse.ArgumentParser:
     emp_import_openclaw.add_argument("--config", default=str(openclaw_root() / "openclaw.json"))
     emp_import_openclaw.add_argument("--dry-run", action="store_true")
     emp_import_openclaw.set_defaults(func=cmd_employee_import_openclaw)
+    emp_sync_openclaw = emp_sub.add_parser("sync-openclaw-runtime")
+    emp_sync_openclaw.add_argument("--config", default=str(openclaw_root() / "openclaw.json"))
+    emp_sync_openclaw.add_argument("--active-only", action="store_true", help="only sync agents declared in openclaw.json as active employees")
+    emp_sync_openclaw.add_argument("--dry-run", action="store_true")
+    emp_sync_openclaw.set_defaults(func=cmd_employee_sync_openclaw_runtime)
+    emp_sync_openclaw_hb = emp_sub.add_parser("sync-openclaw-heartbeats")
+    emp_sync_openclaw_hb.add_argument("--dry-run", action="store_true")
+    emp_sync_openclaw_hb.set_defaults(func=cmd_employee_sync_openclaw_heartbeats)
     emp_onboard = emp_sub.add_parser("onboard")
     emp_onboard.add_argument("--id", required=True)
     emp_onboard.add_argument("--name", required=True)

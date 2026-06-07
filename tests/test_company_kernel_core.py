@@ -4757,6 +4757,77 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertNotIn("market-agent", payload["missing_registered"])
         self.assertEqual(1, payload["counts"]["missing_registered"])
 
+    def test_employee_sync_openclaw_runtime_registers_config_agents_and_runtime_candidates(self) -> None:
+        config = self.root / "openclaw" / "openclaw.json"
+        config.parent.mkdir(parents=True, exist_ok=True)
+        config.write_text(
+            json.dumps(
+                {
+                    "agents": {
+                        "list": [
+                            {"id": "main", "name": "main", "workspace": str(self.root / "workspace-xmanx")},
+                            {"id": "nestcar", "name": "car-rental", "workspace": str(self.root / "workspace-nestcar")},
+                        ]
+                    }
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        for agent_id in ("main", "nestcar", "runtime-only"):
+            sessions = self.root / "openclaw" / "agents" / agent_id / "sessions"
+            sessions.mkdir(parents=True, exist_ok=True)
+            (sessions / "sessions.json").write_text('{"s1": {}}', encoding="utf-8")
+
+        code, synced = run_cli("employee", "sync-openclaw-runtime", "--config", str(config))
+        self.assertEqual(0, code, synced)
+        self.assertEqual(2, synced["counts"]["active"])
+        self.assertEqual(1, synced["counts"]["candidate"])
+
+        conn = companyctl.connect_readonly()
+        try:
+            employees = {row["id"]: dict(row) for row in conn.execute("SELECT * FROM employees WHERE id IN ('main', 'nestcar', 'runtime-only')")}
+        finally:
+            conn.close()
+        self.assertEqual("active", employees["main"]["status"])
+        self.assertEqual("active", employees["nestcar"]["status"])
+        self.assertEqual("candidate", employees["runtime-only"]["status"])
+        self.assertEqual("openclaw", employees["nestcar"]["runtime"])
+
+        status, payload = api_gateway.route_get("/v1/openclaw/runtime-inventory", {})
+        self.assertEqual(HTTPStatus.OK, status, payload)
+        self.assertEqual(0, payload["counts"]["missing_registered"])
+        self.assertTrue(payload["agent_dirs"]["runtime-only"]["registered"])
+
+    def test_employee_sync_openclaw_heartbeats_marks_active_runtime_agents_seen(self) -> None:
+        config = self.root / "openclaw" / "openclaw.json"
+        config.parent.mkdir(parents=True, exist_ok=True)
+        config.write_text(
+            json.dumps({"agents": {"list": [{"id": "nestcar", "name": "car-rental", "workspace": str(self.root / "workspace-nestcar")}]}}),
+            encoding="utf-8",
+        )
+        sessions = self.root / "openclaw" / "agents" / "nestcar" / "sessions"
+        sessions.mkdir(parents=True, exist_ok=True)
+        (sessions / "sessions.json").write_text('{"s1": {}}', encoding="utf-8")
+        spool = self.root / "openclaw" / "telegram" / "ingress-spool-nestcar"
+        spool.mkdir(parents=True, exist_ok=True)
+
+        code, synced = run_cli("employee", "sync-openclaw-runtime", "--config", str(config))
+        self.assertEqual(0, code, synced)
+        code, heartbeat = run_cli("employee", "sync-openclaw-heartbeats")
+        self.assertEqual(0, code, heartbeat)
+        self.assertEqual(1, heartbeat["counts"]["synced"])
+
+        conn = companyctl.connect_readonly()
+        try:
+            row = conn.execute("SELECT metadata_json FROM heartbeats WHERE agent_id = 'nestcar'").fetchone()
+        finally:
+            conn.close()
+        self.assertIsNotNone(row)
+        metadata = json.loads(row["metadata_json"])
+        self.assertEqual("openclaw-runtime-sync", metadata["source"])
+        self.assertEqual(1, metadata["session_count"])
+
     def test_api_gateway_exposes_internal_watchdog_for_no_receipt_messages_and_open_tasks(self) -> None:
         code, sent = run_cli("message", "send", "--from", "openclaw-main", "--to", "nestcar", "--body", "请处理内部任务但没有回执")
         self.assertEqual(0, code, sent)
@@ -6764,6 +6835,33 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertNotIn("retired", wildcard_agents)
         self.assertEqual(1, wildcard_agents.count("openclaw-main"))
 
+    def test_daemon_tick_can_sync_openclaw_runtime_and_heartbeats(self) -> None:
+        calls = []
+
+        def fake_run_companyctl(*args: str) -> dict:
+            calls.append(args)
+            return {"returncode": 0, "stdout": json.dumps({"ok": True}), "stderr": ""}
+
+        with mock.patch.object(company_daemon, "run_companyctl", side_effect=fake_run_companyctl):
+            state = company_daemon.tick(
+                {
+                    "sync_openclaw_runtime": True,
+                    "sync_openclaw_heartbeats": True,
+                    "run_repair": False,
+                    "run_scheduler": False,
+                    "run_supervisor_delivery_loop": False,
+                    "run_retries": False,
+                    "heartbeat_agents": [],
+                    "heartbeat_runtimes": [],
+                    "adapter_workers": [],
+                }
+            )
+        self.assertTrue(state["ok"])
+        self.assertEqual(("employee", "sync-openclaw-runtime"), calls[0])
+        self.assertEqual(("employee", "sync-openclaw-heartbeats"), calls[1])
+        summary = company_daemon.summarize_state(state)
+        self.assertEqual(2, summary["counts"]["openclaw_sync"])
+
     def test_daemon_records_adapter_runs_for_dashboard(self) -> None:
         code, submitted = run_cli("task", "submit", "--from", "openclaw-main", "--to", "codex", "--task-id", "task-adapter-run-dashboard", "--title", "adapter run dashboard")
         self.assertEqual(code, 0, submitted)
@@ -7283,7 +7381,7 @@ class CompanyKernelCoreTest(unittest.TestCase):
         }
         summary = company_daemon.summarize_state(state)
         self.assertFalse(summary["ok"])
-        self.assertEqual({"steps": 5, "heartbeats": 1, "adapters": 1, "repair": 1, "scheduler": 1, "supervisor": 1, "failed": 1}, summary["counts"])
+        self.assertEqual({"steps": 5, "heartbeats": 1, "adapters": 1, "repair": 1, "scheduler": 1, "supervisor": 1, "openclaw_sync": 0, "failed": 1}, summary["counts"])
         self.assertEqual(["main"], summary["heartbeat_agents"])
         self.assertEqual(["adapter.codex"], summary["failed_steps"])
         self.assertNotIn("results", summary)
