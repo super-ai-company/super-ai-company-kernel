@@ -3480,6 +3480,24 @@
     }).join('\n');
   }
 
+  function attemptRecoveryChainSummary(attempts) {
+    const rows = Array.isArray(attempts) ? attempts : [];
+    if (!rows.length) {
+      return 'No attempts yet; old attempts are retained when retry/reassign creates a new attempt.';
+    }
+    const lines = [
+      'old attempts are retained; retry/reassign creates a new attempt with the same trace_id and previous_attempt_id.'
+    ];
+    rows.forEach((item, index) => {
+      const metadata = item.metadata || {};
+      const previous = metadata.previous_attempt_id || '';
+      const reason = metadata.reason || metadata.retry_reason || '';
+      const chain = previous ? `${previous} -> ${item.attempt_id || '-'}` : `${item.attempt_id || '-'}`;
+      lines.push(`#${index + 1} ${item.status || '-'} · ${item.adapter_type || '-'} · attempt=${item.attempt_id || '-'} · previous_attempt_id=${previous || '-'} · chain=${chain}${reason ? ` · reason=${reason}` : ''}`);
+    });
+    return lines.join('\n');
+  }
+
   function progressEventsSummary(events) {
     const rows = Array.isArray(events) ? events : [];
     if (!rows.length) return '-';
@@ -3746,6 +3764,7 @@
         ['Sanitized Logs', sanitizedLogsSummary(sanitizedLogs)],
         ['Attempt History', attemptHistorySummary(attempts)],
         ['Attempt Lineage', attemptLineageSummary(attempts)],
+        ['Attempt Recovery Chain', attemptRecoveryChainSummary(attempts)],
         ['Recent Events', events.slice(-8).map(item => `${item.created_at} ${item.event_type} ${item.id}`).join('\n') || '-'],
         ['Approvals', approvals.map(item => `${item.status}:${item.id || item.approval_id || ''}`).join('\n') || '-'],
         ['Raw', payload],
