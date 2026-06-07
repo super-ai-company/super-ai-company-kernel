@@ -1835,6 +1835,7 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertIn("counts.employees_online", html)
         self.assertIn("counts.employees_total", html)
         self.assertIn("counts.employees_abnormal", html)
+        self.assertIn("counts.done_tasks", html)
         self.assertIn("busy / candidate / active-limited / abnormal", html)
         self.assertEqual(5, html.count('class="nav-btn'))
         self.assertIn("Cockpit Console", html)
@@ -1901,12 +1902,18 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual(0, code, submitted_blocked)
         code, blocked = run_cli("task", "block", "--agent", "codex-cockpit", "--task-id", "task-cockpit-blocked", "--blocker", "needs owner input")
         self.assertEqual(0, code, blocked)
+        code, submitted_done = run_cli("task", "submit", "--from", "main", "--to", "codex-cockpit", "--task-id", "task-cockpit-done", "--title", "Cockpit done task")
+        self.assertEqual(0, code, submitted_done)
         conn = companyctl.connect()
         try:
             workspace = companyctl.ensure_task_workspace(conn, "task-cockpit-long")
             evidence_path = Path(workspace["path"]) / "evidence" / "result.md"
             evidence_path.write_text("safe evidence\n", encoding="utf-8")
             conn.execute("UPDATE tasks SET evidence_path = ?, status = 'claimed', claimed_by = 'codex-cockpit', updated_at = ? WHERE id = ?", (str(evidence_path), companyctl.now(), "task-cockpit-long"))
+            done_workspace = companyctl.ensure_task_workspace(conn, "task-cockpit-done")
+            done_evidence = Path(done_workspace["path"]) / "evidence" / "done.md"
+            done_evidence.write_text("done evidence\n", encoding="utf-8")
+            conn.execute("UPDATE tasks SET evidence_path = ?, status = 'completed', claimed_by = 'codex-cockpit', summary = 'done', updated_at = ? WHERE id = ?", (str(done_evidence), companyctl.now(), "task-cockpit-done"))
             conn.commit()
         finally:
             conn.close()
@@ -1936,6 +1943,7 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual(employee_total, cockpit["counts"]["employees_total"])
         self.assertEqual(2, cockpit["counts"]["employees_online"])
         self.assertGreaterEqual(cockpit["counts"]["employees_abnormal"], 1)
+        self.assertEqual(1, cockpit["counts"]["done_tasks"])
         cockpit_employees = {item["id"]: item for item in cockpit["employees"]}
         self.assertEqual("busy", cockpit_employees["codex-cockpit"]["status"])
         self.assertEqual("active_ready", cockpit_employees["codex-cockpit"]["readiness_level"])

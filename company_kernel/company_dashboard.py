@@ -509,6 +509,7 @@ def build_cockpit_summary(summary: dict) -> dict:
             "running_tasks": sum(1 for item in summary.get("tasks", []) if str(item.get("status", "")).lower() in {"claimed", "running"}),
             "stagnant_tasks": sum(1 for item in long_tasks if item.get("long_task_state") == "progress_stagnant"),
             "blocked_tasks": sum(1 for item in summary.get("tasks", []) if str(item.get("status", "")).lower() in {"blocked", "failed", "stale"}),
+            "done_tasks": sum(1 for item in summary.get("tasks", []) if str(item.get("status", "")).lower() in {"completed", "done"}),
             "pending_approvals": len(pending_approvals),
             "recent_evidence": len(recent_evidence),
         },

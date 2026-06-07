@@ -3219,6 +3219,11 @@
         <div class="cockpit-value" style="color:${Number(counts.pending_approvals || 0) ? 'var(--color-amber)' : 'var(--text-primary)'}">${escapeHtml(counts.pending_approvals || 0)}</div>
         <div class="cockpit-subtext">external_send stays dry-run until owner approval</div>
       </div>
+      <div class="cockpit-card">
+        <h3>Done Tasks</h3>
+        <div class="cockpit-value" style="color:var(--color-green)">${escapeHtml(counts.done_tasks || 0)}</div>
+        <div class="cockpit-subtext">done requires task_id / attempt_id bound final evidence</div>
+      </div>
     `;
     const rows = (cockpit && cockpit.long_tasks) || [];
     longTasks.innerHTML = rows.length ? rows.slice(0, 8).map(item => `
