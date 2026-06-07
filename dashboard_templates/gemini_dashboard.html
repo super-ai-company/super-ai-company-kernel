@@ -2602,6 +2602,56 @@
         </div>
 
         <div class="section-card">
+          <h2><i class="fa-solid fa-box-archive"></i> Artifact Registry</h2>
+          <div style="color:var(--text-muted);font-size:12px;margin-bottom:12px;">
+            Registered artifacts are shown with sanitized workspace-relative paths and lifecycle state.
+          </div>
+          <div class="table-container">
+            <table>
+              <thead>
+                <tr>
+                  <th>Artifact ID</th>
+                  <th>Task</th>
+                  <th>Employee</th>
+                  <th>Stage</th>
+                  <th>Status</th>
+                  <th>Version</th>
+                  <th>Safe Path</th>
+                </tr>
+              </thead>
+              <tbody id="audit-artifacts-tbody">
+                <!-- Populated by JS -->
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <div class="section-card">
+          <h2><i class="fa-solid fa-right-left"></i> Handoff Contracts</h2>
+          <div style="color:var(--text-muted);font-size:12px;margin-bottom:12px;">
+            Task handoffs expose who passed which artifacts to the next task.
+          </div>
+          <div class="table-container">
+            <table>
+              <thead>
+                <tr>
+                  <th>Handoff ID</th>
+                  <th>From Task</th>
+                  <th>To Task</th>
+                  <th>From</th>
+                  <th>To</th>
+                  <th>Status</th>
+                  <th>Artifacts</th>
+                </tr>
+              </thead>
+              <tbody id="audit-handoffs-tbody">
+                <!-- Populated by JS -->
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <div class="section-card">
           <h2 data-i18n="rfc_governance_title"><i class="fa-solid fa-code-pull-request"></i> RFC Governance</h2>
           <div class="table-container">
             <table>
@@ -3054,6 +3104,8 @@
       const adapterRuns = await companyApiGet('/v1/adapter-runs?limit=20');
       const approvals = await companyApiGet('/v1/approvals?limit=20');
       const evidence = await companyApiGet('/v1/evidence?limit=50');
+      const artifacts = await companyApiGet('/v1/artifacts?limit=50');
+      const handoffs = await companyApiGet('/v1/handoffs?limit=50');
       const telemetry = await companyApiGet('/v1/telemetry/traces?limit=20');
       const employees = await companyApiGet('/v1/employees');
       const openclawInventory = await companyApiGet('/v1/openclaw/runtime-inventory');
@@ -3069,6 +3121,8 @@
         adapter_runs: adapterRuns.adapter_runs || [],
         approvals: approvals.approvals || [],
         evidence_records: evidence.evidence || [],
+        artifact_records: artifacts.artifacts || [],
+        handoff_records: handoffs.handoffs || [],
         traces: telemetry.traces || [],
         employees: employees.employees || [],
         openclaw_runtime_inventory: openclawInventory || {}
@@ -4489,6 +4543,8 @@
       });
     }
     refreshAuditEvidenceTable(summary.evidence_records || []);
+    refreshAuditArtifactsTable(summary.artifact_records || []);
+    refreshAuditHandoffsTable(summary.handoff_records || []);
   }
 
   function refreshAuditEvidenceTable(evidenceRecords) {
@@ -4514,6 +4570,49 @@
         </tr>
       `;
     }).join('') : '<tr><td colspan="7" style="color:var(--text-muted);text-align:center;padding:24px;">No evidence records.</td></tr>';
+  }
+
+  function refreshAuditArtifactsTable(artifactRecords) {
+    const tbody = document.getElementById('audit-artifacts-tbody');
+    if (!tbody) return;
+    const rows = Array.isArray(artifactRecords) ? artifactRecords : [];
+    tbody.innerHTML = rows.length ? rows.map(item => {
+      const display = item.display || {};
+      return `
+        <tr>
+          <td style="font-family: monospace; max-width: 260px;">${escapeHtml(item.artifact_id || '')}</td>
+          <td style="font-family: monospace;">${escapeHtml(item.task_id || '-')}</td>
+          <td>${escapeHtml(item.employee_id || '-')}</td>
+          <td><span class="badge claimed">${escapeHtml(item.stage || '-')}</span></td>
+          <td><span class="long-task-state ${item.status === 'rejected' ? 'blocked' : (item.status === 'superseded' ? 'stale' : 'success')}">${escapeHtml(item.status || '-')}</span></td>
+          <td>${escapeHtml(item.version || '-')}</td>
+          <td>
+            <div style="font-family: monospace;">${escapeHtml(display.relative_path || display.basename || '-')}</div>
+            <div style="color:var(--text-muted);font-size:11px;">absolute_path_exposed=${display.absolute_path_exposed ? 'yes' : 'no'}</div>
+          </td>
+        </tr>
+      `;
+    }).join('') : '<tr><td colspan="7" style="color:var(--text-muted);text-align:center;padding:24px;">No artifacts.</td></tr>';
+  }
+
+  function refreshAuditHandoffsTable(handoffRecords) {
+    const tbody = document.getElementById('audit-handoffs-tbody');
+    if (!tbody) return;
+    const rows = Array.isArray(handoffRecords) ? handoffRecords : [];
+    tbody.innerHTML = rows.length ? rows.map(item => {
+      const artifacts = Array.isArray(item.artifacts) ? item.artifacts : [];
+      return `
+        <tr>
+          <td style="font-family: monospace; max-width: 260px;">${escapeHtml(item.handoff_id || '')}</td>
+          <td style="font-family: monospace;">${escapeHtml(item.from_task_id || '-')}</td>
+          <td style="font-family: monospace;">${escapeHtml(item.to_task_id || '-')}</td>
+          <td>${escapeHtml(item.from_employee_id || '-')}</td>
+          <td>${escapeHtml(item.to_employee_id || '-')}</td>
+          <td><span class="long-task-state ${item.status === 'rejected' ? 'blocked' : 'success'}">${escapeHtml(item.status || '-')}</span></td>
+          <td>${escapeHtml(artifacts.join(', ') || '-')}</td>
+        </tr>
+      `;
+    }).join('') : '<tr><td colspan="7" style="color:var(--text-muted);text-align:center;padding:24px;">No handoffs.</td></tr>';
   }
 
   async function decideApprovalFromDashboard(event, approvalId, decision) {

@@ -1832,6 +1832,12 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertIn("audit-evidence-tbody", html)
         self.assertIn("/v1/evidence?limit=50", html)
         self.assertIn("refreshAuditEvidenceTable", html)
+        self.assertIn("audit-artifacts-tbody", html)
+        self.assertIn("/v1/artifacts?limit=50", html)
+        self.assertIn("refreshAuditArtifactsTable", html)
+        self.assertIn("audit-handoffs-tbody", html)
+        self.assertIn("/v1/handoffs?limit=50", html)
+        self.assertIn("refreshAuditHandoffsTable", html)
         self.assertIn("absolute_path_exposed", html)
         self.assertIn("long_task_state || task.status", html)
         self.assertIn("handleOwnerAttentionAction", html)
@@ -1970,6 +1976,66 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertIn("v1-delivery.md", payload_json)
         self.assertNotIn(str(self.root), payload_json)
         self.assertNotIn("path_or_url", payload_json)
+
+    def test_api_gateway_lists_sanitized_artifacts_and_handoffs(self) -> None:
+        for employee_id, role in [("main", "operator"), ("writer", "writer"), ("qa", "qa")]:
+            code, created = run_cli("employee", "create", "--id", employee_id, "--name", employee_id, "--role", role, "--runtime", "local", "--workspace", str(self.root / "workspace" / employee_id))
+            self.assertEqual(0, code, created)
+            if employee_id != "main":
+                self.mark_active(employee_id)
+        code, submitted = run_cli("task", "submit", "--from", "main", "--to", "writer", "--task-id", "task-api-artifact-source", "--title", "Artifact source")
+        self.assertEqual(0, code, submitted)
+        code, qa_task = run_cli("task", "submit", "--from", "main", "--to", "qa", "--task-id", "task-api-artifact-qa", "--title", "Artifact QA")
+        self.assertEqual(0, code, qa_task)
+        conn = companyctl.connect()
+        try:
+            workspace = companyctl.ensure_task_workspace(conn, "task-api-artifact-source")
+            report_path = Path(workspace["path"]) / "work" / "brief.md"
+            report_path.write_text("brief artifact\n", encoding="utf-8")
+            artifact = companyctl.register_artifact_internal(
+                conn,
+                task_id="task-api-artifact-source",
+                employee_id="writer",
+                path=str(report_path),
+                artifact_type="markdown",
+                summary="brief artifact",
+                stage="intermediate",
+            )["artifact"]
+            handoff = companyctl.create_handoff_internal(
+                conn,
+                from_task_id="task-api-artifact-source",
+                to_task_id="task-api-artifact-qa",
+                from_employee_id="writer",
+                to_employee_id="qa",
+                summary="handoff to qa",
+                artifacts=[artifact["artifact_id"]],
+                known_issues="none",
+                next_steps="review artifact",
+                required_actions="accept or reject",
+                acceptance_notes="qa notes",
+            )["handoff"]
+            conn.commit()
+        finally:
+            conn.close()
+
+        status, artifacts = api_gateway.route_get("/v1/artifacts", {"limit": ["10"]})
+        self.assertEqual(200, status, artifacts)
+        artifact_item = next(item for item in artifacts["artifacts"] if item["artifact_id"] == artifact["artifact_id"])
+        self.assertEqual("task-api-artifact-source", artifact_item["task_id"])
+        self.assertTrue(artifact_item["display"]["allowed"])
+        self.assertFalse(artifact_item["display"]["absolute_path_exposed"])
+        artifact_json = json.dumps(artifact_item, ensure_ascii=False)
+        self.assertIn("artifacts/brief.md", artifact_json)
+        self.assertNotIn(str(self.root), artifact_json)
+        self.assertNotIn("path", artifact_item)
+
+        status, handoffs = api_gateway.route_get("/v1/handoffs", {"limit": ["10"]})
+        self.assertEqual(200, status, handoffs)
+        handoff_item = next(item for item in handoffs["handoffs"] if item["handoff_id"] == handoff["handoff_id"])
+        self.assertEqual("task-api-artifact-source", handoff_item["from_task_id"])
+        self.assertEqual("task-api-artifact-qa", handoff_item["to_task_id"])
+        self.assertEqual([artifact["artifact_id"]], handoff_item["artifacts"])
+        self.assertNotIn("artifacts_json", handoff_item)
 
     def test_api_gateway_streams_company_events_as_sse(self) -> None:
         conn = companyctl.connect()
@@ -4921,6 +4987,8 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertIn("/v1/approvals/{approval_id}/approve", openapi["paths"])
         self.assertIn("/v1/approvals/{approval_id}/resolve", openapi["paths"])
         self.assertIn("/v1/evidence", openapi["paths"])
+        self.assertIn("/v1/artifacts", openapi["paths"])
+        self.assertIn("/v1/handoffs", openapi["paths"])
         doctor_query_names = {
             parameter["name"]
             for parameter in openapi["paths"]["/v1/doctor"]["get"]["parameters"]
