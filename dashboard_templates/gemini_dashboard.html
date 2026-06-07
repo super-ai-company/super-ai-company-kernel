@@ -3264,6 +3264,14 @@
     }).join('\n');
   }
 
+  function sanitizedLogsSummary(logs) {
+    const rows = Array.isArray(logs) ? logs : [];
+    if (!rows.length) return '-';
+    return rows.slice(0, 8).map(item => {
+      return `${formatDate(item.created_at || '') || '-'} · ${item.run_id || '-'} · ${item.agent_id || '-'} · ok=${item.ok ? 'yes' : 'no'} · ${item.sanitized_log || ''}`;
+    }).join('\n');
+  }
+
   function latestAttemptDetail(attempts) {
     const rows = Array.isArray(attempts) ? attempts : [];
     return rows.length ? rows[rows.length - 1] : {};
@@ -3419,6 +3427,7 @@
       const attempts = payload.attempts || [];
       const events = payload.events || [];
       const progressEvents = payload.progress_events || [];
+      const sanitizedLogs = payload.sanitized_logs || [];
       const approvals = payload.approvals || [];
       const evidenceRecords = payload.evidence_records || [];
       const supervisorState = payload.supervisor_state || {};
@@ -3438,6 +3447,7 @@
         ['Correction State', correctionSummary],
         ['Supervisor State', supervisorState],
         ['Progress Events', progressEventsSummary(progressEvents)],
+        ['Sanitized Logs', sanitizedLogsSummary(sanitizedLogs)],
         ['Attempt History', attemptHistorySummary(attempts)],
         ['Attempt Lineage', attemptLineageSummary(attempts)],
         ['Recent Events', events.slice(-8).map(item => `${item.created_at} ${item.event_type} ${item.id}`).join('\n') || '-'],
