@@ -14,6 +14,7 @@ import unittest
 from datetime import datetime, timedelta, timezone
 from http import HTTPStatus
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
 from company_kernel import antigravity_adapter
@@ -1804,6 +1805,7 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertNotIn("Scenario Seeder", html)
         self.assertNotIn("Simulation: Normal", html)
         self.assertIn("/v1/dashboard/cockpit", html)
+        self.assertIn("/v1/events/stream", html)
         self.assertIn("Progress Stagnant", html)
         self.assertIn("AI Employee Cockpit", html)
 
@@ -1861,6 +1863,39 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertTrue(shown["evidence"]["allowed"])
         self.assertFalse(shown["evidence"]["absolute_path_exposed"])
         self.assertNotIn(str(self.root), json.dumps(shown["evidence"], ensure_ascii=False))
+
+    def test_api_gateway_streams_company_events_as_sse(self) -> None:
+        conn = companyctl.connect()
+        try:
+            companyctl.record_event(conn, "task.progress", "codex", task_id="task-sse", payload={"message": "stream me"}, trace_id="trace-sse")
+        finally:
+            conn.close()
+
+        handler = object.__new__(api_gateway.ApiHandler)
+        handler.headers = {}
+        handler.wfile = io.BytesIO()
+        sent = []
+
+        def fake_send_response(code):
+            sent.append(("status", code))
+
+        def fake_send_header(name, value):
+            sent.append((name, value))
+
+        handler.send_response = fake_send_response
+        handler.send_header = fake_send_header
+        handler.end_headers = lambda: sent.append(("end", ""))
+        handler.server = SimpleNamespace(quiet=True)
+
+        with mock.patch.object(api_gateway.time, "sleep", return_value=None):
+            handler.stream_events({"max_cycles": ["1"], "poll_seconds": ["1"], "limit": ["5"]})
+
+        output = handler.wfile.getvalue().decode("utf-8")
+        self.assertIn(("status", HTTPStatus.OK), sent)
+        self.assertIn(("Content-Type", "text/event-stream; charset=utf-8"), sent)
+        self.assertIn("event: stream_status", output)
+        self.assertIn("event: company_event", output)
+        self.assertIn("task.progress", output)
 
     def test_evidence_sanitizer_blocks_absolute_secret_paths(self) -> None:
         secret = self.root / ".ssh" / "id_rsa"
