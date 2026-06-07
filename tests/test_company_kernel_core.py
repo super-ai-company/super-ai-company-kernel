@@ -1754,7 +1754,7 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertIn("counts", dashboard_trace)
         self.assertEqual(1, dashboard_trace["counts"]["adapter_runs"])
         with contextlib.redirect_stdout(io.StringIO()):
-            code = company_dashboard.main(["--output", str(output)])
+            code = company_dashboard.main(["--output", str(output), "--variant", "basic"])
         self.assertEqual(0, code)
         html = output.read_text(encoding="utf-8")
         self.assertIn("Conversations", html)
@@ -1773,6 +1773,30 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertIn("Needs Attention", html)
         self.assertIn("trace-dashboard-live", html)
         self.assertIn("company-codex-adapter", html)
+
+    def test_dashboard_auto_variant_prefers_advanced_live_template(self) -> None:
+        output = self.root / "state" / "dashboard-auto.html"
+        with contextlib.redirect_stdout(io.StringIO()) as stdout:
+            code = company_dashboard.main(["--output", str(output)])
+        self.assertEqual(0, code)
+        payload = json.loads(stdout.getvalue())
+        self.assertEqual("advanced", payload["variant"])
+        html = output.read_text(encoding="utf-8")
+        self.assertIn("window.companyApiBase", html)
+        self.assertIn("/v1/telemetry/traces", html)
+        self.assertIn("/v1/messages/recent-direct", html)
+
+    def test_dashboard_auto_variant_falls_back_to_basic_when_template_missing(self) -> None:
+        output = self.root / "state" / "dashboard-auto-fallback.html"
+        missing_template = self.root / "dashboard_templates" / "missing-dashboard.html"
+        with contextlib.redirect_stdout(io.StringIO()) as stdout:
+            code = company_dashboard.main(["--output", str(output), "--template", str(missing_template)])
+        self.assertEqual(0, code)
+        payload = json.loads(stdout.getvalue())
+        self.assertEqual("basic", payload["variant"])
+        html = output.read_text(encoding="utf-8")
+        self.assertIn("Company Kernel Dashboard", html)
+        self.assertNotIn("window.companyApiBase", html)
 
     def test_dashboard_summary_includes_direct_messages_recent(self) -> None:
         code, created = run_cli("employee", "create", "--id", "main", "--name", "main", "--role", "operator", "--runtime", "openclaw", "--workspace", str(self.root / "workspace" / "main"))
@@ -2350,7 +2374,7 @@ class CompanyKernelCoreTest(unittest.TestCase):
 
         output = self.root / "state" / "dashboard-employees.html"
         with contextlib.redirect_stdout(io.StringIO()):
-            code = company_dashboard.main(["--output", str(output)])
+            code = company_dashboard.main(["--output", str(output), "--variant", "basic"])
         self.assertEqual(0, code)
         html = output.read_text(encoding="utf-8")
         self.assertIn("<td>hermes</td><td>active</td><td>online</td><td></td><td>yes</td>", html)
@@ -2445,7 +2469,7 @@ class CompanyKernelCoreTest(unittest.TestCase):
     }).join('');
   }
   document.getElementById('db-path-label').innerText = isSimulationMode ? 'simulation://gateway.company.internal' : 'https://gateway.company.internal';
-  // Stubs for test assertions: companyApiGet checkCompanyApi /v1/health refreshLiveDashboardFromApi window.refreshLiveDashboardFromApi /v1/tasks?limit=50 /v1/messages/recent-direct?limit=20 /v1/telemetry/traces telemetry.traces populateKanban(window.summaryData) kanbanTransitionTask const agent = (task.claimed_by || task.target_agent block`, { agent, blocker: reason } stalled_tasks setInterval(refreshLiveDashboardFromApi, 10000) API OFFLINE /v1/attendance/latest realOnboardGeneratedEmployee realDirectEmployeeMessage openDirectEmployeeMessage /v1/messages/direct realOffboardEmployee openEditEmployeeProfile realUpdateEmployeeProfile 'PATCH' 'DELETE' timeZone: 'Asia/Bangkok' THA bindMentionAutocomplete agent-mention-suggestions collaborationHelpText 是否需要其他员工协助 kernel-form-modal openKernelFormModal('direct' openKernelFormModal('conversation' employee-card-actions employee-card-menu toggleEmployeeActionMenu Send Message prefillChatMention Chat Hub ready for @ grid-template-columns: minmax(0, 1fr) 34px dashboard-layout-fix showApprovalDetails refreshGovernanceTables refreshTraceTelemetry refreshTraceTelemetry() notify-route-status setTimeout(loadNotificationSettings, 350) decideApprovalFromDashboard /v1/approvals/${encodeURIComponent(approvalId)}/approve /v1/approvals/${encodeURIComponent(approvalId)}/deny Approve Deny Approval Actions
+  // Stubs for test assertions: companyApiGet checkCompanyApi /v1/health refreshLiveDashboardFromApi window.refreshLiveDashboardFromApi /v1/tasks?limit=50 /v1/messages/recent-direct?limit=20 /v1/telemetry/traces /v1/openclaw/runtime-inventory openclaw-runtime-inventory-container telemetry.traces populateKanban(window.summaryData) kanbanTransitionTask const agent = (task.claimed_by || task.target_agent block`, { agent, blocker: reason } stalled_tasks setInterval(refreshLiveDashboardFromApi, 10000) API OFFLINE /v1/attendance/latest realOnboardGeneratedEmployee realDirectEmployeeMessage openDirectEmployeeMessage /v1/messages/direct realOffboardEmployee openEditEmployeeProfile realUpdateEmployeeProfile 'PATCH' 'DELETE' timeZone: 'Asia/Bangkok' THA bindMentionAutocomplete agent-mention-suggestions collaborationHelpText 是否需要其他员工协助 kernel-form-modal openKernelFormModal('direct' openKernelFormModal('conversation' employee-card-actions employee-card-menu toggleEmployeeActionMenu Send Message prefillChatMention Chat Hub ready for @ grid-template-columns: minmax(0, 1fr) 34px dashboard-layout-fix showApprovalDetails refreshGovernanceTables refreshTraceTelemetry refreshTraceTelemetry() notify-route-status setTimeout(loadNotificationSettings, 350) decideApprovalFromDashboard /v1/approvals/${encodeURIComponent(approvalId)}/approve /v1/approvals/${encodeURIComponent(approvalId)}/deny Approve Deny Approval Actions
 </script>
 </body></html>
             """,
@@ -2475,6 +2499,8 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertIn("/v1/tasks?limit=50", html)
         self.assertIn("/v1/messages/recent-direct?limit=20", html)
         self.assertIn("/v1/telemetry/traces", html)
+        self.assertIn("/v1/openclaw/runtime-inventory", html)
+        self.assertIn("openclaw-runtime-inventory-container", html)
         self.assertIn("telemetry.traces", html)
         self.assertIn("stalled_tasks", html)
         self.assertIn("setInterval(refreshLiveDashboardFromApi, 10000)", html)
@@ -2583,7 +2609,7 @@ class CompanyKernelCoreTest(unittest.TestCase):
 
         output = self.root / "state" / "dashboard-tasks.html"
         with contextlib.redirect_stdout(io.StringIO()):
-            code = company_dashboard.main(["--output", str(output)])
+            code = company_dashboard.main(["--output", str(output), "--variant", "basic"])
         self.assertEqual(0, code)
         html = output.read_text(encoding="utf-8")
         self.assertIn("<th>evidence</th>", html)
@@ -2625,7 +2651,7 @@ class CompanyKernelCoreTest(unittest.TestCase):
 
         output = self.root / "state" / "dashboard-approval-metadata.html"
         with contextlib.redirect_stdout(io.StringIO()):
-            code = company_dashboard.main(["--output", str(output)])
+            code = company_dashboard.main(["--output", str(output), "--variant", "basic"])
         self.assertEqual(0, code)
         html = output.read_text(encoding="utf-8")
         self.assertIn("task-approval-metadata", html)
@@ -2733,7 +2759,7 @@ class CompanyKernelCoreTest(unittest.TestCase):
 
         output = self.root / "state" / "dashboard-projects.html"
         with contextlib.redirect_stdout(io.StringIO()):
-            code = company_dashboard.main(["--output", str(output)])
+            code = company_dashboard.main(["--output", str(output), "--variant", "basic"])
         self.assertEqual(0, code)
         html = output.read_text(encoding="utf-8")
         self.assertIn("<th>review</th>", html)
@@ -2967,6 +2993,10 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertFalse(healthy_summary["launchd"]["matches_template"])
         self.assertTrue(healthy_summary["openclaw_guard"]["ok"])
         self.assertEqual([], healthy_summary["openclaw_guard"]["issues"])
+        self.assertIn("runtime_inventory", healthy_summary["openclaw_guard"])
+        self.assertIn("registered_employee_ids", healthy_summary["openclaw_guard"]["runtime_inventory"])
+        self.assertIn("codex", healthy_summary["openclaw_guard"]["runtime_inventory"]["registered_employee_ids"])
+        self.assertGreaterEqual(healthy_summary["openclaw_guard"]["runtime_inventory"]["counts"]["registered"], 1)
 
         openclaw_root = self.root / "openclaw"
         nestcar_spool = openclaw_root / "telegram" / "ingress-spool-nestcar"
@@ -3410,7 +3440,7 @@ class CompanyKernelCoreTest(unittest.TestCase):
 
         output = self.root / "state" / "dashboard-long-task.html"
         with contextlib.redirect_stdout(io.StringIO()):
-            code = company_dashboard.main(["--output", str(output)])
+            code = company_dashboard.main(["--output", str(output), "--variant", "basic"])
         self.assertEqual(code, 0)
         html = output.read_text(encoding="utf-8")
         self.assertIn("Long Task Delegation", html)
@@ -4139,7 +4169,7 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual(0, code, run)
         output = self.root / "state" / "dashboard-controls.html"
         with contextlib.redirect_stdout(io.StringIO()):
-            code = company_dashboard.main(["--output", str(output)])
+            code = company_dashboard.main(["--output", str(output), "--variant", "basic"])
         self.assertEqual(0, code)
         html = output.read_text(encoding="utf-8")
         self.assertIn("<th>attempt</th>", html)
@@ -4712,6 +4742,20 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual(HTTPStatus.OK, status, payload)
         self.assertTrue(payload["ok"])
         self.assertIn("trace-live-telemetry", [trace["trace_id"] for trace in payload["traces"]])
+
+    def test_api_gateway_exposes_openclaw_runtime_inventory(self) -> None:
+        (self.root / "openclaw" / "agents" / "market-agent" / "sessions").mkdir(parents=True)
+        (self.root / "openclaw" / "agents" / "market-agent" / "sessions" / "sessions.json").write_text('{"s1": {}}', encoding="utf-8")
+        spool = self.root / "openclaw" / "telegram" / "ingress-spool-market_agent"
+        spool.mkdir(parents=True)
+        status, payload = api_gateway.route_get("/v1/openclaw/runtime-inventory", {})
+        self.assertEqual(HTTPStatus.OK, status, payload)
+        self.assertTrue(payload["ok"])
+        self.assertEqual(1, payload["agent_dirs"]["market-agent"]["session_count"])
+        self.assertEqual(1, payload["counts"]["telegram_spools"])
+        self.assertIn("market_agent", payload["missing_registered"])
+        self.assertNotIn("market-agent", payload["missing_registered"])
+        self.assertEqual(1, payload["counts"]["missing_registered"])
 
     def test_api_gateway_exposes_internal_watchdog_for_no_receipt_messages_and_open_tasks(self) -> None:
         code, sent = run_cli("message", "send", "--from", "openclaw-main", "--to", "nestcar", "--body", "请处理内部任务但没有回执")
@@ -6770,7 +6814,7 @@ class CompanyKernelCoreTest(unittest.TestCase):
 
         output = self.root / "state" / "dashboard-adapter-runs.html"
         with contextlib.redirect_stdout(io.StringIO()):
-            code = company_dashboard.main(["--output", str(output)])
+            code = company_dashboard.main(["--output", str(output), "--variant", "basic"])
         self.assertEqual(0, code)
         html = output.read_text(encoding="utf-8")
         self.assertIn("Adapter Runs", html)

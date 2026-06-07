@@ -2263,7 +2263,81 @@ def count_spool_files(spool_dir: Path) -> dict:
     }
 
 
-def openclaw_guard_health() -> dict:
+def openclaw_runtime_inventory(conn: sqlite3.Connection | None = None) -> dict:
+    root = openclaw_root()
+    agents_dir = root / "agents"
+    telegram_dir = root / "telegram"
+    registered = set()
+    if conn is not None:
+        registered = {str(row["id"]) for row in rows(conn, "SELECT id FROM employees")}
+    registered_aliases = set(registered)
+    for employee_id in registered:
+        registered_aliases.add(employee_id.replace("-", "_"))
+        registered_aliases.add(employee_id.replace("_", "-"))
+
+    def canonical_openclaw_id(value: str) -> str:
+        return value.replace("-", "_")
+
+    def is_registered_openclaw_id(value: str) -> bool:
+        canonical = canonical_openclaw_id(value)
+        return value in registered_aliases or canonical in registered_aliases or canonical.replace("_", "-") in registered_aliases
+
+    agent_dirs = {}
+    if agents_dir.exists():
+        for path in sorted(agents_dir.iterdir()):
+            if not path.is_dir() or path.name.startswith("."):
+                continue
+            session_file = path / "sessions" / "sessions.json"
+            session_payload = load_json_or_default(session_file, {})
+            session_count = len(session_payload) if isinstance(session_payload, dict) else 0
+            normalized_id = canonical_openclaw_id(path.name)
+            agent_dirs[path.name] = {
+                "id": path.name,
+                "normalized_id": normalized_id,
+                "path": str(path),
+                "session_file": str(session_file),
+                "session_file_exists": session_file.exists(),
+                "session_count": session_count,
+                "registered": is_registered_openclaw_id(path.name),
+            }
+    spools = {}
+    if telegram_dir.exists():
+        for spool_dir in sorted(telegram_dir.glob("ingress-spool-*")):
+            account = spool_dir.name.removeprefix("ingress-spool-")
+            normalized_id = canonical_openclaw_id(account)
+            profile = count_spool_files(spool_dir)
+            profile.update(
+                {
+                    "id": account,
+                    "normalized_id": normalized_id,
+                    "registered": is_registered_openclaw_id(account),
+                }
+            )
+            spools[account] = profile
+    discovered_ids = {canonical_openclaw_id(item["id"]) for item in agent_dirs.values()}
+    discovered_ids.update(canonical_openclaw_id(item["id"]) for item in spools.values())
+    discovered_ids.update(item["normalized_id"] for item in agent_dirs.values() if item.get("normalized_id"))
+    discovered_ids.update(item["normalized_id"] for item in spools.values() if item.get("normalized_id"))
+    missing = sorted(item for item in discovered_ids if item and not is_registered_openclaw_id(item))
+    return {
+        "openclaw_root": str(root),
+        "agents_dir": str(agents_dir),
+        "telegram_dir": str(telegram_dir),
+        "registered_employee_ids": sorted(registered),
+        "agent_dirs": agent_dirs,
+        "telegram_spools": spools,
+        "counts": {
+            "agent_dirs": len(agent_dirs),
+            "telegram_spools": len(spools),
+            "registered": len(registered),
+            "missing_registered": len(missing),
+        },
+        "missing_registered": missing,
+        "note": "Read-only inventory. It discovers OpenClaw runtime agents/spools and marks whether they are registered in Company Kernel; it does not onboard or modify them.",
+    }
+
+
+def openclaw_guard_health(conn: sqlite3.Connection | None = None) -> dict:
     root = openclaw_root()
     telegram_dir = root / "telegram"
     launch_agents = Path.home() / "Library" / "LaunchAgents"
@@ -2297,6 +2371,7 @@ def openclaw_guard_health() -> dict:
             "risk": "conflicts_with_openclaw_telegram_getupdates" if watcher_plist.exists() else "",
         },
         "telegram_spools": spools,
+        "runtime_inventory": openclaw_runtime_inventory(conn),
         "backlog_accounts": backlog_accounts,
         "note": "Read-only guard. It detects conditions that can break OpenClaw native Telegram routing; it does not start, stop, or poll Telegram.",
     }
@@ -7307,7 +7382,7 @@ def cmd_doctor(args: argparse.Namespace) -> int:
                 stale_locks.append(dict(lock))
         daemon = daemon_health()
         launchd = launchd_health()
-        openclaw_guard = openclaw_guard_health()
+        openclaw_guard = openclaw_guard_health(conn)
         issues = []
         if not daemon["ok"]:
             issues.append(daemon["reason"] or "daemon_unhealthy")

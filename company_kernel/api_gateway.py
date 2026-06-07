@@ -30,6 +30,7 @@ API_CAPABILITIES = [
     "runtimes",
     "settings",
     "external_mirror",
+    "openclaw_runtime_inventory",
 ]
 API_ENDPOINTS = [
     {"method": "GET", "path": "/v1/health", "summary": "Company Kernel health summary"},
@@ -50,6 +51,7 @@ API_ENDPOINTS = [
     {"method": "POST", "path": "/v1/settings/notification", "summary": "Configure employee notification account without storing tokens", "body": {"telegram_account": "account id", "telegram_bot_token_env": "environment variable name containing token", "telegram_default_target": "chat/user target optional", "employee_notifications_enabled": "bool optional"}},
     {"method": "POST", "path": "/v1/notifications/send", "summary": "Send configured operator notification without exposing secrets", "body": {"message": "string required", "kind": "general/approval/error optional", "subject": "string optional", "target": "telegram target optional", "account": "account optional", "dry_run": "bool optional"}},
     {"method": "GET", "path": "/v1/progress/notifications", "summary": "Read pending or recent progress transition notifications", "query": {"pending_only": "bool optional", "limit": "integer optional"}},
+    {"method": "GET", "path": "/v1/openclaw/runtime-inventory", "summary": "Read-only discovered OpenClaw agents, sessions, Telegram spools, and Company Kernel registration gaps"},
     {"method": "GET", "path": "/v1/supervisor/delivery-loop", "summary": "Read latest autonomous supervisor delivery-loop result"},
     {"method": "POST", "path": "/v1/supervisor/delivery-loop", "summary": "Run autonomous supervisor delivery-loop once", "body": {"limit": "integer optional", "by": "actor optional"}},
     {"method": "POST", "path": "/v1/policy-blocks/report", "summary": "Report non-popup tool-policy blockers and notify operator", "body": {"source": "employee optional", "target": "employee optional", "tool": "tool name optional", "operation": "operation optional", "error": "error text required", "dry_run": "bool optional"}},
@@ -316,6 +318,12 @@ def route_get(path: str, query: dict[str, list[str]]) -> tuple[int, dict]:
                 },
                 "items": items,
             }
+        finally:
+            conn.close()
+    if path == "/v1/openclaw/runtime-inventory":
+        conn = companyctl.connect_readonly()
+        try:
+            return HTTPStatus.OK, {"ok": True, **companyctl.openclaw_runtime_inventory(conn)}
         finally:
             conn.close()
     if path == "/v1/agent-matrix":

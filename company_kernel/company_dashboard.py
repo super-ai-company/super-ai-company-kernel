@@ -923,6 +923,7 @@ def load_summary(conn: sqlite3.Connection) -> dict:
         "runtime_health": {
             "daemon": companyctl.daemon_health(),
             "launchd": companyctl.launchd_health(),
+            "openclaw_inventory": companyctl.openclaw_runtime_inventory(conn),
         },
         "evidence_health": {
             "issues": companyctl.task_evidence_issues(conn),
@@ -1685,10 +1686,11 @@ def advanced_summary(summary: dict) -> dict:
     prepared = dict(summary)
     prepared["employees"] = employee_view_models(summary)
     prepared["communication_observability"] = communication_observability_summary(summary)
+    prepared["openclaw_runtime_inventory"] = summary.get("runtime_health", {}).get("openclaw_inventory", {})
     return prepared
 
 
-def load_advanced_template(path: str = "", *, include_external: bool = False) -> tuple[Path | None, str]:
+def load_advanced_template(path: str = "") -> tuple[Path | None, str]:
     if path:
         candidates = [Path(path)]
     else:
@@ -1742,13 +1744,16 @@ def run(args: argparse.Namespace) -> int:
     output.parent.mkdir(parents=True, exist_ok=True)
     template_path = None
     variant = args.variant
-    if variant == "advanced":
-        template_path, template = load_advanced_template(args.template, include_external=variant == "advanced")
+    if variant in {"auto", "advanced"}:
+        template_path, template = load_advanced_template(args.template)
         if template:
             output.write_text(inject_advanced_dashboard(template, summary, db_path=DB_PATH, api_base=args.api_base), encoding="utf-8")
             variant = "advanced"
-        else:
+        elif variant == "advanced":
             raise SystemExit("advanced dashboard template not found")
+        else:
+            output.write_text(render(summary), encoding="utf-8")
+            variant = "basic"
     else:
         output.write_text(render(summary), encoding="utf-8")
         variant = "basic"

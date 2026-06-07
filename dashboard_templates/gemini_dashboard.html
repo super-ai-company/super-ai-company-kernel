@@ -2267,6 +2267,16 @@
           </div>
         </div>
 
+        <div class="section-card" style="margin-top: 20px;">
+          <h2><i class="fa-solid fa-satellite-dish"></i> OpenClaw Runtime Discovery</h2>
+          <p style="font-size: 12px; color: var(--text-secondary); margin-bottom: 12px;">
+            Read-only view of local OpenClaw agent/session/spool directories. Missing entries are discovered on this Mac but not yet registered as Company Kernel employees.
+          </p>
+          <div id="openclaw-runtime-inventory-container">
+            <!-- Populated by JS -->
+          </div>
+        </div>
+
         <!-- AI Recruiter Slide-out Drawer -->
         <div id="recruiter-drawer" class="recruiter-drawer">
           <div class="drawer-header">
@@ -2780,6 +2790,7 @@
       const approvals = await companyApiGet('/v1/approvals?limit=20');
       const telemetry = await companyApiGet('/v1/telemetry/traces?limit=20');
       const employees = await companyApiGet('/v1/employees');
+      const openclawInventory = await companyApiGet('/v1/openclaw/runtime-inventory');
       const taskRows = tasks.tasks || tasks.items || [];
       const stalledTasks = taskRows.filter(task => ['stale', 'blocked', 'failed'].includes(String(task.status || '').toLowerCase()) || task.blocker);
       mergeLiveSummaryPatch({
@@ -2790,12 +2801,14 @@
         adapter_runs: adapterRuns.adapter_runs || [],
         approvals: approvals.approvals || [],
         traces: telemetry.traces || [],
-        employees: employees.employees || []
+        employees: employees.employees || [],
+        openclaw_runtime_inventory: openclawInventory || {}
       });
       populateDashboard();
       refreshDashboardPresentation();
       refreshChatHub();
       refreshTraceTelemetry();
+      renderOpenClawRuntimeInventory();
       if (typeof window.populateTasks === 'function') window.populateTasks();
       if (typeof window.populateEmployees === 'function') window.populateEmployees(window.summaryData);
       populateKanban(window.summaryData);
@@ -3893,9 +3906,67 @@
     });
   }
 
+  function renderOpenClawRuntimeInventory() {
+    const summary = getDashboardSummary();
+    const inventory = summary.openclaw_runtime_inventory || (summary.runtime_health || {}).openclaw_inventory || {};
+    const container = document.getElementById('openclaw-runtime-inventory-container');
+    if (!container) return;
+    const counts = inventory.counts || {};
+    const missing = inventory.missing_registered || [];
+    const agentDirs = Object.values(inventory.agent_dirs || {});
+    const spools = Object.values(inventory.telegram_spools || {});
+    const missingHtml = missing.length
+      ? missing.slice(0, 16).map(id => `<span class="capability-tag" style="border-color: rgba(248,113,113,0.45); color: #fecaca;">${escapeHtml(id)}</span>`).join(' ')
+      : `<span class="capability-tag" style="border-color: rgba(16,185,129,0.45); color: #bbf7d0;">All discovered runtimes registered</span>`;
+    const rows = [
+      ...agentDirs.slice(0, 12).map(item => ({
+        kind: 'agent_dir',
+        id: item.id || '',
+        registered: item.registered ? 'yes' : 'no',
+        sessions: item.session_count || 0,
+        queue: '-',
+        path: item.path || ''
+      })),
+      ...spools.slice(0, 12).map(item => ({
+        kind: 'telegram_spool',
+        id: item.id || '',
+        registered: item.registered ? 'yes' : 'no',
+        sessions: '-',
+        queue: `${item.pending || 0} pending / ${item.processing || 0} processing`,
+        path: item.path || ''
+      }))
+    ];
+    const rowsHtml = rows.length ? rows.map(row => `
+      <tr>
+        <td>${escapeHtml(row.kind)}</td>
+        <td>${escapeHtml(row.id)}</td>
+        <td><span class="badge ${row.registered === 'yes' ? 'alive' : 'missing'}">${escapeHtml(row.registered)}</span></td>
+        <td>${escapeHtml(String(row.sessions))}</td>
+        <td>${escapeHtml(row.queue)}</td>
+        <td style="font-size: 10px; color: var(--text-muted);">${escapeHtml(shortText(row.path, 96))}</td>
+      </tr>
+    `).join('') : `<tr><td colspan="6" style="color: var(--text-muted); text-align:center;">No OpenClaw runtime directories found.</td></tr>`;
+    container.innerHTML = `
+      <div class="metrics-grid" style="grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); margin-bottom: 12px;">
+        <div class="metric-card"><div class="metric-label">Agent Dirs</div><div class="metric-value">${escapeHtml(String(counts.agent_dirs || 0))}</div></div>
+        <div class="metric-card"><div class="metric-label">Telegram Spools</div><div class="metric-value">${escapeHtml(String(counts.telegram_spools || 0))}</div></div>
+        <div class="metric-card"><div class="metric-label">Kernel Registered</div><div class="metric-value">${escapeHtml(String(counts.registered || 0))}</div></div>
+        <div class="metric-card"><div class="metric-label">Missing Registered</div><div class="metric-value">${escapeHtml(String(counts.missing_registered || 0))}</div></div>
+      </div>
+      <div style="margin-bottom: 12px;">${missingHtml}</div>
+      <div class="table-container">
+        <table>
+          <thead><tr><th>Source</th><th>ID</th><th>Registered</th><th>Sessions</th><th>Queue</th><th>Path</th></tr></thead>
+          <tbody>${rowsHtml}</tbody>
+        </table>
+      </div>
+    `;
+  }
+
   function refreshDashboardPresentation() {
     refreshGovernanceTables();
     refreshTraceTelemetry();
+    renderOpenClawRuntimeInventory();
   }
 
   function populateFollowups() {
