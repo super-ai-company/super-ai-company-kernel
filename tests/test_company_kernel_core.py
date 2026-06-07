@@ -706,6 +706,33 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertIn("COMPANY_EMPLOYEE_TELEGRAM_BOT_TOKEN", config_text)
         self.assertNotIn("123456:secret", config_text)
 
+    def test_company_kernel_db_path_env_overrides_repo_db(self) -> None:
+        external_db = self.root / "global-state" / "company.sqlite"
+        with mock.patch.dict("os.environ", {"COMPANY_KERNEL_DB_PATH": str(external_db)}):
+            resolved = companyctl.resolve_db_path()
+        self.assertEqual(external_db.resolve(), resolved)
+        self.assertNotEqual((self.root / "company.sqlite").resolve(), resolved)
+        resolved.parent.mkdir(parents=True, exist_ok=True)
+
+        with mock.patch.object(companyctl, "DB_PATH", resolved):
+            conn = companyctl.connect()
+            try:
+                conn.execute(
+                    "INSERT INTO employees (id, name, role, runtime, workspace, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                    ("global-db-agent", "global-db-agent", "tester", "local", str(self.root), "active", companyctl.now(), companyctl.now()),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+
+            readonly = companyctl.connect_readonly()
+            try:
+                row = readonly.execute("SELECT id FROM employees WHERE id = ?", ("global-db-agent",)).fetchone()
+            finally:
+                readonly.close()
+        self.assertIsNotNone(row)
+        self.assertTrue(external_db.exists())
+
     def test_notification_send_uses_env_token_and_returns_message_id(self) -> None:
         status, saved = api_gateway.route_post(
             "/v1/settings/notification",
@@ -2279,7 +2306,7 @@ class CompanyKernelCoreTest(unittest.TestCase):
     }).join('');
   }
   document.getElementById('db-path-label').innerText = isSimulationMode ? 'simulation://gateway.company.internal' : 'https://gateway.company.internal';
-  // Stubs for test assertions: companyApiGet checkCompanyApi /v1/health refreshLiveDashboardFromApi window.refreshLiveDashboardFromApi /v1/tasks?limit=50 /v1/messages/recent-direct?limit=20 stalled_tasks setInterval(refreshLiveDashboardFromApi, 10000) API OFFLINE /v1/attendance/latest realOnboardGeneratedEmployee realDirectEmployeeMessage openDirectEmployeeMessage /v1/messages/direct realOffboardEmployee openEditEmployeeProfile realUpdateEmployeeProfile 'PATCH' 'DELETE' timeZone: 'Asia/Bangkok' THA bindMentionAutocomplete agent-mention-suggestions collaborationHelpText 是否需要其他员工协助 kernel-form-modal openKernelFormModal('direct' openKernelFormModal('conversation' employee-card-actions employee-card-menu toggleEmployeeActionMenu Send Message prefillChatMention Chat Hub ready for @ grid-template-columns: minmax(0, 1fr) 34px dashboard-layout-fix showApprovalDetails refreshGovernanceTables refreshTraceTelemetry notify-route-status setTimeout(loadNotificationSettings, 350)
+  // Stubs for test assertions: companyApiGet checkCompanyApi /v1/health refreshLiveDashboardFromApi window.refreshLiveDashboardFromApi /v1/tasks?limit=50 /v1/messages/recent-direct?limit=20 stalled_tasks setInterval(refreshLiveDashboardFromApi, 10000) API OFFLINE /v1/attendance/latest realOnboardGeneratedEmployee realDirectEmployeeMessage openDirectEmployeeMessage /v1/messages/direct realOffboardEmployee openEditEmployeeProfile realUpdateEmployeeProfile 'PATCH' 'DELETE' timeZone: 'Asia/Bangkok' THA bindMentionAutocomplete agent-mention-suggestions collaborationHelpText 是否需要其他员工协助 kernel-form-modal openKernelFormModal('direct' openKernelFormModal('conversation' employee-card-actions employee-card-menu toggleEmployeeActionMenu Send Message prefillChatMention Chat Hub ready for @ grid-template-columns: minmax(0, 1fr) 34px dashboard-layout-fix showApprovalDetails refreshGovernanceTables refreshTraceTelemetry notify-route-status setTimeout(loadNotificationSettings, 350) decideApprovalFromDashboard /v1/approvals/${encodeURIComponent(approvalId)}/approve /v1/approvals/${encodeURIComponent(approvalId)}/deny Approve Deny Approval Actions
 </script>
 </body></html>
             """,
@@ -2347,6 +2374,12 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertIn("refreshTraceTelemetry", html)
         self.assertIn("notify-route-status", html)
         self.assertIn("setTimeout(loadNotificationSettings, 350)", html)
+        self.assertIn("decideApprovalFromDashboard", html)
+        self.assertIn("/v1/approvals/${encodeURIComponent(approvalId)}/approve", html)
+        self.assertIn("/v1/approvals/${encodeURIComponent(approvalId)}/deny", html)
+        self.assertIn("Approve", html)
+        self.assertIn("Deny", html)
+        self.assertIn("Approval Actions", html)
         self.assertNotIn("onclick='showApprovalDetails(${JSON.stringify(app)", html)
 
     def test_dashboard_versioned_template_initializes_chat_state(self) -> None:
@@ -2356,6 +2389,16 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertNotIn("${activeThreadId ===", html)
         self.assertNotIn("if (!activeThreadId", html)
         self.assertNotIn("\n    activeThreadId = threadId;", html)
+
+    def test_dashboard_template_supports_interactive_approval_decisions(self) -> None:
+        template = Path(__file__).resolve().parents[1] / "dashboard_templates" / "gemini_dashboard.html"
+        html = template.read_text(encoding="utf-8")
+        self.assertIn("Approval Actions", html)
+        self.assertIn("decideApprovalFromDashboard", html)
+        self.assertIn("/v1/approvals/${encodeURIComponent(approvalId)}/approve", html)
+        self.assertIn("/v1/approvals/${encodeURIComponent(approvalId)}/deny", html)
+        self.assertIn("event.stopPropagation()", html)
+        self.assertNotIn("Promise.all([\n        companyApiGet('/v1/health')", html)
 
     def test_dashboard_renders_task_evidence_blocker_and_approval_counts(self) -> None:
         code, submitted = run_cli("task", "submit", "--from", "ops", "--to", "maker", "--task-id", "task-dashboard-blocked", "--title", "blocked task")
