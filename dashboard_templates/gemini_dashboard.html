@@ -2612,6 +2612,16 @@
         </div>
 
         <div class="section-card">
+          <h2><i class="fa-solid fa-diagram-project"></i> File Flow Graph</h2>
+          <div style="color:var(--text-muted);font-size:12px;margin-bottom:12px;">
+            Trace-level task -> artifact -> handoff -> evidence graph. Paths remain sanitized and workspace-relative.
+          </div>
+          <div id="trace-file-flow-container" class="graph-panel">
+            <!-- Populated by JS -->
+          </div>
+        </div>
+
+        <div class="section-card">
           <h2><i class="fa-solid fa-box-archive"></i> Artifact Registry</h2>
           <div style="color:var(--text-muted);font-size:12px;margin-bottom:12px;">
             Registered artifacts are shown with sanitized workspace-relative paths and lifecycle state.
@@ -3613,6 +3623,34 @@
       companyApiLog('SYSTEM', `Trace Timeline loaded for ${traceId}.`, 'success');
     } catch (err) {
       companyApiLog('ERROR', `Trace Timeline failed: ${err.message}`, 'error');
+    }
+  }
+
+  async function refreshTraceFileFlow(summary) {
+    const container = document.getElementById('trace-file-flow-container');
+    if (!container) return;
+    const traces = Array.isArray(summary.traces) ? summary.traces : [];
+    const traceId = (traces[0] || {}).trace_id || '';
+    if (!traceId) {
+      container.innerHTML = '<div style="color:var(--text-muted);padding:16px;">No trace file flow available.</div>';
+      return;
+    }
+    container.innerHTML = `<div style="color:var(--text-muted);padding:16px;">Loading file flow for ${escapeHtml(traceId)}...</div>`;
+    try {
+      const graph = await companyApiGet(`/v1/traces/${encodeURIComponent(traceId)}/file-flow`);
+      const nodes = Array.isArray(graph.nodes) ? graph.nodes : [];
+      const edges = Array.isArray(graph.edges) ? graph.edges : [];
+      container.innerHTML = `
+        <div class="graph-title"><i class="fa-solid fa-circle-nodes"></i> Trace ${escapeHtml(traceId)}</div>
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:8px;margin:10px 0;">
+          <div class="cockpit-card"><h3>Nodes</h3><div class="cockpit-value">${escapeHtml(nodes.length)}</div></div>
+          <div class="cockpit-card"><h3>Edges</h3><div class="cockpit-value">${escapeHtml(edges.length)}</div></div>
+          <div class="cockpit-card"><h3>Evidence</h3><div class="cockpit-value">${escapeHtml((graph.counts || {}).evidence || 0)}</div></div>
+        </div>
+        <pre style="white-space:pre-wrap;color:#c7d2fe;font-size:11px;line-height:1.55;background:rgba(2,6,23,.45);border:1px solid rgba(129,140,248,.18);border-radius:10px;padding:12px;">${escapeHtml(graph.mermaid || '')}</pre>
+      `;
+    } catch (err) {
+      container.innerHTML = `<div style="color:var(--color-rose);padding:16px;">File flow failed: ${escapeHtml(err.message)}</div>`;
     }
   }
 
@@ -4663,6 +4701,7 @@
     refreshAuditArtifactsTable(summary.artifact_records || []);
     refreshAuditHandoffsTable(summary.handoff_records || []);
     refreshAuditFailuresTable(summary.failure_records || []);
+    refreshTraceFileFlow(summary);
   }
 
   function refreshAuditEvidenceTable(evidenceRecords) {
