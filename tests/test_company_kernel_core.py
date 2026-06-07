@@ -2666,7 +2666,7 @@ class CompanyKernelCoreTest(unittest.TestCase):
     }).join('');
   }
   document.getElementById('db-path-label').innerText = isSimulationMode ? 'simulation://gateway.company.internal' : 'https://gateway.company.internal';
-  // Stubs for test assertions: companyApiGet checkCompanyApi /v1/health refreshLiveDashboardFromApi window.refreshLiveDashboardFromApi /v1/tasks?limit=50 /v1/messages/recent-direct?limit=20 /v1/telemetry/traces /v1/openclaw/runtime-inventory openclaw-runtime-inventory-container telemetry.traces populateKanban(window.summaryData) kanbanTransitionTask const agent = (task.claimed_by || task.target_agent block`, { agent, blocker: reason } stalled_tasks setInterval(refreshLiveDashboardFromApi, 10000) API OFFLINE /v1/attendance/latest realOnboardGeneratedEmployee realDirectEmployeeMessage openDirectEmployeeMessage /v1/messages/direct realOffboardEmployee openEditEmployeeProfile realUpdateEmployeeProfile 'PATCH' 'DELETE' timeZone: 'Asia/Bangkok' THA bindMentionAutocomplete agent-mention-suggestions collaborationHelpText 是否需要其他员工协助 kernel-form-modal openKernelFormModal('direct' openKernelFormModal('conversation' employee-card-actions employee-card-menu toggleEmployeeActionMenu Send Message prefillChatMention Chat Hub ready for @ grid-template-columns: minmax(0, 1fr) 34px dashboard-layout-fix showApprovalDetails refreshGovernanceTables refreshTraceTelemetry refreshTraceTelemetry() notify-route-status setTimeout(loadNotificationSettings, 350) decideApprovalFromDashboard /v1/approvals/${encodeURIComponent(approvalId)}/approve /v1/approvals/${encodeURIComponent(approvalId)}/deny Approve Deny Approval Actions
+  // Stubs for test assertions: companyApiGet checkCompanyApi /v1/health refreshLiveDashboardFromApi window.refreshLiveDashboardFromApi /v1/tasks?limit=50 /v1/messages/recent-direct?limit=20 /v1/telemetry/traces /v1/openclaw/runtime-inventory openclaw-runtime-inventory-container telemetry.traces populateKanban(window.summaryData) kanbanTransitionTask const agent = (task.claimed_by || task.target_agent block`, { agent, blocker: reason } stalled_tasks setInterval(refreshLiveDashboardFromApi, 10000) API OFFLINE /v1/attendance/latest realOnboardGeneratedEmployee realDirectEmployeeMessage openDirectEmployeeMessage /v1/messages/direct realOffboardEmployee openEditEmployeeProfile realUpdateEmployeeProfile 'PATCH' 'DELETE' timeZone: 'Asia/Bangkok' THA bindMentionAutocomplete agent-mention-suggestions collaborationHelpText 是否需要其他员工协助 kernel-form-modal openKernelFormModal('direct' openKernelFormModal('conversation' employee-card-actions employee-card-menu toggleEmployeeActionMenu Send Message prefillChatMention Chat Hub ready for @ grid-template-columns: minmax(0, 1fr) 34px dashboard-layout-fix showApprovalDetails refreshGovernanceTables refreshTraceTelemetry refreshTraceTelemetry() notify-route-status setTimeout(loadNotificationSettings, 350) decideApprovalFromDashboard /v1/approvals/${encodeURIComponent(approvalId)}/${normalized} Mock Resolve mock resolved from dashboard; no external delivery executed Approve Deny Approval Actions
 </script>
 </body></html>
             """,
@@ -2745,8 +2745,9 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertIn("notify-route-status", html)
         self.assertIn("setTimeout(loadNotificationSettings, 350)", html)
         self.assertIn("decideApprovalFromDashboard", html)
-        self.assertIn("/v1/approvals/${encodeURIComponent(approvalId)}/approve", html)
-        self.assertIn("/v1/approvals/${encodeURIComponent(approvalId)}/deny", html)
+        self.assertIn("/v1/approvals/${encodeURIComponent(approvalId)}/${normalized}", html)
+        self.assertIn("Mock Resolve", html)
+        self.assertIn("mock resolved from dashboard; no external delivery executed", html)
         self.assertIn("Approve", html)
         self.assertIn("Deny", html)
         self.assertIn("Approval Actions", html)
@@ -2765,8 +2766,9 @@ class CompanyKernelCoreTest(unittest.TestCase):
         html = template.read_text(encoding="utf-8")
         self.assertIn("Approval Actions", html)
         self.assertIn("decideApprovalFromDashboard", html)
-        self.assertIn("/v1/approvals/${encodeURIComponent(approvalId)}/approve", html)
-        self.assertIn("/v1/approvals/${encodeURIComponent(approvalId)}/deny", html)
+        self.assertIn("/v1/approvals/${encodeURIComponent(approvalId)}/${normalized}", html)
+        self.assertIn("Mock Resolve", html)
+        self.assertIn("mock: normalized === 'resolve'", html)
         self.assertIn("event.stopPropagation()", html)
         self.assertNotIn("Promise.all([\n        companyApiGet('/v1/health')", html)
 
@@ -2853,6 +2855,43 @@ class CompanyKernelCoreTest(unittest.TestCase):
         html = output.read_text(encoding="utf-8")
         self.assertIn("task-approval-metadata", html)
         self.assertIn("<td>1</td><td>approval task</td>", html)
+
+    def test_approval_mock_resolve_is_dry_run_and_records_event(self) -> None:
+        code, submitted = run_cli("task", "submit", "--from", "ops", "--to", "maker", "--task-id", "task-approval-mock-resolve", "--title", "approval mock resolve task")
+        self.assertEqual(code, 0, submitted)
+        code, approval = run_cli(
+            "approval",
+            "request",
+            "--from",
+            "ops",
+            "--action",
+            "external_send",
+            "--reason",
+            "manual approval dry run",
+            "--target",
+            "maker",
+            "--task-id",
+            "task-approval-mock-resolve",
+            "--approval-id",
+            "approval-mock-resolve",
+        )
+        self.assertEqual(code, 0, approval)
+
+        code, rejected = run_cli("approval", "resolve", "--approval-id", "approval-mock-resolve", "--by", "ops", "--reason", "missing mock flag")
+        self.assertEqual(2, code)
+        self.assertIn("requires --mock", rejected["error"])
+        code, resolved = run_cli("approval", "resolve", "--approval-id", "approval-mock-resolve", "--by", "ops", "--reason", "mock only", "--mock")
+        self.assertEqual(0, code, resolved)
+        self.assertEqual("resolved", resolved["approval"]["status"])
+        self.assertTrue(resolved["approval"]["detail"]["mock_resolve"])
+        self.assertTrue(resolved["approval"]["detail"]["dry_run"])
+        self.assertFalse(resolved["approval"]["detail"]["external_send_executed"])
+        self.assertEqual("approval.resolved", resolved["event"]["event_type"])
+        self.assertEqual("task-approval-mock-resolve", resolved["event"]["task_id"])
+
+        code, listed = run_cli("approval", "list", "--status", "resolved")
+        self.assertEqual(0, code, listed)
+        self.assertEqual(["approval-mock-resolve"], [item["id"] for item in listed["approvals"]])
 
     def test_dashboard_renders_project_goal_acceptance_review_and_retro(self) -> None:
         code, project = run_cli(
@@ -4633,6 +4672,7 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertIn("/v1/tasks", openapi["paths"])
         self.assertIn("/v1/conversations/{conversation_id}/reply", openapi["paths"])
         self.assertIn("/v1/approvals/{approval_id}/approve", openapi["paths"])
+        self.assertIn("/v1/approvals/{approval_id}/resolve", openapi["paths"])
         doctor_query_names = {
             parameter["name"]
             for parameter in openapi["paths"]["/v1/doctor"]["get"]["parameters"]
@@ -4868,6 +4908,33 @@ class CompanyKernelCoreTest(unittest.TestCase):
         status, shown_approval = api_gateway.route_get("/v1/approvals/approval-api-gateway", {})
         self.assertEqual(200, status, shown_approval)
         self.assertEqual("approved", shown_approval["approval"]["status"])
+
+        status, mock_approval = api_gateway.route_post(
+            "/v1/approvals",
+            {
+                "from": "hermes",
+                "action": "external_send",
+                "reason": "mock customer send",
+                "target": "nestcar",
+                "risk": "P1",
+                "approval_id": "approval-api-gateway-mock",
+                "task_id": "task-api-gateway-mock",
+            },
+        )
+        self.assertEqual(201, status, mock_approval)
+        status, resolved = api_gateway.route_post(
+            "/v1/approvals/approval-api-gateway-mock/resolve",
+            {"by": "openclaw-main", "reason": "mock resolved through API", "mock": True},
+        )
+        self.assertEqual(200, status, resolved)
+        self.assertEqual("resolved", resolved["approval"]["status"])
+        self.assertTrue(resolved["approval"]["detail"]["mock_resolve"])
+        self.assertTrue(resolved["approval"]["detail"]["dry_run"])
+        self.assertFalse(resolved["approval"]["detail"]["external_send_executed"])
+        self.assertEqual("approval.resolved", resolved["event"]["event_type"])
+        status, resolved_list = api_gateway.route_get("/v1/approvals", {"status": ["resolved"], "agent": ["hermes"]})
+        self.assertEqual(200, status, resolved_list)
+        self.assertIn("approval-api-gateway-mock", [item["id"] for item in resolved_list["approvals"]])
 
         code, submitted = run_cli("task", "submit", "--from", "openclaw-main", "--to", "codex", "--task-id", "task-api-adapter-retry", "--title", "adapter retry")
         self.assertEqual(code, 0, submitted)

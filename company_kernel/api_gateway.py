@@ -106,6 +106,7 @@ API_ENDPOINTS = [
     {"method": "GET", "path": "/v1/approvals/{approval_id}", "summary": "Show approval"},
     {"method": "POST", "path": "/v1/approvals/{approval_id}/approve", "summary": "Approve request", "body": {"by": "employee id", "reason": "string"}},
     {"method": "POST", "path": "/v1/approvals/{approval_id}/deny", "summary": "Deny request", "body": {"by": "employee id", "reason": "string"}},
+    {"method": "POST", "path": "/v1/approvals/{approval_id}/resolve", "summary": "Mock-resolve request without external delivery", "body": {"by": "employee id", "reason": "string", "mock": True}},
     {"method": "POST", "path": "/v1/heartbeats", "summary": "Write employee heartbeat", "body": {"agent": "employee id"}},
     {"method": "GET", "path": "/v1/attendance/latest", "summary": "Read latest persisted attendance sweep report"},
     {"method": "POST", "path": "/v1/attendance/sweep", "summary": "Run attendance sweep with optional exact agent reply probes", "body": {"source": "source employee optional", "agents": "comma-separated employees optional", "sweep_id": "string optional", "include_candidates": "bool optional", "stale_minutes": "integer optional", "probe_replies": "bool optional", "reply_timeout": "integer optional"}},
@@ -1102,6 +1103,11 @@ def route_post(path: str, body: dict) -> tuple[int, dict]:
     if path.startswith("/v1/approvals/") and path.endswith("/deny"):
         approval_id = path.removeprefix("/v1/approvals/").removesuffix("/deny").strip("/")
         code, payload = run_companyctl(["approval", "deny", "--approval-id", approval_id, "--by", str(body.get("by", "")), "--reason", str(body.get("reason", ""))])
+        return (HTTPStatus.OK if code == 0 else HTTPStatus.BAD_REQUEST), {"exit_code": code, **payload}
+    if path.startswith("/v1/approvals/") and path.endswith("/resolve"):
+        approval_id = path.removeprefix("/v1/approvals/").removesuffix("/resolve").strip("/")
+        argv = ["approval", "resolve", "--approval-id", approval_id, "--by", str(body.get("by", "")), "--reason", str(body.get("reason", "")), "--mock"]
+        code, payload = run_companyctl(argv)
         return (HTTPStatus.OK if code == 0 else HTTPStatus.BAD_REQUEST), {"exit_code": code, **payload}
     if path.startswith("/v1/adapter-runs/") and path.endswith("/ack"):
         run_id = path.removeprefix("/v1/adapter-runs/").removesuffix("/ack").strip("/")
