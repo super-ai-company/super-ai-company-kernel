@@ -6225,7 +6225,11 @@ def cmd_task_list(args: argparse.Namespace) -> int:
         agent = resolve_employee_alias(args.agent)
         where = "WHERE target_agent = ? OR source_agent = ? OR claimed_by = ?"
         params = (agent, agent, agent)
-    emit({"ok": True, "tasks": rows(conn, f"SELECT * FROM tasks {where} ORDER BY created_at DESC", params)})
+    tasks = rows(conn, f"SELECT * FROM tasks {where} ORDER BY created_at DESC", params)
+    for task in tasks:
+        attempt = latest_attempt_for_task(conn, task["id"])
+        task["current_attempt"] = hydrate_execution_attempt(attempt) if attempt else {}
+    emit({"ok": True, "tasks": tasks})
     return 0
 
 
