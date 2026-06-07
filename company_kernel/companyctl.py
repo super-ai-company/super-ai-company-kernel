@@ -4431,12 +4431,30 @@ def complete_task_internal(
     )
     if cur.rowcount == 0:
         raise SystemExit(f"task not found or not owned by agent: {task_id}")
+    completed_attempt = conn.execute(
+        """
+        SELECT * FROM execution_attempts
+        WHERE task_id = ?
+          AND employee_id = ?
+          AND status IN ('starting', 'running', 'correcting')
+        ORDER BY started_at DESC
+        LIMIT 1
+        """,
+        (task_id, agent),
+    ).fetchone()
+    completed_attempt_id = ""
+    if completed_attempt:
+        completed_attempt_id = completed_attempt["attempt_id"]
+        conn.execute(
+            "UPDATE execution_attempts SET status = 'success', finished_at = ?, error_message = '' WHERE attempt_id = ?",
+            (now(), completed_attempt_id),
+        )
     conn.execute("DELETE FROM locks WHERE resource_key = ?", (f"task:{task_id}",))
     synced_plan_items = sync_project_plan_for_task(conn, task_id=task_id, task_status="completed", actor=agent)
     conn.commit()
-    event = record_event(conn, "task.done", agent, task_id=task_id, payload={"summary": summary, "evidence": evidence})
-    audit(conn, agent, "task.done", task_id, {"summary": summary, "evidence": evidence, "event_id": event["id"]})
-    return {"task_id": task_id, "status": "completed", "evidence": evidence, "event_id": event["id"], "synced_plan_items": synced_plan_items}
+    event = record_event(conn, "task.done", agent, task_id=task_id, payload={"summary": summary, "evidence": evidence, "attempt_id": completed_attempt_id})
+    audit(conn, agent, "task.done", task_id, {"summary": summary, "evidence": evidence, "attempt_id": completed_attempt_id, "event_id": event["id"]})
+    return {"task_id": task_id, "status": "completed", "evidence": evidence, "attempt_id": completed_attempt_id, "event_id": event["id"], "synced_plan_items": synced_plan_items}
 
 
 def write_task_inbox_file(task: dict) -> str:
