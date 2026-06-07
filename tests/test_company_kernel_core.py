@@ -1830,6 +1830,10 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertIn("Recent Evidence", html)
         self.assertIn("cockpit-recent-evidence", html)
         self.assertIn("long_task_state || task.status", html)
+        self.assertIn("handleOwnerAttentionAction", html)
+        self.assertIn("data-action-id", html)
+        self.assertIn("correctTaskAttempt(taskId, attemptId)", html)
+        self.assertIn("cancelTaskAttempt(taskId, attemptId)", html)
 
     def test_cockpit_api_sanitizes_evidence_and_exposes_long_task_state(self) -> None:
         code, created = run_cli("employee", "create", "--id", "main", "--name", "main", "--role", "operator", "--runtime", "openclaw", "--workspace", str(self.root / "workspace" / "main"))
@@ -1898,6 +1902,12 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual("codex-cockpit", attention["target_agent"])
         self.assertEqual(attempt_id, attention["attempt_id"])
         self.assertIn("15 分钟没有新进度", attention["message"])
+        self.assertEqual(
+            ["send_correction", "view_logs", "wait", "cancel_attempt"],
+            [action["id"] for action in attention["actions"]],
+        )
+        self.assertTrue(all(action["task_id"] == "task-cockpit-long" for action in attention["actions"]))
+        self.assertTrue(all(action["attempt_id"] == attempt_id for action in attention["actions"]))
 
         status, shown = api_gateway.route_get("/v1/tasks/task-cockpit-long", {})
         self.assertEqual(200, status, shown)

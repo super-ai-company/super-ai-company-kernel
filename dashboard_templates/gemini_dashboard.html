@@ -3114,6 +3114,7 @@
         <div>
           <strong>${escapeHtml(item.kind)} · ${escapeHtml(item.title || '-')}</strong>
           <span>${escapeHtml(item.message || item.meta || '')}</span>
+          ${Array.isArray(item.actions) && item.actions.length ? `<span class="cockpit-action-list">${item.actions.map(action => `<button class="mini-btn" data-action-id="${escapeHtml(action.id || '')}" onclick="event.stopPropagation(); handleOwnerAttentionAction('${escapeHtml(item.task_id || '')}', '${escapeHtml(item.attempt_id || '')}', '${escapeHtml(item.approval_id || '')}', '${escapeHtml(action.id || '')}')">${escapeHtml(action.label || action.id || '')}</button>`).join('')}</span>` : ''}
         </div>
         <div class="long-task-state ${escapeHtml(item.state)}">${escapeHtml(item.state)}</div>
       </div>
@@ -3127,6 +3128,23 @@
         <div class="long-task-state success">evidence</div>
       </div>
     `).join('') : `<div class="cockpit-row"><div><strong>No recent evidence</strong><span>Final evidence from completed work will appear here.</span></div><div class="long-task-state running">empty</div></div>`;
+  }
+
+  function handleOwnerAttentionAction(taskId, attemptId, approvalId, actionId) {
+    if (actionId === 'send_correction') {
+      correctTaskAttempt(taskId, attemptId);
+      return;
+    }
+    if (actionId === 'cancel_attempt') {
+      cancelTaskAttempt(taskId, attemptId);
+      return;
+    }
+    if (actionId === 'approve' || actionId === 'deny' || actionId === 'mock_resolve') {
+      const decision = actionId === 'mock_resolve' ? 'resolve' : actionId;
+      decideApprovalFromDashboard({stopPropagation() {}}, approvalId, decision);
+      return;
+    }
+    if (taskId) openTaskDetailDrawer(taskId);
   }
 
   async function companyApiRequest(path, payload, method) {

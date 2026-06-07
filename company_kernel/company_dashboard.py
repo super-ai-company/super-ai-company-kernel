@@ -318,58 +318,95 @@ def build_cockpit_summary(summary: dict) -> dict:
                 }
             )
     owner_attention = []
+    def attention_actions(kind: str, *, task_id: str = "", attempt_id: str = "", approval_id: str = "") -> list[dict]:
+        base = {"task_id": task_id, "attempt_id": attempt_id, "approval_id": approval_id}
+        if kind == "stagnant_task":
+            return [
+                {**base, "id": "send_correction", "label": "Request Hermes correction", "api": f"/v1/tasks/{task_id}/correct"},
+                {**base, "id": "view_logs", "label": "View sanitized logs", "api": f"/v1/tasks/{task_id}"},
+                {**base, "id": "wait", "label": "Keep waiting", "api": ""},
+                {**base, "id": "cancel_attempt", "label": "Cancel attempt", "api": f"/v1/tasks/{task_id}/cancel"},
+            ]
+        if kind == "blocked_task":
+            return [
+                {**base, "id": "send_correction", "label": "Send correction", "api": f"/v1/tasks/{task_id}/correct"},
+                {**base, "id": "view_logs", "label": "View sanitized logs", "api": f"/v1/tasks/{task_id}"},
+                {**base, "id": "retry", "label": "Retry / reassign", "api": f"/v1/tasks/{task_id}/retry"},
+            ]
+        if kind == "approval":
+            return [
+                {**base, "id": "approve", "label": "Approve", "api": f"/v1/approvals/{approval_id}/approve"},
+                {**base, "id": "deny", "label": "Deny", "api": f"/v1/approvals/{approval_id}/deny"},
+                {**base, "id": "mock_resolve", "label": "Mock resolve dry-run", "api": f"/v1/approvals/{approval_id}/resolve"},
+            ]
+        if kind == "evidence":
+            return [
+                {**base, "id": "review_evidence", "label": "Review evidence", "api": f"/v1/tasks/{task_id}"},
+                {**base, "id": "view_trace", "label": "View trace", "api": ""},
+            ]
+        return []
+
     for item in long_tasks:
         state = str(item.get("long_task_state") or "")
         if state == "progress_stagnant":
+            task_id = str(item.get("task_id", ""))
+            attempt_id = str(item.get("attempt_id", ""))
             owner_attention.append(
                 {
                     "kind": "stagnant_task",
                     "state": state,
-                    "task_id": item.get("task_id", ""),
+                    "task_id": task_id,
                     "title": item.get("title", ""),
                     "target_agent": item.get("target_agent", ""),
-                    "attempt_id": item.get("attempt_id", ""),
+                    "attempt_id": attempt_id,
                     "trace_id": item.get("trace_id", ""),
                     "message": "员工仍在线，但 15 分钟没有新进度。可继续等待、发送探针、查看日志或请求 Hermes 纠偏。",
                     "updated_at": item.get("last_progress_at") or item.get("started_at", ""),
+                    "actions": attention_actions("stagnant_task", task_id=task_id, attempt_id=attempt_id),
                 }
             )
         elif state in {"heartbeat_stale", "blocked", "failed", "stale"}:
+            task_id = str(item.get("task_id", ""))
+            attempt_id = str(item.get("attempt_id", ""))
             owner_attention.append(
                 {
                     "kind": "blocked_task",
                     "state": state,
-                    "task_id": item.get("task_id", ""),
+                    "task_id": task_id,
                     "title": item.get("title", ""),
                     "target_agent": item.get("target_agent", ""),
-                    "attempt_id": item.get("attempt_id", ""),
+                    "attempt_id": attempt_id,
                     "trace_id": item.get("trace_id", ""),
                     "message": item.get("blocker") or "任务需要人工检查：查看日志、纠偏、取消或重新分配。",
                     "updated_at": item.get("last_progress_at") or item.get("started_at", ""),
+                    "actions": attention_actions("blocked_task", task_id=task_id, attempt_id=attempt_id),
                 }
             )
     for task in summary.get("tasks", []):
         status = str(task.get("status", "")).lower()
         if status in {"blocked", "failed", "stale"}:
+            task_id = str(task.get("id", ""))
             owner_attention.append(
                 {
                     "kind": "blocked_task",
                     "state": status,
-                    "task_id": task.get("id", ""),
+                    "task_id": task_id,
                     "title": task.get("title", ""),
                     "target_agent": task.get("target_agent", ""),
                     "attempt_id": "",
                     "trace_id": task.get("trace_id", ""),
                     "message": task.get("blocker") or task.get("summary") or "任务已阻塞或失败，需要人工处理。",
                     "updated_at": task.get("updated_at", ""),
+                    "actions": attention_actions("blocked_task", task_id=task_id),
                 }
             )
     for item in pending_approvals[:10]:
+        approval_id = str(item.get("id", ""))
         owner_attention.append(
             {
                 "kind": "approval",
                 "state": "blocked",
-                "approval_id": item.get("id", ""),
+                "approval_id": approval_id,
                 "task_id": item.get("task_id", ""),
                 "title": item.get("action") or item.get("id", ""),
                 "target_agent": item.get("target_agent", ""),
@@ -377,14 +414,16 @@ def build_cockpit_summary(summary: dict) -> dict:
                 "trace_id": "",
                 "message": "需要 owner approval；真实外部发送保持 dry-run，直到人工批准。",
                 "updated_at": item.get("updated_at", ""),
+                "actions": attention_actions("approval", task_id=str(item.get("task_id", "")), approval_id=approval_id),
             }
         )
     for item in recent_evidence[:10]:
+        task_id = str(item.get("task_id", ""))
         owner_attention.append(
             {
                 "kind": "evidence",
                 "state": "success",
-                "task_id": item.get("task_id", ""),
+                "task_id": task_id,
                 "title": item.get("title", ""),
                 "target_agent": item.get("target_agent", ""),
                 "attempt_id": "",
@@ -392,6 +431,7 @@ def build_cockpit_summary(summary: dict) -> dict:
                 "message": f"Final evidence 可验收：{item.get('evidence', {}).get('relative_path', '')}",
                 "updated_at": item.get("updated_at", ""),
                 "evidence": item.get("evidence", {}),
+                "actions": attention_actions("evidence", task_id=task_id),
             }
         )
     owner_attention.sort(key=lambda item: item.get("updated_at") or "", reverse=True)
