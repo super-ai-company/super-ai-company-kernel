@@ -285,7 +285,7 @@ def supervise_once(
             return result
         created = parse_time(progress_created_at(progress, ts))
         age_minutes = (parse_time(ts) - created).total_seconds() / 60
-        if state in {"acknowledged", "in_progress"} and age_minutes > stale_minutes:
+        if layer in {"received", "working"} and age_minutes > stale_minutes:
             result = {
                 "ok": True,
                 "status": "stalled",

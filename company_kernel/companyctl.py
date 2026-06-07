@@ -2056,9 +2056,31 @@ def launchd_health() -> dict:
     installed = installed_path.exists()
     template_exists = LAUNCHD_TEMPLATE.exists()
     matches_template = False
+    installed_root = ""
+    warning = ""
     if installed and template_exists:
+        installed_text = installed_path.read_text(encoding="utf-8")
         rendered_template = LAUNCHD_TEMPLATE.read_text(encoding="utf-8").replace("__COMPANY_KERNEL_ROOT__", str(ROOT))
-        matches_template = rendered_template == installed_path.read_text(encoding="utf-8")
+        matches_template = rendered_template == installed_text
+        try:
+            import plistlib
+
+            payload = plistlib.loads(installed_text.encode("utf-8"))
+            args = payload.get("ProgramArguments") or []
+            working_dir = str(payload.get("WorkingDirectory") or "")
+            if working_dir:
+                installed_root = str(Path(working_dir).expanduser().resolve())
+            elif isinstance(args, list) and args:
+                daemon_path = Path(str(args[0])).expanduser()
+                if daemon_path.name == "company-daemon":
+                    installed_root = str(daemon_path.parent.parent.resolve())
+        except Exception:
+            installed_root = ""
+    current_root_path = ROOT.expanduser().resolve()
+    current_root = str(current_root_path)
+    database_isolated = bool(installed_root and Path(installed_root).expanduser().resolve() != current_root_path)
+    if database_isolated:
+        warning = "running_from_alternate_clone: current company.sqlite may be isolated from installed daemon root"
     return {
         "label": LAUNCHD_LABEL,
         "template": str(LAUNCHD_TEMPLATE),
@@ -2066,6 +2088,10 @@ def launchd_health() -> dict:
         "installed_path": str(installed_path),
         "installed": installed,
         "matches_template": matches_template,
+        "installed_root": installed_root,
+        "current_root": current_root,
+        "database_isolated": database_isolated,
+        "warning": warning,
         "recommended_interval_seconds": 180,
         "install_command": "bash bin/company-daemon-install-launchd",
         "uninstall_command": "bash bin/company-daemon-uninstall-launchd",

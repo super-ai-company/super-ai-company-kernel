@@ -259,17 +259,41 @@ class CompanyKernelCoreTest(unittest.TestCase):
             patcher.start()
         companyctl._TEST_OPEN_CONNECTIONS = []
 
+        def track_connection(conn: sqlite3.Connection) -> sqlite3.Connection:
+            companyctl._TEST_OPEN_CONNECTIONS.append(conn)
+            return conn
+
         def tracked_connect() -> sqlite3.Connection:
             conn = sqlite3.connect(companyctl.DB_PATH)
             conn.row_factory = sqlite3.Row
             conn.executescript(companyctl.SCHEMA.read_text(encoding="utf-8"))
             companyctl.sync_backlog_from_queue_file(conn)
             conn.commit()
-            companyctl._TEST_OPEN_CONNECTIONS.append(conn)
-            return conn
+            return track_connection(conn)
+
+        def wrap_connect(fn):
+            def tracked_module_connect(*args, **kwargs):
+                return track_connection(fn(*args, **kwargs))
+
+            return tracked_module_connect
 
         self.connect_patcher = mock.patch.object(companyctl, "connect", tracked_connect)
         self.connect_patcher.start()
+        self.module_connect_patchers = [
+            mock.patch.object(module, "connect", wrap_connect(module.connect))
+            for module in [
+                company_dashboard,
+                company_trace,
+                policy_guard,
+                codex_adapter,
+                hermes_adapter,
+                openclaw_adapter,
+                antigravity_adapter,
+                skill_package_worker,
+            ]
+        ]
+        for patcher in self.module_connect_patchers:
+            patcher.start()
         self.fake_adapter_outputs: dict[str, dict] = {}
         for employee_id, role in [
             ("video-ops", "producer"),
@@ -308,6 +332,8 @@ class CompanyKernelCoreTest(unittest.TestCase):
             conn.close()
 
     def tearDown(self) -> None:
+        for patcher in reversed(getattr(self, "module_connect_patchers", [])):
+            patcher.stop()
         self.connect_patcher.stop()
         for conn in getattr(companyctl, "_TEST_OPEN_CONNECTIONS", []):
             conn.close()
@@ -2754,6 +2780,19 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual(code, 0, strict_installed)
         self.assertTrue(strict_installed["launchd"]["installed"])
         self.assertTrue(strict_installed["launchd"]["matches_template"])
+        self.assertEqual(str(self.root.resolve()), strict_installed["launchd"]["installed_root"])
+        self.assertEqual(str(self.root.resolve()), strict_installed["launchd"]["current_root"])
+        self.assertFalse(strict_installed["launchd"]["database_isolated"])
+
+        alternate_root = self.root / "clone"
+        installed.write_text(companyctl.LAUNCHD_TEMPLATE.read_text(encoding="utf-8").replace("__COMPANY_KERNEL_ROOT__", str(alternate_root)), encoding="utf-8")
+        code, clone_diag = run_cli("doctor", "--summary")
+        self.assertEqual(code, 0, clone_diag)
+        self.assertFalse(clone_diag["launchd"]["matches_template"])
+        self.assertEqual(str(alternate_root.resolve()), clone_diag["launchd"]["installed_root"])
+        self.assertEqual(str(self.root.resolve()), clone_diag["launchd"]["current_root"])
+        self.assertTrue(clone_diag["launchd"]["database_isolated"])
+        self.assertIn("running_from_alternate_clone", clone_diag["launchd"]["warning"])
 
         installed.write_text("<plist><dict><key>Label</key><string>old</string></dict></plist>", encoding="utf-8")
         code, strict_mismatch = run_cli("doctor", "--summary", "--strict-launchd")
