@@ -2950,6 +2950,15 @@
     if (modal) modal.style.display = 'flex';
   }
 
+  window.dashboardDetailStore = window.dashboardDetailStore || {};
+  window.showDetails = function(title, raw) {
+    const item = raw && typeof raw === 'object' ? raw : {};
+    renderDetails(title || 'Details', Object.entries(item), item);
+  };
+  window.showStoredDetails = function(title, key) {
+    window.showDetails(title, (window.dashboardDetailStore || {})[key] || {});
+  };
+
   function showApprovalDetails(approval) {
     const detail = approvalDetail(approval);
     const summary = approvalSummary(approval);
@@ -4333,10 +4342,13 @@
     const eventsTbody = document.getElementById('company-events-tbody');
     if (eventsTbody) {
       const eventRows = summary.events || [];
+      window.dashboardDetailStore = window.dashboardDetailStore || {};
       eventsTbody.innerHTML = eventRows.length ? eventRows.map(event => {
+        const detailKey = `event:${event.id || Math.random().toString(36).slice(2)}`;
+        window.dashboardDetailStore[detailKey] = event;
         const processed = event.processed_at ? 'YES' : 'PENDING';
         return `
-          <tr onclick="showDetails('Event: ' + '${escapeHtml(event.id)}', ${JSON.stringify(event).replace(/'/g, "\'")})">
+          <tr onclick="showStoredDetails('Event: ${escapeHtml(event.id || '')}', '${escapeHtml(detailKey)}')">
             <td style="font-family: monospace; font-size: 11px;">${escapeHtml(event.id)}</td>
             <td style="font-family: monospace; font-size: 11px;">${escapeHtml(event.trace_id || '-')}</td>
             <td>${escapeHtml(event.event_type || '-')}</td>
