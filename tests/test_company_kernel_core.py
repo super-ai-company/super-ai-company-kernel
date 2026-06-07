@@ -1919,6 +1919,31 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual("forbidden secret/config path", result["reason"])
         self.assertFalse(result["absolute_path_exposed"])
 
+    def test_log_sanitizer_redacts_secrets_and_sensitive_paths(self) -> None:
+        secret = "sk-testSECRET1234567890"
+        raw = (
+            f"api_key={secret} stdout /Users/owner/.ssh/id_rsa "
+            f"{self.root / '.env'} normal progress token=plain-secret-value"
+        )
+
+        redacted = companyctl.sanitize_log_text(raw)
+
+        self.assertIn("api_key=[REDACTED]", redacted)
+        self.assertIn("token=[REDACTED]", redacted)
+        self.assertIn("normal progress", redacted)
+        self.assertNotIn(secret, redacted)
+        self.assertNotIn("plain-secret-value", redacted)
+        self.assertNotIn("id_rsa", redacted)
+        self.assertNotIn(".env", redacted)
+        self.assertIn("[REDACTED_PATH]", redacted)
+
+    def test_log_sanitizer_does_not_redact_task_ids_containing_sk(self) -> None:
+        task_id = "task-20260607-043615-365dea"
+
+        redacted = companyctl.sanitize_log_text(f"completed task_id={task_id}")
+
+        self.assertIn(task_id, redacted)
+
     def test_advanced_dashboard_counts_visible_ai_employees_not_human_owner(self) -> None:
         summary = {
             "generated_at": companyctl.now(),
@@ -4848,14 +4873,28 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual(code, 0, submitted)
         code, blocked = run_cli("task", "block", "--agent", "codex", "--task-id", "task-api-adapter-retry", "--blocker", "adapter failed")
         self.assertEqual(code, 0, blocked)
+        secret = "sk-testSECRET1234567890"
+        adapter_result = {
+            "ok": False,
+            "agent": "codex",
+            "command": "company-codex-adapter",
+            "stdout": f"api_key={secret} reading /Users/owner/.ssh/id_rsa",
+            "stderr": f"token={secret} blocked on {self.root / '.env'}",
+            "runs": [
+                {
+                    "result": {"stdout": f"authorization={secret}", "stderr": "/Users/owner/project/profile.json"},
+                    "parsed_stdout": {"task_id": "task-api-adapter-retry", "summary": "safe progress context"},
+                }
+            ],
+        }
         conn = companyctl.connect()
         try:
             conn.execute(
                 """
                 INSERT INTO adapter_runs(id, trace_id, agent_id, task_id, command, ok, processed, attempt, next_retry_at, result_json, created_at)
-                VALUES ('adapter-run-api-retry', ?, 'codex', 'task-api-adapter-retry', 'company-codex-adapter', 0, 1, 1, '2000-01-01T00:00:00+00:00', '{}', ?)
+                VALUES ('adapter-run-api-retry', ?, 'codex', 'task-api-adapter-retry', 'company-codex-adapter', 0, 1, 1, '2000-01-01T00:00:00+00:00', ?, ?)
                 """,
-                (submitted["task"]["metadata"]["trace_id"], companyctl.now()),
+                (submitted["task"]["metadata"]["trace_id"], json.dumps(adapter_result), companyctl.now()),
             )
             conn.commit()
         finally:
@@ -4864,6 +4903,21 @@ class CompanyKernelCoreTest(unittest.TestCase):
         status, run = api_gateway.route_get("/v1/adapter-runs/adapter-run-api-retry", {"summary": ["true"]})
         self.assertEqual(200, status, run)
         self.assertEqual("adapter-run-api-retry", run["adapter_run"]["id"])
+        result_summary_json = json.dumps(run["result_summary"], ensure_ascii=False)
+        self.assertIn("sanitized_log", run["result_summary"])
+        self.assertIn("safe progress context", result_summary_json)
+        self.assertNotIn(secret, result_summary_json)
+        self.assertNotIn("id_rsa", result_summary_json)
+        self.assertNotIn(".env", result_summary_json)
+        self.assertNotIn("profile.json", result_summary_json)
+        status, listed_runs = api_gateway.route_get("/v1/adapter-runs", {"limit": ["5"]})
+        self.assertEqual(200, status, listed_runs)
+        listed_run = next(item for item in listed_runs["adapter_runs"] if item["id"] == "adapter-run-api-retry")
+        listed_run_json = json.dumps(listed_run, ensure_ascii=False)
+        self.assertIn("sanitized_log", listed_run)
+        self.assertNotIn("result_json", listed_run)
+        self.assertNotIn(secret, listed_run_json)
+        self.assertNotIn("id_rsa", listed_run_json)
         status, retry = api_gateway.route_post("/v1/adapter-runs/adapter-run-api-retry/retry", {"by": "openclaw-main", "reason": "retry through API"})
         self.assertEqual(200, status, retry)
         self.assertEqual("task-api-adapter-retry", retry["task_id"])
@@ -7117,7 +7171,14 @@ class CompanyKernelCoreTest(unittest.TestCase):
             "agent": "codex",
             "command": "company-codex-adapter",
             "processed": 1,
-            "runs": [{"parsed_stdout": {"task_id": "task-adapter-run-dashboard"}}],
+            "stdout": "api_key=sk-dashboardSECRET1234567890 reading /Users/owner/.ssh/id_rsa",
+            "stderr": f"token=sk-dashboardSECRET1234567890 blocked on {self.root / '.env'}",
+            "runs": [
+                {
+                    "result": {"stdout": "authorization=sk-dashboardSECRET1234567890", "stderr": "/Users/owner/project/profile.json"},
+                    "parsed_stdout": {"task_id": "task-adapter-run-dashboard", "summary": "safe dashboard progress"},
+                }
+            ],
             "at": "2026-06-03T04:30:00+07:00",
             "state_file": str(self.root / "state" / "daemon" / "workers" / "codex.json"),
         }
@@ -7147,11 +7208,19 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual(code, 0, shown)
         self.assertEqual("task-adapter-run-dashboard", shown["adapter_run"]["task_id"])
         self.assertEqual("task-adapter-run-dashboard", shown["result"]["runs"][0]["parsed_stdout"]["task_id"])
+        self.assertIn("sk-dashboardSECRET1234567890", json.dumps(shown, ensure_ascii=False))
         code, shown_summary = run_cli("runtime", "adapter-run", "show", "--run-id", run_id, "--summary")
         self.assertEqual(code, 0, shown_summary)
         self.assertNotIn("result_json", shown_summary["adapter_run"])
         self.assertNotIn("result", shown_summary)
         self.assertEqual("task-adapter-run-dashboard", shown_summary["result_summary"]["runs"][0]["task_id"])
+        summary_json = json.dumps(shown_summary, ensure_ascii=False)
+        self.assertIn("sanitized_log", shown_summary["result_summary"])
+        self.assertIn("safe dashboard progress", summary_json)
+        self.assertNotIn("sk-dashboardSECRET1234567890", summary_json)
+        self.assertNotIn("id_rsa", summary_json)
+        self.assertNotIn(".env", summary_json)
+        self.assertNotIn("profile.json", summary_json)
         code, failed = run_cli("runtime", "adapter-runs", "--status", "failed", "--unacknowledged-only")
         self.assertEqual(code, 0, failed)
         self.assertEqual([], failed["adapter_runs"])
@@ -7164,7 +7233,12 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertIn("Adapter Runs", html)
         self.assertIn("task-adapter-run-dashboard", html)
         self.assertIn("company-codex-adapter", html)
-        self.assertIn(str(self.root / "state" / "daemon" / "workers" / "codex.json"), html)
+        self.assertIn("safe dashboard progress", html)
+        self.assertIn("sanitized_log", html)
+        self.assertNotIn("sk-dashboardSECRET1234567890", html)
+        self.assertNotIn("id_rsa", html)
+        self.assertNotIn(".env", html)
+        self.assertNotIn("profile.json", html)
 
     def test_daemon_worker_processes_task_end_to_end(self) -> None:
         code, submitted = run_cli(

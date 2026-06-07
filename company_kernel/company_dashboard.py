@@ -879,7 +879,9 @@ def communication_observability_summary(summary: dict) -> dict:
     failed_count = 0
     for run in summary.get("adapter_runs", [])[:8]:
         try:
-            result = json.loads(run.get("result_json", "{}") or "{}")
+            result = run.get("_result")
+            if not isinstance(result, dict):
+                result = json.loads(run.get("result_json", "{}") or "{}")
         except json.JSONDecodeError:
             result = {}
         parsed_runs = result.get("runs", []) if isinstance(result, dict) else []
@@ -908,6 +910,7 @@ def communication_observability_summary(summary: dict) -> dict:
                 "progress_state": progress.get("state", ""),
                 "progress_label": progress.get("label", ""),
                 "summary": parsed_stdout.get("summary", "") if isinstance(parsed_stdout, dict) else "",
+                "sanitized_log": run.get("sanitized_log") or companyctl.summarize_adapter_result(result).get("sanitized_log", ""),
             }
         )
 
@@ -977,6 +980,18 @@ def communication_observability_summary(summary: dict) -> dict:
         },
         "internal_watchdog": summary.get("internal_watchdog", {"counts": {}, "no_receipt_messages": [], "open_tasks": []}),
     }
+
+
+def public_summary(summary: dict) -> dict:
+    cleaned = dict(summary)
+    cleaned_runs = []
+    for run in cleaned.get("adapter_runs", []):
+        run_copy = dict(run)
+        run_copy.pop("result_json", None)
+        run_copy.pop("_result", None)
+        cleaned_runs.append(run_copy)
+    cleaned["adapter_runs"] = cleaned_runs
+    return cleaned
 
 
 def load_summary(conn: sqlite3.Connection) -> dict:
@@ -1053,6 +1068,16 @@ def load_summary(conn: sqlite3.Connection) -> dict:
             (employee["id"],),
         ).fetchone()
         employee["current_attempt"] = dict(current_attempt) if current_attempt else {}
+
+    adapter_runs = rows(conn, "SELECT * FROM adapter_runs ORDER BY created_at DESC LIMIT 20")
+    for adapter_run in adapter_runs:
+        raw_result = adapter_run.get("result_json", "{}")
+        try:
+            result = json.loads(raw_result or "{}")
+        except json.JSONDecodeError:
+            result = {"raw": raw_result}
+        adapter_run["_result"] = result
+        adapter_run["sanitized_log"] = companyctl.summarize_adapter_result(result).get("sanitized_log", "")
 
     return {
         "generated_at": generated_at,
@@ -1169,7 +1194,7 @@ def load_summary(conn: sqlite3.Connection) -> dict:
         "followups": companyctl.list_followups("all")[:20],
         "pending_events": rows(conn, "SELECT * FROM company_events WHERE processed_at = '' ORDER BY created_at ASC LIMIT 20"),
         "events": rows(conn, "SELECT * FROM company_events ORDER BY created_at DESC LIMIT 20"),
-        "adapter_runs": rows(conn, "SELECT * FROM adapter_runs ORDER BY created_at DESC LIMIT 20"),
+        "adapter_runs": adapter_runs,
         "active_attempts": rows(
             conn,
             """
@@ -1435,7 +1460,9 @@ def render(summary: dict) -> str:
     adapter_runs = []
     for run in summary["adapter_runs"]:
         try:
-            result = json.loads(run.get("result_json", "{}") or "{}")
+            result = run.get("_result")
+            if not isinstance(result, dict):
+                result = json.loads(run.get("result_json", "{}") or "{}")
         except json.JSONDecodeError:
             result = {}
         progress = companyctl.extract_progress_payload({})
@@ -1448,9 +1475,10 @@ def render(summary: dict) -> str:
             {
                 **run,
                 "ok_text": "yes" if run.get("ok") else "no",
-                "state_file": result.get("state_file", ""),
+                "state_file": run.get("state_file") or result.get("state_file", ""),
                 "progress_layer": progress.get("layer", ""),
                 "progress_state": progress.get("state", ""),
+                "sanitized_log": run.get("sanitized_log") or companyctl.summarize_adapter_result(result).get("sanitized_log", ""),
             }
         )
     runtime_health = [
@@ -1598,7 +1626,7 @@ def render(summary: dict) -> str:
     <h2>Recent Events</h2>
     {render_table(["id", "trace", "type", "source", "task", "processed_at", "created"], summary["events"], ["id", "trace_id", "event_type", "source_agent", "task_id", "processed_at", "created_at"])}
     <h2>Adapter Runs</h2>
-    {render_table(["id", "trace", "agent", "task", "command", "ok", "progress_layer", "progress_state", "processed", "attempt", "next_retry", "ack_by", "ack_reason", "state_file", "created"], adapter_runs, ["id", "trace_id", "agent_id", "task_id", "command", "ok_text", "progress_layer", "progress_state", "processed", "attempt", "next_retry_at", "acknowledged_by", "acknowledgement_reason", "state_file", "created_at"])}
+    {render_table(["id", "trace", "agent", "task", "command", "ok", "progress_layer", "progress_state", "processed", "attempt", "next_retry", "ack_by", "ack_reason", "sanitized_log", "state_file", "created"], adapter_runs, ["id", "trace_id", "agent_id", "task_id", "command", "ok_text", "progress_layer", "progress_state", "processed", "attempt", "next_retry_at", "acknowledged_by", "acknowledgement_reason", "sanitized_log", "state_file", "created_at"])}
     <h2>Locks</h2>
     {render_table(["resource", "owner", "lease_until", "updated"], summary["locks"], ["resource_key", "owner_agent", "lease_until", "updated_at"])}
   </main>
@@ -1831,7 +1859,7 @@ def render(summary: dict) -> str:
 
 
 def advanced_summary(summary: dict) -> dict:
-    prepared = dict(summary)
+    prepared = public_summary(summary)
     employees = employee_view_models(summary)
     counts = dict(summary.get("counts", {}))
     counts["employees"] = len(employees)

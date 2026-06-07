@@ -2622,6 +2622,7 @@
                   <th>Processed</th>
                   <th>Ack By</th>
                   <th>Ack Reason</th>
+                  <th>Sanitized Log</th>
                   <th>Created</th>
                 </tr>
               </thead>
@@ -4751,6 +4752,7 @@
           <td>${escapeHtml(run.processed)}</td>
           <td>${escapeHtml(run.acknowledged_by || '-')}</td>
           <td>${escapeHtml(run.acknowledgement_reason || '-')}</td>
+          <td>${escapeHtml(shortText(run.sanitized_log || '-', 120))}</td>
           <td>${formatDate(run.created_at)}</td>
         </tr>
       `;
@@ -5288,7 +5290,7 @@
       lines.push({
         at: run.created_at,
         tag: 'adapter',
-        text: `${run.agent_id || '-'} ${run.command || '-'} ok=${run.ok}`,
+        text: `${run.agent_id || '-'} ${run.command || '-'} ok=${run.ok} ${run.sanitized_log || ''}`,
         type: Number(run.ok) === 1 ? 'success' : 'warn'
       });
     });

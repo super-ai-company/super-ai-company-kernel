@@ -8,6 +8,7 @@ import io
 import json
 import mimetypes
 import os
+import re
 import shutil
 import sqlite3
 import subprocess
@@ -829,6 +830,34 @@ def sanitize_evidence_path_for_display(raw_path: str) -> dict:
         }
     )
     return result
+
+
+SENSITIVE_LOG_PATTERNS = [
+    re.compile(r"(?i)(api[_-]?key|token|secret|password|passwd|authorization|bearer)\s*[:=]\s*([^\s,;]+)"),
+    re.compile(r"(?i)(?<![A-Za-z0-9_])(sk-[A-Za-z0-9_\-]{12,})"),
+    re.compile(r"(?i)(?<![A-Za-z0-9_])(xox[baprs]-[A-Za-z0-9\-]{12,})"),
+]
+
+
+def sanitize_log_text(raw: object, *, max_length: int = 1200) -> str:
+    text = "" if raw is None else str(raw)
+    if not text:
+        return ""
+    text = text.replace(str(Path.home()), "~")
+    for env_key, env_value in os.environ.items():
+        if not env_value or len(env_value) < 8:
+            continue
+        key_lower = env_key.lower()
+        if any(marker in key_lower for marker in ("token", "secret", "password", "passwd", "api_key", "apikey", "authorization")):
+            text = text.replace(env_value, "[REDACTED_ENV]")
+    text = re.sub(r"(?<![\w.-])/[^\s\"']*(?:\.env|id_rsa|id_ed25519|config|profile|credentials|token)[^\s\"']*", "[REDACTED_PATH]", text, flags=re.IGNORECASE)
+    text = re.sub(r"(?<![\w.-])~[^\s\"']*(?:\.env|id_rsa|id_ed25519|config|profile|credentials|token)[^\s\"']*", "[REDACTED_PATH]", text, flags=re.IGNORECASE)
+    for pattern in SENSITIVE_LOG_PATTERNS:
+        text = pattern.sub(lambda match: f"{match.group(1)}=[REDACTED]" if match.lastindex and match.lastindex >= 2 else "[REDACTED]", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    if len(text) > max_length:
+        text = text[: max_length - 1] + "…"
+    return text
 
 
 def sha256_file(path: Path) -> str:
@@ -7280,7 +7309,7 @@ def cmd_runtime_adapter_runs(args: argparse.Namespace) -> int:
         conn,
         f"""
         SELECT id, trace_id, agent_id, task_id, command, ok, processed, attempt, next_retry_at,
-               acknowledged_at, acknowledged_by, acknowledgement_reason, created_at
+               acknowledged_at, acknowledged_by, acknowledgement_reason, result_json, created_at
         FROM adapter_runs
         {where_sql}
         ORDER BY created_at DESC
@@ -7288,17 +7317,37 @@ def cmd_runtime_adapter_runs(args: argparse.Namespace) -> int:
         """,
         tuple([*params, args.limit]),
     )
+    for adapter_run in adapter_runs:
+        raw_result_json = adapter_run.pop("result_json", "{}")
+        try:
+            result = json.loads(raw_result_json or "{}")
+        except json.JSONDecodeError:
+            result = {"raw": raw_result_json}
+        adapter_run["sanitized_log"] = summarize_adapter_result(result).get("sanitized_log", "")
     emit({"ok": True, "adapter_runs": adapter_runs})
     return 0
 
 
 def summarize_adapter_result(result: dict) -> dict:
     runs = []
+    log_parts = [
+        str(result.get("stdout", "")),
+        str(result.get("stderr", "")),
+        str(result.get("companyctl_stdout", "")),
+        str(result.get("companyctl_stderr", "")),
+        str(result.get("reply", "")),
+        str(result.get("blocker", "")),
+        str(result.get("error", "")),
+    ]
     for run in result.get("runs", []):
         if not isinstance(run, dict):
             continue
         command_result = run.get("result", {})
         parsed = run.get("parsed_stdout", {})
+        if isinstance(command_result, dict):
+            log_parts.extend([str(command_result.get("stdout", "")), str(command_result.get("stderr", ""))])
+        if isinstance(parsed, dict):
+            log_parts.extend([str(parsed.get("summary", "")), str(parsed.get("blocker", "")), str(parsed.get("error", ""))])
         report_path = str(parsed.get("report", "")) if isinstance(parsed, dict) else ""
         progress_state = ""
         progress_task_id = ""
@@ -7343,6 +7392,7 @@ def summarize_adapter_result(result: dict) -> dict:
         "processed": result.get("processed", 0),
         "at": result.get("at", ""),
         "state_file": result.get("state_file", ""),
+        "sanitized_log": sanitize_log_text("\n".join(part for part in log_parts if part), max_length=1600),
         "runs": runs,
     }
 
