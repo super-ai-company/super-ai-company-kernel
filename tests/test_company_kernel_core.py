@@ -1808,6 +1808,8 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertIn("/v1/events/stream", html)
         self.assertIn("Progress Stagnant", html)
         self.assertIn("AI Employee Cockpit", html)
+        self.assertIn("Correction State", html)
+        self.assertIn("Supervisor State", html)
 
     def test_cockpit_api_sanitizes_evidence_and_exposes_long_task_state(self) -> None:
         code, created = run_cli("employee", "create", "--id", "main", "--name", "main", "--role", "operator", "--runtime", "openclaw", "--workspace", str(self.root / "workspace" / "main"))
@@ -4064,6 +4066,15 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual(0, code, shown)
         self.assertEqual("cancelled", shown["task"]["status"])
         self.assertEqual(attempt_id, shown["attempts"][0]["attempt_id"])
+        self.assertEqual(1, shown["supervisor_state"]["corrections_requested"])
+        self.assertEqual(1, shown["supervisor_state"]["corrections_acknowledged"])
+        self.assertEqual("cancelled", shown["correction_summary"]["latest_attempt_status"])
+        self.assertEqual(attempt_id, shown["correction_summary"]["latest_attempt_id"])
+
+        status, api_shown = api_gateway.route_get("/v1/tasks/task-long-managed", {})
+        self.assertEqual(200, status, api_shown)
+        self.assertEqual(shown["supervisor_state"], api_shown["supervisor_state"])
+        self.assertEqual(shown["correction_summary"], api_shown["correction_summary"])
 
     def test_managed_attempt_progress_refresh_prevents_stale_until_progress_stops(self) -> None:
         for employee_id, role in [("main", "operator"), ("hermes", "supervisor"), ("codex", "developer")]:

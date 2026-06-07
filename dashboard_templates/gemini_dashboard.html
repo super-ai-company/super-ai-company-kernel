@@ -3315,6 +3315,8 @@
       const attempts = payload.attempts || [];
       const events = payload.events || [];
       const approvals = payload.approvals || [];
+      const supervisorState = payload.supervisor_state || {};
+      const correctionSummary = payload.correction_summary || {};
       renderDetails(`Task Detail: ${taskId}`, [
         ['Status', task.status || '-'],
         ['Target', task.target_agent || '-'],
@@ -3322,6 +3324,8 @@
         ['Trace', (attempts[0] && attempts[0].trace_id) || task.trace_id || '-'],
         ['Evidence', payload.evidence || {}],
         ['Blocker', payload.blocker || '-'],
+        ['Correction State', correctionSummary],
+        ['Supervisor State', supervisorState],
         ['Attempt History', attemptHistorySummary(attempts)],
         ['Recent Events', events.slice(-8).map(item => `${item.created_at} ${item.event_type} ${item.id}`).join('\n') || '-'],
         ['Approvals', approvals.map(item => `${item.status}:${item.id || item.approval_id || ''}`).join('\n') || '-'],
