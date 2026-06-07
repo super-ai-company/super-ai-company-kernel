@@ -1819,6 +1819,8 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertIn("Runtime Policy", html)
         self.assertIn("Progress Events", html)
         self.assertIn("owner_attention", html)
+        self.assertIn("Recent Evidence", html)
+        self.assertIn("cockpit-recent-evidence", html)
         self.assertIn("long_task_state || task.status", html)
 
     def test_cockpit_api_sanitizes_evidence_and_exposes_long_task_state(self) -> None:
@@ -1878,6 +1880,10 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertTrue(long_task["evidence"]["allowed"])
         self.assertFalse(long_task["evidence"]["absolute_path_exposed"])
         self.assertIn("evidence/result.md", long_task["evidence"]["relative_path"])
+        recent_evidence = next(item for item in cockpit["recent_evidence"] if item["task_id"] == "task-cockpit-long")
+        self.assertTrue(recent_evidence["evidence"]["allowed"])
+        self.assertFalse(recent_evidence["evidence"]["absolute_path_exposed"])
+        self.assertIn("evidence/result.md", recent_evidence["evidence"]["relative_path"])
         attention = next(item for item in cockpit["owner_attention"] if item["task_id"] == "task-cockpit-long" and item["kind"] == "stagnant_task")
         self.assertEqual("stagnant_task", attention["kind"])
         self.assertEqual("progress_stagnant", attention["state"])
