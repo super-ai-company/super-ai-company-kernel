@@ -288,6 +288,14 @@ def route_get(path: str, query: dict[str, list[str]]) -> tuple[int, dict]:
             return HTTPStatus.OK, {"ok": True, **company_dashboard.communication_observability_summary(summary)}
         finally:
             conn.close()
+    if path == "/v1/telemetry/traces":
+        conn = companyctl.connect()
+        try:
+            limit_raw = query_value(query, "limit", "20")
+            limit = int(limit_raw) if str(limit_raw).isdigit() else 20
+            return HTTPStatus.OK, {"ok": True, "traces": company_dashboard.build_traces(conn, limit=limit)}
+        finally:
+            conn.close()
     if path == "/v1/progress/notifications":
         conn = companyctl.connect()
         try:

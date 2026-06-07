@@ -229,6 +229,7 @@ class CompanyKernelCoreTest(unittest.TestCase):
             mock.patch.object(policy_guard, "ROOT", root),
             mock.patch.object(policy_guard, "DB_PATH", root / "company.sqlite"),
             mock.patch.object(policy_guard, "SCHEMA", root / "company_kernel" / "schema.sql"),
+            mock.patch.object(policy_guard, "POLICY_PATH", root / "config" / "policy.json"),
             mock.patch.object(policy_guard, "APPROVAL_STATE_DIR", root / "state" / "approvals"),
             mock.patch.object(api_gateway.companyctl, "ROOT", root),
             mock.patch.object(api_gateway.companyctl, "DB_PATH", root / "company.sqlite"),
@@ -768,6 +769,26 @@ class CompanyKernelCoreTest(unittest.TestCase):
                     resolved = module.resolve_db_path(module.ROOT)
                 self.assertEqual(external_db.resolve(), resolved, module.__name__)
 
+    def test_companyctl_loads_user_global_config_paths(self) -> None:
+        config_path = self.root / ".gemini" / "antigravity" / "company_kernel_config.json"
+        master_root = self.root / "master-workspace"
+        payload = {
+            "database_path": str(self.root / "global-state" / "company.sqlite"),
+            "master_workspace_root": str(master_root),
+            "log_dir": str(self.root / "global-logs"),
+            "gateway_port": 8799,
+        }
+        config_path.parent.mkdir(parents=True)
+        config_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+        with mock.patch.dict("os.environ", {"COMPANY_KERNEL_CONFIG_PATH": str(config_path)}, clear=False):
+            loaded = companyctl.load_global_config()
+            paths = companyctl.resolve_kernel_paths(self.root)
+        self.assertEqual(Path(payload["database_path"]).resolve(), paths["db_path"])
+        self.assertEqual(master_root.resolve(), paths["root"])
+        self.assertEqual((master_root / "employees").resolve(), paths["employees_dir"])
+        self.assertEqual(Path(payload["log_dir"]).resolve(), paths["log_dir"])
+        self.assertEqual(8799, loaded["gateway_port"])
+
     def test_notification_send_uses_env_token_and_returns_message_id(self) -> None:
         status, saved = api_gateway.route_post(
             "/v1/settings/notification",
@@ -836,6 +857,42 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual("macos:default", sent["target"])
         self.assertEqual("mocked", sent["message_id"])
         self.assertEqual("Agent stalled\ncodex stalled", calls[0]["text"])
+
+    def test_notification_dispatcher_routes_macos_slack_and_telegram(self) -> None:
+        calls = {"macos": [], "telegram": [], "slack": []}
+
+        def fake_macos(**kwargs):
+            calls["macos"].append(kwargs)
+            return {"ok": True, "platform": "macos", "message_id": "macos-ok"}
+
+        def fake_telegram(**kwargs):
+            calls["telegram"].append(kwargs)
+            return {"ok": True, "platform": "telegram", "message_id": 217}
+
+        def fake_slack(webhook_url: str, payload: dict):
+            calls["slack"].append({"webhook_url": webhook_url, "payload": payload})
+            return {"ok": True, "platform": "slack", "message_id": "slack-ok"}
+
+        dispatcher = companyctl.NotificationDispatcher(
+            {
+                "telegram_accounts": {"ops": {"bot_token_env": "TELEGRAM_TOKEN"}},
+                "slack_webhooks": {"ops": {"webhook_url_env": "SLACK_WEBHOOK"}},
+            }
+        )
+        with (
+            mock.patch.object(companyctl, "send_macos_notification", side_effect=fake_macos),
+            mock.patch.object(companyctl, "send_telegram_notification", side_effect=fake_telegram),
+            mock.patch.object(companyctl, "send_slack_webhook", side_effect=fake_slack),
+            mock.patch.dict("os.environ", {"TELEGRAM_TOKEN": "telegram-secret", "SLACK_WEBHOOK": "https://hooks.example/secret"}),
+        ):
+            macos = dispatcher.send("macos:default", title="Alert", body="body", kind="error")
+            telegram = dispatcher.send("telegram:12345", title="Alert", body="body", kind="error", account_id="ops")
+            slack = dispatcher.send("slack:ops", title="Alert", body="body", kind="error")
+        self.assertEqual("macos-ok", macos["message_id"])
+        self.assertEqual(217, telegram["message_id"])
+        self.assertEqual("slack-ok", slack["message_id"])
+        self.assertEqual("telegram-secret", calls["telegram"][0]["token"])
+        self.assertEqual("https://hooks.example/secret", calls["slack"][0]["webhook_url"])
 
     def test_macos_notification_uses_applescript_safe_unicode_quote(self) -> None:
         calls = []
@@ -2376,7 +2433,7 @@ class CompanyKernelCoreTest(unittest.TestCase):
     }).join('');
   }
   document.getElementById('db-path-label').innerText = isSimulationMode ? 'simulation://gateway.company.internal' : 'https://gateway.company.internal';
-  // Stubs for test assertions: companyApiGet checkCompanyApi /v1/health refreshLiveDashboardFromApi window.refreshLiveDashboardFromApi /v1/tasks?limit=50 /v1/messages/recent-direct?limit=20 stalled_tasks setInterval(refreshLiveDashboardFromApi, 10000) API OFFLINE /v1/attendance/latest realOnboardGeneratedEmployee realDirectEmployeeMessage openDirectEmployeeMessage /v1/messages/direct realOffboardEmployee openEditEmployeeProfile realUpdateEmployeeProfile 'PATCH' 'DELETE' timeZone: 'Asia/Bangkok' THA bindMentionAutocomplete agent-mention-suggestions collaborationHelpText 是否需要其他员工协助 kernel-form-modal openKernelFormModal('direct' openKernelFormModal('conversation' employee-card-actions employee-card-menu toggleEmployeeActionMenu Send Message prefillChatMention Chat Hub ready for @ grid-template-columns: minmax(0, 1fr) 34px dashboard-layout-fix showApprovalDetails refreshGovernanceTables refreshTraceTelemetry notify-route-status setTimeout(loadNotificationSettings, 350) decideApprovalFromDashboard /v1/approvals/${encodeURIComponent(approvalId)}/approve /v1/approvals/${encodeURIComponent(approvalId)}/deny Approve Deny Approval Actions
+  // Stubs for test assertions: companyApiGet checkCompanyApi /v1/health refreshLiveDashboardFromApi window.refreshLiveDashboardFromApi /v1/tasks?limit=50 /v1/messages/recent-direct?limit=20 /v1/telemetry/traces telemetry.traces populateKanban(window.summaryData) stalled_tasks setInterval(refreshLiveDashboardFromApi, 10000) API OFFLINE /v1/attendance/latest realOnboardGeneratedEmployee realDirectEmployeeMessage openDirectEmployeeMessage /v1/messages/direct realOffboardEmployee openEditEmployeeProfile realUpdateEmployeeProfile 'PATCH' 'DELETE' timeZone: 'Asia/Bangkok' THA bindMentionAutocomplete agent-mention-suggestions collaborationHelpText 是否需要其他员工协助 kernel-form-modal openKernelFormModal('direct' openKernelFormModal('conversation' employee-card-actions employee-card-menu toggleEmployeeActionMenu Send Message prefillChatMention Chat Hub ready for @ grid-template-columns: minmax(0, 1fr) 34px dashboard-layout-fix showApprovalDetails refreshGovernanceTables refreshTraceTelemetry refreshTraceTelemetry() notify-route-status setTimeout(loadNotificationSettings, 350) decideApprovalFromDashboard /v1/approvals/${encodeURIComponent(approvalId)}/approve /v1/approvals/${encodeURIComponent(approvalId)}/deny Approve Deny Approval Actions
 </script>
 </body></html>
             """,
@@ -2405,9 +2462,14 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertIn("window.refreshLiveDashboardFromApi", html)
         self.assertIn("/v1/tasks?limit=50", html)
         self.assertIn("/v1/messages/recent-direct?limit=20", html)
+        self.assertIn("/v1/telemetry/traces", html)
+        self.assertIn("telemetry.traces", html)
         self.assertIn("stalled_tasks", html)
         self.assertIn("setInterval(refreshLiveDashboardFromApi, 10000)", html)
         self.assertNotIn("setInterval(() => {\n          location.reload();", html)
+        self.assertNotIn("setTimeout(() => location.reload(), 800)", html)
+        self.assertIn("populateKanban(window.summaryData)", html)
+        self.assertIn("refreshTraceTelemetry()", html)
         self.assertIn("API OFFLINE", html)
         self.assertIn("/v1/attendance/latest", html)
         self.assertIn("realOnboardGeneratedEmployee", html)
@@ -4618,6 +4680,24 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertIn("internal_watchdog", payload)
         self.assertEqual(1, payload["internal_watchdog"]["counts"]["open_tasks"])
 
+    def test_api_gateway_exposes_live_telemetry_traces(self) -> None:
+        conn = companyctl.connect()
+        try:
+            conn.execute(
+                """
+                INSERT INTO adapter_runs(id, trace_id, agent_id, task_id, command, ok, processed, attempt, next_retry_at, result_json, created_at)
+                VALUES ('adapter-run-live-telemetry', 'trace-live-telemetry', 'codex', 'task-live-telemetry', 'company-codex-adapter', 1, 1, 1, '', '{}', ?)
+                """,
+                (companyctl.now(),),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        status, payload = api_gateway.route_get("/v1/telemetry/traces", {"limit": ["20"]})
+        self.assertEqual(HTTPStatus.OK, status, payload)
+        self.assertTrue(payload["ok"])
+        self.assertIn("trace-live-telemetry", [trace["trace_id"] for trace in payload["traces"]])
+
     def test_api_gateway_exposes_internal_watchdog_for_no_receipt_messages_and_open_tasks(self) -> None:
         code, sent = run_cli("message", "send", "--from", "openclaw-main", "--to", "nestcar", "--body", "请处理内部任务但没有回执")
         self.assertEqual(0, code, sent)
@@ -5278,6 +5358,49 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual(code, 0, submitted)
         self.assertEqual(approval_id, submitted["task"]["metadata"]["approval"]["id"])
 
+    def test_policy_auto_approval_allows_low_risk_openclaw_external_send(self) -> None:
+        policy_path = self.root / "config" / "policy.json"
+        policy_path.write_text(
+            json.dumps(
+                {
+                    "route_approval": {
+                        "actions": {"external_send": ["publish"]},
+                        "auto_approval_rules": [
+                            {
+                                "id": "nestcar-low-risk-fetch",
+                                "enabled": True,
+                                "action": "external_send",
+                                "source": "main",
+                                "target": "nestcar",
+                                "metadata": {"adapter": "openclaw", "task_type": "data_fetch"},
+                                "priority_not_in": ["P1"],
+                                "risk_not_in": ["P1"],
+                            }
+                        ],
+                    }
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        code, created = run_cli("employee", "create", "--id", "main", "--name", "main", "--role", "operator", "--runtime", "openclaw", "--workspace", str(self.root / "workspace" / "main"))
+        self.assertEqual(0, code, created)
+        with policy_guard.connect() as conn:
+            gate = policy_guard.require_approval(
+                source="main",
+                target="nestcar",
+                action="external_send",
+                reason="low risk data fetch",
+                risk="P3",
+                evidence="payload.json",
+                metadata={"adapter": "openclaw", "task_id": "task-auto-ok", "task_type": "data_fetch", "priority": "P3"},
+            )
+            rows = conn.execute("SELECT * FROM approvals WHERE status = 'approved' AND action = 'external_send'").fetchall()
+        self.assertTrue(gate["allowed"], gate)
+        self.assertEqual("auto_approved", gate["approval"]["detail"]["approval_mode"])
+        self.assertEqual("nestcar-low-risk-fetch", gate["approval"]["detail"]["auto_rule_id"])
+        self.assertEqual(1, len(rows))
+
     def test_custom_runtime_can_be_registered_and_onboarded_without_code_changes(self) -> None:
         with self.assertRaises(SystemExit):
             companyctl.main(["employee", "create", "--id", "cursor-agent", "--name", "Cursor", "--role", "developer", "--runtime", "cursor", "--workspace", str(self.root / "cursor")])
@@ -5591,6 +5714,46 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual("completed", task["task"]["status"])
         self.assertEqual(executed["report"], task["task"]["evidence_path"])
         self.assertIn("Submitted Company Kernel task to OpenClaw legacy bus", Path(executed["report"]).read_text(encoding="utf-8"))
+
+    def test_openclaw_adapter_execute_reports_missing_oc_as_blocker(self) -> None:
+        task_id = "task-openclaw-missing-oc"
+        code, main = run_cli("employee", "create", "--id", "main", "--name", "main", "--role", "operator", "--runtime", "openclaw", "--workspace", str(self.root / "workspace" / "main"))
+        self.assertEqual(0, code, main)
+        code, submitted = run_cli(
+            "task",
+            "submit",
+            "--from",
+            "main",
+            "--to",
+            "nestcar",
+            "--task-id",
+            task_id,
+            "--title",
+            "Submit real OpenClaw task",
+            "--description",
+            "should block clearly when oc is missing",
+            "--priority",
+            "P3",
+        )
+        self.assertEqual(0, code, submitted)
+        code, approval = run_cli("approval", "request", "--from", "main", "--action", "external_send", "--target", "nestcar", "--risk", "P3", "--reason", "allow OpenClaw bridge")
+        self.assertEqual(0, code, approval)
+        code, approved = run_cli("approval", "approve", "--approval-id", approval["approval"]["id"], "--by", "main", "--reason", "test")
+        self.assertEqual(0, code, approved)
+
+        missing_oc = self.root / "openclaw" / "scripts" / "oc"
+        captured = io.StringIO()
+        with mock.patch.object(openclaw_adapter, "OPENCLAW_ROOT", self.root / "openclaw"), contextlib.redirect_stdout(captured):
+            code = openclaw_adapter.main(["--agent", "nestcar", "--execute", "--approval-id", approval["approval"]["id"]])
+        result = json.loads(captured.getvalue())
+        self.assertEqual(1, code, result)
+        self.assertFalse(result["ok"])
+        self.assertEqual("blocked", result["status"])
+        self.assertIn(str(missing_oc), result["blocker"])
+        self.assertIn("OpenClaw executable not found", result["blocker"])
+        code, task = run_cli("task", "show", "--task-id", task_id)
+        self.assertEqual(0, code, task)
+        self.assertEqual("blocked", task["task"]["status"])
 
     def test_codex_adapter_dry_run_writes_task_card_and_evidence(self) -> None:
         code, submitted = run_cli(
@@ -6381,6 +6544,35 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual(code, 0, onboard)
         self.assertEqual([], onboard["scaffolded_files"])
         self.assertFalse((external / "AGENTS.md").exists())
+
+    def test_daemon_uses_global_config_master_workspace_root(self) -> None:
+        master_root = self.root / "master-daemon-root"
+        config_path = self.root / ".gemini" / "antigravity" / "company_kernel_config.json"
+        (master_root / "config").mkdir(parents=True)
+        (master_root / "logs").mkdir()
+        (master_root / "state" / "daemon").mkdir(parents=True)
+        (master_root / "config" / "daemon.json").write_text(json.dumps({"heartbeat_agents": ["main"]}), encoding="utf-8")
+        config_path.parent.mkdir(parents=True)
+        config_path.write_text(
+            json.dumps(
+                {
+                    "master_workspace_root": str(master_root),
+                    "database_path": str(master_root / "company.sqlite"),
+                    "log_dir": str(master_root / "logs"),
+                    "gateway_port": 8780,
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        with mock.patch.dict("os.environ", {"COMPANY_KERNEL_CONFIG_PATH": str(config_path)}, clear=False):
+            paths = company_daemon.resolve_daemon_paths()
+            loaded = company_daemon.load_config(paths["config_path"])
+        self.assertEqual(master_root.resolve(), paths["root"])
+        self.assertEqual((master_root / "config" / "daemon.json").resolve(), paths["config_path"])
+        self.assertEqual((master_root / "state" / "daemon").resolve(), paths["state_dir"])
+        self.assertEqual((master_root / "logs" / "daemon.log").resolve(), paths["log_path"])
+        self.assertEqual(["main"], loaded["heartbeat_agents"])
 
     def test_daemon_resolves_runtime_heartbeat_agents_without_duplicates(self) -> None:
         for employee_id in ["main", "nestcar"]:

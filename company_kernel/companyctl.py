@@ -22,21 +22,61 @@ from pathlib import Path
 from .db_paths import ensure_db_parent
 from .schema_migrations import ensure_schema_migrations
 
-ROOT = Path(os.environ.get("OPENCLAW_COMPANY_KERNEL_ROOT", Path(__file__).resolve().parents[1])).resolve()
+DEFAULT_ROOT = Path(__file__).resolve().parents[1]
+GLOBAL_CONFIG_PATH = Path("~/.gemini/antigravity/company_kernel_config.json")
+
+
+def load_global_config(path: Path | None = None) -> dict:
+    raw_path = str(os.environ.get("COMPANY_KERNEL_CONFIG_PATH", "") or "").strip()
+    config_path = path or (Path(raw_path).expanduser() if raw_path else GLOBAL_CONFIG_PATH.expanduser())
+    if not config_path.exists():
+        return {}
+    try:
+        payload = json.loads(config_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def resolve_kernel_paths(default_root: Path) -> dict[str, Path | int | dict]:
+    config = load_global_config()
+    env_root = str(os.environ.get("OPENCLAW_COMPANY_KERNEL_ROOT", "") or "").strip()
+    root_value = config.get("master_workspace_root") or env_root or str(default_root)
+    root = Path(str(root_value)).expanduser().resolve()
+    db_value = str(os.environ.get("COMPANY_KERNEL_DB_PATH", "") or config.get("database_path") or root / "company.sqlite")
+    log_value = str(config.get("log_dir") or root / "logs")
+    return {
+        "config": config,
+        "root": root,
+        "db_path": Path(db_value).expanduser().resolve(),
+        "employees_dir": root / "employees",
+        "state_dir": root / "state",
+        "rfc_dir": root / "rfcs",
+        "config_dir": root / "config",
+        "log_dir": Path(log_value).expanduser().resolve(),
+        "gateway_port": int(config.get("gateway_port", 0) or 0),
+    }
+
+
+_KERNEL_PATHS = resolve_kernel_paths(DEFAULT_ROOT)
+ROOT = Path(_KERNEL_PATHS["root"])
 
 
 def resolve_db_path() -> Path:
     override = str(os.environ.get("COMPANY_KERNEL_DB_PATH", "") or "").strip()
     if override:
         return Path(override).expanduser().resolve()
-    return ROOT / "company.sqlite"
+    config_db = load_global_config().get("database_path")
+    if config_db:
+        return Path(str(config_db)).expanduser().resolve()
+    return Path(_KERNEL_PATHS["db_path"])
 
 
 DB_PATH = resolve_db_path()
-EMPLOYEES_DIR = ROOT / "employees"
-STATE_DIR = ROOT / "state"
-RFC_DIR = ROOT / "rfcs"
-CONFIG_DIR = ROOT / "config"
+EMPLOYEES_DIR = Path(_KERNEL_PATHS["employees_dir"])
+STATE_DIR = Path(_KERNEL_PATHS["state_dir"])
+RFC_DIR = Path(_KERNEL_PATHS["rfc_dir"])
+CONFIG_DIR = Path(_KERNEL_PATHS["config_dir"])
 WORKFLOW_DIR = CONFIG_DIR / "workflows"
 LAUNCHD_LABEL = "ai.openclaw.company-kernel.daemon"
 LAUNCHD_TEMPLATE = CONFIG_DIR / "launchd" / f"{LAUNCHD_LABEL}.plist"
@@ -1718,6 +1758,11 @@ def resolve_notification_target(target: str) -> tuple[str, str]:
         if not chat_id:
             raise ValueError("telegram target chat id is required")
         return "telegram", chat_id
+    if raw.startswith("slack:"):
+        webhook_id = raw.split(":", 1)[1].strip()
+        if not webhook_id:
+            raise ValueError("slack webhook id is required")
+        return "slack", webhook_id
     if raw:
         return "telegram", raw
     raise ValueError("notification target is required")
@@ -1757,6 +1802,52 @@ def send_telegram_notification(*, token: str, chat_id: str, text: str, timeout: 
     }
 
 
+def send_slack_webhook(webhook_url: str, payload: dict, timeout: int = 20) -> dict:
+    if not webhook_url:
+        raise ValueError("slack webhook url is not configured")
+    data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    request = urllib.request.Request(webhook_url, data=data, method="POST")
+    request.add_header("Content-Type", "application/json")
+    with urllib.request.urlopen(request, timeout=timeout) as response:
+        body = response.read().decode("utf-8", errors="replace")
+    return {"ok": True, "platform": "slack", "message_id": body or "ok"}
+
+
+class NotificationDispatcher:
+    def __init__(self, settings: dict):
+        self.settings = settings or {}
+
+    def send_macos_alert(self, title: str, body: str, kind: str = "general") -> dict:
+        text = f"{title}\n{body}".strip() if title else body
+        return send_macos_notification(text=text, title=title or "Company Kernel", subtitle=kind)
+
+    def send_telegram_message(self, chat_id: str, text: str, account_id: str = "") -> dict:
+        accounts = self.settings.get("telegram_accounts", {}) if isinstance(self.settings.get("telegram_accounts"), dict) else {}
+        account = accounts.get(account_id, {}) if account_id else next(iter(accounts.values()), {})
+        token_env = str(account.get("bot_token_env", "") or "")
+        return send_telegram_notification(token=os.environ.get(token_env, ""), chat_id=chat_id, text=text)
+
+    def send_slack_webhook(self, webhook_url: str, payload: dict) -> dict:
+        return send_slack_webhook(webhook_url, payload)
+
+    def send(self, target: str, *, title: str = "", body: str = "", kind: str = "general", account_id: str = "", dry_run: bool = False) -> dict:
+        platform, address = resolve_notification_target(target)
+        text = f"{title}\n{body}".strip() if title else body
+        result = {"ok": True, "dry_run": dry_run, "platform": platform, "kind": kind, "target": target}
+        if dry_run:
+            return result
+        if platform == "macos":
+            return {**result, **self.send_macos_alert(title or "Company Kernel", body, kind)}
+        if platform == "telegram":
+            return {**result, **self.send_telegram_message(address, text, account_id)}
+        if platform == "slack":
+            webhooks = self.settings.get("slack_webhooks", {}) if isinstance(self.settings.get("slack_webhooks"), dict) else {}
+            hook = webhooks.get(address, {}) if isinstance(webhooks.get(address, {}), dict) else {}
+            webhook_env = str(hook.get("webhook_url_env", "") or "")
+            return {**result, **self.send_slack_webhook(os.environ.get(webhook_env, ""), {"text": text, "kind": kind})}
+        return {**result, "ok": False, "error": f"unsupported notification platform: {platform}"}
+
+
 def notification_send_result(*, message: str, target: str = "", account_id: str = "", subject: str = "", kind: str = "general", dry_run: bool = False) -> dict:
     settings = notification_settings()
     notifications = settings["employee_notifications"]
@@ -1778,24 +1869,10 @@ def notification_send_result(*, message: str, target: str = "", account_id: str 
     if platform != "macos" and not account:
         return {"ok": False, "error": "notification account is not configured", "account": account_id}
     if platform != "telegram":
-        if platform != "macos":
-            return {"ok": False, "error": f"unsupported notification platform: {platform}"}
-        text = f"{subject}\n{message}".strip() if subject else message
-        result = {
-            "ok": True,
-            "dry_run": dry_run,
-            "platform": platform,
-            "kind": kind,
-            "account": account_id,
-            "target": f"macos:{chat_id}",
-            "token_env": "",
-            "token_configured": True,
-        }
-        if dry_run:
-            return result
+        result = {"ok": True, "dry_run": dry_run, "platform": platform, "kind": kind, "account": account_id, "target": f"{platform}:{chat_id}", "token_env": "", "token_configured": True}
         try:
-            sent = send_macos_notification(text=text, title=subject or "Company Kernel", subtitle=kind)
-        except (OSError, subprocess.SubprocessError, TimeoutError) as exc:
+            sent = NotificationDispatcher(settings).send(f"{platform}:{chat_id}", title=subject or "Company Kernel", body=message, kind=kind, account_id=account_id, dry_run=dry_run)
+        except (ValueError, OSError, subprocess.SubprocessError, urllib.error.URLError, TimeoutError) as exc:
             return {**result, "ok": False, "error": str(exc)}
         return {**result, **sent}
     token_env = str(account.get("bot_token_env", "") or "")

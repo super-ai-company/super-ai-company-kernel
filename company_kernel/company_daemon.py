@@ -12,10 +12,23 @@ from pathlib import Path
 from company_kernel import companyctl
 
 
-ROOT = Path(os.environ.get("OPENCLAW_COMPANY_KERNEL_ROOT", Path(__file__).resolve().parents[1])).resolve()
-CONFIG_PATH = ROOT / "config" / "daemon.json"
-STATE_DIR = ROOT / "state" / "daemon"
-LOG_PATH = ROOT / "logs" / "daemon.log"
+def resolve_daemon_paths() -> dict[str, Path]:
+    paths = companyctl.resolve_kernel_paths(Path(__file__).resolve().parents[1])
+    root = Path(paths["root"])
+    log_dir = Path(paths["log_dir"])
+    return {
+        "root": root,
+        "config_path": root / "config" / "daemon.json",
+        "state_dir": root / "state" / "daemon",
+        "log_path": log_dir / "daemon.log",
+    }
+
+
+_DAEMON_PATHS = resolve_daemon_paths()
+ROOT = _DAEMON_PATHS["root"]
+CONFIG_PATH = _DAEMON_PATHS["config_path"]
+STATE_DIR = _DAEMON_PATHS["state_dir"]
+LOG_PATH = _DAEMON_PATHS["log_path"]
 
 
 def now() -> str:
