@@ -2012,17 +2012,11 @@
     
     <div class="sidebar-footer">
       <div class="scenario-seeder-container">
-        <label class="scenario-label" data-i18n="scenario_label"><i class="fa-solid fa-flask-vial"></i> Scenario Seeder</label>
-        <select id="scenario-selector" class="scenario-select" onchange="triggerScenario(this.value)">
-          <option value="real">Real SQLite DB</option>
-          <option value="sim_normal">Simulation: Normal</option>
-          <option value="sim_outage">Simulation: Deadlock</option>
-          <option value="sim_sprint">Simulation: Live Sprint</option>
-        </select>
+        <label class="scenario-label" data-i18n="scenario_label"><i class="fa-solid fa-database"></i> Data Source</label>
+        <div class="scenario-select" style="display:flex; align-items:center; min-height: 34px; pointer-events:none;">
+          Live SQLite + OpenClaw Runtime
+        </div>
       </div>
-      <button class="refresh-mode-btn" id="simulation-toggle-btn" style="display:none;" onclick="toggleSimulationMode()">
-        <i class="fa-solid fa-bolt"></i> Sandbox Simulation
-      </button>
       <div class="auto-refresh-container">
         <span data-i18n="auto_refresh">Auto Refresh (10s)</span>
         <label class="switch">
@@ -2098,13 +2092,10 @@
             
             <div class="section-card">
               <h2 data-i18n="terminal_title"><i class="fa-solid fa-terminal"></i> Kernel Operations Terminal</h2>
+              <p style="font-size: 12px; color: var(--text-secondary); margin-bottom: 10px;">Read-only live event stream from Company Kernel ledger, direct messages, and adapter runs.</p>
               <div class="terminal-console-container">
                 <div class="terminal-console" id="terminal-stdout">
-                  <!-- Typewriter lines simulation by JS -->
-                </div>
-                <div class="terminal-input-row">
-                  <span class="terminal-prompt">kernel:~$</span>
-                  <input type="text" id="terminal-input-field" placeholder="Type help, status, agents, run-task, lock, scenario, or clear..." onkeydown="if(event.key==='Enter') executeTerminalCommand()">
+                  <!-- Populated by real ledger snapshots -->
                 </div>
               </div>
             </div>
@@ -2431,6 +2422,27 @@
 
       <!-- Events Tab -->
       <div id="tab-events" class="tab-pane">
+        <div class="section-card">
+          <h2 data-i18n="company_events_title"><i class="fa-solid fa-list-check"></i> Company Event Ledger</h2>
+          <div class="table-container">
+            <table>
+              <thead>
+                <tr>
+                  <th>Event ID</th>
+                  <th>Trace</th>
+                  <th>Type</th>
+                  <th>Source</th>
+                  <th>Task</th>
+                  <th>Processed</th>
+                  <th>Created</th>
+                </tr>
+              </thead>
+              <tbody id="company-events-tbody">
+                <!-- Populated by JS -->
+              </tbody>
+            </table>
+          </div>
+        </div>
         <div class="section-card">
           <h2 data-i18n="adapter_runs_title"><i class="fa-solid fa-microchip"></i> Adapter Runs History</h2>
           <div class="table-container">
@@ -2786,6 +2798,7 @@
       const health = await companyApiGet('/v1/health');
       const tasks = await companyApiGet('/v1/tasks?limit=50');
       const recentDirect = await companyApiGet('/v1/messages/recent-direct?limit=20');
+      const events = await companyApiGet('/v1/events?limit=20');
       const adapterRuns = await companyApiGet('/v1/adapter-runs?limit=20');
       const approvals = await companyApiGet('/v1/approvals?limit=20');
       const telemetry = await companyApiGet('/v1/telemetry/traces?limit=20');
@@ -2798,6 +2811,7 @@
         tasks: taskRows,
         stalled_tasks: stalledTasks,
         direct_messages_recent: recentDirect.direct_messages_recent || [],
+        events: events.events || [],
         adapter_runs: adapterRuns.adapter_runs || [],
         approvals: approvals.approvals || [],
         traces: telemetry.traces || [],
@@ -3950,7 +3964,7 @@
       <div class="metrics-grid" style="grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); margin-bottom: 12px;">
         <div class="metric-card"><div class="metric-label">Agent Dirs</div><div class="metric-value">${escapeHtml(String(counts.agent_dirs || 0))}</div></div>
         <div class="metric-card"><div class="metric-label">Telegram Spools</div><div class="metric-value">${escapeHtml(String(counts.telegram_spools || 0))}</div></div>
-        <div class="metric-card"><div class="metric-label">Kernel Registered</div><div class="metric-value">${escapeHtml(String(counts.registered || 0))}</div></div>
+        <div class="metric-card"><div class="metric-label">Kernel Registered</div><div class="metric-value">${escapeHtml(String(counts.registered || 0))}</div><div style="font-size:11px;color:var(--text-secondary);margin-top:6px;">Includes human owner records such as owner-shift.</div></div>
         <div class="metric-card"><div class="metric-label">Missing Registered</div><div class="metric-value">${escapeHtml(String(counts.missing_registered || 0))}</div></div>
       </div>
       <div style="margin-bottom: 12px;">${missingHtml}</div>
@@ -3967,6 +3981,7 @@
     refreshGovernanceTables();
     refreshTraceTelemetry();
     renderOpenClawRuntimeInventory();
+    refreshKernelEventConsole();
   }
 
   function populateFollowups() {
@@ -4075,11 +4090,12 @@
         </div>
       </div>
       <div class="metric-card">
-        <h3>Employees</h3>
+        <h3>AI Employees</h3>
         <div class="value">
           ${metrics.employees} 
           <i class="fa-solid fa-users"></i>
         </div>
+        <div style="font-size:11px;color:var(--text-secondary);margin-top:6px;">Excludes human owner; see OpenClaw inventory for total registered records.</div>
       </div>
       <div class="metric-card">
         <h3>Pending Approvals</h3>
@@ -4312,6 +4328,26 @@
         </tr>
       `;
     }).join('');
+
+    // Company Event Ledger
+    const eventsTbody = document.getElementById('company-events-tbody');
+    if (eventsTbody) {
+      const eventRows = summary.events || [];
+      eventsTbody.innerHTML = eventRows.length ? eventRows.map(event => {
+        const processed = event.processed_at ? 'YES' : 'PENDING';
+        return `
+          <tr onclick="showDetails('Event: ' + '${escapeHtml(event.id)}', ${JSON.stringify(event).replace(/'/g, "\'")})">
+            <td style="font-family: monospace; font-size: 11px;">${escapeHtml(event.id)}</td>
+            <td style="font-family: monospace; font-size: 11px;">${escapeHtml(event.trace_id || '-')}</td>
+            <td>${escapeHtml(event.event_type || '-')}</td>
+            <td>${escapeHtml(event.source_agent || '-')}</td>
+            <td>${escapeHtml(event.task_id || '-')}</td>
+            <td><span class="badge ${event.processed_at ? 'completed' : 'blocked'}">${processed}</span></td>
+            <td>${formatDate(event.created_at)}</td>
+          </tr>
+        `;
+      }).join('') : '<tr><td colspan="7" style="color: var(--text-secondary);">No Company Kernel events found.</td></tr>';
+    }
 
     // Adapter Runs Table
     const runsTbody = document.getElementById('adapter-runs-tbody');
@@ -4837,48 +4873,54 @@
     svg.appendChild(circle);
   }
 
-  // Scrolling Terminal Simulator
-  const terminalLogs = [
-    { tag: 'KERNEL', text: 'Company Kernel initialised successfully. Listening on SQLite connection...', type: 'success' },
-    { tag: 'DAEMON', text: 'Heartbeat scanning pass... hermes: ALIVE, codex: ALIVE, openclaw-main: ALIVE, antigravity: ALIVE, trae: ALIVE.', type: 'normal' },
-    { tag: 'SCHEDULER', text: 'Scanning pending events... 0 events found. Queue idle.', type: 'normal' },
-    { tag: 'REPAIR', text: 'Audit pass: Locks lease validation passed. 0 locks expired.', type: 'normal' },
-    { tag: 'video-ops', text: 'Submitted Task task-enterprise-001 (Funny Chinese Screenplay) to target: video-creator.', type: 'normal' },
-    { tag: 'SCHEDULER', text: 'Event trigger match: task.submit (task-enterprise-001). Creating inbox file.', type: 'success' },
-    { tag: 'video-creator', text: 'Heartbeat signal registered. Claiming task task-enterprise-001.', type: 'normal' },
-    { tag: 'KERNEL', text: 'Resource lock registered: lock:video-rendering-engine claimed by video-creator.', type: 'warn' },
-    { tag: 'video-creator', text: 'Executing local adapter worker... starting video script drafts.', type: 'normal' },
-    { tag: 'antigravity', text: 'Successfully parsed project files. Generated 2 structural proposals.', type: 'success' },
-    { tag: 'trae', text: 'Executing trae chat ask task. 0 conflicts found in workspace compiles.', type: 'success' },
-    { tag: 'codex', text: 'Claimed code migration task task-enterprise-002. Lock lock:sqlite:schema-upgrade acquired.', type: 'normal' },
-    { tag: 'codex', text: 'Code review result: 1 issue found in migration script indexes. Fixing patch...', type: 'warn' },
-    { tag: 'hermes', text: 'Executing automated task task-enterprise-005 (Staging check). Result: ok.', type: 'success' },
-    { tag: 'KERNEL', text: 'Evidence log task-enterprise-005 written to reports/task-enterprise-005.evidence.md.', type: 'success' }
-  ];
-
-  let logIndex = 0;
-  function startTerminalSimulation() {
+  function refreshKernelEventConsole() {
     const stdout = document.getElementById('terminal-stdout');
     if (!stdout) return;
     stdout.innerHTML = '';
-    
-    for(let i=0; i<6; i++) {
-      printTerminalLine(terminalLogs[i]);
-      logIndex = i + 1;
-    }
 
-    setInterval(() => {
-      if (logIndex >= terminalLogs.length) logIndex = 0;
-      printTerminalLine(terminalLogs[logIndex]);
-      logIndex++;
-    }, 4000);
+    const summary = summaryData || {};
+    const lines = [];
+    (summary.events || []).slice(0, 8).forEach(event => {
+      lines.push({
+        at: event.created_at,
+        tag: event.event_type || 'event',
+        text: `${event.source_agent || '-'} task=${event.task_id || '-'} trace=${event.trace_id || '-'}`,
+        type: event.processed_at ? 'success' : 'warn'
+      });
+    });
+    (summary.direct_messages_recent || []).slice(0, 5).forEach(message => {
+      lines.push({
+        at: message.created_at,
+        tag: 'direct',
+        text: `${message.source_agent || '-'} → ${message.target_agent || '-'} ${message.body || ''}`.slice(0, 180),
+        type: 'normal'
+      });
+    });
+    (summary.adapter_runs || []).slice(0, 5).forEach(run => {
+      lines.push({
+        at: run.created_at,
+        tag: 'adapter',
+        text: `${run.agent_id || '-'} ${run.command || '-'} ok=${run.ok}`,
+        type: Number(run.ok) === 1 ? 'success' : 'warn'
+      });
+    });
+
+    lines
+      .sort((a, b) => new Date(b.at || 0) - new Date(a.at || 0))
+      .slice(0, 15)
+      .reverse()
+      .forEach(printTerminalLine);
+
+    if (!lines.length) {
+      printTerminalLine({tag: 'kernel', text: 'No ledger events in current snapshot.', type: 'normal'});
+    }
   }
 
   function printTerminalLine(logObj) {
     const stdout = document.getElementById('terminal-stdout');
     if (!stdout) return;
     
-    const timeStr = new Date().toLocaleTimeString();
+    const timeStr = logObj.at ? formatDate(logObj.at) : new Date().toLocaleTimeString();
     const line = document.createElement('div');
     line.className = 'terminal-line';
     
@@ -5047,12 +5089,13 @@
       "chat_threads_title": "Conversations",
       "chat_placeholder": "Type a message to the agent conversation...",
       "chat_send": "Send",
+      "company_events_title": "Company Event Ledger",
       "adapter_runs_title": "Adapter Runs History",
       "telemetry_title_sub": "Distributed Trace Telemetry",
       "telemetry_desc": "Trace ID propagation pipeline showing execution latencies and calling hierarchies across sandboxed agent runtimes.",
       "search_placeholder": "Search tasks by ID, title, or agents...",
       "trace_search_placeholder": "Search traces by Trace ID, title, or service name...",
-      "scenario_label": "Scenario Seeder",
+      "scenario_label": "Data Source",
       "reload_btn": "Reload Dashboard",
       "auto_refresh": "Auto Refresh (10s)",
       "fire_title": "Fire AI Employee Warning",
@@ -5111,12 +5154,13 @@
       "chat_placeholder": "给智能代理会话发送消息...",
       "chat_send": "发送",
       "pattern_error": "正则匹配错误",
+      "company_events_title": "公司事件账本",
       "adapter_runs_title": "适配器运行历史",
       "telemetry_title_sub": "分布式链路追踪",
       "telemetry_desc": "展示沙箱化代理运行时之间的调用层次与执行延迟追踪日志。",
       "search_placeholder": "搜索任务 ID、标题或执行代理...",
       "trace_search_placeholder": "搜索链路 ID、标题或服务名称...",
-      "scenario_label": "场景生成器",
+      "scenario_label": "数据源",
       "reload_btn": "刷新控制台",
       "auto_refresh": "自动刷新 (10秒)",
       "fire_title": "解雇 AI 雇员警告",
@@ -5207,7 +5251,7 @@
     populateKanban();
     populateTraces();
     renderInteractiveNetworkMap();
-    startTerminalSimulation();
+    refreshKernelEventConsole();
     populateChatHub();
     installNotificationSettingsPanel();
     
