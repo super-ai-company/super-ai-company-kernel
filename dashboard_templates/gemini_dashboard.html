@@ -2577,6 +2577,31 @@
         </div>
 
         <div class="section-card">
+          <h2><i class="fa-solid fa-folder-shield"></i> Evidence Safety Ledger</h2>
+          <div style="color:var(--text-muted);font-size:12px;margin-bottom:12px;">
+            Evidence paths are rendered from sanitized whitelist roots only; absolute paths stay hidden.
+          </div>
+          <div class="table-container">
+            <table>
+              <thead>
+                <tr>
+                  <th>Evidence ID</th>
+                  <th>Task</th>
+                  <th>Employee</th>
+                  <th>Final</th>
+                  <th>Safe Path</th>
+                  <th>Display State</th>
+                  <th>Created</th>
+                </tr>
+              </thead>
+              <tbody id="audit-evidence-tbody">
+                <!-- Populated by JS -->
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <div class="section-card">
           <h2 data-i18n="rfc_governance_title"><i class="fa-solid fa-code-pull-request"></i> RFC Governance</h2>
           <div class="table-container">
             <table>
@@ -3028,6 +3053,7 @@
       const events = await companyApiGet('/v1/events?limit=20');
       const adapterRuns = await companyApiGet('/v1/adapter-runs?limit=20');
       const approvals = await companyApiGet('/v1/approvals?limit=20');
+      const evidence = await companyApiGet('/v1/evidence?limit=50');
       const telemetry = await companyApiGet('/v1/telemetry/traces?limit=20');
       const employees = await companyApiGet('/v1/employees');
       const openclawInventory = await companyApiGet('/v1/openclaw/runtime-inventory');
@@ -3042,6 +3068,7 @@
         events: events.events || [],
         adapter_runs: adapterRuns.adapter_runs || [],
         approvals: approvals.approvals || [],
+        evidence_records: evidence.evidence || [],
         traces: telemetry.traces || [],
         employees: employees.employees || [],
         openclaw_runtime_inventory: openclawInventory || {}
@@ -4461,6 +4488,32 @@
         row.addEventListener('click', () => showApprovalDetails(approvals[Number(row.dataset.approvalIndex)]));
       });
     }
+    refreshAuditEvidenceTable(summary.evidence_records || []);
+  }
+
+  function refreshAuditEvidenceTable(evidenceRecords) {
+    const tbody = document.getElementById('audit-evidence-tbody');
+    if (!tbody) return;
+    const rows = Array.isArray(evidenceRecords) ? evidenceRecords : [];
+    tbody.innerHTML = rows.length ? rows.map(item => {
+      const display = item.display || {};
+      const allowed = !!display.allowed;
+      const state = allowed ? 'allowed' : (display.reason || 'blocked');
+      return `
+        <tr>
+          <td style="font-family: monospace; max-width: 260px;">${escapeHtml(item.evidence_id || '')}</td>
+          <td style="font-family: monospace;">${escapeHtml(item.task_id || '-')}</td>
+          <td>${escapeHtml(item.employee_id || '-')}</td>
+          <td><span class="badge ${item.is_final ? 'approved' : 'claimed'}">${item.is_final ? 'final' : 'supporting'}</span></td>
+          <td>
+            <div style="font-family: monospace;">${escapeHtml(display.relative_path || display.basename || '-')}</div>
+            <div style="color:var(--text-muted);font-size:11px;">absolute_path_exposed=${display.absolute_path_exposed ? 'yes' : 'no'}</div>
+          </td>
+          <td><span class="long-task-state ${allowed ? 'success' : 'blocked'}">${escapeHtml(state)}</span></td>
+          <td>${formatDate(item.created_at || '')}</td>
+        </tr>
+      `;
+    }).join('') : '<tr><td colspan="7" style="color:var(--text-muted);text-align:center;padding:24px;">No evidence records.</td></tr>';
   }
 
   async function decideApprovalFromDashboard(event, approvalId, decision) {

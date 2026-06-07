@@ -1829,6 +1829,10 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertIn("owner_attention", html)
         self.assertIn("Recent Evidence", html)
         self.assertIn("cockpit-recent-evidence", html)
+        self.assertIn("audit-evidence-tbody", html)
+        self.assertIn("/v1/evidence?limit=50", html)
+        self.assertIn("refreshAuditEvidenceTable", html)
+        self.assertIn("absolute_path_exposed", html)
         self.assertIn("long_task_state || task.status", html)
         self.assertIn("handleOwnerAttentionAction", html)
         self.assertIn("data-action-id", html)
@@ -1923,6 +1927,49 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertTrue(shown["evidence"]["allowed"])
         self.assertFalse(shown["evidence"]["absolute_path_exposed"])
         self.assertNotIn(str(self.root), json.dumps(shown["evidence"], ensure_ascii=False))
+
+    def test_api_gateway_lists_sanitized_evidence_records(self) -> None:
+        code, created = run_cli("employee", "create", "--id", "main", "--name", "main", "--role", "operator", "--runtime", "openclaw", "--workspace", str(self.root / "workspace" / "main"))
+        self.assertEqual(0, code, created)
+        code, created = run_cli("employee", "create", "--id", "writer", "--name", "writer", "--role", "writer", "--runtime", "local", "--workspace", str(self.root / "workspace" / "writer"))
+        self.assertEqual(0, code, created)
+        self.mark_active("writer")
+        code, submitted = run_cli("task", "submit", "--from", "main", "--to", "writer", "--task-id", "task-api-evidence-list", "--title", "Evidence list")
+        self.assertEqual(0, code, submitted)
+        conn = companyctl.connect()
+        try:
+            workspace = companyctl.ensure_task_workspace(conn, "task-api-evidence-list")
+            final_path = Path(workspace["path"]) / "final" / "delivery.md"
+            final_path.write_text("final delivery\n", encoding="utf-8")
+            artifact = companyctl.register_artifact_internal(
+                conn,
+                task_id="task-api-evidence-list",
+                employee_id="writer",
+                artifact_type="text",
+                path=str(final_path),
+                summary="final delivery",
+                stage="final",
+                is_final=True,
+            )["artifact"]
+            promoted = companyctl.promote_artifact_to_evidence_internal(conn, artifact_id=artifact["artifact_id"], by="writer", summary="safe final evidence")
+            conn.commit()
+        finally:
+            conn.close()
+
+        status, evidence = api_gateway.route_get("/v1/evidence", {"limit": ["10"]})
+        self.assertEqual(200, status, evidence)
+        self.assertTrue(evidence["ok"])
+        self.assertIn("/v1/evidence", evidence["source"])
+        item = next(row for row in evidence["evidence"] if row["evidence_id"] == promoted["evidence"]["evidence_id"])
+        self.assertEqual("task-api-evidence-list", item["task_id"])
+        self.assertTrue(item["is_final"])
+        self.assertTrue(item["display"]["allowed"])
+        self.assertFalse(item["display"]["absolute_path_exposed"])
+        payload_json = json.dumps(item, ensure_ascii=False)
+        self.assertIn("artifacts/delivery.md", payload_json)
+        self.assertIn("v1-delivery.md", payload_json)
+        self.assertNotIn(str(self.root), payload_json)
+        self.assertNotIn("path_or_url", payload_json)
 
     def test_api_gateway_streams_company_events_as_sse(self) -> None:
         conn = companyctl.connect()
@@ -4873,6 +4920,7 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertIn("/v1/conversations/{conversation_id}/reply", openapi["paths"])
         self.assertIn("/v1/approvals/{approval_id}/approve", openapi["paths"])
         self.assertIn("/v1/approvals/{approval_id}/resolve", openapi["paths"])
+        self.assertIn("/v1/evidence", openapi["paths"])
         doctor_query_names = {
             parameter["name"]
             for parameter in openapi["paths"]["/v1/doctor"]["get"]["parameters"]
