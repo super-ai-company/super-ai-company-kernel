@@ -81,6 +81,7 @@ API_ENDPOINTS = [
     {"method": "GET", "path": "/v1/messages/recent-direct", "summary": "Dashboard-ready recent direct messages feed", "query": {"limit": "integer optional"}},
     {"method": "GET", "path": "/v1/events", "summary": "List Company Kernel event ledger entries", "query": {"pending_only": "bool optional", "limit": "integer optional"}},
     {"method": "GET", "path": "/v1/events/stream", "summary": "Server-Sent Events stream for recent Company Kernel event ledger entries", "query": {"limit": "integer optional", "poll_seconds": "integer optional", "max_cycles": "integer optional"}},
+    {"method": "GET", "path": "/v1/evidence", "summary": "List sanitized evidence records for Audit Hub", "query": {"task_id": "task id optional", "limit": "integer optional"}},
     {"method": "GET", "path": "/v1/dashboard/communication-observability", "summary": "Dashboard-ready summary for direct messages, external mirror status, adapter-run progress, 5-layer progress heartbeat, and internal no-receipt watchdog"},
     {"method": "GET", "path": "/v1/dashboard/cockpit", "summary": "Dashboard-ready AI Employee Cockpit summary with long-task heartbeat/progress state and sanitized evidence"},
     {"method": "GET", "path": "/v1/dashboard/internal-watchdog", "summary": "Detect internal messages/tasks that were delivered but have no receipt, claim, or final evidence"},
@@ -349,6 +350,32 @@ def route_get(path: str, query: dict[str, list[str]]) -> tuple[int, dict]:
         else:
             events = list(reversed(recent_event_rows(limit=limit)))
         return HTTPStatus.OK, {"ok": True, "events": events, "pending_only": pending_only}
+    if path == "/v1/evidence":
+        limit_raw = query_value(query, "limit", "50")
+        limit = int(limit_raw) if str(limit_raw).isdigit() else 50
+        limit = max(1, min(limit, 200))
+        task_id = query_value(query, "task_id")
+        sql = """
+            SELECT evidence_id, trace_id, task_id, attempt_id, employee_id, artifact_id,
+                   type, path_or_url, summary, checksum, is_final, metadata_json, created_at
+            FROM evidence
+        """
+        params: list[object] = []
+        if task_id:
+            sql += " WHERE task_id = ?"
+            params.append(task_id)
+        sql += " ORDER BY created_at DESC LIMIT ?"
+        params.append(limit)
+        conn = companyctl.connect_readonly()
+        try:
+            evidence = companyctl.rows(conn, sql, tuple(params))
+        finally:
+            conn.close()
+        for item in evidence:
+            raw_path = item.pop("path_or_url", "")
+            item["display"] = companyctl.sanitize_evidence_path_for_display(raw_path)
+            item["is_final"] = bool(item.get("is_final"))
+        return HTTPStatus.OK, {"ok": True, "source": "/v1/evidence", "evidence": evidence}
     if path == "/v1/dashboard/communication-observability":
         conn = companyctl.connect()
         try:
