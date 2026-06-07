@@ -2344,6 +2344,7 @@
                   <th>Status</th>
                   <th>Reason / Details</th>
                   <th>Updated</th>
+                  <th>Approval Actions</th>
                 </tr>
               </thead>
               <tbody id="approvals-tbody">
@@ -2772,19 +2773,24 @@
 
   async function refreshLiveDashboardFromApi() {
     try {
-      const [health, tasks, recentDirect] = await Promise.all([
-        companyApiGet('/v1/health'),
-        companyApiGet('/v1/tasks?limit=50'),
-        companyApiGet('/v1/messages/recent-direct?limit=20')
-      ]);
+      const health = await companyApiGet('/v1/health');
+      const tasks = await companyApiGet('/v1/tasks?limit=50');
+      const recentDirect = await companyApiGet('/v1/messages/recent-direct?limit=20');
+      const adapterRuns = await companyApiGet('/v1/adapter-runs?limit=20');
+      const approvals = await companyApiGet('/v1/approvals?limit=20');
+      const employees = await companyApiGet('/v1/employees');
       const taskRows = tasks.tasks || tasks.items || [];
       const stalledTasks = taskRows.filter(task => ['stale', 'blocked', 'failed'].includes(String(task.status || '').toLowerCase()) || task.blocker);
       mergeLiveSummaryPatch({
         runtime_health: health,
         tasks: taskRows,
         stalled_tasks: stalledTasks,
-        direct_messages_recent: recentDirect.direct_messages_recent || []
+        direct_messages_recent: recentDirect.direct_messages_recent || [],
+        adapter_runs: adapterRuns.adapter_runs || [],
+        approvals: approvals.approvals || [],
+        employees: employees.employees || []
       });
+      populateDashboard();
       refreshDashboardPresentation();
       refreshChatHub();
       if (typeof window.populateTasks === 'function') window.populateTasks();
@@ -3787,14 +3793,41 @@
               </div>
             </td>
             <td>${formatDate(app.updated_at || '')}</td>
+            <td>
+              ${String(app.status || '').toLowerCase() === 'pending' ? `
+                <button class="chat-tool-btn" onclick="decideApprovalFromDashboard(event, '${escapeHtml(app.id || '')}', 'approve')">Approve</button>
+                <button class="chat-tool-btn" onclick="decideApprovalFromDashboard(event, '${escapeHtml(app.id || '')}', 'deny')">Deny</button>
+              ` : '<span style="color:var(--text-muted);font-size:11px;">closed</span>'}
+            </td>
           </tr>
         `;
-      }).join('') : '<tr><td colspan="6" style="color:var(--text-muted);text-align:center;padding:24px;">No approvals.</td></tr>';
+      }).join('') : '<tr><td colspan="7" style="color:var(--text-muted);text-align:center;padding:24px;">No approvals.</td></tr>';
       approvalsTbody.querySelectorAll('tr[data-approval-index]').forEach(row => {
         row.addEventListener('click', () => showApprovalDetails(approvals[Number(row.dataset.approvalIndex)]));
       });
     }
   }
+
+  async function decideApprovalFromDashboard(event, approvalId, decision) {
+    if (event && typeof event.stopPropagation === 'function') event.stopPropagation();
+    const normalized = decision === 'deny' ? 'deny' : 'approve';
+    const reason = normalized === 'approve' ? 'approved from dashboard' : 'denied from dashboard';
+    const endpoint = normalized === 'approve'
+      ? `/v1/approvals/${encodeURIComponent(approvalId)}/approve`
+      : `/v1/approvals/${encodeURIComponent(approvalId)}/deny`;
+    companyApiLog('SYSTEM', `${normalized} approval ${approvalId}...`, 'normal');
+    try {
+      await companyApiPost(endpoint, {
+        by: HUMAN_OWNER_ID,
+        reason
+      });
+      companyApiLog('SYSTEM', `Approval ${approvalId} ${normalized}d.`, 'success');
+      await refreshLiveDashboardFromApi();
+    } catch (err) {
+      companyApiLog('ERROR', `Approval ${approvalId} ${normalized} failed: ${err.message}`, 'error');
+    }
+  }
+  window.decideApprovalFromDashboard = decideApprovalFromDashboard;
 
   function refreshTraceTelemetry() {
     const summary = getDashboardSummary();
@@ -5104,10 +5137,13 @@
     const toggle = document.getElementById('refresh-toggle');
     if (toggle) {
       toggle.checked = isAutoRefresh;
-      if (isAutoRefresh) {
-        refreshLiveDashboardFromApi();
-        refreshInterval = setInterval(refreshLiveDashboardFromApi, 10000);
-      }
+    }
+    
+    // Always load the latest live data once on page load
+    refreshLiveDashboardFromApi();
+    
+    if (isAutoRefresh) {
+      refreshInterval = setInterval(refreshLiveDashboardFromApi, 10000);
     }
     
     window.addEventListener('resize', drawSVGConnections);
