@@ -1832,6 +1832,9 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertIn("/v1/events/stream", html)
         self.assertIn("Progress Stagnant", html)
         self.assertIn("AI Employee Cockpit", html)
+        self.assertIn("counts.employees_online", html)
+        self.assertIn("counts.employees_total", html)
+        self.assertIn("counts.employees_abnormal", html)
         self.assertEqual(5, html.count('class="nav-btn'))
         self.assertIn("Cockpit Console", html)
         self.assertIn("AI Fleet & Skills", html)
@@ -1875,10 +1878,13 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual(0, code, created)
         code, created = run_cli("employee", "create", "--id", "codex-cockpit", "--name", "codex-cockpit", "--role", "engineer", "--runtime", "codex", "--workspace", str(self.root / "workspace" / "codex-cockpit"))
         self.assertEqual(0, code, created)
+        code, created = run_cli("employee", "create", "--id", "agy-cockpit", "--name", "agy-cockpit", "--role", "designer", "--runtime", "antigravity", "--workspace", str(self.root / "workspace" / "agy-cockpit"))
+        self.assertEqual(0, code, created)
         conn = companyctl.connect()
         try:
             conn.execute("UPDATE employees SET status = 'active', updated_at = ? WHERE id = ?", (companyctl.now(), "main"))
             conn.execute("UPDATE employees SET status = 'active', updated_at = ? WHERE id = ?", (companyctl.now(), "codex-cockpit"))
+            conn.execute("UPDATE employees SET status = 'active', updated_at = ? WHERE id = ?", (companyctl.now(), "agy-cockpit"))
             conn.commit()
         finally:
             conn.close()
@@ -1921,9 +1927,18 @@ class CompanyKernelCoreTest(unittest.TestCase):
         status, cockpit = api_gateway.route_get("/v1/dashboard/cockpit", {})
         self.assertEqual(200, status, cockpit)
         self.assertTrue(cockpit["ok"])
+        conn = companyctl.connect()
+        try:
+            employee_total = conn.execute("SELECT COUNT(*) AS count FROM employees").fetchone()["count"]
+        finally:
+            conn.close()
+        self.assertEqual(employee_total, cockpit["counts"]["employees_total"])
+        self.assertEqual(2, cockpit["counts"]["employees_online"])
+        self.assertGreaterEqual(cockpit["counts"]["employees_abnormal"], 1)
         cockpit_employees = {item["id"]: item for item in cockpit["employees"]}
         self.assertEqual("active_ready", cockpit_employees["codex-cockpit"]["readiness_level"])
         self.assertIn("runtime_evidence", cockpit_employees["codex-cockpit"]["readiness_reason"])
+        self.assertEqual("abnormal", cockpit_employees["agy-cockpit"]["status"])
         long_task = next(item for item in cockpit["long_tasks"] if item["task_id"] == "task-cockpit-long")
         self.assertEqual("progress_stagnant", long_task["long_task_state"])
         self.assertEqual("fresh", long_task["heartbeat_state"])

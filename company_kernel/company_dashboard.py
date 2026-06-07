@@ -479,6 +479,14 @@ def build_cockpit_summary(summary: dict) -> dict:
                 "last_seen_at": employee.get("last_seen_at", ""),
             }
         )
+    employees_total = len(employee_states)
+    employees_online = sum(
+        1
+        for item in employee_states
+        if str(item.get("heartbeat_status") or "") not in {"", "missing", "offline"}
+        and seconds_since(str(item.get("last_seen_at") or ""), generated_at) < 15 * 60
+    )
+    employees_abnormal = sum(1 for item in employee_states if str(item.get("status") or "") == "abnormal")
     return {
         "ok": True,
         "generated_at": generated_at,
@@ -489,7 +497,10 @@ def build_cockpit_summary(summary: dict) -> dict:
             "correction_binding": "task_id + attempt_id",
         },
         "counts": {
-            "employees": len(employee_states),
+            "employees": employees_total,
+            "employees_total": employees_total,
+            "employees_online": employees_online,
+            "employees_abnormal": employees_abnormal,
             "active_attempts": len(active_attempts),
             "running_tasks": sum(1 for item in summary.get("tasks", []) if str(item.get("status", "")).lower() in {"claimed", "running"}),
             "stagnant_tasks": sum(1 for item in long_tasks if item.get("long_task_state") == "progress_stagnant"),

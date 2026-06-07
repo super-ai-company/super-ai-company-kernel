@@ -3201,8 +3201,8 @@
     cards.innerHTML = `
       <div class="cockpit-card">
         <h3>Employees Online</h3>
-        <div class="cockpit-value">${escapeHtml(counts.employees || 0)}</div>
-        <div class="cockpit-subtext">active / candidate / active-limited visible from Kernel registry</div>
+        <div class="cockpit-value">${escapeHtml(counts.employees_online ?? 0)}</div>
+        <div class="cockpit-subtext">${escapeHtml(counts.employees_total ?? counts.employees ?? 0)} total · ${escapeHtml(counts.employees_abnormal ?? 0)} abnormal</div>
       </div>
       <div class="cockpit-card">
         <h3>Active Attempts</h3>
