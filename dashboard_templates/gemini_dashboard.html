@@ -2778,6 +2778,7 @@
       const recentDirect = await companyApiGet('/v1/messages/recent-direct?limit=20');
       const adapterRuns = await companyApiGet('/v1/adapter-runs?limit=20');
       const approvals = await companyApiGet('/v1/approvals?limit=20');
+      const telemetry = await companyApiGet('/v1/telemetry/traces?limit=20');
       const employees = await companyApiGet('/v1/employees');
       const taskRows = tasks.tasks || tasks.items || [];
       const stalledTasks = taskRows.filter(task => ['stale', 'blocked', 'failed'].includes(String(task.status || '').toLowerCase()) || task.blocker);
@@ -2788,13 +2789,16 @@
         direct_messages_recent: recentDirect.direct_messages_recent || [],
         adapter_runs: adapterRuns.adapter_runs || [],
         approvals: approvals.approvals || [],
+        traces: telemetry.traces || [],
         employees: employees.employees || []
       });
       populateDashboard();
       refreshDashboardPresentation();
       refreshChatHub();
+      refreshTraceTelemetry();
       if (typeof window.populateTasks === 'function') window.populateTasks();
       if (typeof window.populateEmployees === 'function') window.populateEmployees(window.summaryData);
+      populateKanban(window.summaryData);
       companyApiLog('SYSTEM', `Live refresh ok: tasks=${taskRows.length} stalled=${stalledTasks.length}`, 'success');
       return true;
     } catch (err) {
@@ -3513,7 +3517,8 @@
         companyApiLog('SYSTEM', `Task ${taskId} reopened: ${reason}`, 'success');
       }
       
-      setTimeout(() => location.reload(), 800);
+      await refreshLiveDashboardFromApi();
+      populateKanban(window.summaryData);
     } catch (err) {
       companyApiLog('ERROR', `Transition failed: ${err.message}`, 'error');
     }
@@ -4456,8 +4461,8 @@
   }
 
   // Populate Kanban columns
-  function populateKanban() {
-    const summary = summaryData;
+  function populateKanban(inputSummary) {
+    const summary = inputSummary || window.summaryData || summaryData;
     if (!summary) return;
     
     const lists = {
