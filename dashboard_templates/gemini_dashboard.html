@@ -3246,6 +3246,7 @@
       <div class="cockpit-row" ${item.task_id ? `onclick="openTaskDetailDrawer('${escapeHtml(item.task_id || '')}')"` : ''}>
         <div>
           <strong>${escapeHtml(item.kind)} · ${escapeHtml(item.title || '-')}</strong>
+          <span>${escapeHtml([item.target_agent ? `target=${item.target_agent}` : '', item.task_id ? `task=${item.task_id}` : '', item.approval_id ? `approval=${item.approval_id}` : '', item.approval_action ? `action=${item.approval_action}` : '', item.risk ? `risk=${item.risk}` : ''].filter(Boolean).join(' · '))}</span>
           <span>${escapeHtml(item.message || item.meta || '')}</span>
           ${Array.isArray(item.actions) && item.actions.length ? `<span class="cockpit-action-list">${item.actions.map(action => `<button class="mini-btn" data-action-id="${escapeHtml(action.id || '')}" onclick="event.stopPropagation(); handleOwnerAttentionAction('${escapeHtml(item.task_id || '')}', '${escapeHtml(item.attempt_id || '')}', '${escapeHtml(item.approval_id || '')}', '${escapeHtml(action.id || '')}')">${escapeHtml(action.label || action.id || '')}</button>`).join('')}</span>` : ''}
         </div>
