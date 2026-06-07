@@ -1355,6 +1355,38 @@ def task_attempts(conn: sqlite3.Connection, task_id: str) -> list[dict]:
     return [hydrate_execution_attempt(attempt) for attempt in attempts]
 
 
+def task_supervisor_state(attempts: list[dict]) -> tuple[dict, dict]:
+    state = {
+        "corrections_requested": 0,
+        "corrections_acknowledged": 0,
+        "last_correction": {},
+        "blocked_reason": "",
+        "last_blocked_at": "",
+    }
+    latest = attempts[-1] if attempts else {}
+    for attempt in attempts:
+        supervisor_state = attempt.get("supervisor_state", {})
+        if not isinstance(supervisor_state, dict):
+            continue
+        state["corrections_requested"] += int(supervisor_state.get("corrections_requested", 0) or 0)
+        state["corrections_acknowledged"] += int(supervisor_state.get("corrections_acknowledged", 0) or 0)
+        if supervisor_state.get("last_correction"):
+            state["last_correction"] = supervisor_state["last_correction"]
+        if supervisor_state.get("blocked_reason"):
+            state["blocked_reason"] = supervisor_state["blocked_reason"]
+        if supervisor_state.get("last_blocked_at"):
+            state["last_blocked_at"] = supervisor_state["last_blocked_at"]
+    summary = {
+        "latest_attempt_id": latest.get("attempt_id", ""),
+        "latest_attempt_status": latest.get("status", ""),
+        "latest_employee_id": latest.get("employee_id", ""),
+        "needs_ack": state["corrections_requested"] > state["corrections_acknowledged"],
+        "correction_balance": state["corrections_requested"] - state["corrections_acknowledged"],
+        "blocked": bool(state["blocked_reason"]),
+    }
+    return state, summary
+
+
 def latest_active_attempt_for_task(conn: sqlite3.Connection, task_id: str, employee_id: str) -> dict | None:
     placeholders = ",".join("?" for _ in MANAGED_ATTEMPT_ACTIVE_STATUSES)
     params = [task_id, employee_id, *sorted(MANAGED_ATTEMPT_ACTIVE_STATUSES)]
@@ -6229,6 +6261,8 @@ def cmd_task_show(args: argparse.Namespace) -> int:
     evidence_path = task_obj.get("evidence_path", "")
     evidence = sanitize_evidence_path_for_display(evidence_path)
     audit_rows = rows(conn, "SELECT * FROM audit_logs WHERE target = ? ORDER BY created_at ASC", (task_id,))
+    attempts = task_attempts(conn, task_id)
+    supervisor_state, correction_summary = task_supervisor_state(attempts)
     emit(
         {
             "ok": True,
@@ -6240,7 +6274,9 @@ def cmd_task_show(args: argparse.Namespace) -> int:
             "children": children,
             "events": events,
             "hook_runs": hook_runs,
-            "attempts": task_attempts(conn, task_id),
+            "attempts": attempts,
+            "supervisor_state": supervisor_state,
+            "correction_summary": correction_summary,
             "approvals": task_approvals(conn, task_id),
             "lock": dict(lock) if lock else {},
             "audit_logs": audit_rows,
