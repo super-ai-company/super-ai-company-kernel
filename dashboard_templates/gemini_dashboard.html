@@ -5260,14 +5260,65 @@
 
   // Auto refresh
   let refreshInterval = null;
+  let eventStream = null;
+
+  function stopEventStream() {
+    if (eventStream) {
+      eventStream.close();
+      eventStream = null;
+    }
+  }
+
+  function startEventStream() {
+    if (!window.EventSource) {
+      companyApiLog('SYSTEM', 'SSE unsupported; using 10s REST polling fallback.', 'normal');
+      return false;
+    }
+    if (eventStream) return true;
+    try {
+      const url = `${getCompanyApiBase()}/v1/events/stream?poll_seconds=2&max_cycles=300&limit=20`;
+      eventStream = new EventSource(url);
+      eventStream.addEventListener('stream_status', (event) => {
+        companyApiLog('SYSTEM', `SSE stream connected: ${event.data}`, 'success');
+      });
+      eventStream.addEventListener('company_event', () => {
+        refreshLiveDashboardFromApi();
+      });
+      eventStream.addEventListener('heartbeat', () => {
+        const badge = document.getElementById('top-status-badge');
+        const text = document.getElementById('top-status-text');
+        if (badge) badge.className = 'system-status ok';
+        if (text) text.innerText = 'API ONLINE / SSE';
+      });
+      eventStream.onerror = () => {
+        companyApiLog('ERROR', 'SSE stream disconnected; falling back to 10s REST polling.', 'error');
+        stopEventStream();
+        if (!refreshInterval) {
+          refreshInterval = setInterval(refreshLiveDashboardFromApi, 10000);
+        }
+      };
+      return true;
+    } catch (err) {
+      companyApiLog('ERROR', `SSE setup failed: ${err.message}; using REST polling fallback.`, 'error');
+      stopEventStream();
+      return false;
+    }
+  }
+
   function toggleAutoRefresh(checkbox) {
     if (checkbox.checked) {
       localStorage.setItem('dashboard-auto-refresh', 'true');
       refreshLiveDashboardFromApi();
-      refreshInterval = setInterval(refreshLiveDashboardFromApi, 10000);
+      if (refreshInterval) clearInterval(refreshInterval);
+      refreshInterval = null;
+      if (!startEventStream()) {
+        refreshInterval = setInterval(refreshLiveDashboardFromApi, 10000);
+      }
     } else {
       localStorage.setItem('dashboard-auto-refresh', 'false');
       if (refreshInterval) clearInterval(refreshInterval);
+      refreshInterval = null;
+      stopEventStream();
     }
   }
 
@@ -5492,7 +5543,9 @@
     refreshLiveDashboardFromApi();
     
     if (isAutoRefresh) {
-      refreshInterval = setInterval(refreshLiveDashboardFromApi, 10000);
+      if (!startEventStream()) {
+        refreshInterval = setInterval(refreshLiveDashboardFromApi, 10000);
+      }
     }
     
     window.addEventListener('resize', drawSVGConnections);

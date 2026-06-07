@@ -4,6 +4,7 @@ import argparse
 import contextlib
 import io
 import json
+import time
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
@@ -79,6 +80,7 @@ API_ENDPOINTS = [
     {"method": "GET", "path": "/v1/messages", "summary": "List messages", "query": {"agent": "employee id required"}},
     {"method": "GET", "path": "/v1/messages/recent-direct", "summary": "Dashboard-ready recent direct messages feed", "query": {"limit": "integer optional"}},
     {"method": "GET", "path": "/v1/events", "summary": "List Company Kernel event ledger entries", "query": {"pending_only": "bool optional", "limit": "integer optional"}},
+    {"method": "GET", "path": "/v1/events/stream", "summary": "Server-Sent Events stream for recent Company Kernel event ledger entries", "query": {"limit": "integer optional", "poll_seconds": "integer optional", "max_cycles": "integer optional"}},
     {"method": "GET", "path": "/v1/dashboard/communication-observability", "summary": "Dashboard-ready summary for direct messages, external mirror status, adapter-run progress, 5-layer progress heartbeat, and internal no-receipt watchdog"},
     {"method": "GET", "path": "/v1/dashboard/cockpit", "summary": "Dashboard-ready AI Employee Cockpit summary with long-task heartbeat/progress state and sanitized evidence"},
     {"method": "GET", "path": "/v1/dashboard/internal-watchdog", "summary": "Detect internal messages/tasks that were delivered but have no receipt, claim, or final evidence"},
@@ -221,6 +223,37 @@ def truthy(value: object) -> bool:
     return value is True or str(value).lower() in {"1", "true", "yes", "on"}
 
 
+def recent_event_rows(*, limit: int = 20, after_created_at: str = "", after_id: str = "") -> list[dict]:
+    conn = companyctl.connect_readonly()
+    try:
+        limit = max(1, min(int(limit), 200))
+        if after_created_at:
+            return companyctl.rows(
+                conn,
+                """
+                SELECT id, trace_id, event_type, source_agent, task_id, payload_json, created_at, processed_at
+                FROM company_events
+                WHERE created_at > ? OR (created_at = ? AND id > ?)
+                ORDER BY created_at ASC, id ASC
+                LIMIT ?
+                """,
+                (after_created_at, after_created_at, after_id, limit),
+            )
+        latest = companyctl.rows(
+            conn,
+            """
+            SELECT id, trace_id, event_type, source_agent, task_id, payload_json, created_at, processed_at
+            FROM company_events
+            ORDER BY created_at DESC, id DESC
+            LIMIT ?
+            """,
+            (limit,),
+        )
+        return list(reversed(latest))
+    finally:
+        conn.close()
+
+
 def route_get(path: str, query: dict[str, list[str]]) -> tuple[int, dict]:
     if path in {"/v1", "/v1/"}:
         return HTTPStatus.OK, service_descriptor()
@@ -293,27 +326,28 @@ def route_get(path: str, query: dict[str, list[str]]) -> tuple[int, dict]:
         finally:
             conn.close()
     if path == "/v1/events":
-        conn = companyctl.connect_readonly()
-        try:
-            limit_raw = query_value(query, "limit", "20")
-            limit = int(limit_raw) if str(limit_raw).isdigit() else 20
-            limit = max(1, min(limit, 200))
-            pending_only = truthy(query_value(query, "pending_only"))
-            where = "WHERE processed_at = ''" if pending_only else ""
-            events = companyctl.rows(
-                conn,
-                f"""
-                SELECT id, trace_id, event_type, source_agent, task_id, payload_json, created_at, processed_at
-                FROM company_events
-                {where}
-                ORDER BY created_at DESC
-                LIMIT ?
-                """,
-                (limit,),
-            )
-            return HTTPStatus.OK, {"ok": True, "events": events, "pending_only": pending_only}
-        finally:
-            conn.close()
+        limit_raw = query_value(query, "limit", "20")
+        limit = int(limit_raw) if str(limit_raw).isdigit() else 20
+        pending_only = truthy(query_value(query, "pending_only"))
+        if pending_only:
+            conn = companyctl.connect_readonly()
+            try:
+                events = companyctl.rows(
+                    conn,
+                    """
+                    SELECT id, trace_id, event_type, source_agent, task_id, payload_json, created_at, processed_at
+                    FROM company_events
+                    WHERE processed_at = ''
+                    ORDER BY created_at DESC
+                    LIMIT ?
+                    """,
+                    (max(1, min(limit, 200)),),
+                )
+            finally:
+                conn.close()
+        else:
+            events = list(reversed(recent_event_rows(limit=limit)))
+        return HTTPStatus.OK, {"ok": True, "events": events, "pending_only": pending_only}
     if path == "/v1/dashboard/communication-observability":
         conn = companyctl.connect()
         try:
@@ -1099,6 +1133,48 @@ class ApiHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(raw)
 
+    def send_sse_event(self, event: str, payload: dict, *, event_id: str = "") -> None:
+        if event_id:
+            self.wfile.write(f"id: {event_id}\n".encode("utf-8"))
+        self.wfile.write(f"event: {event}\n".encode("utf-8"))
+        data = json.dumps(payload, ensure_ascii=False)
+        for line in data.splitlines() or ["{}"]:
+            self.wfile.write(f"data: {line}\n".encode("utf-8"))
+        self.wfile.write(b"\n")
+        self.wfile.flush()
+
+    def stream_events(self, query: dict[str, list[str]]) -> None:
+        limit_raw = query_value(query, "limit", "20")
+        poll_raw = query_value(query, "poll_seconds", "2")
+        cycles_raw = query_value(query, "max_cycles", "30")
+        limit = int(limit_raw) if str(limit_raw).isdigit() else 20
+        poll_seconds = max(1, min(int(poll_raw) if str(poll_raw).isdigit() else 2, 10))
+        max_cycles = max(1, min(int(cycles_raw) if str(cycles_raw).isdigit() else 30, 300))
+        self.send_response(HTTPStatus.OK)
+        self.send_cors_headers()
+        self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+        self.send_header("Cache-Control", "no-cache")
+        self.send_header("Connection", "keep-alive")
+        self.end_headers()
+        last_created_at = ""
+        last_id = str(self.headers.get("Last-Event-ID", "") or "")
+        self.send_sse_event(
+            "stream_status",
+            {"ok": True, "mode": "sqlite_short_poll", "poll_seconds": poll_seconds, "timeout_is_sync_wait_only": True},
+        )
+        for _ in range(max_cycles):
+            try:
+                events = recent_event_rows(limit=limit, after_created_at=last_created_at, after_id=last_id)
+                for event in events:
+                    self.send_sse_event("company_event", event, event_id=event.get("id", ""))
+                    last_created_at = event.get("created_at", last_created_at)
+                    last_id = event.get("id", last_id)
+                if not events:
+                    self.send_sse_event("heartbeat", {"ok": True, "created_at": companyctl.now()})
+                time.sleep(poll_seconds)
+            except (BrokenPipeError, ConnectionResetError):
+                break
+
     def do_OPTIONS(self) -> None:
         self.send_response(HTTPStatus.NO_CONTENT)
         self.send_cors_headers()
@@ -1129,6 +1205,9 @@ class ApiHandler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
         query = parse_qs(parsed.query)
+        if parsed.path == "/v1/events/stream":
+            self.stream_events(query)
+            return
         status, payload = route_get(parsed.path, query)
         self.send_json(status, payload)
 
