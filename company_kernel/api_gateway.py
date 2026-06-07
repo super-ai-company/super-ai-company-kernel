@@ -87,6 +87,7 @@ API_ENDPOINTS = [
     {"method": "GET", "path": "/v1/handoffs", "summary": "List handoff contracts for Audit Hub", "query": {"task_id": "from or to task id optional", "limit": "integer optional"}},
     {"method": "GET", "path": "/v1/failures", "summary": "List sanitized task, attempt, and adapter failure records for Audit Hub", "query": {"task_id": "task id optional", "limit": "integer optional"}},
     {"method": "GET", "path": "/v1/traces/{trace_id}/timeline", "summary": "Read sanitized trace timeline for dashboard trace view"},
+    {"method": "GET", "path": "/v1/workspaces/prune", "summary": "Preview task workspace retention prune candidates; dry-run only", "query": {"dry_run": "bool required", "older_than_days": "integer optional", "limit": "integer optional"}},
     {"method": "GET", "path": "/v1/dashboard/communication-observability", "summary": "Dashboard-ready summary for direct messages, external mirror status, adapter-run progress, 5-layer progress heartbeat, and internal no-receipt watchdog"},
     {"method": "GET", "path": "/v1/dashboard/cockpit", "summary": "Dashboard-ready AI Employee Cockpit summary with long-task heartbeat/progress state and sanitized evidence"},
     {"method": "GET", "path": "/v1/dashboard/internal-watchdog", "summary": "Detect internal messages/tasks that were delivered but have no receipt, claim, or final evidence"},
@@ -391,6 +392,18 @@ def route_get(path: str, query: dict[str, list[str]]) -> tuple[int, dict]:
         try:
             trace = company_trace.load_trace(conn, trace_id)
             return HTTPStatus.OK, company_trace.safe_trace_payload(trace)
+        finally:
+            conn.close()
+    if path == "/v1/workspaces/prune":
+        if not truthy(query_value(query, "dry_run")):
+            return HTTPStatus.BAD_REQUEST, {"ok": False, "error": "workspace prune API is dry-run only; pass dry_run=true"}
+        limit_raw = query_value(query, "limit", "100")
+        older_raw = query_value(query, "older_than_days", "30")
+        limit = int(limit_raw) if str(limit_raw).isdigit() else 100
+        older_than_days = int(older_raw) if str(older_raw).isdigit() else 30
+        conn = companyctl.connect_readonly()
+        try:
+            return HTTPStatus.OK, companyctl.workspace_prune_preview(conn, older_than_days=older_than_days, limit=limit)
         finally:
             conn.close()
     if path == "/v1/dashboard/communication-observability":

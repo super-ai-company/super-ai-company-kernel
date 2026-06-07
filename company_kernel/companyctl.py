@@ -3353,6 +3353,96 @@ def cmd_trace_timeline(args: argparse.Namespace) -> int:
     return 0
 
 
+TERMINAL_WORKSPACE_STATUSES = {"done", "failed", "cancelled"}
+
+
+def directory_size_bytes(path: Path) -> int:
+    if not path.exists():
+        return 0
+    if path.is_file():
+        return path.stat().st_size
+    total = 0
+    for item in path.rglob("*"):
+        if item.is_file() and not item.is_symlink():
+            total += item.stat().st_size
+    return total
+
+
+def workspace_prune_preview(conn: sqlite3.Connection, *, older_than_days: int = 30, limit: int = 100) -> dict:
+    safe_days = max(1, int(older_than_days or 30))
+    safe_limit = max(1, min(int(limit or 100), 500))
+    cutoff = datetime.now(timezone.utc).astimezone() - timedelta(days=safe_days)
+    candidates = []
+    for item in rows(
+        conn,
+        """
+        SELECT tw.task_id, tw.trace_id, tw.path, tw.manifest_path, tw.updated_at,
+               t.status, t.target_agent, t.title, t.updated_at AS task_updated_at
+        FROM task_workspaces tw
+        JOIN tasks t ON t.id = tw.task_id
+        ORDER BY tw.updated_at ASC
+        """,
+    ):
+        status = str(item.get("status") or "")
+        if status not in TERMINAL_WORKSPACE_STATUSES:
+            continue
+        try:
+            updated = parse_time(str(item.get("updated_at") or item.get("task_updated_at") or ""))
+        except (TypeError, ValueError):
+            continue
+        if updated >= cutoff:
+            continue
+        workspace_path = Path(str(item.get("path") or "")).expanduser().resolve()
+        try:
+            relative = workspace_path.relative_to(TASK_WORKSPACE_ROOT.resolve())
+        except ValueError:
+            continue
+        candidates.append(
+            {
+                "task_id": item["task_id"],
+                "trace_id": item.get("trace_id", ""),
+                "status": status,
+                "target_agent": item.get("target_agent", ""),
+                "title": item.get("title", ""),
+                "updated_at": item.get("updated_at", ""),
+                "age_days": max(0, int((datetime.now(timezone.utc).astimezone() - updated).total_seconds() // 86400)),
+                "workspace": str(relative),
+                "manifest": str(Path(str(item.get("manifest_path") or "")).name),
+                "bytes": directory_size_bytes(workspace_path),
+            }
+        )
+        if len(candidates) >= safe_limit:
+            break
+    return {
+        "ok": True,
+        "dry_run": True,
+        "policy": {
+            "mode": "preview_only",
+            "older_than_days": safe_days,
+            "terminal_statuses": sorted(TERMINAL_WORKSPACE_STATUSES),
+            "root": str(TASK_WORKSPACE_ROOT),
+        },
+        "summary": {
+            "candidates": len(candidates),
+            "bytes_reclaimable": sum(int(item.get("bytes") or 0) for item in candidates),
+        },
+        "candidates": candidates,
+    }
+
+
+def cmd_workspace_prune(args: argparse.Namespace) -> int:
+    if not args.dry_run:
+        emit({"ok": False, "error": "workspace prune is preview-only in this phase; pass --dry-run"})
+        return 2
+    conn = connect_readonly()
+    try:
+        preview = workspace_prune_preview(conn, older_than_days=args.older_than_days, limit=args.limit)
+    finally:
+        conn.close()
+    emit(preview)
+    return 0
+
+
 def is_human_owner_employee(employee: dict) -> bool:
     return employee.get("id") == "owner" or employee.get("role") == "human-owner" or employee.get("runtime") == "human"
 
@@ -8914,6 +9004,14 @@ def build_parser() -> argparse.ArgumentParser:
     trace_timeline.add_argument("--trace-id", default="")
     trace_timeline.add_argument("--task-id", default="")
     trace_timeline.set_defaults(func=cmd_trace_timeline)
+
+    workspace = sub.add_parser("workspace")
+    workspace_sub = workspace.add_subparsers(dest="workspace_cmd", required=True)
+    workspace_prune = workspace_sub.add_parser("prune")
+    workspace_prune.add_argument("--dry-run", action="store_true")
+    workspace_prune.add_argument("--older-than-days", type=int, default=30)
+    workspace_prune.add_argument("--limit", type=int, default=100)
+    workspace_prune.set_defaults(func=cmd_workspace_prune)
 
     lock = sub.add_parser("lock")
     lock_sub = lock.add_subparsers(dest="lock_cmd", required=True)

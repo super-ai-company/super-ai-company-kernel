@@ -4300,6 +4300,48 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual(1, len(trace["evidence"]))
         self.assertEqual(1, len(trace["execution_attempts"]))
 
+    def test_workspace_prune_dry_run_lists_only_old_terminal_task_workspaces(self) -> None:
+        for employee_id, role in [("main", "operator"), ("writer", "writer")]:
+            code, created = run_cli("employee", "create", "--id", employee_id, "--name", employee_id, "--role", role, "--runtime", "local", "--workspace", str(self.root / "workspace" / employee_id))
+            self.assertEqual(0, code, created)
+            if employee_id != "main":
+                self.mark_active(employee_id)
+        code, old_task = run_cli("task", "submit", "--from", "main", "--to", "writer", "--task-id", "task-prune-old-done", "--title", "Old done")
+        self.assertEqual(0, code, old_task)
+        code, running_task = run_cli("task", "submit", "--from", "main", "--to", "writer", "--task-id", "task-prune-running", "--title", "Running")
+        self.assertEqual(0, code, running_task)
+        conn = companyctl.connect()
+        try:
+            old_workspace = companyctl.ensure_task_workspace(conn, "task-prune-old-done")
+            running_workspace = companyctl.ensure_task_workspace(conn, "task-prune-running")
+            old_file = Path(old_workspace["path"]) / "work" / "old.txt"
+            running_file = Path(running_workspace["path"]) / "work" / "running.txt"
+            old_file.write_text("old\n", encoding="utf-8")
+            running_file.write_text("running\n", encoding="utf-8")
+            old_ts = "2026-01-01T00:00:00+07:00"
+            conn.execute("UPDATE tasks SET status = 'done', updated_at = ? WHERE id = ?", (old_ts, "task-prune-old-done"))
+            conn.execute("UPDATE task_workspaces SET updated_at = ? WHERE task_id = ?", (old_ts, "task-prune-old-done"))
+            conn.commit()
+        finally:
+            conn.close()
+
+        code, preview = run_cli("workspace", "prune", "--dry-run", "--older-than-days", "30")
+        self.assertEqual(0, code, preview)
+        self.assertTrue(preview["dry_run"])
+        self.assertEqual(["task-prune-old-done"], [item["task_id"] for item in preview["candidates"]])
+        self.assertGreater(preview["summary"]["bytes_reclaimable"], 0)
+        self.assertTrue(old_file.exists())
+        self.assertTrue(running_file.exists())
+        status, api_preview = api_gateway.route_get("/v1/workspaces/prune", {"dry_run": ["true"], "older_than_days": ["30"]})
+        self.assertEqual(HTTPStatus.OK, status, api_preview)
+        self.assertEqual(preview["candidates"], api_preview["candidates"])
+        status, rejected = api_gateway.route_get("/v1/workspaces/prune", {"older_than_days": ["30"]})
+        self.assertEqual(HTTPStatus.BAD_REQUEST, status, rejected)
+        self.assertFalse(rejected["ok"])
+        payload_json = json.dumps(api_preview, ensure_ascii=False)
+        self.assertNotIn("task-prune-running", payload_json)
+        self.assertNotIn(str(self.root / "workspace" / "writer"), payload_json)
+
     def test_dashboard_trace_counts_include_v3_file_flow(self) -> None:
         for employee_id in ["manager", "writer", "qa"]:
             code, created = run_cli("employee", "create", "--id", employee_id, "--name", employee_id, "--role", "agent", "--runtime", "local", "--workspace", str(self.root / "workspace" / employee_id))
