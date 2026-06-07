@@ -1799,6 +1799,7 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertNotIn("JSON.stringify(event).replace", html)
         self.assertIn("Read-only live event stream", html)
         self.assertIn("refreshKernelEventConsole", html)
+        self.assertIn("Evidence Records", html)
         self.assertIn("Excludes human owner", html)
         self.assertIn("Includes human owner records", html)
         self.assertNotIn("terminalLogs", html)
@@ -4444,6 +4445,10 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual("", attempt["error_message"])
         done_event = next(item for item in shown["events"] if item["event_type"] == "task.done")
         self.assertEqual(attempt_id, json.loads(done_event["payload_json"])["attempt_id"])
+        evidence_record = next(item for item in shown["evidence_records"] if item["task_id"] == "task-done-closes-attempt")
+        self.assertEqual(attempt_id, evidence_record["attempt_id"])
+        self.assertEqual("codex", evidence_record["employee_id"])
+        self.assertEqual(1, evidence_record["is_final"])
         with sqlite3.connect(self.root / "company.sqlite") as conn:
             conn.row_factory = sqlite3.Row
             evidence_row = conn.execute("SELECT * FROM evidence WHERE task_id = ? AND is_final = 1", ("task-done-closes-attempt",)).fetchone()

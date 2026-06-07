@@ -1393,6 +1393,20 @@ def task_attempts(conn: sqlite3.Connection, task_id: str) -> list[dict]:
     return [hydrate_execution_attempt(attempt) for attempt in attempts]
 
 
+def task_evidence_records(conn: sqlite3.Connection, task_id: str) -> list[dict]:
+    return rows(
+        conn,
+        """
+        SELECT evidence_id, trace_id, task_id, attempt_id, employee_id, artifact_id,
+               type, path_or_url, summary, checksum, is_final, metadata_json, created_at
+        FROM evidence
+        WHERE task_id = ?
+        ORDER BY created_at DESC
+        """,
+        (task_id,),
+    )
+
+
 def task_supervisor_state(attempts: list[dict]) -> tuple[dict, dict]:
     state = {
         "corrections_requested": 0,
@@ -6357,6 +6371,7 @@ def cmd_task_show(args: argparse.Namespace) -> int:
     evidence = sanitize_evidence_path_for_display(evidence_path)
     audit_rows = rows(conn, "SELECT * FROM audit_logs WHERE target = ? ORDER BY created_at ASC", (task_id,))
     attempts = task_attempts(conn, task_id)
+    evidence_records = task_evidence_records(conn, task_id)
     supervisor_state, correction_summary = task_supervisor_state(attempts)
     emit(
         {
@@ -6364,6 +6379,7 @@ def cmd_task_show(args: argparse.Namespace) -> int:
             "task": task_obj,
             "metadata": metadata,
             "evidence": evidence,
+            "evidence_records": evidence_records,
             "blocker": task_obj.get("blocker", ""),
             "parents": parents,
             "children": children,
