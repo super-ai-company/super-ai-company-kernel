@@ -32,6 +32,7 @@ API_CAPABILITIES = [
     "settings",
     "external_mirror",
     "openclaw_runtime_inventory",
+    "operations_cockpit",
 ]
 API_ENDPOINTS = [
     {"method": "GET", "path": "/v1/health", "summary": "Company Kernel health summary"},
@@ -79,6 +80,7 @@ API_ENDPOINTS = [
     {"method": "GET", "path": "/v1/messages/recent-direct", "summary": "Dashboard-ready recent direct messages feed", "query": {"limit": "integer optional"}},
     {"method": "GET", "path": "/v1/events", "summary": "List Company Kernel event ledger entries", "query": {"pending_only": "bool optional", "limit": "integer optional"}},
     {"method": "GET", "path": "/v1/dashboard/communication-observability", "summary": "Dashboard-ready summary for direct messages, external mirror status, adapter-run progress, 5-layer progress heartbeat, and internal no-receipt watchdog"},
+    {"method": "GET", "path": "/v1/dashboard/cockpit", "summary": "Dashboard-ready AI Employee Cockpit summary with long-task heartbeat/progress state and sanitized evidence"},
     {"method": "GET", "path": "/v1/dashboard/internal-watchdog", "summary": "Detect internal messages/tasks that were delivered but have no receipt, claim, or final evidence"},
     {"method": "POST", "path": "/v1/dashboard/internal-watchdog/remediate", "summary": "Create or dry-run follow-up/escalation/reroute-decision actions for no-receipt messages and open internal tasks", "body": {"source": "employee id optional", "dry_run": "bool optional default true", "deliver": "bool optional", "escalate_to": "employee id optional default hermes", "escalate_existing": "bool optional", "reroute_to": "employee id optional default codex", "create_reroute_plan": "bool optional"}},
     {"method": "POST", "path": "/v1/dashboard/internal-watchdog/apply-reroutes", "summary": "Apply answered reroute decisions by creating new tasks and blocking original stalled tasks", "body": {"by": "employee id optional default hermes", "dry_run": "bool optional default true"}},
@@ -317,6 +319,13 @@ def route_get(path: str, query: dict[str, list[str]]) -> tuple[int, dict]:
         try:
             summary = company_dashboard.load_summary(conn)
             return HTTPStatus.OK, {"ok": True, **company_dashboard.communication_observability_summary(summary)}
+        finally:
+            conn.close()
+    if path == "/v1/dashboard/cockpit":
+        conn = companyctl.connect_readonly()
+        try:
+            summary = company_dashboard.load_summary(conn)
+            return HTTPStatus.OK, company_dashboard.build_cockpit_summary(summary)
         finally:
             conn.close()
     if path == "/v1/telemetry/traces":

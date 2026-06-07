@@ -69,6 +69,14 @@ def minutes_since(value: str, generated_at: str) -> int | None:
     return max(0, int((generated - timestamp).total_seconds() // 60))
 
 
+def seconds_since(value: str, generated_at: str) -> int | None:
+    timestamp = parse_time(value)
+    generated = parse_time(generated_at)
+    if not timestamp or not generated:
+        return None
+    return max(0, int((generated - timestamp).total_seconds()))
+
+
 def milliseconds_between(start: str, end: str) -> int:
     start_dt = parse_time(start)
     end_dt = parse_time(end)
@@ -242,6 +250,131 @@ def build_traces(conn: sqlite3.Connection, *, limit: int = 20) -> list[dict]:
             }
         )
     return traces
+
+
+def long_task_state(attempt: dict, *, generated_at: str) -> dict:
+    policy = companyctl.attempt_json_field(dict(attempt), "runtime_policy_json")
+    heartbeat_interval = int(policy.get("heartbeat_interval_seconds", companyctl.DEFAULT_RUNTIME_POLICY["heartbeat_interval_seconds"]) or companyctl.DEFAULT_RUNTIME_POLICY["heartbeat_interval_seconds"])
+    stale_after = int(policy.get("stale_after_seconds", companyctl.DEFAULT_RUNTIME_POLICY["stale_after_seconds"]) or companyctl.DEFAULT_RUNTIME_POLICY["stale_after_seconds"])
+    max_runtime = int(policy.get("max_runtime_seconds", companyctl.DEFAULT_RUNTIME_POLICY["max_runtime_seconds"]) or companyctl.DEFAULT_RUNTIME_POLICY["max_runtime_seconds"])
+    heartbeat_age = seconds_since(str(attempt.get("last_heartbeat_at") or attempt.get("started_at") or ""), generated_at)
+    progress_age = seconds_since(str(attempt.get("last_progress_at") or attempt.get("started_at") or ""), generated_at)
+    runtime_age = seconds_since(str(attempt.get("started_at") or ""), generated_at)
+    heartbeat_warn_after = max(1, heartbeat_interval * 2)
+    heartbeat_state = "unknown" if heartbeat_age is None else "stale" if heartbeat_age >= heartbeat_warn_after else "fresh"
+    progress_state = "unknown" if progress_age is None else "stagnant" if progress_age >= stale_after else "fresh"
+    status = str(attempt.get("status") or "")
+    if status == "correcting":
+        state = "correcting"
+    elif status in {"failed", "cancelled", "stale", "success"}:
+        state = status
+    elif heartbeat_state == "stale":
+        state = "heartbeat_stale"
+    elif progress_state == "stagnant":
+        state = "progress_stagnant"
+    else:
+        state = "running"
+    return {
+        "long_task_state": state,
+        "heartbeat_state": heartbeat_state,
+        "progress_state": progress_state,
+        "heartbeat_age_seconds": heartbeat_age,
+        "progress_age_seconds": progress_age,
+        "runtime_age_seconds": runtime_age,
+        "heartbeat_warn_after_seconds": heartbeat_warn_after,
+        "stale_after_seconds": stale_after,
+        "max_runtime_seconds": max_runtime,
+        "timeout_is_sync_wait_only": True,
+    }
+
+
+def build_cockpit_summary(summary: dict) -> dict:
+    generated_at = str(summary.get("generated_at") or now())
+    employees = summary.get("employees", [])
+    active_attempts = summary.get("active_attempts", [])
+    tasks_by_id = {str(task.get("id", "")): task for task in summary.get("tasks", [])}
+    long_tasks = []
+    for attempt in active_attempts:
+        task = tasks_by_id.get(str(attempt.get("task_id", "")), {})
+        state = long_task_state(attempt, generated_at=generated_at)
+        evidence = companyctl.sanitize_evidence_path_for_display(str(task.get("evidence_path") or ""))
+        long_tasks.append(
+            {
+                "task_id": attempt.get("task_id", ""),
+                "title": task.get("title", ""),
+                "target_agent": task.get("target_agent", attempt.get("employee_id", "")),
+                "attempt_id": attempt.get("attempt_id", ""),
+                "trace_id": attempt.get("trace_id", ""),
+                "attempt_status": attempt.get("status", ""),
+                "task_status": task.get("status", ""),
+                "started_at": attempt.get("started_at", ""),
+                "last_heartbeat_at": attempt.get("last_heartbeat_at", ""),
+                "last_progress_at": attempt.get("last_progress_at", ""),
+                "blocker": task.get("blocker", "") or attempt.get("error_message", ""),
+                "evidence": evidence,
+                **state,
+            }
+        )
+    pending_approvals = [item for item in summary.get("approvals", []) if str(item.get("status", "")).lower() == "pending"]
+    recent_evidence = []
+    for task in summary.get("tasks", []):
+        evidence = companyctl.sanitize_evidence_path_for_display(str(task.get("evidence_path") or ""))
+        if evidence.get("allowed"):
+            recent_evidence.append(
+                {
+                    "task_id": task.get("id", ""),
+                    "title": task.get("title", ""),
+                    "status": task.get("status", ""),
+                    "target_agent": task.get("target_agent", ""),
+                    "updated_at": task.get("updated_at", ""),
+                    "evidence": evidence,
+                }
+            )
+    employee_states = []
+    for employee in employees:
+        status = str(employee.get("employee_status") or employee.get("status") or "")
+        heartbeat = str(employee.get("heartbeat_status") or "missing")
+        active_state = "active-limited" if status == "active" and not employee.get("current_attempt") and employee.get("runtime") == "antigravity" else status
+        if heartbeat in {"stale", "missing", "offline"}:
+            active_state = "abnormal" if status == "active" else status
+        employee_states.append(
+            {
+                "id": employee.get("id", ""),
+                "name": employee.get("name", ""),
+                "runtime": employee.get("runtime", ""),
+                "role": employee.get("role", ""),
+                "status": active_state,
+                "employee_status": status,
+                "heartbeat_status": heartbeat,
+                "progress_layer": employee.get("progress_layer", ""),
+                "progress_state": employee.get("progress_state", ""),
+                "current_attempt": employee.get("current_attempt", {}),
+                "last_seen_at": employee.get("last_seen_at", ""),
+            }
+        )
+    return {
+        "ok": True,
+        "generated_at": generated_at,
+        "refresh": {"mode": "rest_polling", "interval_seconds": 10, "sse_reserved": True, "websocket": False},
+        "status_contract": {
+            "timeout": "sync_wait_only",
+            "progress_stagnant": "heartbeat fresh but no progress beyond stale_after_seconds; do not auto-cancel",
+            "correction_binding": "task_id + attempt_id",
+        },
+        "counts": {
+            "employees": len(employee_states),
+            "active_attempts": len(active_attempts),
+            "running_tasks": sum(1 for item in summary.get("tasks", []) if str(item.get("status", "")).lower() in {"claimed", "running"}),
+            "stagnant_tasks": sum(1 for item in long_tasks if item.get("long_task_state") == "progress_stagnant"),
+            "blocked_tasks": sum(1 for item in summary.get("tasks", []) if str(item.get("status", "")).lower() in {"blocked", "failed", "stale"}),
+            "pending_approvals": len(pending_approvals),
+            "recent_evidence": len(recent_evidence),
+        },
+        "employees": employee_states,
+        "long_tasks": long_tasks,
+        "pending_approvals": pending_approvals[:10],
+        "recent_evidence": recent_evidence[:10],
+    }
 
 
 def recent_direct_messages(conn: sqlite3.Connection, *, limit: int = 20) -> list[dict]:
@@ -1694,6 +1827,7 @@ def advanced_summary(summary: dict) -> dict:
     prepared["employees"] = employees
     prepared["communication_observability"] = communication_observability_summary(summary)
     prepared["openclaw_runtime_inventory"] = summary.get("runtime_health", {}).get("openclaw_inventory", {})
+    prepared["cockpit"] = build_cockpit_summary({**summary, "employees": employees})
     return prepared
 
 
