@@ -2958,6 +2958,9 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertIn("function extractTaskContext", html)
         self.assertIn("function visibleChatMessages", html)
         self.assertIn("function hiddenChatNotice", html)
+        self.assertIn("function sortChatThreadsForTaskContext", html)
+        self.assertIn("task-bound first", html)
+        self.assertIn("const firstTaskBoundThread", html)
         self.assertIn("Task-bound messages stay visible; handshakes hidden by default", html)
         self.assertIn("Only greeting/handshake/idle messages are hidden", html)
 

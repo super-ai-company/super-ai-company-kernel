@@ -4082,6 +4082,16 @@
     return `<div class="chat-hidden-notice">Hidden greeting/handshake/idle messages: ${hiddenCount}. Toggle “Show handshakes” to inspect raw chatter.</div>`;
   }
 
+  function sortChatThreadsForTaskContext(conversations) {
+    // task-bound first: real work threads should not be buried under greeting/handshake chatter.
+    return (conversations || []).slice().sort((a, b) => {
+      const aTask = extractTaskContext(a) || ((a.messages || []).map(extractTaskContext).find(Boolean) || '');
+      const bTask = extractTaskContext(b) || ((b.messages || []).map(extractTaskContext).find(Boolean) || '');
+      if (!!aTask !== !!bTask) return aTask ? -1 : 1;
+      return new Date(b.updated_at || b.last_message_at || 0) - new Date(a.updated_at || a.last_message_at || 0);
+    });
+  }
+
   function renderRealChatMessages() {
     const summary = getDashboardSummary();
     const activeId = getActiveConversationId();
@@ -5624,7 +5634,8 @@
       return;
     }
 
-    const conversationThreads = (summary.conversations || []).map(c => {
+    const sortedConversations = sortChatThreadsForTaskContext(summary.conversations || []);
+    const conversationThreads = sortedConversations.map(c => {
       const messages = c.messages || [];
       const filtered = visibleChatMessages(messages);
       const taskContext = extractTaskContext(c) || (messages.map(extractTaskContext).find(Boolean) || '');
@@ -5642,8 +5653,10 @@
     listContainer.innerHTML = directThread + conversationThreads;
 
     if (!window.activeThreadId) {
-      if (directMessages.length > 0) selectChatThread('direct-messages-recent');
-      else if ((summary.conversations || []).length > 0) selectChatThread(summary.conversations[0].id);
+      const firstTaskBoundThread = sortedConversations.find(c => extractTaskContext(c) || ((c.messages || []).map(extractTaskContext).find(Boolean) || ''));
+      if (firstTaskBoundThread) selectChatThread(firstTaskBoundThread.id);
+      else if (directMessages.length > 0) selectChatThread('direct-messages-recent');
+      else if (sortedConversations.length > 0) selectChatThread(sortedConversations[0].id);
     } else if (window.activeThreadId) {
       renderRealChatMessages();
     }
