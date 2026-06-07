@@ -88,6 +88,7 @@ API_ENDPOINTS = [
     {"method": "GET", "path": "/v1/handoffs", "summary": "List handoff contracts for Audit Hub", "query": {"task_id": "from or to task id optional", "limit": "integer optional"}},
     {"method": "GET", "path": "/v1/failures", "summary": "List sanitized task, attempt, and adapter failure records for Audit Hub", "query": {"task_id": "task id optional", "limit": "integer optional"}},
     {"method": "GET", "path": "/v1/traces/{trace_id}/timeline", "summary": "Read sanitized trace timeline for dashboard trace view"},
+    {"method": "GET", "path": "/v1/traces/{trace_id}/file-flow", "summary": "Read trace task/artifact/handoff/evidence file-flow graph"},
     {"method": "GET", "path": "/v1/workspaces/prune", "summary": "Preview task workspace retention prune candidates; dry-run only", "query": {"dry_run": "bool required", "older_than_days": "integer optional", "limit": "integer optional"}},
     {"method": "GET", "path": "/v1/dashboard/communication-observability", "summary": "Dashboard-ready summary for direct messages, external mirror status, adapter-run progress, 5-layer progress heartbeat, and internal no-receipt watchdog"},
     {"method": "GET", "path": "/v1/dashboard/cockpit", "summary": "Dashboard-ready AI Employee Cockpit summary with long-task heartbeat/progress state and sanitized evidence"},
@@ -395,6 +396,15 @@ def route_get(path: str, query: dict[str, list[str]]) -> tuple[int, dict]:
         try:
             trace = company_trace.load_trace(conn, trace_id)
             return HTTPStatus.OK, company_trace.safe_trace_payload(trace)
+        finally:
+            conn.close()
+    if path.startswith("/v1/traces/") and path.endswith("/file-flow"):
+        trace_id = path.removeprefix("/v1/traces/").removesuffix("/file-flow").strip("/")
+        if not trace_id or "/" in trace_id:
+            return HTTPStatus.NOT_FOUND, {"ok": False, "error": "not found", "path": path}
+        conn = companyctl.connect_readonly()
+        try:
+            return HTTPStatus.OK, companyctl.trace_file_flow_graph(conn, trace_id)
         finally:
             conn.close()
     if path == "/v1/workspaces/prune":

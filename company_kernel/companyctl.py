@@ -3245,6 +3245,146 @@ def audit_handoff_records(conn: sqlite3.Connection, *, task_id: str = "", limit:
     return handoffs
 
 
+def mermaid_node_id(raw: str) -> str:
+    return re.sub(r"[^A-Za-z0-9_]", "_", raw)
+
+
+def trace_file_flow_graph(conn: sqlite3.Connection, trace_id: str) -> dict:
+    safe_trace_id = str(trace_id or "").strip()
+    artifact_rows = rows(
+        conn,
+        """
+        SELECT artifact_id, task_id, employee_id, name, path, stage, status, version, is_final, summary, created_at
+        FROM artifacts
+        WHERE trace_id = ?
+        ORDER BY created_at ASC, artifact_id ASC
+        """,
+        (safe_trace_id,),
+    )
+    handoff_rows = audit_handoff_records(conn, limit=200)
+    handoff_rows = [item for item in handoff_rows if item.get("trace_id") == safe_trace_id]
+    evidence_rows = rows(
+        conn,
+        """
+        SELECT evidence_id, task_id, attempt_id, employee_id, artifact_id, path_or_url, summary, is_final, created_at
+        FROM evidence
+        WHERE trace_id = ?
+        ORDER BY created_at ASC, evidence_id ASC
+        """,
+        (safe_trace_id,),
+    )
+    nodes: list[dict] = []
+    edges: list[dict] = []
+    task_ids = {str(row.get("task_id") or "") for row in artifact_rows}
+    task_ids.update(str(row.get("task_id") or "") for row in evidence_rows)
+    for handoff in handoff_rows:
+        task_ids.add(str(handoff.get("from_task_id") or ""))
+        task_ids.add(str(handoff.get("to_task_id") or ""))
+    for metadata_row in rows(conn, "SELECT task_id, metadata_json FROM task_metadata ORDER BY task_id ASC"):
+        metadata = parse_json_arg(metadata_row.get("metadata_json", "") or "{}", {})
+        if metadata.get("trace_id") == safe_trace_id:
+            task_ids.add(str(metadata_row.get("task_id") or ""))
+    task_ids = {task_id for task_id in task_ids if task_id}
+    task_rows = []
+    if task_ids:
+        placeholders = ",".join("?" for _ in task_ids)
+        task_rows = rows(
+            conn,
+            f"""
+            SELECT id, source_agent, target_agent, title, status, claimed_by, created_at, updated_at
+            FROM tasks
+            WHERE id IN ({placeholders})
+            ORDER BY created_at ASC, id ASC
+            """,
+            tuple(sorted(task_ids)),
+        )
+
+    def add_node(node_id: str, kind: str, label: str, **extra: object) -> None:
+        if any(node["id"] == node_id for node in nodes):
+            return
+        nodes.append({"id": node_id, "kind": kind, "label": label, **extra})
+
+    for task in task_rows:
+        add_node(
+            f"task:{task['id']}",
+            "task",
+            str(task.get("title") or task["id"]),
+            task_id=task["id"],
+            status=task.get("status", ""),
+            target_agent=task.get("target_agent", ""),
+        )
+    artifact_by_id = {}
+    for artifact in artifact_rows:
+        artifact_id = artifact["artifact_id"]
+        artifact_by_id[artifact_id] = artifact
+        display = sanitize_evidence_path_for_display(artifact.get("path", ""))
+        add_node(
+            f"artifact:{artifact_id}",
+            "artifact",
+            str(artifact.get("name") or artifact_id),
+            artifact_id=artifact_id,
+            task_id=artifact.get("task_id", ""),
+            stage=artifact.get("stage", ""),
+            status=artifact.get("status", ""),
+            version=artifact.get("version", ""),
+            display=display,
+        )
+        if artifact.get("task_id"):
+            edges.append({"from": f"task:{artifact['task_id']}", "to": f"artifact:{artifact_id}", "label": "created artifact"})
+    for handoff in handoff_rows:
+        handoff_id = handoff["handoff_id"]
+        add_node(
+            f"handoff:{handoff_id}",
+            "handoff",
+            str(handoff.get("summary") or handoff_id),
+            handoff_id=handoff_id,
+            status=handoff.get("status", ""),
+            from_task_id=handoff.get("from_task_id", ""),
+            to_task_id=handoff.get("to_task_id", ""),
+        )
+        if handoff.get("from_task_id"):
+            edges.append({"from": f"task:{handoff['from_task_id']}", "to": f"handoff:{handoff_id}", "label": "handoff"})
+        if handoff.get("to_task_id"):
+            edges.append({"from": f"handoff:{handoff_id}", "to": f"task:{handoff['to_task_id']}", "label": "accepted by"})
+        for artifact_id in handoff.get("artifacts", []):
+            if artifact_id in artifact_by_id:
+                edges.append({"from": f"artifact:{artifact_id}", "to": f"handoff:{handoff_id}", "label": "included"})
+    for evidence in evidence_rows:
+        evidence_id = evidence["evidence_id"]
+        display = sanitize_evidence_path_for_display(evidence.get("path_or_url", ""))
+        add_node(
+            f"evidence:{evidence_id}",
+            "evidence",
+            str(evidence.get("summary") or evidence_id),
+            evidence_id=evidence_id,
+            task_id=evidence.get("task_id", ""),
+            artifact_id=evidence.get("artifact_id", ""),
+            is_final=bool(evidence.get("is_final")),
+            display=display,
+        )
+        if evidence.get("artifact_id"):
+            edges.append({"from": f"artifact:{evidence['artifact_id']}", "to": f"evidence:{evidence_id}", "label": "promoted evidence"})
+        elif evidence.get("task_id"):
+            edges.append({"from": f"task:{evidence['task_id']}", "to": f"evidence:{evidence_id}", "label": "submitted evidence"})
+
+    mermaid_lines = ["graph LR"]
+    for node in nodes:
+        label = str(node.get("label") or node["id"]).replace('"', "'")
+        mermaid_lines.append(f'  {mermaid_node_id(node["id"])}["{label}"]')
+    for edge in edges:
+        label = str(edge.get("label") or "").replace('"', "'")
+        mermaid_lines.append(f'  {mermaid_node_id(edge["from"])} -->|{label}| {mermaid_node_id(edge["to"])}')
+    return {
+        "ok": True,
+        "kind": "trace_file_flow",
+        "trace_id": safe_trace_id,
+        "counts": {"tasks": len(task_rows), "artifacts": len(artifact_rows), "handoffs": len(handoff_rows), "evidence": len(evidence_rows), "nodes": len(nodes), "edges": len(edges)},
+        "nodes": nodes,
+        "edges": edges,
+        "mermaid": "\n".join(mermaid_lines),
+    }
+
+
 def audit_failure_records(conn: sqlite3.Connection, *, task_id: str = "", limit: int | str | None = 50) -> list[dict]:
     safe_limit = clamp_audit_limit(limit)
     params: list[object] = []

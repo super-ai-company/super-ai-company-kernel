@@ -4399,6 +4399,30 @@ class CompanyKernelCoreTest(unittest.TestCase):
         evidence_span = next(span for span in trace["spans"] if span["name"].startswith("evidence."))
         self.assertIn("attempt_id", evidence_span)
 
+        status, graph = api_gateway.route_get(f"/v1/traces/{submitted['task']['metadata']['trace_id']}/file-flow", {})
+        self.assertEqual(HTTPStatus.OK, status, graph)
+        self.assertEqual(submitted["task"]["metadata"]["trace_id"], graph["trace_id"])
+        self.assertEqual("trace_file_flow", graph["kind"])
+        self.assertIn("task:task-v3-dashboard", [node["id"] for node in graph["nodes"]])
+        self.assertIn(f"artifact:{artifact['artifact']['artifact_id']}", [node["id"] for node in graph["nodes"]])
+        self.assertIn(f"handoff:{handoff['handoff']['handoff_id']}", [node["id"] for node in graph["nodes"]])
+        self.assertIn(f"evidence:{evidence['evidence']['evidence_id']}", [node["id"] for node in graph["nodes"]])
+        edge_labels = [edge["label"] for edge in graph["edges"]]
+        self.assertIn("created artifact", edge_labels)
+        self.assertIn("handoff", edge_labels)
+        self.assertIn("promoted evidence", edge_labels)
+        self.assertIn("graph LR", graph["mermaid"])
+
+        output = self.root / "state" / "file-flow-dashboard.html"
+        with contextlib.redirect_stdout(io.StringIO()):
+            code = company_dashboard.main(["--output", str(output), "--variant", "advanced"])
+        self.assertEqual(0, code)
+        html = output.read_text(encoding="utf-8")
+        self.assertIn("File Flow Graph", html)
+        self.assertIn("trace-file-flow-container", html)
+        self.assertIn("/v1/traces/${encodeURIComponent(traceId)}/file-flow", html)
+        self.assertIn(submitted["task"]["metadata"]["trace_id"], html)
+
     def test_dashboard_trace_spans_highlight_supervisor_corrections(self) -> None:
         for employee_id, role in [("main", "operator"), ("hermes", "supervisor"), ("codex", "developer")]:
             code, created = run_cli("employee", "create", "--id", employee_id, "--name", employee_id, "--role", role, "--runtime", "local", "--workspace", str(self.root / "workspace" / employee_id))
