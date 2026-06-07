@@ -1836,6 +1836,7 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertIn("counts.employees_total", html)
         self.assertIn("counts.employees_abnormal", html)
         self.assertIn("counts.done_tasks", html)
+        self.assertIn("counts.awaiting_approval_tasks", html)
         self.assertIn("busy / candidate / active-limited / abnormal", html)
         self.assertEqual(5, html.count('class="nav-btn'))
         self.assertIn("Cockpit Console", html)
@@ -1904,6 +1905,25 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual(0, code, blocked)
         code, submitted_done = run_cli("task", "submit", "--from", "main", "--to", "codex-cockpit", "--task-id", "task-cockpit-done", "--title", "Cockpit done task")
         self.assertEqual(0, code, submitted_done)
+        code, submitted_approval = run_cli("task", "submit", "--from", "main", "--to", "codex-cockpit", "--task-id", "task-cockpit-awaiting-approval", "--title", "Cockpit approval task")
+        self.assertEqual(0, code, submitted_approval)
+        code, approval = run_cli(
+            "approval",
+            "request",
+            "--from",
+            "main",
+            "--action",
+            "external_send",
+            "--reason",
+            "approval bound to cockpit task",
+            "--target",
+            "codex-cockpit",
+            "--task-id",
+            "task-cockpit-awaiting-approval",
+            "--approval-id",
+            "approval-cockpit-awaiting",
+        )
+        self.assertEqual(0, code, approval)
         conn = companyctl.connect()
         try:
             workspace = companyctl.ensure_task_workspace(conn, "task-cockpit-long")
@@ -1944,6 +1964,7 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual(2, cockpit["counts"]["employees_online"])
         self.assertGreaterEqual(cockpit["counts"]["employees_abnormal"], 1)
         self.assertEqual(1, cockpit["counts"]["done_tasks"])
+        self.assertEqual(1, cockpit["counts"]["awaiting_approval_tasks"])
         cockpit_employees = {item["id"]: item for item in cockpit["employees"]}
         self.assertEqual("busy", cockpit_employees["codex-cockpit"]["status"])
         self.assertEqual("active_ready", cockpit_employees["codex-cockpit"]["readiness_level"])

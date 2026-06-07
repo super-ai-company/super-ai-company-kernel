@@ -321,6 +321,17 @@ def build_cockpit_summary(summary: dict) -> dict:
             }
         )
     pending_approvals = [item for item in summary.get("approvals", []) if str(item.get("status", "")).lower() == "pending"]
+    pending_approval_task_ids = set()
+    for approval in pending_approvals:
+        raw = approval.get("reason", "")
+        try:
+            detail = json.loads(raw or "{}")
+        except json.JSONDecodeError:
+            detail = {}
+        if isinstance(detail, dict):
+            metadata = detail.get("metadata", {})
+            if isinstance(metadata, dict) and metadata.get("task_id"):
+                pending_approval_task_ids.add(str(metadata["task_id"]))
     recent_evidence = []
     for task in summary.get("tasks", []):
         evidence = companyctl.sanitize_evidence_path_for_display(str(task.get("evidence_path") or ""))
@@ -510,6 +521,12 @@ def build_cockpit_summary(summary: dict) -> dict:
             "stagnant_tasks": sum(1 for item in long_tasks if item.get("long_task_state") == "progress_stagnant"),
             "blocked_tasks": sum(1 for item in summary.get("tasks", []) if str(item.get("status", "")).lower() in {"blocked", "failed", "stale"}),
             "done_tasks": sum(1 for item in summary.get("tasks", []) if str(item.get("status", "")).lower() in {"completed", "done"}),
+            "awaiting_approval_tasks": sum(
+                1
+                for item in summary.get("tasks", [])
+                if str(item.get("id", "")) in pending_approval_task_ids
+                and str(item.get("status", "")).lower() not in {"completed", "done", "cancelled"}
+            ),
             "pending_approvals": len(pending_approvals),
             "recent_evidence": len(recent_evidence),
         },
