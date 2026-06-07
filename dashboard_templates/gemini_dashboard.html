@@ -3139,6 +3139,14 @@
       cancelTaskAttempt(taskId, attemptId);
       return;
     }
+    if (actionId === 'retry') {
+      retryTask(taskId);
+      return;
+    }
+    if (actionId === 'reassign') {
+      reassignTask(taskId);
+      return;
+    }
     if (actionId === 'approve' || actionId === 'deny' || actionId === 'mock_resolve') {
       const decision = actionId === 'mock_resolve' ? 'resolve' : actionId;
       decideApprovalFromDashboard({stopPropagation() {}}, approvalId, decision);
