@@ -22,7 +22,16 @@ from pathlib import Path
 from .schema_migrations import ensure_schema_migrations
 
 ROOT = Path(os.environ.get("OPENCLAW_COMPANY_KERNEL_ROOT", Path(__file__).resolve().parents[1])).resolve()
-DB_PATH = ROOT / "company.sqlite"
+
+
+def resolve_db_path() -> Path:
+    override = str(os.environ.get("COMPANY_KERNEL_DB_PATH", "") or "").strip()
+    if override:
+        return Path(override).expanduser().resolve()
+    return ROOT / "company.sqlite"
+
+
+DB_PATH = resolve_db_path()
 EMPLOYEES_DIR = ROOT / "employees"
 STATE_DIR = ROOT / "state"
 RFC_DIR = ROOT / "rfcs"
@@ -537,6 +546,7 @@ def sync_backlog_from_queue_file(conn: sqlite3.Connection) -> None:
 
 
 def connect() -> sqlite3.Connection:
+    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     conn.executescript(SCHEMA.read_text(encoding="utf-8"))
