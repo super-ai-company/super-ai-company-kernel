@@ -80,6 +80,7 @@ STATE_DIR = Path(_KERNEL_PATHS["state_dir"])
 RFC_DIR = Path(_KERNEL_PATHS["rfc_dir"])
 CONFIG_DIR = Path(_KERNEL_PATHS["config_dir"])
 WORKFLOW_DIR = CONFIG_DIR / "workflows"
+SKILL_PACKAGES_DIR = ROOT / "skill-packages"
 LAUNCHD_LABEL = "ai.openclaw.company-kernel.daemon"
 LAUNCHD_TEMPLATE = CONFIG_DIR / "launchd" / f"{LAUNCHD_LABEL}.plist"
 HOOKS_PATH = CONFIG_DIR / "hooks.json"
@@ -3023,6 +3024,59 @@ def cmd_agent_matrix(args: argparse.Namespace) -> int:
         "rule": "online attendance is not enough for active_ready; active_ready requires active employee plus structured runtime evidence",
     }
     emit(report)
+    return 0
+
+
+def skill_manifest_summary(manifest_path: Path) -> dict:
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        return {
+            "ok": False,
+            "id": manifest_path.parent.name,
+            "name": manifest_path.parent.name,
+            "manifest_path": str(manifest_path),
+            "error": str(exc),
+        }
+    runtime = manifest.get("runtime", {}) if isinstance(manifest.get("runtime", {}), dict) else {}
+    permissions = manifest.get("permissions", {}) if isinstance(manifest.get("permissions", {}), dict) else {}
+    pricing = manifest.get("pricing", {}) if isinstance(manifest.get("pricing", {}), dict) else {}
+    acceptance = manifest.get("acceptance", {}) if isinstance(manifest.get("acceptance", {}), dict) else {}
+    return {
+        "ok": True,
+        "id": str(manifest.get("id") or manifest_path.parent.name),
+        "name": str(manifest.get("name") or manifest_path.parent.name),
+        "version": str(manifest.get("version") or ""),
+        "description": str(manifest.get("description") or ""),
+        "manifest_path": str(manifest_path),
+        "runtime_type": str(runtime.get("type") or ""),
+        "workspace_permission": str(permissions.get("workspace") or ""),
+        "network": bool(permissions.get("network", False)),
+        "secrets_count": len(permissions.get("secrets", []) if isinstance(permissions.get("secrets", []), list) else []),
+        "pricing_unit": str(pricing.get("unit") or ""),
+        "pricing_amount": pricing.get("amount", ""),
+        "pricing_currency": str(pricing.get("currency") or ""),
+        "final_artifact": str(acceptance.get("final_artifact") or ""),
+        "evidence_required": bool(acceptance.get("evidence_required", False)),
+    }
+
+
+def skill_registry() -> dict:
+    skills = []
+    if SKILL_PACKAGES_DIR.exists():
+        for manifest_path in sorted(SKILL_PACKAGES_DIR.glob("*/skill.json")):
+            skills.append(skill_manifest_summary(manifest_path))
+    return {
+        "ok": True,
+        "root": str(SKILL_PACKAGES_DIR),
+        "count": len(skills),
+        "skills": skills,
+        "rule": "read-only registry; skill execution still requires Kernel task, authorized task workspace, artifact registration, and evidence promotion",
+    }
+
+
+def cmd_skill_list(args: argparse.Namespace) -> int:
+    emit(skill_registry())
     return 0
 
 
@@ -8463,6 +8517,11 @@ def build_parser() -> argparse.ArgumentParser:
     emp_offboard.add_argument("--hard-delete", action="store_true", help="delete only Company Kernel-managed employee files/workspace")
     emp_offboard.add_argument("--dry-run", action="store_true")
     emp_offboard.set_defaults(func=cmd_employee_offboard)
+
+    skill = sub.add_parser("skill")
+    skill_sub = skill.add_subparsers(dest="skill_cmd", required=True)
+    skill_list = skill_sub.add_parser("list")
+    skill_list.set_defaults(func=cmd_skill_list)
 
     attendance = sub.add_parser("attendance")
     attendance_sub = attendance.add_subparsers(dest="attendance_cmd", required=True)
