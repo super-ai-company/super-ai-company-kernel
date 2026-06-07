@@ -18,6 +18,7 @@ API_CAPABILITIES = [
     "doctor",
     "tasks",
     "messages",
+    "events",
     "conversations",
     "approvals",
     "heartbeats",
@@ -30,6 +31,7 @@ API_CAPABILITIES = [
     "runtimes",
     "settings",
     "external_mirror",
+    "openclaw_runtime_inventory",
 ]
 API_ENDPOINTS = [
     {"method": "GET", "path": "/v1/health", "summary": "Company Kernel health summary"},
@@ -50,6 +52,7 @@ API_ENDPOINTS = [
     {"method": "POST", "path": "/v1/settings/notification", "summary": "Configure employee notification account without storing tokens", "body": {"telegram_account": "account id", "telegram_bot_token_env": "environment variable name containing token", "telegram_default_target": "chat/user target optional", "employee_notifications_enabled": "bool optional"}},
     {"method": "POST", "path": "/v1/notifications/send", "summary": "Send configured operator notification without exposing secrets", "body": {"message": "string required", "kind": "general/approval/error optional", "subject": "string optional", "target": "telegram target optional", "account": "account optional", "dry_run": "bool optional"}},
     {"method": "GET", "path": "/v1/progress/notifications", "summary": "Read pending or recent progress transition notifications", "query": {"pending_only": "bool optional", "limit": "integer optional"}},
+    {"method": "GET", "path": "/v1/openclaw/runtime-inventory", "summary": "Read-only discovered OpenClaw agents, sessions, Telegram spools, and Company Kernel registration gaps"},
     {"method": "GET", "path": "/v1/supervisor/delivery-loop", "summary": "Read latest autonomous supervisor delivery-loop result"},
     {"method": "POST", "path": "/v1/supervisor/delivery-loop", "summary": "Run autonomous supervisor delivery-loop once", "body": {"limit": "integer optional", "by": "actor optional"}},
     {"method": "POST", "path": "/v1/policy-blocks/report", "summary": "Report non-popup tool-policy blockers and notify operator", "body": {"source": "employee optional", "target": "employee optional", "tool": "tool name optional", "operation": "operation optional", "error": "error text required", "dry_run": "bool optional"}},
@@ -74,6 +77,7 @@ API_ENDPOINTS = [
     {"method": "POST", "path": "/v1/tasks/{task_id}/conversations", "summary": "Start task-bound conversation", "body": {"from": "employee id optional", "participants": "comma-separated extra participants optional", "title": "string optional", "body": "string optional", "conversation_id": "string optional", "evidence": "path optional"}},
     {"method": "GET", "path": "/v1/messages", "summary": "List messages", "query": {"agent": "employee id required"}},
     {"method": "GET", "path": "/v1/messages/recent-direct", "summary": "Dashboard-ready recent direct messages feed", "query": {"limit": "integer optional"}},
+    {"method": "GET", "path": "/v1/events", "summary": "List Company Kernel event ledger entries", "query": {"pending_only": "bool optional", "limit": "integer optional"}},
     {"method": "GET", "path": "/v1/dashboard/communication-observability", "summary": "Dashboard-ready summary for direct messages, external mirror status, adapter-run progress, 5-layer progress heartbeat, and internal no-receipt watchdog"},
     {"method": "GET", "path": "/v1/dashboard/internal-watchdog", "summary": "Detect internal messages/tasks that were delivered but have no receipt, claim, or final evidence"},
     {"method": "POST", "path": "/v1/dashboard/internal-watchdog/remediate", "summary": "Create or dry-run follow-up/escalation/reroute-decision actions for no-receipt messages and open internal tasks", "body": {"source": "employee id optional", "dry_run": "bool optional default true", "deliver": "bool optional", "escalate_to": "employee id optional default hermes", "escalate_existing": "bool optional", "reroute_to": "employee id optional default codex", "create_reroute_plan": "bool optional"}},
@@ -232,8 +236,13 @@ def route_get(path: str, query: dict[str, list[str]]) -> tuple[int, dict]:
         code, payload = run_companyctl(argv)
         return (HTTPStatus.OK if code == 0 else HTTPStatus.BAD_REQUEST), {"exit_code": code, **payload}
     if path == "/v1/employees":
-        code, payload = run_companyctl(["employee", "list"])
-        return (HTTPStatus.OK if code == 0 else HTTPStatus.BAD_REQUEST), {"exit_code": code, **payload}
+        conn = companyctl.connect_readonly()
+        try:
+            summary = company_dashboard.load_summary(conn)
+            employees = company_dashboard.employee_view_models(summary)
+            return HTTPStatus.OK, {"exit_code": 0, "ok": True, "employees": employees}
+        finally:
+            conn.close()
     if path == "/v1/employees/match":
         return HTTPStatus.METHOD_NOT_ALLOWED, {"ok": False, "error": "use POST", "path": path}
     if path == "/v1/settings/notification":
@@ -281,11 +290,41 @@ def route_get(path: str, query: dict[str, list[str]]) -> tuple[int, dict]:
             return HTTPStatus.OK, {"ok": True, "direct_messages_recent": company_dashboard.recent_direct_messages(conn, limit=limit)}
         finally:
             conn.close()
+    if path == "/v1/events":
+        conn = companyctl.connect_readonly()
+        try:
+            limit_raw = query_value(query, "limit", "20")
+            limit = int(limit_raw) if str(limit_raw).isdigit() else 20
+            limit = max(1, min(limit, 200))
+            pending_only = truthy(query_value(query, "pending_only"))
+            where = "WHERE processed_at = ''" if pending_only else ""
+            events = companyctl.rows(
+                conn,
+                f"""
+                SELECT id, trace_id, event_type, source_agent, task_id, payload_json, created_at, processed_at
+                FROM company_events
+                {where}
+                ORDER BY created_at DESC
+                LIMIT ?
+                """,
+                (limit,),
+            )
+            return HTTPStatus.OK, {"ok": True, "events": events, "pending_only": pending_only}
+        finally:
+            conn.close()
     if path == "/v1/dashboard/communication-observability":
         conn = companyctl.connect()
         try:
             summary = company_dashboard.load_summary(conn)
             return HTTPStatus.OK, {"ok": True, **company_dashboard.communication_observability_summary(summary)}
+        finally:
+            conn.close()
+    if path == "/v1/telemetry/traces":
+        conn = companyctl.connect()
+        try:
+            limit_raw = query_value(query, "limit", "20")
+            limit = int(limit_raw) if str(limit_raw).isdigit() else 20
+            return HTTPStatus.OK, {"ok": True, "traces": company_dashboard.build_traces(conn, limit=limit)}
         finally:
             conn.close()
     if path == "/v1/progress/notifications":
@@ -308,6 +347,12 @@ def route_get(path: str, query: dict[str, list[str]]) -> tuple[int, dict]:
                 },
                 "items": items,
             }
+        finally:
+            conn.close()
+    if path == "/v1/openclaw/runtime-inventory":
+        conn = companyctl.connect_readonly()
+        try:
+            return HTTPStatus.OK, {"ok": True, **companyctl.openclaw_runtime_inventory(conn)}
         finally:
             conn.close()
     if path == "/v1/agent-matrix":
