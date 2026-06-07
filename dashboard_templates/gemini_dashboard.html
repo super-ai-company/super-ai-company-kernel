@@ -2740,6 +2740,29 @@
         </div>
 
         <div class="section-card">
+          <h2><i class="fa-solid fa-broom"></i> Workspace Retention Dry-run</h2>
+          <div style="color:var(--text-muted);font-size:12px;margin-bottom:12px;">
+            Preview old terminal task workspaces via <code>/v1/workspaces/prune?dry_run=true</code>; dry-run only; no files are deleted.
+          </div>
+          <div class="table-container">
+            <table>
+              <thead>
+                <tr>
+                  <th>Task</th>
+                  <th>Status</th>
+                  <th>Age</th>
+                  <th>Size</th>
+                  <th>Safe Workspace Path</th>
+                </tr>
+              </thead>
+              <tbody id="workspace-prune-tbody">
+                <!-- Populated by JS -->
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <div class="section-card">
           <h2 data-i18n="rfc_governance_title"><i class="fa-solid fa-code-pull-request"></i> RFC Governance</h2>
           <div class="table-container">
             <table>
@@ -3195,6 +3218,7 @@
       const artifacts = await companyApiGet('/v1/artifacts?limit=50');
       const handoffs = await companyApiGet('/v1/handoffs?limit=50');
       const failures = await companyApiGet('/v1/failures?limit=50');
+      const workspacePrune = await companyApiGet('/v1/workspaces/prune?dry_run=true&older_than_days=30&limit=50');
       const telemetry = await companyApiGet('/v1/telemetry/traces?limit=20');
       const employees = await companyApiGet('/v1/employees');
       const openclawInventory = await companyApiGet('/v1/openclaw/runtime-inventory');
@@ -3213,6 +3237,7 @@
         artifact_records: artifacts.artifacts || [],
         handoff_records: handoffs.handoffs || [],
         failure_records: failures.failures || [],
+        workspace_prune_preview: workspacePrune || {},
         traces: telemetry.traces || [],
         employees: employees.employees || [],
         openclaw_runtime_inventory: openclawInventory || {}
@@ -4790,6 +4815,7 @@
     refreshAuditArtifactsTable(summary.artifact_records || []);
     refreshAuditHandoffsTable(summary.handoff_records || []);
     refreshAuditFailuresTable(summary.failure_records || []);
+    refreshWorkspacePrunePreview(summary.workspace_prune_preview || {});
     refreshTraceFileFlow(summary);
   }
 
@@ -4878,6 +4904,32 @@
         </tr>
       `;
     }).join('') : '<tr><td colspan="7" style="color:var(--text-muted);text-align:center;padding:24px;">No failure records.</td></tr>';
+  }
+
+  function refreshWorkspacePrunePreview(preview) {
+    const tbody = document.getElementById('workspace-prune-tbody');
+    if (!tbody) return;
+    const candidates = Array.isArray(preview.candidates) ? preview.candidates : [];
+    const policy = preview.policy || {};
+    const summary = preview.summary || {};
+    const totalBytes = Number(summary.bytes_reclaimable || 0);
+    tbody.innerHTML = candidates.length ? candidates.map(item => {
+      const ageDays = item.age_days === undefined || item.age_days === null ? '-' : `${item.age_days}d`;
+      const size = item.bytes === undefined || item.bytes === null ? '-' : `${item.bytes} bytes`;
+      const path = item.workspace || '-';
+      return `
+        <tr>
+          <td style="font-family: monospace;">${escapeHtml(item.task_id || '-')}</td>
+          <td><span class="long-task-state ${item.status === 'completed' || item.status === 'done' ? 'success' : 'stale'}">${escapeHtml(item.status || '-')}</span></td>
+          <td>${escapeHtml(ageDays)}</td>
+          <td>${escapeHtml(size)}</td>
+          <td>
+            <div style="font-family: monospace;">${escapeHtml(path)}</div>
+            <div style="color:var(--text-muted);font-size:11px;">dry-run only; no files are deleted · threshold=${escapeHtml(policy.older_than_days || 30)}d · candidates=${escapeHtml(summary.candidates || candidates.length)} · total=${escapeHtml(totalBytes)} bytes</div>
+          </td>
+        </tr>
+      `;
+    }).join('') : '<tr><td colspan="5" style="color:var(--text-muted);text-align:center;padding:24px;">No prune candidates. dry-run only; no files are deleted.</td></tr>';
   }
 
   async function decideApprovalFromDashboard(event, approvalId, decision) {
