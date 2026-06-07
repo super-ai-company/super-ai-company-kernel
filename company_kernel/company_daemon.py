@@ -282,7 +282,7 @@ def summarize_state(state: dict) -> dict:
     failed_steps = []
     heartbeat_agents = []
     adapter_steps = []
-    counts = {"steps": len(steps), "heartbeats": 0, "adapters": 0, "repair": 0, "scheduler": 0, "supervisor": 0, "failed": 0}
+    counts = {"steps": len(steps), "heartbeats": 0, "adapters": 0, "repair": 0, "scheduler": 0, "supervisor": 0, "openclaw_sync": 0, "failed": 0}
     for item in steps:
         step = str(item.get("step", ""))
         result = item.get("result", {})
@@ -302,6 +302,8 @@ def summarize_state(state: dict) -> dict:
             counts["scheduler"] += 1
         elif step.startswith("supervisor."):
             counts["supervisor"] += 1
+        elif step.startswith("openclaw-sync."):
+            counts["openclaw_sync"] += 1
     return {
         "ok": state.get("ok", False),
         "at": state.get("at", ""),
@@ -315,6 +317,10 @@ def summarize_state(state: dict) -> dict:
 
 def tick(config: dict) -> dict:
     results = []
+    if config.get("sync_openclaw_runtime", False):
+        results.append({"step": "openclaw-sync.runtime", "result": run_companyctl("employee", "sync-openclaw-runtime")})
+    if config.get("sync_openclaw_heartbeats", False):
+        results.append({"step": "openclaw-sync.heartbeats", "result": run_companyctl("employee", "sync-openclaw-heartbeats")})
     if config.get("run_repair", True):
         results.append({"step": "repair.reset-stale-claims", "result": run_companyctl("repair", "reset-stale-claims")})
     if config.get("run_scheduler", True):
