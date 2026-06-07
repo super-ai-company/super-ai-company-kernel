@@ -2249,6 +2249,10 @@
               <div class="cockpit-list" id="cockpit-owner-attention">
                 <!-- Populated by JS -->
               </div>
+              <h3 style="font-size:13px;color:var(--text-secondary);margin:18px 0 10px;">Recent Evidence</h3>
+              <div class="cockpit-list" id="cockpit-recent-evidence">
+                <!-- Populated by JS -->
+              </div>
             </div>
           </div>
         </div>
@@ -3051,7 +3055,8 @@
     const cards = document.getElementById('cockpit-cards');
     const longTasks = document.getElementById('cockpit-long-tasks');
     const attention = document.getElementById('cockpit-owner-attention');
-    if (!cards || !longTasks || !attention) return;
+    const recentEvidence = document.getElementById('cockpit-recent-evidence');
+    if (!cards || !longTasks || !attention || !recentEvidence) return;
     const counts = (cockpit && cockpit.counts) || {};
     cards.innerHTML = `
       <div class="cockpit-card">
@@ -3101,6 +3106,15 @@
         <div class="long-task-state ${escapeHtml(item.state)}">${escapeHtml(item.state)}</div>
       </div>
     `).join('') : `<div class="cockpit-row"><div><strong>No owner attention needed</strong><span>Pending approvals and recent final evidence will appear here.</span></div><div class="long-task-state success">clear</div></div>`;
+    recentEvidence.innerHTML = evidence.length ? evidence.slice(0, 5).map(item => `
+      <div class="cockpit-row" onclick="openTaskDetailDrawer('${escapeHtml(item.task_id || '')}')">
+        <div>
+          <strong>${escapeHtml(item.title || item.task_id || '-')}</strong>
+          <span>${escapeHtml(item.target_agent || '-')} · ${escapeHtml((item.evidence && item.evidence.relative_path) || '')}</span>
+        </div>
+        <div class="long-task-state success">evidence</div>
+      </div>
+    `).join('') : `<div class="cockpit-row"><div><strong>No recent evidence</strong><span>Final evidence from completed work will appear here.</span></div><div class="long-task-state running">empty</div></div>`;
   }
 
   async function companyApiRequest(path, payload, method) {
