@@ -4012,11 +4012,14 @@ class CompanyKernelCoreTest(unittest.TestCase):
             conn.row_factory = sqlite3.Row
             event_types = [row["event_type"] for row in conn.execute("SELECT event_type FROM company_events WHERE trace_id = ? ORDER BY created_at", (trace_id,))]
             attempts = [dict(row) for row in conn.execute("SELECT * FROM execution_attempts WHERE trace_id = ? ORDER BY started_at", (trace_id,))]
+            done_payload = conn.execute("SELECT payload_json FROM company_events WHERE trace_id = ? AND event_type = 'task.done' ORDER BY created_at DESC LIMIT 1", (trace_id,)).fetchone()["payload_json"]
         self.assertIn("artifact.updated", event_types)
         self.assertIn("handoff.rejected", event_types)
         self.assertIn("task.retrying", event_types)
         self.assertTrue(any(item["adapter_type"] == "retry" and item["status"] == "starting" for item in attempts))
-        self.assertTrue(any(item["employee_id"] == "backup" and item["status"] == "running" for item in attempts))
+        backup_attempt = next(item for item in attempts if item["employee_id"] == "backup" and item["adapter_type"] == "reassign")
+        self.assertEqual("success", backup_attempt["status"])
+        self.assertEqual(backup_attempt["attempt_id"], json.loads(done_payload)["attempt_id"])
 
     def test_managed_attempt_policy_correction_stale_and_cancel(self) -> None:
         for employee_id, role in [("main", "operator"), ("hermes", "supervisor"), ("codex", "developer")]:
@@ -4410,6 +4413,32 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual("", task["evidence_path"])
         self.assertEqual(0, done_events)
         self.assertEqual(0, evidence_rows)
+
+    def test_task_done_closes_current_managed_attempt_as_success(self) -> None:
+        for employee_id, role in [("main", "operator"), ("codex", "developer")]:
+            code, created = run_cli("employee", "create", "--id", employee_id, "--name", employee_id, "--role", role, "--runtime", "local", "--workspace", str(self.root / "workspace" / employee_id))
+            self.assertEqual(code, 0, created)
+        self.mark_active("codex")
+        code, submitted = run_cli("task", "submit", "--from", "main", "--to", "codex", "--task-id", "task-done-closes-attempt", "--title", "Done closes attempt")
+        self.assertEqual(0, code, submitted)
+        workspace = Path(submitted["task"]["workspace"]["path"])
+        evidence = workspace / "evidence" / "result.md"
+        evidence.write_text("done closes attempt evidence\n", encoding="utf-8")
+        code, run = run_cli("task", "run", "--task-id", "task-done-closes-attempt", "--agent", "codex", "--by", "main")
+        self.assertEqual(0, code, run)
+        attempt_id = run["attempt"]["attempt_id"]
+
+        code, done = run_cli("task", "done", "--agent", "codex", "--task-id", "task-done-closes-attempt", "--summary", "完成并关闭 attempt", "--evidence", str(evidence))
+        self.assertEqual(0, code, done)
+        code, shown = run_cli("task", "show", "--task-id", "task-done-closes-attempt")
+        self.assertEqual(0, code, shown)
+        self.assertEqual("completed", shown["task"]["status"])
+        attempt = next(item for item in shown["attempts"] if item["attempt_id"] == attempt_id)
+        self.assertEqual("success", attempt["status"])
+        self.assertTrue(attempt["finished_at"])
+        self.assertEqual("", attempt["error_message"])
+        done_event = next(item for item in shown["events"] if item["event_type"] == "task.done")
+        self.assertEqual(attempt_id, json.loads(done_event["payload_json"])["attempt_id"])
 
     def test_managed_attempt_api_control_endpoints(self) -> None:
         for employee_id, role in [("main", "operator"), ("hermes", "supervisor"), ("codex", "developer")]:
