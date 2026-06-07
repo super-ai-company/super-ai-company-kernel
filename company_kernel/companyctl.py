@@ -7497,23 +7497,28 @@ def cmd_doctor(args: argparse.Namespace) -> int:
             "failed_adapter_runs": conn.execute("SELECT COUNT(*) FROM adapter_runs WHERE ok = 0 AND acknowledged_at = ''").fetchone()[0],
         }
         heartbeat_cutoff = datetime.now(timezone.utc).astimezone() - timedelta(minutes=15)
+        active_ai_employee_filter = """
+            e.status = 'active'
+            AND COALESCE(e.runtime, '') != 'human'
+            AND COALESCE(e.role, '') NOT IN ('human-owner', 'owner')
+        """
         missing_heartbeats = rows(
             conn,
-            """
+            f"""
             SELECT e.id, e.runtime
             FROM employees e
             LEFT JOIN heartbeats h ON h.agent_id = e.id
-            WHERE e.status = 'active' AND h.agent_id IS NULL
+            WHERE {active_ai_employee_filter} AND h.agent_id IS NULL
             ORDER BY e.id
             """,
         )
         stale_heartbeats = []
         for row in conn.execute(
-            """
+            f"""
             SELECT e.id, e.runtime, h.last_seen_at
             FROM employees e
             JOIN heartbeats h ON h.agent_id = e.id
-            WHERE e.status = 'active'
+            WHERE {active_ai_employee_filter}
             ORDER BY e.id
             """
         ).fetchall():

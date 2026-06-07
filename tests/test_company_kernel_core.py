@@ -1785,6 +1785,59 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertIn("window.companyApiBase", html)
         self.assertIn("/v1/telemetry/traces", html)
         self.assertIn("/v1/messages/recent-direct", html)
+        self.assertIn("Live SQLite + OpenClaw Runtime", html)
+        self.assertIn("Company Event Ledger", html)
+        self.assertIn("/v1/events", html)
+        self.assertIn("company-events-tbody", html)
+        self.assertIn("Read-only live event stream", html)
+        self.assertIn("refreshKernelEventConsole", html)
+        self.assertIn("Excludes human owner", html)
+        self.assertIn("Includes human owner records", html)
+        self.assertNotIn("terminalLogs", html)
+        self.assertNotIn("startTerminalSimulation", html)
+        self.assertNotIn("executeTerminalCommand", html)
+        self.assertNotIn("toggleSimulationMode", html)
+        self.assertNotIn("Scenario Seeder", html)
+        self.assertNotIn("Simulation: Normal", html)
+
+    def test_advanced_dashboard_counts_visible_ai_employees_not_human_owner(self) -> None:
+        summary = {
+            "generated_at": companyctl.now(),
+            "counts": {"employees": 2, "active_employees": 2, "candidate_employees": 0, "archived_employees": 0},
+            "employees": [
+                {
+                    "id": "owner",
+                    "name": "Owner",
+                    "role": "human-owner",
+                    "runtime": "human",
+                    "status": "active",
+                    "workspace": str(self.root / "workspace" / "owner"),
+                    "last_seen_at": "",
+                    "current_attempt": {},
+                },
+                {
+                    "id": "codex",
+                    "name": "Codex",
+                    "role": "developer",
+                    "runtime": "codex",
+                    "status": "active",
+                    "workspace": str(self.root / "workspace" / "codex"),
+                    "last_seen_at": companyctl.now(),
+                    "current_attempt": {},
+                },
+            ],
+            "tasks": [],
+            "direct_messages_recent": [],
+            "external_threads": [],
+            "adapter_runs": [],
+            "progress_notifications_recent": [],
+            "supervisor_loop": {},
+            "internal_watchdog": {},
+        }
+        prepared = company_dashboard.advanced_summary(summary)
+        self.assertEqual(1, prepared["counts"]["employees"])
+        self.assertEqual(1, prepared["counts"]["active_employees"])
+        self.assertEqual(["codex"], [employee["id"] for employee in prepared["employees"]])
 
     def test_dashboard_auto_variant_falls_back_to_basic_when_template_missing(self) -> None:
         output = self.root / "state" / "dashboard-auto-fallback.html"
@@ -2951,6 +3004,23 @@ class CompanyKernelCoreTest(unittest.TestCase):
         for agent in ["video-ops", "video-creator", "video-publisher", "codex", "openclaw-main", "hermes", "nestcar"]:
             code, heartbeat = run_cli("heartbeat", "--agent", agent)
             self.assertEqual(code, 0, heartbeat)
+        code, runtime = run_cli("runtime", "register", "--runtime", "human", "--command", "manual-human-owner")
+        self.assertEqual(code, 0, runtime)
+        code, owner = run_cli(
+            "employee",
+            "create",
+            "--id",
+            "owner",
+            "--name",
+            "Owner",
+            "--role",
+            "human-owner",
+            "--runtime",
+            "human",
+            "--workspace",
+            str(self.root / "workspace" / "owner"),
+        )
+        self.assertEqual(code, 0, owner)
         daemon_state = self.root / "state" / "daemon" / "last-run.json"
         daemon_state.parent.mkdir(parents=True, exist_ok=True)
         daemon_state.write_text(json.dumps({"ok": True, "at": companyctl.now(), "results": []}, ensure_ascii=False), encoding="utf-8")
@@ -2979,6 +3049,8 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual([], healthy_summary["issues"])
         self.assertEqual(0, healthy_summary["heartbeat"]["missing"])
         self.assertEqual(0, healthy_summary["heartbeat"]["stale"])
+        self.assertNotIn("owner", healthy_summary["heartbeat"]["missing_agents"])
+        self.assertNotIn("owner", healthy_summary["heartbeat"]["stale_agents"])
         self.assertEqual(7, healthy_summary["counts"]["heartbeats"])
         self.assertEqual(0, healthy_summary["counts"]["capability_issues"])
         self.assertEqual(0, healthy_summary["counts"]["task_evidence_issues"])
@@ -4639,6 +4711,13 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual(200, status, failed)
         self.assertNotIn("adapter-run-api-retry", [item["id"] for item in failed["adapter_runs"]])
 
+        status, events = api_gateway.route_get("/v1/events", {"limit": ["5"]})
+        self.assertEqual(200, status, events)
+        self.assertGreaterEqual(len(events["events"]), 1)
+        self.assertIn("event_type", events["events"][0])
+        self.assertIn("source_agent", events["events"][0])
+        self.assertIn("processed_at", events["events"][0])
+
     def test_api_gateway_exposes_communication_observability_summary(self) -> None:
         code, sent_a = run_cli("message", "send", "--from", "openclaw-main", "--to", "codex", "--body", "请确认 adapter-run summary")
         self.assertEqual(code, 0, sent_a)
@@ -5093,6 +5172,9 @@ class CompanyKernelCoreTest(unittest.TestCase):
         status, employees = api_gateway.route_get("/v1/employees", {})
         self.assertEqual(200, status, employees)
         self.assertIn("cursor-dev", [item["id"] for item in employees["employees"]])
+        self.assertIn("heartbeat_status", employees["employees"][0])
+        self.assertIn("last_seen_at", employees["employees"][0])
+        self.assertIn("kernel_state", employees["employees"][0])
         status, shown = api_gateway.route_get("/v1/employees/cursor-dev", {})
         self.assertEqual(200, status, shown)
         self.assertEqual("cursor", shown["employee"]["runtime"])
