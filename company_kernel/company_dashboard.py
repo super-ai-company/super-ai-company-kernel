@@ -330,6 +330,84 @@ def build_cockpit_summary(summary: dict) -> dict:
                     "evidence": evidence,
                 }
             )
+    owner_attention = []
+    for item in long_tasks:
+        state = str(item.get("long_task_state") or "")
+        if state == "progress_stagnant":
+            owner_attention.append(
+                {
+                    "kind": "stagnant_task",
+                    "state": state,
+                    "task_id": item.get("task_id", ""),
+                    "title": item.get("title", ""),
+                    "target_agent": item.get("target_agent", ""),
+                    "attempt_id": item.get("attempt_id", ""),
+                    "trace_id": item.get("trace_id", ""),
+                    "message": "员工仍在线，但 15 分钟没有新进度。可继续等待、发送探针、查看日志或请求 Hermes 纠偏。",
+                    "updated_at": item.get("last_progress_at") or item.get("started_at", ""),
+                }
+            )
+        elif state in {"heartbeat_stale", "blocked", "failed", "stale"}:
+            owner_attention.append(
+                {
+                    "kind": "blocked_task",
+                    "state": state,
+                    "task_id": item.get("task_id", ""),
+                    "title": item.get("title", ""),
+                    "target_agent": item.get("target_agent", ""),
+                    "attempt_id": item.get("attempt_id", ""),
+                    "trace_id": item.get("trace_id", ""),
+                    "message": item.get("blocker") or "任务需要人工检查：查看日志、纠偏、取消或重新分配。",
+                    "updated_at": item.get("last_progress_at") or item.get("started_at", ""),
+                }
+            )
+    for task in summary.get("tasks", []):
+        status = str(task.get("status", "")).lower()
+        if status in {"blocked", "failed", "stale"}:
+            owner_attention.append(
+                {
+                    "kind": "blocked_task",
+                    "state": status,
+                    "task_id": task.get("id", ""),
+                    "title": task.get("title", ""),
+                    "target_agent": task.get("target_agent", ""),
+                    "attempt_id": "",
+                    "trace_id": task.get("trace_id", ""),
+                    "message": task.get("blocker") or task.get("summary") or "任务已阻塞或失败，需要人工处理。",
+                    "updated_at": task.get("updated_at", ""),
+                }
+            )
+    for item in pending_approvals[:10]:
+        owner_attention.append(
+            {
+                "kind": "approval",
+                "state": "blocked",
+                "approval_id": item.get("id", ""),
+                "task_id": item.get("task_id", ""),
+                "title": item.get("action") or item.get("id", ""),
+                "target_agent": item.get("target_agent", ""),
+                "attempt_id": "",
+                "trace_id": "",
+                "message": "需要 owner approval；真实外部发送保持 dry-run，直到人工批准。",
+                "updated_at": item.get("updated_at", ""),
+            }
+        )
+    for item in recent_evidence[:10]:
+        owner_attention.append(
+            {
+                "kind": "evidence",
+                "state": "success",
+                "task_id": item.get("task_id", ""),
+                "title": item.get("title", ""),
+                "target_agent": item.get("target_agent", ""),
+                "attempt_id": "",
+                "trace_id": "",
+                "message": f"Final evidence 可验收：{item.get('evidence', {}).get('relative_path', '')}",
+                "updated_at": item.get("updated_at", ""),
+                "evidence": item.get("evidence", {}),
+            }
+        )
+    owner_attention.sort(key=lambda item: item.get("updated_at") or "", reverse=True)
     employee_states = []
     for employee in employees:
         status = str(employee.get("employee_status") or employee.get("status") or "")
@@ -375,6 +453,7 @@ def build_cockpit_summary(summary: dict) -> dict:
         },
         "employees": employee_states,
         "long_tasks": long_tasks,
+        "owner_attention": owner_attention[:20],
         "pending_approvals": pending_approvals[:10],
         "recent_evidence": recent_evidence[:10],
     }

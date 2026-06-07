@@ -1814,6 +1814,7 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertIn("Heartbeat / Progress", html)
         self.assertIn("Runtime Policy", html)
         self.assertIn("Progress Events", html)
+        self.assertIn("owner_attention", html)
 
     def test_cockpit_api_sanitizes_evidence_and_exposes_long_task_state(self) -> None:
         code, created = run_cli("employee", "create", "--id", "main", "--name", "main", "--role", "operator", "--runtime", "openclaw", "--workspace", str(self.root / "workspace" / "main"))
@@ -1872,6 +1873,12 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertTrue(long_task["evidence"]["allowed"])
         self.assertFalse(long_task["evidence"]["absolute_path_exposed"])
         self.assertIn("evidence/result.md", long_task["evidence"]["relative_path"])
+        attention = next(item for item in cockpit["owner_attention"] if item["task_id"] == "task-cockpit-long" and item["kind"] == "stagnant_task")
+        self.assertEqual("stagnant_task", attention["kind"])
+        self.assertEqual("progress_stagnant", attention["state"])
+        self.assertEqual("codex-cockpit", attention["target_agent"])
+        self.assertEqual(attempt_id, attention["attempt_id"])
+        self.assertIn("15 分钟没有新进度", attention["message"])
 
         status, shown = api_gateway.route_get("/v1/tasks/task-cockpit-long", {})
         self.assertEqual(200, status, shown)

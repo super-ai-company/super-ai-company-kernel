@@ -3087,15 +3087,16 @@
     `).join('') : `<div class="cockpit-row"><div><strong>No managed long-running attempts</strong><span>Start one with task run or an adapter managed attempt.</span></div><div class="long-task-state success">idle</div></div>`;
     const pending = (cockpit && cockpit.pending_approvals) || [];
     const evidence = (cockpit && cockpit.recent_evidence) || [];
-    const attentionRows = [
-      ...pending.slice(0, 5).map(item => ({kind: 'approval', title: item.action || item.id, meta: `${item.source_agent || '-'} · ${item.status || '-'}`, state: 'blocked', id: item.id || ''})),
-      ...evidence.slice(0, 5).map(item => ({kind: 'evidence', title: item.title || item.task_id, meta: `${item.target_agent || '-'} · ${item.evidence ? item.evidence.relative_path : ''}`, state: 'success', id: item.task_id || ''}))
+    const ownerAttention = (cockpit && cockpit.owner_attention) || [];
+    const attentionRows = ownerAttention.length ? ownerAttention : [
+      ...pending.slice(0, 5).map(item => ({kind: 'approval', title: item.action || item.id, meta: `${item.source_agent || '-'} · ${item.status || '-'}`, state: 'blocked', id: item.id || '', message: '需要 owner approval'})),
+      ...evidence.slice(0, 5).map(item => ({kind: 'evidence', title: item.title || item.task_id, meta: `${item.target_agent || '-'} · ${item.evidence ? item.evidence.relative_path : ''}`, state: 'success', id: item.task_id || '', message: 'Final evidence 可验收'}))
     ];
     attention.innerHTML = attentionRows.length ? attentionRows.map(item => `
-      <div class="cockpit-row">
+      <div class="cockpit-row" ${item.task_id ? `onclick="openTaskDetailDrawer('${escapeHtml(item.task_id || '')}')"` : ''}>
         <div>
           <strong>${escapeHtml(item.kind)} · ${escapeHtml(item.title || '-')}</strong>
-          <span>${escapeHtml(item.meta || '')}</span>
+          <span>${escapeHtml(item.message || item.meta || '')}</span>
         </div>
         <div class="long-task-state ${escapeHtml(item.state)}">${escapeHtml(item.state)}</div>
       </div>
