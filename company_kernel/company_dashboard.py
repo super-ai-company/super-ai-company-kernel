@@ -137,7 +137,17 @@ def build_traces(conn: sqlite3.Connection, *, limit: int = 20) -> list[dict]:
         artifact_rows = rows(conn, "SELECT artifact_id, task_id, employee_id, name, stage, status, version, created_at FROM artifacts WHERE trace_id = ? ORDER BY created_at ASC", (trace_id,))
         evidence_rows = rows(conn, "SELECT evidence_id, task_id, attempt_id, employee_id, summary, path_or_url, is_final, created_at FROM evidence WHERE trace_id = ? ORDER BY created_at ASC", (trace_id,))
         handoff_rows = rows(conn, "SELECT handoff_id, from_task_id, to_task_id, from_employee_id, status, summary, created_at FROM handoffs WHERE trace_id = ? ORDER BY created_at ASC", (trace_id,))
-        attempt_rows = rows(conn, "SELECT attempt_id, task_id, employee_id, adapter_type, status, started_at, finished_at FROM execution_attempts WHERE trace_id = ? ORDER BY started_at ASC", (trace_id,))
+        attempt_rows = rows(
+            conn,
+            """
+            SELECT attempt_id, task_id, employee_id, adapter_type, status,
+                   runtime_policy_json, metadata_json, started_at, finished_at
+            FROM execution_attempts
+            WHERE trace_id = ?
+            ORDER BY started_at ASC
+            """,
+            (trace_id,),
+        )
         timestamps = [item["created_at"] for item in [*event_rows, *run_rows, *artifact_rows, *evidence_rows, *handoff_rows] if item.get("created_at")]
         timestamps.extend(item["started_at"] for item in attempt_rows if item.get("started_at"))
         timestamps.extend(item["finished_at"] for item in attempt_rows if item.get("finished_at"))
@@ -236,6 +246,10 @@ def build_traces(conn: sqlite3.Connection, *, limit: int = 20) -> list[dict]:
                 }
             )
         for attempt in attempt_rows:
+            metadata = companyctl.attempt_json_field(attempt, "metadata_json")
+            runtime_policy = companyctl.attempt_json_field(attempt, "runtime_policy_json")
+            previous_attempt_id = str(metadata.get("previous_attempt_id", "") or "")
+            attempt_chain = [previous_attempt_id, attempt["attempt_id"]] if previous_attempt_id else [attempt["attempt_id"]]
             spans.append(
                 {
                     "name": f"attempt.{attempt['status']}",
@@ -244,6 +258,10 @@ def build_traces(conn: sqlite3.Connection, *, limit: int = 20) -> list[dict]:
                     "start_ms": milliseconds_between(start, attempt["started_at"]),
                     "attempt_id": attempt["attempt_id"],
                     "task_id": attempt["task_id"],
+                    "adapter_type": attempt["adapter_type"],
+                    "previous_attempt_id": previous_attempt_id,
+                    "attempt_chain": attempt_chain,
+                    "runtime_policy": runtime_policy,
                     "created_at": attempt["started_at"],
                     "label": attempt["adapter_type"],
                 }

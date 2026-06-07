@@ -3243,6 +3243,18 @@
     }).join('\n');
   }
 
+  function attemptLineageSummary(attempts) {
+    const rows = Array.isArray(attempts) ? attempts : [];
+    if (!rows.length) return '-';
+    return rows.map((item, index) => {
+      const metadata = item.metadata || {};
+      const previous = metadata.previous_attempt_id || '';
+      const reason = metadata.reason || metadata.retry_reason || '';
+      const prefix = previous ? `${previous} -> ${item.attempt_id || '-'}` : `${item.attempt_id || '-'}`;
+      return `#${index + 1} previous_attempt_id=${previous || '-'} · chain=${prefix} · adapter=${item.adapter_type || '-'} · status=${item.status || '-'}${reason ? ` · reason=${reason}` : ''}`;
+    }).join('\n');
+  }
+
   function progressEventsSummary(events) {
     const rows = Array.isArray(events) ? events : [];
     if (!rows.length) return '-';
@@ -3427,6 +3439,7 @@
         ['Supervisor State', supervisorState],
         ['Progress Events', progressEventsSummary(progressEvents)],
         ['Attempt History', attemptHistorySummary(attempts)],
+        ['Attempt Lineage', attemptLineageSummary(attempts)],
         ['Recent Events', events.slice(-8).map(item => `${item.created_at} ${item.event_type} ${item.id}`).join('\n') || '-'],
         ['Approvals', approvals.map(item => `${item.status}:${item.id || item.approval_id || ''}`).join('\n') || '-'],
         ['Raw', payload],

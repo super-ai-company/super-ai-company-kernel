@@ -4273,6 +4273,16 @@ class CompanyKernelCoreTest(unittest.TestCase):
         payload = event["payload_json"] if isinstance(event["payload_json"], dict) else json.loads(event["payload_json"])
         self.assertEqual(retry_attempt["attempt_id"], payload["attempt_id"])
         self.assertEqual(original_attempt_id, payload["previous_attempt_id"])
+        conn = companyctl.connect()
+        try:
+            summary = company_dashboard.load_summary(conn)
+        finally:
+            conn.close()
+        trace = next(item for item in summary["traces"] if item["trace_id"] == trace_id)
+        retry_span = next(span for span in trace["spans"] if span.get("attempt_id") == retry_attempt["attempt_id"])
+        self.assertEqual(original_attempt_id, retry_span["previous_attempt_id"])
+        self.assertEqual([original_attempt_id, retry_attempt["attempt_id"]], retry_span["attempt_chain"])
+        self.assertEqual("retry", retry_span["adapter_type"])
 
     def test_supervisor_scan_warns_on_missing_heartbeat_without_marking_progress_stale(self) -> None:
         for employee_id, role in [("main", "operator"), ("hermes", "supervisor"), ("codex", "developer")]:
@@ -4669,6 +4679,8 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertIn("/v1/tasks/${encodeURIComponent(taskId)}/retry", html)
         self.assertIn("/v1/tasks/${encodeURIComponent(taskId)}/reassign", html)
         self.assertIn("Attempt History", html)
+        self.assertIn("Attempt Lineage", html)
+        self.assertIn("previous_attempt_id", html)
         self.assertIn("readiness-badge", html)
 
     def test_agent_matrix_reports_employee_readiness_levels(self) -> None:
