@@ -258,9 +258,17 @@ class CompanyKernelCoreTest(unittest.TestCase):
         for patcher in self.patchers:
             patcher.start()
         companyctl._TEST_OPEN_CONNECTIONS = []
+        self._original_sqlite_connect = sqlite3.connect
+
+        def tracked_sqlite_connect(*args, **kwargs):
+            conn = self._original_sqlite_connect(*args, **kwargs)
+            companyctl._TEST_OPEN_CONNECTIONS.append(conn)
+            return conn
+
+        self.sqlite_connect_patcher = mock.patch.object(sqlite3, "connect", tracked_sqlite_connect)
+        self.sqlite_connect_patcher.start()
 
         def track_connection(conn: sqlite3.Connection) -> sqlite3.Connection:
-            companyctl._TEST_OPEN_CONNECTIONS.append(conn)
             return conn
 
         def tracked_connect() -> sqlite3.Connection:
@@ -279,21 +287,7 @@ class CompanyKernelCoreTest(unittest.TestCase):
 
         self.connect_patcher = mock.patch.object(companyctl, "connect", tracked_connect)
         self.connect_patcher.start()
-        self.module_connect_patchers = [
-            mock.patch.object(module, "connect", wrap_connect(module.connect))
-            for module in [
-                company_dashboard,
-                company_trace,
-                policy_guard,
-                codex_adapter,
-                hermes_adapter,
-                openclaw_adapter,
-                antigravity_adapter,
-                skill_package_worker,
-            ]
-        ]
-        for patcher in self.module_connect_patchers:
-            patcher.start()
+        self.module_connect_patchers = []
         self.fake_adapter_outputs: dict[str, dict] = {}
         for employee_id, role in [
             ("video-ops", "producer"),
@@ -336,8 +330,10 @@ class CompanyKernelCoreTest(unittest.TestCase):
             patcher.stop()
         self.connect_patcher.stop()
         for conn in getattr(companyctl, "_TEST_OPEN_CONNECTIONS", []):
-            conn.close()
+            with contextlib.suppress(sqlite3.Error):
+                conn.close()
         companyctl._TEST_OPEN_CONNECTIONS.clear()
+        self.sqlite_connect_patcher.stop()
         for patcher in reversed(self.patchers):
             patcher.stop()
         self.tmp.cleanup()
