@@ -2553,6 +2553,24 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertIn("messages table", html)
         self.assertIn("dashboard direct UI ping", html)
         self.assertIn("renderDirectMessagesRecent", html)
+        self.assertIn("show-chat-handshakes-toggle", html)
+        self.assertIn("isLowSignalChatMessage", html)
+        self.assertIn("Hidden greeting/handshake/idle", html)
+        self.assertIn("Task-bound", html)
+
+    def test_advanced_dashboard_chat_hub_defaults_to_task_bound_noise_filtering(self) -> None:
+        output = self.root / "state" / "dashboard-chat-filter.html"
+        template = Path(__file__).resolve().parents[1] / "dashboard_templates" / "gemini_dashboard.html"
+        with contextlib.redirect_stdout(io.StringIO()):
+            code = company_dashboard.main(["--variant", "advanced", "--template", str(template), "--output", str(output)])
+        self.assertEqual(0, code)
+        html = output.read_text(encoding="utf-8")
+        self.assertIn("dashboard-show-chat-handshakes", html)
+        self.assertIn("function extractTaskContext", html)
+        self.assertIn("function visibleChatMessages", html)
+        self.assertIn("function hiddenChatNotice", html)
+        self.assertIn("Task-bound messages stay visible; handshakes hidden by default", html)
+        self.assertIn("Only greeting/handshake/idle messages are hidden", html)
 
     def test_dashboard_distinguishes_active_online_from_candidate_heartbeat(self) -> None:
         code, hermes = run_cli("employee", "create", "--id", "hermes", "--name", "Hermes", "--role", "supervisor", "--runtime", "hermes", "--workspace", str(self.root / "hermes"))
