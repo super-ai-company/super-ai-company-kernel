@@ -4214,6 +4214,7 @@
               ${String(app.status || '').toLowerCase() === 'pending' ? `
                 <button class="chat-tool-btn" onclick="decideApprovalFromDashboard(event, '${escapeHtml(app.id || '')}', 'approve')">Approve</button>
                 <button class="chat-tool-btn" onclick="decideApprovalFromDashboard(event, '${escapeHtml(app.id || '')}', 'deny')">Deny</button>
+                <button class="chat-tool-btn" onclick="decideApprovalFromDashboard(event, '${escapeHtml(app.id || '')}', 'resolve')">Mock Resolve</button>
               ` : '<span style="color:var(--text-muted);font-size:11px;">closed</span>'}
             </td>
           </tr>
@@ -4227,18 +4228,20 @@
 
   async function decideApprovalFromDashboard(event, approvalId, decision) {
     if (event && typeof event.stopPropagation === 'function') event.stopPropagation();
-    const normalized = decision === 'deny' ? 'deny' : 'approve';
-    const reason = normalized === 'approve' ? 'approved from dashboard' : 'denied from dashboard';
-    const endpoint = normalized === 'approve'
-      ? `/v1/approvals/${encodeURIComponent(approvalId)}/approve`
-      : `/v1/approvals/${encodeURIComponent(approvalId)}/deny`;
+    const normalized = decision === 'deny' ? 'deny' : (decision === 'resolve' ? 'resolve' : 'approve');
+    const reason = normalized === 'approve'
+      ? 'approved from dashboard'
+      : (normalized === 'resolve' ? 'mock resolved from dashboard; no external delivery executed' : 'denied from dashboard');
+    const endpoint = `/v1/approvals/${encodeURIComponent(approvalId)}/${normalized}`;
     companyApiLog('SYSTEM', `${normalized} approval ${approvalId}...`, 'normal');
     try {
       await companyApiPost(endpoint, {
         by: HUMAN_OWNER_ID,
-        reason
+        reason,
+        mock: normalized === 'resolve'
       });
-      companyApiLog('SYSTEM', `Approval ${approvalId} ${normalized}d.`, 'success');
+      const suffix = normalized === 'resolve' ? 'mock-resolved without external delivery' : `${normalized}d`;
+      companyApiLog('SYSTEM', `Approval ${approvalId} ${suffix}.`, 'success');
       await refreshLiveDashboardFromApi();
     } catch (err) {
       companyApiLog('ERROR', `Approval ${approvalId} ${normalized} failed: ${err.message}`, 'error');

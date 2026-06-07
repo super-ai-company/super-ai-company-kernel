@@ -6107,6 +6107,16 @@ def decide_approval(args: argparse.Namespace, status: str) -> int:
             "decided_at": now(),
         }
     )
+    if status == "resolved":
+        detail.update(
+            {
+                "mock_resolve": True,
+                "dry_run": True,
+                "external_send_executed": False,
+                "resolution_mode": "mock",
+                "safety_note": "Mock resolve only records an owner decision; it never triggers Telegram/OpenClaw/external_send delivery.",
+            }
+        )
     conn.execute(
         "UPDATE approvals SET status = ?, reason = ?, updated_at = ? WHERE id = ?",
         (status, json.dumps(detail, ensure_ascii=False), now(), args.approval_id),
@@ -6115,7 +6125,21 @@ def decide_approval(args: argparse.Namespace, status: str) -> int:
     approval = normalize_approval(conn.execute("SELECT * FROM approvals WHERE id = ?", (args.approval_id,)).fetchone())
     path = write_approval_state(approval)
     audit(conn, actor, f"approval.{status}", args.approval_id, approval)
-    emit({"ok": True, "approval": approval, "file": path})
+    event_type = f"approval.{status}"
+    event = record_event(
+        conn,
+        event_type,
+        actor,
+        task_id=str(detail.get("metadata", {}).get("task_id", "") or ""),
+        payload={
+            "approval_id": args.approval_id,
+            "status": status,
+            "reason": args.reason,
+            "dry_run": bool(detail.get("dry_run", False)),
+            "external_send_executed": bool(detail.get("external_send_executed", False)),
+        },
+    )
+    emit({"ok": True, "approval": approval, "file": path, "event": event})
     return 0
 
 
@@ -6125,6 +6149,13 @@ def cmd_approval_approve(args: argparse.Namespace) -> int:
 
 def cmd_approval_deny(args: argparse.Namespace) -> int:
     return decide_approval(args, "denied")
+
+
+def cmd_approval_resolve(args: argparse.Namespace) -> int:
+    if not args.mock:
+        emit({"ok": False, "error": "resolve requires --mock; real external execution must use explicit approve/deny plus a delivery worker"})
+        return 2
+    return decide_approval(args, "resolved")
 
 
 def cmd_task_list(args: argparse.Namespace) -> int:
@@ -8414,7 +8445,7 @@ def build_parser() -> argparse.ArgumentParser:
     approval_request.add_argument("--approval-id", default="")
     approval_request.set_defaults(func=cmd_approval_request)
     approval_list = approval_sub.add_parser("list")
-    approval_list.add_argument("--status", choices=["pending", "approved", "denied", "all"], default="pending")
+    approval_list.add_argument("--status", choices=["pending", "approved", "denied", "resolved", "all"], default="pending")
     approval_list.add_argument("--agent", default="")
     approval_list.add_argument("--action", default="")
     approval_list.add_argument("--limit", type=int, default=50)
@@ -8432,6 +8463,12 @@ def build_parser() -> argparse.ArgumentParser:
     approval_deny.add_argument("--by", required=True)
     approval_deny.add_argument("--reason", default="")
     approval_deny.set_defaults(func=cmd_approval_deny)
+    approval_resolve = approval_sub.add_parser("resolve")
+    approval_resolve.add_argument("--approval-id", required=True)
+    approval_resolve.add_argument("--by", required=True)
+    approval_resolve.add_argument("--reason", default="")
+    approval_resolve.add_argument("--mock", action="store_true", help="record a dry-run/mock resolution without triggering external delivery")
+    approval_resolve.set_defaults(func=cmd_approval_resolve)
 
     lock = sub.add_parser("lock")
     lock_sub = lock.add_subparsers(dest="lock_cmd", required=True)
