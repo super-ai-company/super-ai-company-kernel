@@ -1699,6 +1699,10 @@ def update_notification_settings(payload: dict) -> dict:
 
 def resolve_notification_target(target: str) -> tuple[str, str]:
     raw = str(target or "").strip()
+    if raw in {"macos", "macos:", "local", "local:"}:
+        return "macos", "default"
+    if raw.startswith("macos:"):
+        return "macos", raw.split(":", 1)[1].strip() or "default"
     if raw.startswith("telegram:"):
         chat_id = raw.split(":", 1)[1].strip()
         if not chat_id:
@@ -1707,6 +1711,19 @@ def resolve_notification_target(target: str) -> tuple[str, str]:
     if raw:
         return "telegram", raw
     raise ValueError("notification target is required")
+
+
+def applescript_quote(value: str) -> str:
+    return '"' + str(value or "").replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
+def send_macos_notification(*, text: str, title: str = "Company Kernel", subtitle: str = "") -> dict:
+    command = ["osascript", "-e"]
+    script = f"display notification {applescript_quote(text)} with title {applescript_quote(title)}"
+    if subtitle:
+        script += f" subtitle {applescript_quote(subtitle)}"
+    subprocess.run(command + [script], check=True, capture_output=True, text=True, timeout=10)
+    return {"ok": True, "platform": "macos", "message_id": "osascript"}
 
 
 def send_telegram_notification(*, token: str, chat_id: str, text: str, timeout: int = 20) -> dict:
@@ -1739,15 +1756,38 @@ def notification_send_result(*, message: str, target: str = "", account_id: str 
     account_id = account_id or route.get("account", "") or notifications.get("account", "")
     accounts = settings["telegram_accounts"]
     account = accounts.get(account_id)
-    if not account:
+    account_default_target = account.get("default_target", "") if isinstance(account, dict) else ""
+    explicit_target = str(target or "").strip()
+    if not explicit_target and not account:
         return {"ok": False, "error": "notification account is not configured", "account": account_id}
-    target = target or route.get("target", "") or notifications.get("target", "") or account.get("default_target", "")
+    target = explicit_target or route.get("target", "") or notifications.get("target", "") or account_default_target
     try:
         platform, chat_id = resolve_notification_target(target)
     except ValueError as exc:
         return {"ok": False, "error": str(exc), "account": account_id, "target": target}
+    if platform != "macos" and not account:
+        return {"ok": False, "error": "notification account is not configured", "account": account_id}
     if platform != "telegram":
-        return {"ok": False, "error": f"unsupported notification platform: {platform}"}
+        if platform != "macos":
+            return {"ok": False, "error": f"unsupported notification platform: {platform}"}
+        text = f"{subject}\n{message}".strip() if subject else message
+        result = {
+            "ok": True,
+            "dry_run": dry_run,
+            "platform": platform,
+            "kind": kind,
+            "account": account_id,
+            "target": f"macos:{chat_id}",
+            "token_env": "",
+            "token_configured": True,
+        }
+        if dry_run:
+            return result
+        try:
+            sent = send_macos_notification(text=text, title=subject or "Company Kernel", subtitle=kind)
+        except (OSError, subprocess.SubprocessError, TimeoutError) as exc:
+            return {**result, "ok": False, "error": str(exc)}
+        return {**result, **sent}
     token_env = str(account.get("bot_token_env", "") or "")
     token = os.environ.get(token_env, "")
     text = f"{subject}\n{message}".strip() if subject else message

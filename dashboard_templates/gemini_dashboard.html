@@ -2763,6 +2763,41 @@
     }
   }
 
+  function mergeLiveSummaryPatch(patch) {
+    const current = window.summaryData || window.kernelSummary || {};
+    window.summaryData = Object.assign({}, current, patch);
+    summaryData = window.summaryData;
+    return window.summaryData;
+  }
+
+  async function refreshLiveDashboardFromApi() {
+    try {
+      const [health, tasks, recentDirect] = await Promise.all([
+        companyApiGet('/v1/health'),
+        companyApiGet('/v1/tasks?limit=50'),
+        companyApiGet('/v1/messages/recent-direct?limit=20')
+      ]);
+      const taskRows = tasks.tasks || tasks.items || [];
+      const stalledTasks = taskRows.filter(task => ['stale', 'blocked', 'failed'].includes(String(task.status || '').toLowerCase()) || task.blocker);
+      mergeLiveSummaryPatch({
+        runtime_health: health,
+        tasks: taskRows,
+        stalled_tasks: stalledTasks,
+        direct_messages_recent: recentDirect.direct_messages_recent || []
+      });
+      refreshDashboardPresentation();
+      refreshChatHub();
+      if (typeof window.populateTasks === 'function') window.populateTasks();
+      if (typeof window.populateEmployees === 'function') window.populateEmployees(window.summaryData);
+      companyApiLog('SYSTEM', `Live refresh ok: tasks=${taskRows.length} stalled=${stalledTasks.length}`, 'success');
+      return true;
+    } catch (err) {
+      companyApiLog('ERROR', `Live refresh failed: ${err.message}`, 'error');
+      return false;
+    }
+  }
+  window.refreshLiveDashboardFromApi = refreshLiveDashboardFromApi;
+
   async function companyApiRequest(path, payload, method) {
     const res = await fetch(getCompanyApiBase() + path, {
       method: method || 'POST',
@@ -4848,9 +4883,8 @@
   function toggleAutoRefresh(checkbox) {
     if (checkbox.checked) {
       localStorage.setItem('dashboard-auto-refresh', 'true');
-      refreshInterval = setInterval(() => {
-        location.reload();
-      }, 10000);
+      refreshLiveDashboardFromApi();
+      refreshInterval = setInterval(refreshLiveDashboardFromApi, 10000);
     } else {
       localStorage.setItem('dashboard-auto-refresh', 'false');
       if (refreshInterval) clearInterval(refreshInterval);
@@ -5071,9 +5105,8 @@
     if (toggle) {
       toggle.checked = isAutoRefresh;
       if (isAutoRefresh) {
-        refreshInterval = setInterval(() => {
-          location.reload();
-        }, 10000);
+        refreshLiveDashboardFromApi();
+        refreshInterval = setInterval(refreshLiveDashboardFromApi, 10000);
       }
     }
     

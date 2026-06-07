@@ -760,6 +760,36 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual("error", sent["kind"])
         self.assertEqual("telegram:<operator-chat-id>", sent["target"])
 
+    def test_notification_send_supports_macos_without_telegram_account(self) -> None:
+        calls = []
+
+        def fake_macos_notification(**kwargs):
+            calls.append(kwargs)
+            return {"ok": True, "platform": "macos", "message_id": "mocked"}
+
+        with mock.patch.object(companyctl, "send_macos_notification", side_effect=fake_macos_notification):
+            code, sent = run_cli("notification", "send", "--target", "macos", "--kind", "error", "--subject", "Agent stalled", "--message", "codex stalled")
+        self.assertEqual(0, code, sent)
+        self.assertEqual("macos", sent["platform"])
+        self.assertEqual("macos:default", sent["target"])
+        self.assertEqual("mocked", sent["message_id"])
+        self.assertEqual("Agent stalled\ncodex stalled", calls[0]["text"])
+
+    def test_macos_notification_uses_applescript_safe_unicode_quote(self) -> None:
+        calls = []
+
+        def fake_run(command, **kwargs):
+            calls.append((command, kwargs))
+            return mock.Mock(returncode=0)
+
+        with mock.patch.object(companyctl.subprocess, "run", side_effect=fake_run):
+            result = companyctl.send_macos_notification(text='本机通知 "ok"', title="Company Kernel", subtitle="error")
+        self.assertTrue(result["ok"])
+        script = calls[0][0][-1]
+        self.assertIn('display notification "本机通知 \\"ok\\""', script)
+        self.assertIn('with title "Company Kernel"', script)
+        self.assertIn('subtitle "error"', script)
+
     def test_approval_request_notifies_operator_route(self) -> None:
         code, created = run_cli("employee", "create", "--id", "main", "--name", "main", "--role", "operator", "--runtime", "openclaw", "--workspace", str(self.root / "workspace" / "main"))
         self.assertEqual(0, code, created)
@@ -2249,7 +2279,7 @@ class CompanyKernelCoreTest(unittest.TestCase):
     }).join('');
   }
   document.getElementById('db-path-label').innerText = isSimulationMode ? 'simulation://gateway.company.internal' : 'https://gateway.company.internal';
-  // Stubs for test assertions: companyApiGet checkCompanyApi /v1/health API OFFLINE /v1/attendance/latest realOnboardGeneratedEmployee realDirectEmployeeMessage openDirectEmployeeMessage /v1/messages/direct realOffboardEmployee openEditEmployeeProfile realUpdateEmployeeProfile 'PATCH' 'DELETE' timeZone: 'Asia/Bangkok' THA bindMentionAutocomplete agent-mention-suggestions collaborationHelpText 是否需要其他员工协助 kernel-form-modal openKernelFormModal('direct' openKernelFormModal('conversation' employee-card-actions employee-card-menu toggleEmployeeActionMenu Send Message prefillChatMention Chat Hub ready for @ grid-template-columns: minmax(0, 1fr) 34px dashboard-layout-fix showApprovalDetails refreshGovernanceTables refreshTraceTelemetry notify-route-status setTimeout(loadNotificationSettings, 350)
+  // Stubs for test assertions: companyApiGet checkCompanyApi /v1/health refreshLiveDashboardFromApi window.refreshLiveDashboardFromApi /v1/tasks?limit=50 /v1/messages/recent-direct?limit=20 stalled_tasks setInterval(refreshLiveDashboardFromApi, 10000) API OFFLINE /v1/attendance/latest realOnboardGeneratedEmployee realDirectEmployeeMessage openDirectEmployeeMessage /v1/messages/direct realOffboardEmployee openEditEmployeeProfile realUpdateEmployeeProfile 'PATCH' 'DELETE' timeZone: 'Asia/Bangkok' THA bindMentionAutocomplete agent-mention-suggestions collaborationHelpText 是否需要其他员工协助 kernel-form-modal openKernelFormModal('direct' openKernelFormModal('conversation' employee-card-actions employee-card-menu toggleEmployeeActionMenu Send Message prefillChatMention Chat Hub ready for @ grid-template-columns: minmax(0, 1fr) 34px dashboard-layout-fix showApprovalDetails refreshGovernanceTables refreshTraceTelemetry notify-route-status setTimeout(loadNotificationSettings, 350)
 </script>
 </body></html>
             """,
@@ -2274,6 +2304,13 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertIn("companyApiGet", html)
         self.assertIn("checkCompanyApi", html)
         self.assertIn("/v1/health", html)
+        self.assertIn("refreshLiveDashboardFromApi", html)
+        self.assertIn("window.refreshLiveDashboardFromApi", html)
+        self.assertIn("/v1/tasks?limit=50", html)
+        self.assertIn("/v1/messages/recent-direct?limit=20", html)
+        self.assertIn("stalled_tasks", html)
+        self.assertIn("setInterval(refreshLiveDashboardFromApi, 10000)", html)
+        self.assertNotIn("setInterval(() => {\n          location.reload();", html)
         self.assertIn("API OFFLINE", html)
         self.assertIn("/v1/attendance/latest", html)
         self.assertIn("realOnboardGeneratedEmployee", html)
