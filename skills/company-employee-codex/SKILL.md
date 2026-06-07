@@ -135,6 +135,72 @@ Codex must not rely on chat text alone. If no matching progress file is written,
 - Main must verify `git status`, `git diff --stat`, changed files, tests, runtime/browser evidence, and artifacts before accepting Codex output.
 - Codex must not redefine the product goal, touch unrelated business workspaces, or turn pending/candidate states into success.
 
+## Codex Mode Router
+
+Codex is not one generic executor. Main/Hermes must select the mode before dispatch and write it into the task card.
+
+- **目标模式 / Target Mode**: clear bounded implementation or bugfix; one objective; one verification gate; exit after result.
+- **计划模式 / Plan Mode**: unknown root cause, high-risk schema/API/security, unfamiliar code; read-only; no edits.
+- **列队模式 / Queue Mode**: multiple backlog items; Hermes owns order, queue state, isolation, and verification between items.
+- **引导模式 / Guided Mode**: long or drift-prone task; checkpoints; Hermes monitors process/log/diff and steers.
+
+Required task card fields:
+
+```text
+模式：目标 / 计划 / 列队 / 引导
+目标：one objective
+上下文：repo, branch, relevant facts
+允许范围：paths/files/tools
+禁止事项：secrets, production writes, unrelated refactors, destructive ops
+验收标准：exact commands/tests/browser checks
+输出格式：changed_files, commands_run, verification_run, evidence_path, blocker, risks
+停止条件：when to stop/report/ask
+```
+
+## Codex CLI Patterns
+
+Planning, read-only:
+
+```bash
+codex exec -C /absolute/repo -s read-only '计划模式：只读分析，禁止修改。目标：<goal>。输出 relevant files, plan, risks, verification gates。'
+```
+
+Bounded implementation:
+
+```bash
+codex exec --full-auto -C /absolute/repo '目标模式：完成 <goal>。允许范围：<paths>。禁止：<forbidden>。验收：<commands>。输出 changed_files/verification/blocker。'
+```
+
+Frontend/UI implementation must include UI/UX Pro Max:
+
+```text
+前端 UI/UX 强制规则：
+1. 先读取 /Users/shift/.codex/skills/ui-ux-pro-max/SKILL.md。
+2. 在目标项目运行：python3 /Users/shift/.codex/skills/ui-ux-pro-max/scripts/search.py "<product style>" --design-system --persist -p "<Project>" -f markdown
+3. 具体页面加 --page "<page-name>"。
+4. 实现前读取 design-system/MASTER.md 和 page override。
+5. 输出设计系统路径、修改文件、验证命令、截图/DOM/browser 检查结果。
+```
+
+## Hermes Acceptance Gate for Codex
+
+Main must verify, not trust claims:
+
+```bash
+git status --short
+git diff --stat
+git diff -- <relevant paths>
+python3 -m unittest discover -s tests -v
+```
+
+Completion requires:
+
+- expected files changed only;
+- tests/verification command exit_code 0;
+- report under `reports/codex-runs/` or relevant project report dir;
+- queue item updated only after Hermes verification;
+- GitHub delivery is not claimed until commit/push/PR/merge evidence exists.
+
 ## Execution Rules
 
 - Default adapter mode is dry-run: creates `codex-task-card.md` and report.

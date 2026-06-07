@@ -141,6 +141,15 @@ class CodexPmSupervisorTest(unittest.TestCase):
         self.assertIn("Codex 卡住", result["human_message"])
         self.assertEqual(result["evidence_path"], str(progress.resolve()))
 
+    def test_stale_working_alias_becomes_stalled(self) -> None:
+        progress = self._write_progress("working")
+        result = codex_pm_supervisor.supervise_once(agent="codex", now_ts="2026-06-06T00:40:00+07:00", stale_minutes=10)
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(result["status"], "stalled")
+        self.assertEqual("working", result["progress_layer"])
+        self.assertEqual("working", result["progress_state"])
+        self.assertEqual(result["evidence_path"], str(progress.resolve()))
+
     def test_workspace_override_reads_progress_from_explicit_dev_workspace(self) -> None:
         explicit_workspace = self.root / "dev-workspace" / "codex"
         explicit_workspace.mkdir(parents=True)

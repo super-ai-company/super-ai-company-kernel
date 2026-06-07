@@ -78,6 +78,67 @@ For Google Developer Knowledge MCP, the codelab config uses an HTTP server URL l
 
 Company Kernel usage rule: first use `agy --print` and/or an interactive `agy` session to prove Antigravity can follow goals, run `!` shell checks, and return structured evidence. Only then route GUI/frontend implementation; otherwise keep it as reviewer/candidate.
 
+## Antigravity Guided Frontend Workflow
+
+Use Antigravity as an interactive GUI/frontend worker, not a blind `--print` one-shot, when real UI work is expected.
+
+Startup patterns:
+
+```bash
+# exact CLI smoke
+agy --print "只回复 ANTIGRAVITY_CLI_OK" --print-timeout 60s
+
+# interactive guided session with repo as working directory
+agy --prompt-interactive "请作为 Company Kernel 前端员工。先 /goal 分析 dashboard，不要修改文件，先用 !git status 和 !python3 -m unittest ... 验证环境，然后输出计划。"
+```
+
+Inside `agy` session:
+
+- `/goal <goal>`: set current objective before work.
+- `!git status`: verify branch/dirty state.
+- `!python3 -m unittest ...`: run verification through Bash mode.
+- `/artifacts`: inspect implementation plans/artifacts before accepting.
+- `/tasks`: monitor background work.
+- `/context`: check context pressure.
+- `/mcp`: inspect/configure MCP servers, including Developer Knowledge MCP.
+
+MCP config path shared by Antigravity IDE/CLI:
+
+```text
+~/.gemini/config/mcp_config.json
+```
+
+Google Developer Knowledge MCP codelab endpoint:
+
+```text
+https://developerknowledge.googleapis.com/mcp
+```
+
+Use `X-Goog-Api-Key` in the MCP config only; never write API keys into skills/reports/queues/prompts.
+
+## Antigravity Evidence Contract
+
+For implementation tasks, Antigravity must return structured evidence:
+
+```text
+status: done | blocked | in_progress
+current_action: ...
+changed_files: [paths] or -
+verification_run: command + exit_code + stdout/stderr summary
+browser_check: page/DOM/screenshot evidence or blocker
+artifacts: /path or /artifacts reference
+blocker: empty or exact reason
+next_action: ...
+```
+
+Acceptance rules:
+
+- `agy --print` exact ACK proves CLI presence only.
+- A model identity/status sentence is `blocked_invalid_dispatch`, not progress.
+- GUI brief generation is candidate evidence, not implementation completion.
+- If Antigravity can inspect UI but cannot write code, use it as reviewer and route implementation to Codex target/guided mode.
+- If it can write code, Hermes still verifies git diff, tests, and browser/DOM evidence before queue completion.
+
 ## Execution Rules
 
 - Default adapter mode is dry-run: writes a GUI task brief and evidence.
