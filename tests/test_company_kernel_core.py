@@ -11,7 +11,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from http import HTTPStatus
 from pathlib import Path
 from unittest import mock
@@ -1803,6 +1803,77 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertNotIn("toggleSimulationMode", html)
         self.assertNotIn("Scenario Seeder", html)
         self.assertNotIn("Simulation: Normal", html)
+        self.assertIn("/v1/dashboard/cockpit", html)
+        self.assertIn("Progress Stagnant", html)
+        self.assertIn("AI Employee Cockpit", html)
+
+    def test_cockpit_api_sanitizes_evidence_and_exposes_long_task_state(self) -> None:
+        code, created = run_cli("employee", "create", "--id", "main", "--name", "main", "--role", "operator", "--runtime", "openclaw", "--workspace", str(self.root / "workspace" / "main"))
+        self.assertEqual(0, code, created)
+        code, created = run_cli("employee", "create", "--id", "codex-cockpit", "--name", "codex-cockpit", "--role", "engineer", "--runtime", "codex", "--workspace", str(self.root / "workspace" / "codex-cockpit"))
+        self.assertEqual(0, code, created)
+        conn = companyctl.connect()
+        try:
+            conn.execute("UPDATE employees SET status = 'active', updated_at = ? WHERE id = ?", (companyctl.now(), "main"))
+            conn.execute("UPDATE employees SET status = 'active', updated_at = ? WHERE id = ?", (companyctl.now(), "codex-cockpit"))
+            conn.commit()
+        finally:
+            conn.close()
+        code, submitted = run_cli("task", "submit", "--from", "main", "--to", "codex-cockpit", "--task-id", "task-cockpit-long", "--title", "Cockpit long task")
+        self.assertEqual(0, code, submitted)
+        conn = companyctl.connect()
+        try:
+            workspace = companyctl.ensure_task_workspace(conn, "task-cockpit-long")
+            evidence_path = Path(workspace["path"]) / "evidence" / "result.md"
+            evidence_path.write_text("safe evidence\n", encoding="utf-8")
+            conn.execute("UPDATE tasks SET evidence_path = ?, status = 'claimed', claimed_by = 'codex-cockpit', updated_at = ? WHERE id = ?", (str(evidence_path), companyctl.now(), "task-cockpit-long"))
+            conn.commit()
+        finally:
+            conn.close()
+
+        code, run = run_cli("task", "run", "--task-id", "task-cockpit-long", "--agent", "codex-cockpit", "--by", "main", "--stale-after-seconds", "900")
+        self.assertEqual(0, code, run)
+        attempt_id = run["attempt"]["attempt_id"]
+        conn = companyctl.connect()
+        try:
+            current = datetime.now(timezone.utc).astimezone()
+            old = (current - timedelta(minutes=20)).isoformat(timespec="seconds")
+            fresh = current.isoformat(timespec="seconds")
+            conn.execute("UPDATE execution_attempts SET last_progress_at = ?, last_heartbeat_at = ? WHERE attempt_id = ?", (old, fresh, attempt_id))
+            conn.execute("UPDATE tasks SET evidence_path = ? WHERE id = ?", (str(self.root / ".ssh" / "id_rsa"), "task-secret-evidence"))
+            conn.commit()
+        finally:
+            conn.close()
+
+        status, cockpit = api_gateway.route_get("/v1/dashboard/cockpit", {})
+        self.assertEqual(200, status, cockpit)
+        self.assertTrue(cockpit["ok"])
+        long_task = next(item for item in cockpit["long_tasks"] if item["task_id"] == "task-cockpit-long")
+        self.assertEqual("progress_stagnant", long_task["long_task_state"])
+        self.assertEqual("fresh", long_task["heartbeat_state"])
+        self.assertEqual("stagnant", long_task["progress_state"])
+        self.assertTrue(long_task["evidence"]["allowed"])
+        self.assertFalse(long_task["evidence"]["absolute_path_exposed"])
+        self.assertIn("evidence/result.md", long_task["evidence"]["relative_path"])
+
+        status, shown = api_gateway.route_get("/v1/tasks/task-cockpit-long", {})
+        self.assertEqual(200, status, shown)
+        self.assertTrue(shown["evidence"]["allowed"])
+        self.assertFalse(shown["evidence"]["absolute_path_exposed"])
+        self.assertNotIn(str(self.root), json.dumps(shown["evidence"], ensure_ascii=False))
+
+    def test_evidence_sanitizer_blocks_absolute_secret_paths(self) -> None:
+        secret = self.root / ".ssh" / "id_rsa"
+        secret.parent.mkdir(parents=True, exist_ok=True)
+        secret.write_text("secret\n", encoding="utf-8")
+
+        result = companyctl.sanitize_evidence_path_for_display(str(secret))
+
+        self.assertFalse(result["allowed"])
+        self.assertTrue(result["exists"])
+        self.assertEqual("", result["relative_path"])
+        self.assertEqual("forbidden secret/config path", result["reason"])
+        self.assertFalse(result["absolute_path_exposed"])
 
     def test_advanced_dashboard_counts_visible_ai_employees_not_human_owner(self) -> None:
         summary = {

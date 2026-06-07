@@ -146,6 +146,112 @@
       box-shadow: 0 0 10px var(--color-indigo);
     }
 
+    .cockpit-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 16px;
+      margin-bottom: 18px;
+    }
+
+    .cockpit-card {
+      background: linear-gradient(145deg, rgba(11, 19, 43, 0.92), rgba(15, 23, 42, 0.68));
+      border: 1px solid rgba(59, 130, 246, 0.22);
+      border-radius: 18px;
+      padding: 16px;
+      box-shadow: 0 18px 45px rgba(0, 0, 0, 0.24);
+    }
+
+    .cockpit-card h3 {
+      font-family: 'Outfit', sans-serif;
+      font-size: 13px;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--text-secondary);
+      margin-bottom: 10px;
+    }
+
+    .cockpit-value {
+      font-family: 'Outfit', sans-serif;
+      font-size: 34px;
+      font-weight: 800;
+      line-height: 1;
+    }
+
+    .cockpit-subtext {
+      margin-top: 8px;
+      color: var(--text-muted);
+      font-size: 12px;
+      line-height: 1.45;
+    }
+
+    .cockpit-list {
+      display: grid;
+      gap: 10px;
+    }
+
+    .cockpit-row {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 12px;
+      align-items: center;
+      border: 1px solid rgba(255, 255, 255, 0.07);
+      background: rgba(2, 6, 23, 0.42);
+      border-radius: 12px;
+      padding: 10px 12px;
+    }
+
+    .cockpit-row strong {
+      display: block;
+      font-size: 13px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .cockpit-row span {
+      color: var(--text-muted);
+      font-size: 11px;
+    }
+
+    .long-task-state {
+      border-radius: 999px;
+      padding: 5px 9px;
+      font-size: 10px;
+      font-weight: 800;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      border: 1px solid rgba(255,255,255,0.12);
+    }
+
+    .long-task-state.running,
+    .long-task-state.correcting {
+      color: #93c5fd;
+      background: rgba(59, 130, 246, 0.12);
+      border-color: rgba(59, 130, 246, 0.24);
+    }
+
+    .long-task-state.progress_stagnant,
+    .long-task-state.heartbeat_stale {
+      color: #fbbf24;
+      background: rgba(245, 158, 11, 0.12);
+      border-color: rgba(245, 158, 11, 0.28);
+    }
+
+    .long-task-state.blocked,
+    .long-task-state.failed,
+    .long-task-state.stale {
+      color: #fca5a5;
+      background: rgba(239, 68, 68, 0.12);
+      border-color: rgba(239, 68, 68, 0.28);
+    }
+
+    .long-task-state.done,
+    .long-task-state.success {
+      color: #86efac;
+      background: rgba(34, 197, 94, 0.12);
+      border-color: rgba(34, 197, 94, 0.28);
+    }
+
     .sidebar-footer {
       border-top: 1px solid var(--border-color);
       padding-top: 20px;
@@ -1985,7 +2091,7 @@
     
     <nav class="nav-menu">
       <button class="nav-btn active" data-tab="overview" onclick="switchTab('overview')" data-i18n="nav_overview">
-        <i class="fa-solid fa-gauge"></i> Overview
+        <i class="fa-solid fa-gauge"></i> Cockpit Console
       </button>
       <button class="nav-btn" data-tab="chat-hub" onclick="switchTab('chat-hub')" data-i18n="nav_chat_hub">
         <i class="fa-solid fa-comments"></i> Chat Hub
@@ -2034,7 +2140,7 @@
   <main class="main-panel">
     <header class="top-bar">
       <div class="page-title">
-        <h1 data-i18n="console_title">Operations Console</h1>
+        <h1 data-i18n="console_title">AI Employee Cockpit</h1>
         <p>API Gateway: <span id="db-path-label" style="font-family: monospace;">https://gateway.company.internal</span></p>
       </div>
       
@@ -2048,6 +2154,29 @@
       
       <!-- Overview Tab -->
       <div id="tab-overview" class="tab-pane active">
+        <div class="section-card">
+          <h2><i class="fa-solid fa-jet-fighter-up"></i> AI Employee Cockpit</h2>
+          <p style="font-size: 12px; color: var(--text-secondary); margin-bottom: 14px;">
+            Long tasks are supervised by heartbeat, progress, correction, cancel, and evidence. CLI timeout is only a sync wait window, not task failure.
+          </p>
+          <div class="cockpit-grid" id="cockpit-cards">
+            <!-- Populated by JS -->
+          </div>
+          <div class="dashboard-layout">
+            <div class="left-col">
+              <h3 style="font-size:13px;color:var(--text-secondary);margin-bottom:10px;">Long-Running Attempts</h3>
+              <div class="cockpit-list" id="cockpit-long-tasks">
+                <!-- Populated by JS -->
+              </div>
+            </div>
+            <div class="right-col">
+              <h3 style="font-size:13px;color:var(--text-secondary);margin-bottom:10px;">Owner Attention</h3>
+              <div class="cockpit-list" id="cockpit-owner-attention">
+                <!-- Populated by JS -->
+              </div>
+            </div>
+          </div>
+        </div>
         <div class="metrics-grid" id="metrics-cards">
           <!-- Populated by JS -->
         </div>
@@ -2796,6 +2925,7 @@
   async function refreshLiveDashboardFromApi() {
     try {
       const health = await companyApiGet('/v1/health');
+      const cockpit = await companyApiGet('/v1/dashboard/cockpit');
       const tasks = await companyApiGet('/v1/tasks?limit=50');
       const recentDirect = await companyApiGet('/v1/messages/recent-direct?limit=20');
       const events = await companyApiGet('/v1/events?limit=20');
@@ -2808,6 +2938,7 @@
       const stalledTasks = taskRows.filter(task => ['stale', 'blocked', 'failed'].includes(String(task.status || '').toLowerCase()) || task.blocker);
       mergeLiveSummaryPatch({
         runtime_health: health,
+        cockpit,
         tasks: taskRows,
         stalled_tasks: stalledTasks,
         direct_messages_recent: recentDirect.direct_messages_recent || [],
@@ -2834,6 +2965,61 @@
     }
   }
   window.refreshLiveDashboardFromApi = refreshLiveDashboardFromApi;
+
+  function renderCockpit(cockpit) {
+    const cards = document.getElementById('cockpit-cards');
+    const longTasks = document.getElementById('cockpit-long-tasks');
+    const attention = document.getElementById('cockpit-owner-attention');
+    if (!cards || !longTasks || !attention) return;
+    const counts = (cockpit && cockpit.counts) || {};
+    cards.innerHTML = `
+      <div class="cockpit-card">
+        <h3>Employees Online</h3>
+        <div class="cockpit-value">${escapeHtml(counts.employees || 0)}</div>
+        <div class="cockpit-subtext">active / candidate / active-limited visible from Kernel registry</div>
+      </div>
+      <div class="cockpit-card">
+        <h3>Active Attempts</h3>
+        <div class="cockpit-value">${escapeHtml(counts.active_attempts || 0)}</div>
+        <div class="cockpit-subtext">managed by task_id + attempt_id, not a CLI timeout</div>
+      </div>
+      <div class="cockpit-card">
+        <h3>Progress Stagnant</h3>
+        <div class="cockpit-value" style="color:${Number(counts.stagnant_tasks || 0) ? 'var(--color-amber)' : 'var(--color-green)'}">${escapeHtml(counts.stagnant_tasks || 0)}</div>
+        <div class="cockpit-subtext">heartbeat fresh, but no progress for the configured interval</div>
+      </div>
+      <div class="cockpit-card">
+        <h3>Owner Approvals</h3>
+        <div class="cockpit-value" style="color:${Number(counts.pending_approvals || 0) ? 'var(--color-amber)' : 'var(--text-primary)'}">${escapeHtml(counts.pending_approvals || 0)}</div>
+        <div class="cockpit-subtext">external_send stays dry-run until owner approval</div>
+      </div>
+    `;
+    const rows = (cockpit && cockpit.long_tasks) || [];
+    longTasks.innerHTML = rows.length ? rows.slice(0, 8).map(item => `
+      <div class="cockpit-row" onclick="openTaskDetailDrawer('${escapeHtml(item.task_id || '')}')">
+        <div>
+          <strong>${escapeHtml(item.title || item.task_id || '-')}</strong>
+          <span>${escapeHtml(item.target_agent || '-')} · attempt=${escapeHtml(item.attempt_id || '-')} · progress_age=${escapeHtml(item.progress_age_seconds ?? '-')}s</span>
+        </div>
+        <div class="long-task-state ${escapeHtml(item.long_task_state || 'running')}">${escapeHtml(item.long_task_state || 'running')}</div>
+      </div>
+    `).join('') : `<div class="cockpit-row"><div><strong>No managed long-running attempts</strong><span>Start one with task run or an adapter managed attempt.</span></div><div class="long-task-state success">idle</div></div>`;
+    const pending = (cockpit && cockpit.pending_approvals) || [];
+    const evidence = (cockpit && cockpit.recent_evidence) || [];
+    const attentionRows = [
+      ...pending.slice(0, 5).map(item => ({kind: 'approval', title: item.action || item.id, meta: `${item.source_agent || '-'} · ${item.status || '-'}`, state: 'blocked', id: item.id || ''})),
+      ...evidence.slice(0, 5).map(item => ({kind: 'evidence', title: item.title || item.task_id, meta: `${item.target_agent || '-'} · ${item.evidence ? item.evidence.relative_path : ''}`, state: 'success', id: item.task_id || ''}))
+    ];
+    attention.innerHTML = attentionRows.length ? attentionRows.map(item => `
+      <div class="cockpit-row">
+        <div>
+          <strong>${escapeHtml(item.kind)} · ${escapeHtml(item.title || '-')}</strong>
+          <span>${escapeHtml(item.meta || '')}</span>
+        </div>
+        <div class="long-task-state ${escapeHtml(item.state)}">${escapeHtml(item.state)}</div>
+      </div>
+    `).join('') : `<div class="cockpit-row"><div><strong>No owner attention needed</strong><span>Pending approvals and recent final evidence will appear here.</span></div><div class="long-task-state success">clear</div></div>`;
+  }
 
   async function companyApiRequest(path, payload, method) {
     const res = await fetch(getCompanyApiBase() + path, {
@@ -2988,6 +3174,33 @@
       ['Spans', (trace.spans || []).map(span => `${span.service || '-'} / ${span.name || '-'} / ${span.task_id || '-'}`)]
     ], trace);
   }
+
+  async function openTaskDetailDrawer(taskId) {
+    if (!taskId) return;
+    companyApiLog('SYSTEM', `Loading task detail ${taskId}...`, 'normal');
+    try {
+      const payload = await companyApiGet(`/v1/tasks/${encodeURIComponent(taskId)}`);
+      const task = payload.task || {};
+      const attempts = payload.attempts || [];
+      const events = payload.events || [];
+      const approvals = payload.approvals || [];
+      renderDetails(`Task Detail: ${taskId}`, [
+        ['Status', task.status || '-'],
+        ['Target', task.target_agent || '-'],
+        ['Claimed By', task.claimed_by || '-'],
+        ['Trace', (attempts[0] && attempts[0].trace_id) || task.trace_id || '-'],
+        ['Evidence', payload.evidence || {}],
+        ['Blocker', payload.blocker || '-'],
+        ['Attempts', attempts.map(item => `${item.status}:${item.attempt_id}`).join('\n') || '-'],
+        ['Recent Events', events.slice(-8).map(item => `${item.created_at} ${item.event_type} ${item.id}`).join('\n') || '-'],
+        ['Approvals', approvals.map(item => `${item.status}:${item.id || item.approval_id || ''}`).join('\n') || '-'],
+        ['Raw', payload],
+      ], payload);
+    } catch (err) {
+      companyApiLog('ERROR', `Task detail ${taskId} failed: ${err.message}`, 'error');
+    }
+  }
+  window.openTaskDetailDrawer = openTaskDetailDrawer;
 
   function guideCollaborationAfterFailure(prefix) {
     companyApiLog('SYSTEM', `${prefix} ${collaborationHelpText()}`, 'normal');
@@ -4089,6 +4302,7 @@
     
     // Overview Metrics
     const metrics = summary.counts;
+    renderCockpit(summary.cockpit || {});
     const cardsContainer = document.getElementById('metrics-cards');
     cardsContainer.innerHTML = `
       <div class="metric-card">

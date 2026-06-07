@@ -91,6 +91,9 @@ TASK_WORKSPACE_ROOT = STATE_DIR / "task-workspaces"
 SCHEMA = ROOT / "company_kernel" / "schema.sql"
 _OPEN_CONNECTIONS: list[sqlite3.Connection] = []
 
+EVIDENCE_DISPLAY_ALLOWED_NAMES = {"evidence", "reports", "artifacts", "final"}
+EVIDENCE_DISPLAY_FORBIDDEN_PARTS = {".ssh", ".env", "config", "profile", "api_key", "api-key", "apikey", "secrets", "secret"}
+
 KNOWN_RUNTIMES = {
     "openclaw": "OpenClaw runtime adapter",
     "hermes": "Hermes local runtime adapter",
@@ -744,6 +747,88 @@ def require_workspace_path(conn: sqlite3.Connection, task_id: str, raw_path: str
     except ValueError as exc:
         raise ValueError(f"artifact path must be inside task workspace: {candidate}") from exc
     return candidate
+
+
+def evidence_display_roots() -> list[Path]:
+    roots = [
+        TASK_WORKSPACE_ROOT,
+        STATE_DIR / "evidence",
+        STATE_DIR / "reports",
+        STATE_DIR / "artifacts",
+        ROOT / "workspace",
+        ROOT / "reports",
+        ROOT / "artifacts",
+        ROOT / "evidence",
+    ]
+    employees_dir = EMPLOYEES_DIR
+    if employees_dir.exists():
+        roots.extend(path / "reports" for path in employees_dir.iterdir() if path.is_dir())
+    return [path.resolve() for path in roots]
+
+
+def sanitize_evidence_path_for_display(raw_path: str) -> dict:
+    value = str(raw_path or "").strip()
+    result = {
+        "path": "",
+        "relative_path": "",
+        "basename": "",
+        "exists": False,
+        "allowed": False,
+        "reason": "",
+        "checksum": "",
+        "absolute_path_exposed": False,
+    }
+    if not value:
+        result["reason"] = "empty"
+        return result
+    if "\x00" in value or ".." in Path(value).parts:
+        result["reason"] = "unsafe path traversal"
+        return result
+    candidate = Path(value).expanduser()
+    if not candidate.is_absolute():
+        candidate = ROOT / candidate
+    try:
+        resolved = candidate.resolve()
+    except OSError:
+        result["reason"] = "unresolvable"
+        return result
+    result["exists"] = resolved.exists() and resolved.is_file()
+    parts_lower = {part.lower() for part in resolved.parts}
+    if parts_lower & EVIDENCE_DISPLAY_FORBIDDEN_PARTS:
+        result["reason"] = "forbidden secret/config path"
+        return result
+    allowed_root = None
+    relative = None
+    for root in evidence_display_roots():
+        try:
+            rel = resolved.relative_to(root)
+        except ValueError:
+            continue
+        allowed_root = root
+        relative = rel
+        break
+    if allowed_root is None or relative is None:
+        result["reason"] = "not in allowed evidence roots"
+        return result
+    if not relative.parts:
+        result["reason"] = "evidence path points to root"
+        return result
+    if not (set(part.lower() for part in resolved.parts) & EVIDENCE_DISPLAY_ALLOWED_NAMES):
+        result["reason"] = "missing evidence/reports/artifacts/final segment"
+        return result
+    result.update(
+        {
+            "path": str(relative),
+            "relative_path": str(relative),
+            "basename": resolved.name,
+            "exists": resolved.exists() and resolved.is_file(),
+            "allowed": True,
+            "reason": "allowed",
+            "checksum": sha256_file(resolved) if resolved.exists() and resolved.is_file() else "",
+            "absolute_path_exposed": False,
+        }
+    )
+    return result
 
 
 def sha256_file(path: Path) -> str:
@@ -6082,10 +6167,7 @@ def cmd_task_show(args: argparse.Namespace) -> int:
     lock = conn.execute("SELECT * FROM locks WHERE resource_key = ?", (f"task:{task_id}",)).fetchone()
     task_obj = dict(task)
     evidence_path = task_obj.get("evidence_path", "")
-    evidence = {
-        "path": evidence_path,
-        "exists": bool(evidence_path and Path(evidence_path).exists()),
-    }
+    evidence = sanitize_evidence_path_for_display(evidence_path)
     audit_rows = rows(conn, "SELECT * FROM audit_logs WHERE target = ? ORDER BY created_at ASC", (task_id,))
     emit(
         {
