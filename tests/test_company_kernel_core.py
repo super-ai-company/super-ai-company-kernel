@@ -1838,6 +1838,9 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertIn("audit-handoffs-tbody", html)
         self.assertIn("/v1/handoffs?limit=50", html)
         self.assertIn("refreshAuditHandoffsTable", html)
+        self.assertIn("audit-failures-tbody", html)
+        self.assertIn("/v1/failures?limit=50", html)
+        self.assertIn("refreshAuditFailuresTable", html)
         self.assertIn("absolute_path_exposed", html)
         self.assertIn("long_task_state || task.status", html)
         self.assertIn("handleOwnerAttentionAction", html)
@@ -2036,6 +2039,52 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual("task-api-artifact-qa", handoff_item["to_task_id"])
         self.assertEqual([artifact["artifact_id"]], handoff_item["artifacts"])
         self.assertNotIn("artifacts_json", handoff_item)
+
+    def test_api_gateway_lists_sanitized_failure_records(self) -> None:
+        for employee_id, role in [("main", "operator"), ("codex", "developer")]:
+            code, created = run_cli("employee", "create", "--id", employee_id, "--name", employee_id, "--role", role, "--runtime", "local", "--workspace", str(self.root / "workspace" / employee_id))
+            self.assertEqual(0, code, created)
+            if employee_id != "main":
+                self.mark_active(employee_id)
+        code, submitted = run_cli("task", "submit", "--from", "main", "--to", "codex", "--task-id", "task-api-failure-ledger", "--title", "Failure ledger")
+        self.assertEqual(0, code, submitted)
+        code, run = run_cli("task", "run", "--task-id", "task-api-failure-ledger", "--agent", "codex", "--by", "hermes")
+        self.assertEqual(0, code, run)
+        secret = "sk-testSECRET1234567890"
+        code, finished = run_cli("task", "attempt", "finish", "--attempt-id", run["attempt"]["attempt_id"], "--status", "failed", "--error", f"failed with token={secret} at {self.root / '.env'}")
+        self.assertEqual(0, code, finished)
+        code, blocked = run_cli("task", "block", "--agent", "codex", "--task-id", "task-api-failure-ledger", "--blocker", f"blocked with api_key={secret} /Users/shift/.ssh/id_rsa")
+        self.assertEqual(0, code, blocked)
+        conn = companyctl.connect()
+        try:
+            conn.execute(
+                """
+                INSERT INTO adapter_runs(id, trace_id, agent_id, task_id, command, ok, processed, attempt, result_json, created_at)
+                VALUES ('adapter-run-failure-ledger', ?, 'codex', 'task-api-failure-ledger', 'company-codex-adapter', 0, 0, 1, ?, ?)
+                """,
+                (
+                    submitted["task"]["metadata"]["trace_id"],
+                    json.dumps({"stderr": f"api_key={secret} reading /Users/shift/.ssh/id_rsa", "stdout": "safe failure context"}, ensure_ascii=False),
+                    companyctl.now(),
+                ),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        status, failures = api_gateway.route_get("/v1/failures", {"limit": ["20"]})
+        self.assertEqual(200, status, failures)
+        self.assertTrue(failures["ok"])
+        kinds = [item["kind"] for item in failures["failures"]]
+        self.assertIn("task", kinds)
+        self.assertIn("attempt", kinds)
+        self.assertIn("adapter_run", kinds)
+        failures_json = json.dumps(failures, ensure_ascii=False)
+        self.assertIn("task-api-failure-ledger", failures_json)
+        self.assertIn("safe failure context", failures_json)
+        self.assertNotIn(secret, failures_json)
+        self.assertNotIn("id_rsa", failures_json)
+        self.assertNotIn(".env", failures_json)
 
     def test_api_gateway_streams_company_events_as_sse(self) -> None:
         conn = companyctl.connect()
@@ -4989,6 +5038,7 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertIn("/v1/evidence", openapi["paths"])
         self.assertIn("/v1/artifacts", openapi["paths"])
         self.assertIn("/v1/handoffs", openapi["paths"])
+        self.assertIn("/v1/failures", openapi["paths"])
         doctor_query_names = {
             parameter["name"]
             for parameter in openapi["paths"]["/v1/doctor"]["get"]["parameters"]
