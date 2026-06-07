@@ -6376,6 +6376,39 @@ def cmd_task_show(args: argparse.Namespace) -> int:
     audit_rows = rows(conn, "SELECT * FROM audit_logs WHERE target = ? ORDER BY created_at ASC", (task_id,))
     attempts = task_attempts(conn, task_id)
     evidence_records = task_evidence_records(conn, task_id)
+    sanitized_logs = []
+    for run in rows(
+        conn,
+        """
+        SELECT id, trace_id, agent_id, task_id, command, ok, processed, attempt, result_json, created_at
+        FROM adapter_runs
+        WHERE task_id = ?
+        ORDER BY created_at DESC
+        LIMIT 20
+        """,
+        (task_id,),
+    ):
+        raw_result_json = run.pop("result_json", "{}")
+        try:
+            result = json.loads(raw_result_json or "{}")
+        except json.JSONDecodeError:
+            result = {"raw": raw_result_json}
+        summary = summarize_adapter_result(result)
+        sanitized_logs.append(
+            {
+                "run_id": run["id"],
+                "trace_id": run.get("trace_id", ""),
+                "agent_id": run.get("agent_id", ""),
+                "task_id": run.get("task_id", ""),
+                "command": run.get("command", ""),
+                "ok": bool(run.get("ok")),
+                "processed": bool(run.get("processed")),
+                "attempt": run.get("attempt", 0),
+                "created_at": run.get("created_at", ""),
+                "sanitized_log": summary.get("sanitized_log", ""),
+                "progress_file": summary.get("progress_file", ""),
+            }
+        )
     supervisor_state, correction_summary = task_supervisor_state(attempts)
     emit(
         {
@@ -6391,6 +6424,7 @@ def cmd_task_show(args: argparse.Namespace) -> int:
             "hook_runs": hook_runs,
             "attempts": attempts,
             "progress_events": task_progress_events(events),
+            "sanitized_logs": sanitized_logs,
             "supervisor_state": supervisor_state,
             "correction_summary": correction_summary,
             "approvals": task_approvals(conn, task_id),
