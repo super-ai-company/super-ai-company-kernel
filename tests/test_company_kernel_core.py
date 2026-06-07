@@ -31,6 +31,7 @@ from company_kernel import companyctl
 from company_kernel import communication_acceptance
 from company_kernel import codex_adapter
 from company_kernel import codex_pm_supervisor
+from company_kernel import db_paths
 from company_kernel import hermes_adapter
 from company_kernel import openclaw_adapter
 from company_kernel import policy_guard
@@ -788,6 +789,17 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual((master_root / "employees").resolve(), paths["employees_dir"])
         self.assertEqual(Path(payload["log_dir"]).resolve(), paths["log_dir"])
         self.assertEqual(8799, loaded["gateway_port"])
+
+    def test_db_paths_loads_user_global_config_database_path(self) -> None:
+        config_path = self.root / ".gemini" / "antigravity" / "company_kernel_config.json"
+        global_db = self.root / "global-state" / "company.sqlite"
+        config_path.parent.mkdir(parents=True)
+        config_path.write_text(json.dumps({"database_path": str(global_db)}, ensure_ascii=False), encoding="utf-8")
+
+        with mock.patch.dict("os.environ", {"COMPANY_KERNEL_CONFIG_PATH": str(config_path)}, clear=False):
+            resolved = db_paths.resolve_db_path(self.root)
+
+        self.assertEqual(str(global_db.resolve()), str(resolved.resolve()))
 
     def test_notification_send_uses_env_token_and_returns_message_id(self) -> None:
         status, saved = api_gateway.route_post(
@@ -2433,7 +2445,7 @@ class CompanyKernelCoreTest(unittest.TestCase):
     }).join('');
   }
   document.getElementById('db-path-label').innerText = isSimulationMode ? 'simulation://gateway.company.internal' : 'https://gateway.company.internal';
-  // Stubs for test assertions: companyApiGet checkCompanyApi /v1/health refreshLiveDashboardFromApi window.refreshLiveDashboardFromApi /v1/tasks?limit=50 /v1/messages/recent-direct?limit=20 /v1/telemetry/traces telemetry.traces populateKanban(window.summaryData) stalled_tasks setInterval(refreshLiveDashboardFromApi, 10000) API OFFLINE /v1/attendance/latest realOnboardGeneratedEmployee realDirectEmployeeMessage openDirectEmployeeMessage /v1/messages/direct realOffboardEmployee openEditEmployeeProfile realUpdateEmployeeProfile 'PATCH' 'DELETE' timeZone: 'Asia/Bangkok' THA bindMentionAutocomplete agent-mention-suggestions collaborationHelpText 是否需要其他员工协助 kernel-form-modal openKernelFormModal('direct' openKernelFormModal('conversation' employee-card-actions employee-card-menu toggleEmployeeActionMenu Send Message prefillChatMention Chat Hub ready for @ grid-template-columns: minmax(0, 1fr) 34px dashboard-layout-fix showApprovalDetails refreshGovernanceTables refreshTraceTelemetry refreshTraceTelemetry() notify-route-status setTimeout(loadNotificationSettings, 350) decideApprovalFromDashboard /v1/approvals/${encodeURIComponent(approvalId)}/approve /v1/approvals/${encodeURIComponent(approvalId)}/deny Approve Deny Approval Actions
+  // Stubs for test assertions: companyApiGet checkCompanyApi /v1/health refreshLiveDashboardFromApi window.refreshLiveDashboardFromApi /v1/tasks?limit=50 /v1/messages/recent-direct?limit=20 /v1/telemetry/traces telemetry.traces populateKanban(window.summaryData) kanbanTransitionTask const agent = (task.claimed_by || task.target_agent block`, { agent, blocker: reason } stalled_tasks setInterval(refreshLiveDashboardFromApi, 10000) API OFFLINE /v1/attendance/latest realOnboardGeneratedEmployee realDirectEmployeeMessage openDirectEmployeeMessage /v1/messages/direct realOffboardEmployee openEditEmployeeProfile realUpdateEmployeeProfile 'PATCH' 'DELETE' timeZone: 'Asia/Bangkok' THA bindMentionAutocomplete agent-mention-suggestions collaborationHelpText 是否需要其他员工协助 kernel-form-modal openKernelFormModal('direct' openKernelFormModal('conversation' employee-card-actions employee-card-menu toggleEmployeeActionMenu Send Message prefillChatMention Chat Hub ready for @ grid-template-columns: minmax(0, 1fr) 34px dashboard-layout-fix showApprovalDetails refreshGovernanceTables refreshTraceTelemetry refreshTraceTelemetry() notify-route-status setTimeout(loadNotificationSettings, 350) decideApprovalFromDashboard /v1/approvals/${encodeURIComponent(approvalId)}/approve /v1/approvals/${encodeURIComponent(approvalId)}/deny Approve Deny Approval Actions
 </script>
 </body></html>
             """,
@@ -2470,6 +2482,9 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertNotIn("setTimeout(() => location.reload(), 800)", html)
         self.assertIn("populateKanban(window.summaryData)", html)
         self.assertIn("refreshTraceTelemetry()", html)
+        self.assertIn("kanbanTransitionTask", html)
+        self.assertIn("const agent = (task.claimed_by || task.target_agent", html)
+        self.assertIn("block`, { agent, blocker: reason }", html)
         self.assertIn("API OFFLINE", html)
         self.assertIn("/v1/attendance/latest", html)
         self.assertIn("realOnboardGeneratedEmployee", html)
@@ -5714,6 +5729,74 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual("completed", task["task"]["status"])
         self.assertEqual(executed["report"], task["task"]["evidence_path"])
         self.assertIn("Submitted Company Kernel task to OpenClaw legacy bus", Path(executed["report"]).read_text(encoding="utf-8"))
+
+    def test_openclaw_adapter_execute_uses_auto_approval_for_low_risk_data_fetch(self) -> None:
+        (self.root / "config" / "policy.json").write_text(
+            json.dumps(
+                {
+                    "route_approval": {
+                        "auto_approval_rules": [
+                            {
+                                "id": "nestcar-low-risk-fetch",
+                                "enabled": True,
+                                "action": "external_send",
+                                "source": "main",
+                                "target": "nestcar",
+                                "metadata": {"adapter": "openclaw", "task_type": "data_fetch"},
+                                "priority_not_in": ["P1"],
+                                "risk_not_in": ["P1"],
+                            }
+                        ]
+                    }
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        task_id = "task-openclaw-auto-approval"
+        code, main = run_cli("employee", "create", "--id", "main", "--name", "main", "--role", "operator", "--runtime", "openclaw", "--workspace", str(self.root / "workspace" / "main"))
+        self.assertEqual(0, code, main)
+        code, submitted = run_cli(
+            "task",
+            "submit",
+            "--from",
+            "main",
+            "--to",
+            "nestcar",
+            "--task-id",
+            task_id,
+            "--title",
+            "低风险抓取",
+            "--description",
+            "data fetch through OpenClaw",
+            "--priority",
+            "P3",
+        )
+        self.assertEqual(0, code, submitted)
+        with companyctl.connect() as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO task_metadata(task_id, metadata_json, updated_at) VALUES (?, ?, ?)",
+                (task_id, json.dumps({"trace_id": submitted["task"]["metadata"]["trace_id"], "task_type": "data_fetch"}, ensure_ascii=False), companyctl.now()),
+            )
+            conn.commit()
+
+        calls: list[list[str]] = []
+
+        def fake_submit(source: str, target: str, priority: str, payload: dict) -> tuple[int, str, str]:
+            calls.append([source, target, priority, payload["task_id"]])
+            return 0, json.dumps({"ok": True, "file": str(self.root / "openclaw" / "bus" / f"{payload['task_id']}.json")}, ensure_ascii=False), ""
+
+        captured = io.StringIO()
+        with mock.patch.object(openclaw_adapter, "submit_openclaw", fake_submit), contextlib.redirect_stdout(captured):
+            code = openclaw_adapter.main(["--agent", "nestcar", "--execute"])
+        result = json.loads(captured.getvalue())
+        self.assertEqual(0, code, result)
+        self.assertTrue(result["ok"], result)
+        self.assertEqual([["main", "nestcar", "P3", task_id]], calls)
+        with policy_guard.connect() as conn:
+            approval = conn.execute("SELECT * FROM approvals WHERE source_agent = 'main' AND action = 'external_send' AND status = 'approved'").fetchone()
+        self.assertIsNotNone(approval)
+        self.assertEqual("auto_approved", json.loads(approval["reason"])["approval_mode"])
 
     def test_openclaw_adapter_execute_reports_missing_oc_as_blocker(self) -> None:
         task_id = "task-openclaw-missing-oc"

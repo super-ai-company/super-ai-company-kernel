@@ -65,6 +65,21 @@ def next_task(agent: str) -> sqlite3.Row | None:
         conn.close()
 
 
+def task_metadata(task_id: str) -> dict:
+    conn = connect()
+    try:
+        row = conn.execute("SELECT metadata_json FROM task_metadata WHERE task_id = ?", (task_id,)).fetchone()
+    finally:
+        conn.close()
+    if not row:
+        return {}
+    try:
+        parsed = json.loads(row["metadata_json"] or "{}")
+    except json.JSONDecodeError:
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
 def paths(agent: str, task_id: str) -> dict[str, Path]:
     base = ROOT / "employees" / agent / "reports" / task_id
     base.mkdir(parents=True, exist_ok=True)
@@ -176,6 +191,16 @@ def process(args: argparse.Namespace) -> int:
         return 0
     artifact = paths(args.agent, task["id"])
     payload = build_payload(task)
+    metadata = task_metadata(task["id"])
+    task_type = str(metadata.get("task_type", "") or metadata.get("type", "") or "").strip()
+    approval_metadata = {
+        "adapter": "openclaw",
+        "task_id": task["id"],
+        "target_agent": args.agent,
+        "priority": task["priority"],
+    }
+    if task_type:
+        approval_metadata["task_type"] = task_type
     artifact["payload"].write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     claim_out = ""
     claim_err = ""
@@ -196,10 +221,10 @@ def process(args: argparse.Namespace) -> int:
         target=args.agent,
         action="external_send",
         reason=approval_reason(task),
-        risk="P1",
+        risk=task["priority"],
         evidence=str(artifact["payload"]),
         approval_id=args.approval_id,
-        metadata={"adapter": "openclaw", "task_id": task["id"], "target_agent": args.agent},
+        metadata=approval_metadata,
     )
     if not gate["allowed"]:
         detail = f"OpenClaw adapter execute blocked pending approval {gate['approval_request']['id']}."
