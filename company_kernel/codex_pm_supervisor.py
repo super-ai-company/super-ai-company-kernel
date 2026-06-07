@@ -179,6 +179,40 @@ def close_task(conn: sqlite3.Connection, task: sqlite3.Row, status: str, summary
     conn.commit()
 
 
+def queue_supervisor_notification(result: dict[str, Any]) -> dict[str, Any]:
+    db_path = Path(str(result.get("db_path") or DB_PATH)).expanduser().resolve()
+    schema_path = SCHEMA.expanduser().resolve()
+    conn = connect(db_path=db_path, schema_path=schema_path)
+    try:
+        payload = {
+            "kind": "supervisor_escalation",
+            "agent_id": str(result.get("agent", "") or ""),
+            "task_id": str(result.get("task_id", "") or ""),
+            "trace_id": "",
+            "trigger": "codex_pm_supervisor",
+            "triggered_at": now(),
+            "triggered_by": "hermes",
+            "message": str(result.get("human_message") or result.get("blocker") or "").strip(),
+            "summary": str(result.get("human_message") or result.get("blocker") or "").strip(),
+            "reason": "sync supervisor notification failed",
+            "delivery_status": "pending",
+            "channel": "repo-only",
+            "account": "",
+            "target": "",
+            "delivery_result": result.get("notification", {}),
+        }
+        event = companyctl.record_event(
+            conn,
+            "progress.notification",
+            "hermes",
+            task_id=payload["task_id"],
+            payload=payload,
+        )
+        return {"event_type": "progress.notification", "event_id": event["id"], **payload}
+    finally:
+        conn.close()
+
+
 def notify_if_escalation(result: dict[str, Any]) -> dict[str, Any]:
     if result.get("status") not in {"stalled", "blocked"}:
         return result
@@ -194,6 +228,8 @@ def notify_if_escalation(result: dict[str, Any]) -> dict[str, Any]:
     except Exception as exc:
         notification = {"ok": False, "error": str(exc)}
     result["notification"] = notification
+    if not notification.get("ok"):
+        result["queued_notification"] = queue_supervisor_notification(result)
     return result
 
 

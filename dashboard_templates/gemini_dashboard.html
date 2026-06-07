@@ -3439,6 +3439,7 @@
   };
 
   window.openKanbanTransitionModal = function(task, targetStatus) {
+    window.kanbanTransitionTask = task || {};
     document.getElementById('trans-task-id').value = task.id;
     document.getElementById('trans-target-status').value = targetStatus;
     
@@ -3503,7 +3504,9 @@
         companyApiLog('SYSTEM', `Task ${taskId} claimed by ${agent}.`, 'success');
       } else if (targetStatus === 'blocked') {
         const reason = document.getElementById('trans-blocked-reason').value.trim() || 'Blocked via Kanban board drag';
-        await companyApiPost(`/v1/tasks/${encodeURIComponent(taskId)}/block`, { blocker: reason });
+        const task = window.kanbanTransitionTask || {};
+        const agent = (task.claimed_by || task.target_agent || HUMAN_OWNER_ID);
+        await companyApiPost(`/v1/tasks/${encodeURIComponent(taskId)}/block`, { agent, blocker: reason });
         companyApiLog('SYSTEM', `Task ${taskId} blocked: ${reason}`, 'success');
       } else if (targetStatus === 'completed') {
         const agent = document.getElementById('trans-completed-agent').value;
