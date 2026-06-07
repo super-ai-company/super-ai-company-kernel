@@ -19,6 +19,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+from .db_paths import ensure_db_parent
 from .schema_migrations import ensure_schema_migrations
 
 ROOT = Path(os.environ.get("OPENCLAW_COMPANY_KERNEL_ROOT", Path(__file__).resolve().parents[1])).resolve()
@@ -546,8 +547,7 @@ def sync_backlog_from_queue_file(conn: sqlite3.Connection) -> None:
 
 
 def connect() -> sqlite3.Connection:
-    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(ensure_db_parent(DB_PATH))
     conn.row_factory = sqlite3.Row
     conn.executescript(SCHEMA.read_text(encoding="utf-8"))
     ensure_schema_migrations(conn)
@@ -4349,7 +4349,14 @@ def cmd_message_direct(args: argparse.Namespace) -> int:
         "receipt_file": receipt_record["file"] if receipt_record else "",
         "stderr": cp.stderr[-2000:],
     }
-    if cp.returncode != 0 or delivery_failed:
+    adapter_blocked = bool(adapter_payload.get("blocked_execution")) and not delivery_failed
+    if adapter_blocked:
+        result["adapter_blocked"] = {
+            "blocked_execution": True,
+            "blocker": str(adapter_payload.get("blocker") or adapter_payload.get("error") or "adapter reported blocked execution"),
+            "status_delivery": adapter_payload.get("status_delivery", {}),
+        }
+    elif cp.returncode != 0 or delivery_failed:
         reason = str(delivery_status.get("errorMessage") or cp.stderr[-1000:] or cp.stdout[-1000:] or f"direct command exit_code={cp.returncode}")
         result["employee_unavailable"] = mark_employee_unavailable(conn, target, reason)
         conn.commit()

@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from company_kernel import companyctl
+from company_kernel.db_paths import ensure_db_parent, resolve_db_path
 
 
 def root() -> Path:
@@ -17,7 +18,7 @@ def root() -> Path:
 
 
 def db_path() -> Path:
-    return root() / "company.sqlite"
+    return resolve_db_path(root())
 
 
 def now() -> str:
@@ -30,7 +31,7 @@ def emit(obj: dict) -> None:
 
 def connect() -> sqlite3.Connection:
     project_root = root()
-    conn = sqlite3.connect(db_path())
+    conn = sqlite3.connect(ensure_db_parent(db_path()))
     conn.row_factory = sqlite3.Row
     conn.executescript((project_root / "company_kernel" / "schema.sql").read_text(encoding="utf-8"))
     conn.commit()

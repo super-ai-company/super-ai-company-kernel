@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import shutil
 import sqlite3
@@ -9,11 +10,19 @@ import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 
+from .db_paths import ensure_db_parent, resolve_db_path as resolve_kernel_db_path
+
 
 ROOT = Path(__file__).resolve().parents[1]
-DB_PATH = ROOT / "company.sqlite"
 APP_PATH = Path("/Applications/Antigravity.app")
 AGY_COMMAND = "agy"
+
+
+def resolve_db_path() -> Path:
+    return resolve_kernel_db_path(ROOT)
+
+
+DB_PATH = resolve_db_path()
 
 
 def now() -> str:
@@ -25,7 +34,7 @@ def emit(obj: dict) -> None:
 
 
 def connect() -> sqlite3.Connection:
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(ensure_db_parent(DB_PATH))
     conn.row_factory = sqlite3.Row
     conn.executescript((ROOT / "company_kernel" / "schema.sql").read_text(encoding="utf-8"))
     conn.commit()
@@ -218,6 +227,11 @@ def validate_agy_reply(*, message: str, reply: str, before_files: list[str], aft
     changed_files = sorted(set(after_files) - set(before_files))
     stale_markers = ("HERMES_LOCAL_VERIFY_OK", "approval-route-task-hermes", "dangerously-skip-permissions", "protected path", "permission grants")
     stale_hit = next((marker for marker in stale_markers if marker.lower() in reply.lower()), "")
+    planning_only = bool(
+        re.search(r"(?im)^\s*I will\b", reply)
+        or re.search(r"(?im)^\s*我将|^\s*我会", reply)
+        or "timed out waiting for response" in reply.lower()
+    )
     required = ("status", "current_action", "changed_files", "verification_run", "blocker")
     missing = [field for field in required if not fields.get(field)]
     status = fields.get("status", "").lower()
@@ -229,6 +243,8 @@ def validate_agy_reply(*, message: str, reply: str, before_files: list[str], aft
     blocker = ""
     if stale_hit:
         blocker = f"blocked_context_mismatch: reply contains stale marker {stale_hit}"
+    elif planning_only:
+        blocker = "planning_only_or_timeout: Antigravity returned plan text or timed out before structured evidence"
     elif missing:
         blocker = "missing structured fields: " + ", ".join(missing)
     elif status not in {"working", "done", "blocked"}:

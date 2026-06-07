@@ -8,11 +8,12 @@ import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 
+from company_kernel.db_paths import ensure_db_parent, resolve_db_path
 from company_kernel.policy_guard import require_approval
 
 
 ROOT = Path(os.environ.get("OPENCLAW_COMPANY_KERNEL_ROOT", Path(__file__).resolve().parents[1])).resolve()
-DB_PATH = ROOT / "company.sqlite"
+DB_PATH = resolve_db_path(ROOT)
 OPENCLAW_ROOT = Path(os.environ.get("OPENCLAW_ROOT", str(Path.home() / "openclaw"))).expanduser().resolve()
 OPENCLAW_BUS_AGENTS = {"main", "nestcar", "chindahotpot", "invest", "video-creator", "video-publisher", "video-ops", "krothong"}
 
@@ -26,7 +27,7 @@ def emit(obj: dict) -> None:
 
 
 def connect() -> sqlite3.Connection:
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(ensure_db_parent(DB_PATH))
     conn.row_factory = sqlite3.Row
     conn.executescript((ROOT / "company_kernel" / "schema.sql").read_text(encoding="utf-8"))
     conn.commit()

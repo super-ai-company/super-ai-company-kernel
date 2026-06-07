@@ -10,11 +10,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from . import companyctl
+from .db_paths import ensure_db_parent, resolve_db_path
 from .schema_migrations import ensure_schema_migrations
 
 
 ROOT = Path(__file__).resolve().parents[1]
-DB_PATH = ROOT / "company.sqlite"
+DB_PATH = resolve_db_path(ROOT)
 SCHEMA = ROOT / "company_kernel" / "schema.sql"
 DEFAULT_OUTPUT = ROOT / "state" / "dashboard.html"
 ADVANCED_TEMPLATE_CANDIDATES = [
@@ -27,7 +28,7 @@ def now() -> str:
 
 
 def connect() -> sqlite3.Connection:
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(ensure_db_parent(DB_PATH))
     conn.row_factory = sqlite3.Row
     conn.executescript(SCHEMA.read_text(encoding="utf-8"))
     ensure_schema_migrations(conn)

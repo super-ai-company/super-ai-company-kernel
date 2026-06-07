@@ -20,19 +20,24 @@ from company_kernel import antigravity_adapter
 from company_kernel import api_gateway
 from company_kernel import api_grpc
 from company_kernel import api_rpc
+from company_kernel import adapter_worker
+from company_kernel import claude_adapter
 from company_kernel import company_daemon
 from company_kernel import company_local_smoke
 from company_kernel import company_dashboard
 from company_kernel import company_service_smoke
 from company_kernel import company_trace
 from company_kernel import companyctl
+from company_kernel import communication_acceptance
 from company_kernel import codex_adapter
+from company_kernel import codex_pm_supervisor
 from company_kernel import hermes_adapter
 from company_kernel import openclaw_adapter
 from company_kernel import policy_guard
 from company_kernel import sandboxing
 from company_kernel import schema_migrations
 from company_kernel import skill_package_worker
+from company_kernel import trae_adapter
 
 
 def run_cli(*args: str) -> tuple[int, dict]:
@@ -732,6 +737,36 @@ class CompanyKernelCoreTest(unittest.TestCase):
                 readonly.close()
         self.assertIsNotNone(row)
         self.assertTrue(external_db.exists())
+
+    def test_antigravity_adapter_db_path_env_overrides_repo_db(self) -> None:
+        external_db = self.root / "global-state" / "company.sqlite"
+        with mock.patch.dict("os.environ", {"COMPANY_KERNEL_DB_PATH": str(external_db)}):
+            resolved = antigravity_adapter.resolve_db_path()
+        self.assertEqual(external_db.resolve(), resolved)
+        self.assertNotEqual((self.root / "company.sqlite").resolve(), resolved)
+
+    def test_runtime_modules_share_global_db_path_override(self) -> None:
+        external_db = self.root / "global-state" / "company.sqlite"
+        modules = [
+            adapter_worker,
+            claude_adapter,
+            codex_adapter,
+            codex_pm_supervisor,
+            communication_acceptance,
+            company_dashboard,
+            hermes_adapter,
+            openclaw_adapter,
+            policy_guard,
+            skill_package_worker,
+            trae_adapter,
+        ]
+        with mock.patch.dict("os.environ", {"COMPANY_KERNEL_DB_PATH": str(external_db)}):
+            for module in modules:
+                if hasattr(module, "db_path"):
+                    resolved = module.db_path()
+                else:
+                    resolved = module.resolve_db_path(module.ROOT)
+                self.assertEqual(external_db.resolve(), resolved, module.__name__)
 
     def test_notification_send_uses_env_token_and_returns_message_id(self) -> None:
         status, saved = api_gateway.route_post(
@@ -1535,6 +1570,41 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual(0, code, shown)
         self.assertEqual("candidate", shown["employee"]["status"])
         self.assertEqual("telegram delivery failed", shown["profile"]["unavailable_reason"])
+
+    def test_antigravity_blocked_execution_does_not_downgrade_active_employee(self) -> None:
+        code, created = run_cli("employee", "create", "--id", "main", "--name", "main", "--role", "operator", "--runtime", "openclaw", "--workspace", str(self.root / "workspace" / "main"))
+        self.assertEqual(0, code, created)
+        code, created = run_cli("employee", "create", "--id", "antigravity", "--name", "Antigravity", "--role", "developer", "--runtime", "antigravity", "--workspace", str(self.root / "workspace" / "antigravity"))
+        self.assertEqual(0, code, created)
+        self.mark_active("antigravity")
+
+        def fake_run(cmd, cwd=None, text=None, capture_output=None, timeout=None):
+            class Result:
+                returncode = 1
+                stdout = json.dumps(
+                    {
+                        "ok": False,
+                        "direct_message": True,
+                        "reply": "status: blocked\ncurrent_action: Agy returned planning-only output\nchanged_files: -\nverification_run: adapter report\nblocker: planning_only_or_timeout",
+                        "blocked_execution": True,
+                        "blocker": "planning_only_or_timeout",
+                        "status_delivery": {"ok": True},
+                    }
+                )
+                stderr = ""
+
+            return Result()
+
+        with mock.patch.object(companyctl.subprocess, "run", side_effect=fake_run):
+            code, sent = run_cli("message", "direct", "--from", "main", "--to", "antigravity", "--body", "评测 dashboard")
+        self.assertEqual(1, code, sent)
+        self.assertFalse(sent["ok"])
+        self.assertTrue(sent["adapter_blocked"]["blocked_execution"])
+        self.assertNotIn("employee_unavailable", sent)
+        code, shown = run_cli("employee", "show", "antigravity")
+        self.assertEqual(0, code, shown)
+        self.assertEqual("active", shown["employee"]["status"])
+        self.assertNotIn("unavailable_reason", shown["profile"])
 
     def test_dashboard_renders_conversations_and_pending_events(self) -> None:
         code, created = run_cli("employee", "create", "--id", "main", "--name", "main", "--role", "operator", "--runtime", "openclaw", "--workspace", str(self.root / "workspace" / "main"))
@@ -5915,6 +5985,24 @@ class CompanyKernelCoreTest(unittest.TestCase):
         )
         self.assertTrue(validation["ok"], validation)
         self.assertTrue(validation["activation_eligible"], validation)
+
+    def test_antigravity_planning_only_timeout_reply_is_specific_blocker(self) -> None:
+        reply = "\n".join(
+            [
+                "I will inspect the dashboard template.",
+                "I will run tests.",
+                "Error: timed out waiting for response",
+            ]
+        )
+        validation = antigravity_adapter.validate_agy_reply(
+            message="请评测 dashboard 并返回结构化 evidence",
+            reply=reply,
+            before_files=[],
+            after_files=[],
+        )
+        self.assertFalse(validation["ok"], validation)
+        self.assertEqual("blocked", validation["status"])
+        self.assertIn("planning_only_or_timeout", validation["blocker"])
 
     def test_antigravity_managed_prompt_requires_concrete_verification(self) -> None:
         conn = antigravity_adapter.connect()
