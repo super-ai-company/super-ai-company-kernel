@@ -39,6 +39,7 @@ FOLLOWUP_STATE_DIR = STATE_DIR / "followups"
 SUPERVISOR_STATE_DIR = STATE_DIR / "supervisor"
 TASK_WORKSPACE_ROOT = STATE_DIR / "task-workspaces"
 SCHEMA = ROOT / "company_kernel" / "schema.sql"
+_OPEN_CONNECTIONS: list[sqlite3.Connection] = []
 
 KNOWN_RUNTIMES = {
     "openclaw": "OpenClaw runtime adapter",
@@ -542,13 +543,22 @@ def connect() -> sqlite3.Connection:
     ensure_schema_migrations(conn)
     sync_backlog_from_queue_file(conn)
     conn.commit()
+    _OPEN_CONNECTIONS.append(conn)
     return conn
 
 
 def connect_readonly() -> sqlite3.Connection:
     conn = sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True)
     conn.row_factory = sqlite3.Row
+    _OPEN_CONNECTIONS.append(conn)
     return conn
+
+
+def close_open_connections() -> None:
+    while _OPEN_CONNECTIONS:
+        conn = _OPEN_CONNECTIONS.pop()
+        with contextlib.suppress(sqlite3.Error):
+            conn.close()
 
 
 def emit(obj: dict) -> None:
@@ -7988,9 +7998,12 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = build_parser()
-    args = parser.parse_args(argv)
-    return args.func(args)
+    try:
+        parser = build_parser()
+        args = parser.parse_args(argv)
+        return args.func(args)
+    finally:
+        close_open_connections()
 
 
 if __name__ == "__main__":
