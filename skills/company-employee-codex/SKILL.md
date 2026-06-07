@@ -100,6 +100,34 @@ Pass criteria:
 - Codex workspace contains `reports/progress_acknowledged_*.json`, `reports/progress_in_progress_*.json`, and final `progress_completed_*.json` or `progress_blocked_*.json`.
 - The final reply includes concrete `changed_files`, `verification_run`, `blocker`, and `eta`; echoing the prompt is failure.
 
+## Hermes PM Supervision Contract
+
+When Codex is managed by Hermes as project manager, Codex must continuously expose state in the canonical workspace `reports/` directory:
+
+```text
+progress_acknowledged_*.json
+progress_in_progress_*.json
+progress_completed_*.json
+progress_blocked_*.json
+```
+
+Required semantics:
+
+- `acknowledged`: Codex received and understood the task.
+- `in_progress`: Codex is actively implementing or verifying.
+- `completed`: Codex finished and included verification evidence.
+- `blocked`: Codex cannot continue and wrote one concrete blocker.
+
+Each progress file must include the active Company Kernel `task_id`. Hermes ignores unrelated old progress files.
+
+Hermes will poll through:
+
+```bash
+bin/company-codex-pm-supervisor --agent codex --stale-minutes 15
+```
+
+Codex must not rely on chat text alone. If no matching progress file is written, Hermes will treat the task as stalled.
+
 ## Main/Codex Role Boundary
 
 - Main/OpenClaw owns project registration, scope, acceptance, sequencing, GitHub finalization, and human-facing status.

@@ -269,7 +269,7 @@ def summarize_state(state: dict) -> dict:
     failed_steps = []
     heartbeat_agents = []
     adapter_steps = []
-    counts = {"steps": len(steps), "heartbeats": 0, "adapters": 0, "repair": 0, "scheduler": 0, "failed": 0}
+    counts = {"steps": len(steps), "heartbeats": 0, "adapters": 0, "repair": 0, "scheduler": 0, "supervisor": 0, "failed": 0}
     for item in steps:
         step = str(item.get("step", ""))
         result = item.get("result", {})
@@ -287,6 +287,8 @@ def summarize_state(state: dict) -> dict:
             counts["repair"] += 1
         elif step.startswith("scheduler."):
             counts["scheduler"] += 1
+        elif step.startswith("supervisor."):
+            counts["supervisor"] += 1
     return {
         "ok": state.get("ok", False),
         "at": state.get("at", ""),
@@ -304,6 +306,8 @@ def tick(config: dict) -> dict:
         results.append({"step": "repair.reset-stale-claims", "result": run_companyctl("repair", "reset-stale-claims")})
     if config.get("run_scheduler", True):
         results.append({"step": "scheduler.run", "result": run_companyctl("scheduler", "run")})
+    if config.get("run_supervisor_delivery_loop", config.get("run_scheduler", True)):
+        results.append({"step": "supervisor.delivery-loop", "result": run_companyctl("supervisor", "delivery-loop")})
     for result in retry_due_adapter_runs(config):
         results.append({"step": "retry.adapter-run", "result": result})
     for agent in resolve_heartbeat_agents(config):

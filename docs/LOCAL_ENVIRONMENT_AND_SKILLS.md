@@ -133,7 +133,9 @@ Current skill families:
 
 ```text
 company-employee-openclaw
+company-employee-openclaw-workspace
 company-employee-hermes
+company-employee-cli-hermes
 company-employee-codex
 company-employee-claude
 company-employee-trae

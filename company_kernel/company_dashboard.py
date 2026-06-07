@@ -87,6 +87,14 @@ def build_traces(conn: sqlite3.Connection, *, limit: int = 20) -> list[dict]:
               SELECT trace_id, created_at FROM company_events WHERE trace_id != ''
               UNION ALL
               SELECT trace_id, created_at FROM adapter_runs WHERE trace_id != ''
+              UNION ALL
+              SELECT trace_id, created_at FROM artifacts WHERE trace_id != ''
+              UNION ALL
+              SELECT trace_id, created_at FROM evidence WHERE trace_id != ''
+              UNION ALL
+              SELECT trace_id, created_at FROM handoffs WHERE trace_id != ''
+              UNION ALL
+              SELECT trace_id, started_at AS created_at FROM execution_attempts WHERE trace_id != ''
             )
             GROUP BY trace_id
             ORDER BY last_seen DESC
@@ -117,7 +125,13 @@ def build_traces(conn: sqlite3.Connection, *, limit: int = 20) -> list[dict]:
             """,
             (trace_id,),
         )
-        timestamps = [item["created_at"] for item in [*event_rows, *run_rows] if item.get("created_at")]
+        artifact_rows = rows(conn, "SELECT artifact_id, task_id, employee_id, name, stage, status, version, created_at FROM artifacts WHERE trace_id = ? ORDER BY created_at ASC", (trace_id,))
+        evidence_rows = rows(conn, "SELECT evidence_id, task_id, employee_id, summary, path_or_url, is_final, created_at FROM evidence WHERE trace_id = ? ORDER BY created_at ASC", (trace_id,))
+        handoff_rows = rows(conn, "SELECT handoff_id, from_task_id, to_task_id, from_employee_id, status, summary, created_at FROM handoffs WHERE trace_id = ? ORDER BY created_at ASC", (trace_id,))
+        attempt_rows = rows(conn, "SELECT attempt_id, task_id, employee_id, adapter_type, status, started_at, finished_at FROM execution_attempts WHERE trace_id = ? ORDER BY started_at ASC", (trace_id,))
+        timestamps = [item["created_at"] for item in [*event_rows, *run_rows, *artifact_rows, *evidence_rows, *handoff_rows] if item.get("created_at")]
+        timestamps.extend(item["started_at"] for item in attempt_rows if item.get("started_at"))
+        timestamps.extend(item["finished_at"] for item in attempt_rows if item.get("finished_at"))
         if not timestamps:
             continue
         start = min(timestamps)
@@ -154,6 +168,58 @@ def build_traces(conn: sqlite3.Connection, *, limit: int = 20) -> list[dict]:
                     "created_at": run["created_at"],
                 }
             )
+        for artifact in artifact_rows:
+            spans.append(
+                {
+                    "name": f"artifact.{artifact['status']}",
+                    "service": artifact["employee_id"] or "artifact",
+                    "duration_ms": 24,
+                    "start_ms": milliseconds_between(start, artifact["created_at"]),
+                    "artifact_id": artifact["artifact_id"],
+                    "task_id": artifact["task_id"],
+                    "created_at": artifact["created_at"],
+                    "label": f"{artifact['name']} v{artifact['version']} {artifact['stage']}",
+                }
+            )
+        for item in evidence_rows:
+            spans.append(
+                {
+                    "name": "evidence.final" if item.get("is_final") else "evidence.created",
+                    "service": item["employee_id"] or "evidence",
+                    "duration_ms": 24,
+                    "start_ms": milliseconds_between(start, item["created_at"]),
+                    "evidence_id": item["evidence_id"],
+                    "task_id": item["task_id"],
+                    "created_at": item["created_at"],
+                    "label": item["summary"] or item["path_or_url"],
+                }
+            )
+        for handoff in handoff_rows:
+            spans.append(
+                {
+                    "name": f"handoff.{handoff['status']}",
+                    "service": handoff["from_employee_id"] or "handoff",
+                    "duration_ms": 24,
+                    "start_ms": milliseconds_between(start, handoff["created_at"]),
+                    "handoff_id": handoff["handoff_id"],
+                    "task_id": handoff["from_task_id"],
+                    "created_at": handoff["created_at"],
+                    "label": f"{handoff['from_task_id']} -> {handoff['to_task_id']}: {handoff['summary']}",
+                }
+            )
+        for attempt in attempt_rows:
+            spans.append(
+                {
+                    "name": f"attempt.{attempt['status']}",
+                    "service": attempt["employee_id"] or "attempt",
+                    "duration_ms": milliseconds_between(attempt["started_at"], attempt.get("finished_at") or attempt["started_at"]) if attempt.get("finished_at") else 24,
+                    "start_ms": milliseconds_between(start, attempt["started_at"]),
+                    "attempt_id": attempt["attempt_id"],
+                    "task_id": attempt["task_id"],
+                    "created_at": attempt["started_at"],
+                    "label": attempt["adapter_type"],
+                }
+            )
         spans.sort(key=lambda item: (item.get("start_ms", 0), item.get("name", "")))
         first = spans[0] if spans else {}
         traces.append(
@@ -162,6 +228,14 @@ def build_traces(conn: sqlite3.Connection, *, limit: int = 20) -> list[dict]:
                 "title": first.get("task_id") or first.get("name") or trace_id,
                 "duration_ms": max(duration, max((span["start_ms"] + span["duration_ms"] for span in spans), default=1)),
                 "spans": spans,
+                "counts": {
+                    "events": len(event_rows),
+                    "adapter_runs": len(run_rows),
+                    "artifacts": len(artifact_rows),
+                    "handoffs": len(handoff_rows),
+                    "evidence": len(evidence_rows),
+                    "execution_attempts": len(attempt_rows),
+                },
                 "started_at": start,
                 "updated_at": end,
             }
@@ -829,6 +903,19 @@ def load_summary(conn: sqlite3.Connection) -> dict:
         employee["progress_state"] = progress.get("state", "")
         employee["progress_label"] = progress.get("label", "")
         employee["progress_summary"] = progress.get("summary", "")
+        current_attempt = conn.execute(
+            """
+            SELECT attempt_id, trace_id, task_id, employee_id, adapter_type, runtime, pid, session_key,
+                   status, last_heartbeat_at, last_progress_at, started_at, finished_at, error_message
+            FROM execution_attempts
+            WHERE employee_id = ?
+              AND status IN ('starting', 'running', 'correcting')
+            ORDER BY started_at DESC
+            LIMIT 1
+            """,
+            (employee["id"],),
+        ).fetchone()
+        employee["current_attempt"] = dict(current_attempt) if current_attempt else {}
 
     return {
         "generated_at": generated_at,
@@ -945,6 +1032,17 @@ def load_summary(conn: sqlite3.Connection) -> dict:
         "pending_events": rows(conn, "SELECT * FROM company_events WHERE processed_at = '' ORDER BY created_at ASC LIMIT 20"),
         "events": rows(conn, "SELECT * FROM company_events ORDER BY created_at DESC LIMIT 20"),
         "adapter_runs": rows(conn, "SELECT * FROM adapter_runs ORDER BY created_at DESC LIMIT 20"),
+        "active_attempts": rows(
+            conn,
+            """
+            SELECT attempt_id, trace_id, task_id, employee_id, adapter_type, runtime, pid, session_key,
+                   status, last_heartbeat_at, last_progress_at, started_at, finished_at, error_message
+            FROM execution_attempts
+            WHERE status IN ('starting', 'running', 'correcting')
+            ORDER BY started_at DESC
+            LIMIT 50
+            """,
+        ),
         "locks": rows(conn, "SELECT * FROM locks ORDER BY updated_at DESC"),
         "traces": build_traces(conn),
     }
@@ -975,6 +1073,36 @@ def render_employee_table(items: list[dict]) -> str:
             f"<button type='button' onclick=\"directMessageEmployee('{employee_id}')\">Direct</button> "
             f"<button type='button' onclick=\"editEmployee('{employee_id}')\">Edit</button> "
             f"<button class='danger-button' type='button' onclick=\"offboardEmployee('{employee_id}', false)\">Archive</button>"
+            "</td>"
+        )
+        body.append(f"<tr>{cells}{actions}</tr>")
+    return f"<table><thead><tr>{head}</tr></thead><tbody>{''.join(body)}</tbody></table>"
+
+
+def render_task_table(items: list[dict]) -> str:
+    headers = ["id", "source", "target", "priority", "status", "claimed_by", "attempt", "evidence", "blocker", "approvals", "title", "updated", "actions"]
+    fields = ["id", "source_agent", "target_agent", "priority", "status", "claimed_by", "attempt_display", "evidence", "blocker_detail", "approval_count", "title", "updated_at"]
+    head = "".join(f"<th>{e(header)}</th>" for header in headers)
+    body = []
+    for item in items:
+        task_id = e(item.get("id", ""))
+        attempt_id = e(item.get("attempt_id", ""))
+        trace_id = e(item.get("attempt_trace_id", "") or item.get("trace_id", ""))
+        target = e(item.get("target_agent", ""))
+        cells = "".join(f"<td>{e(item.get(field, ''))}</td>" for field in fields)
+        if attempt_id:
+            managed_actions = (
+                f"<button type='button' onclick=\"correctTaskAttempt('{task_id}', '{attempt_id}')\">Correct</button> "
+                f"<button class='danger-button' type='button' onclick=\"cancelTaskAttempt('{task_id}', '{attempt_id}')\">Cancel</button> "
+            )
+        else:
+            managed_actions = ""
+        actions = (
+            "<td>"
+            f"{managed_actions}"
+            f"<button type='button' onclick=\"retryTask('{task_id}')\">Retry</button> "
+            f"<button type='button' onclick=\"reassignTask('{task_id}', '{target}')\">Reassign</button> "
+            f"<button type='button' onclick=\"viewTaskTrace('{trace_id}')\">Trace</button>"
             "</td>"
         )
         body.append(f"<tr>{cells}{actions}</tr>")
@@ -1108,13 +1236,22 @@ def render(summary: dict) -> str:
             }
         )
     tasks = []
+    attempts_by_task = {str(item.get("task_id", "")): item for item in summary.get("active_attempts", [])}
     for task in summary["tasks"]:
+        attempt = attempts_by_task.get(str(task["id"]), {})
+        attempt_display = ""
+        if attempt:
+            attempt_display = f"{attempt.get('status', '')}: {attempt.get('attempt_id', '')}"
         tasks.append(
             {
                 **task,
                 "evidence": "yes" if task.get("evidence_path") else "",
                 "blocker_detail": task.get("blocker", ""),
                 "approval_count": approval_counts.get(str(task["id"]), 0),
+                "attempt_id": attempt.get("attempt_id", ""),
+                "attempt_status": attempt.get("status", ""),
+                "attempt_trace_id": attempt.get("trace_id", ""),
+                "attempt_display": attempt_display,
             }
         )
     task_delegations = []
@@ -1294,7 +1431,7 @@ def render(summary: dict) -> str:
     <h2>Projects</h2>
     {render_table(["id", "owner", "status", "review", "plan", "open_plan", "accepted", "goal", "acceptance", "retro", "title", "updated"], projects, ["id", "owner_agent", "status", "review_state", "plan", "open_plan_items", "acceptance_count", "goal", "acceptance", "latest_acceptance_summary", "title", "updated_at"])}
     <h2>Recent Tasks</h2>
-    {render_table(["id", "source", "target", "priority", "status", "claimed_by", "evidence", "blocker", "approvals", "title", "updated"], tasks, ["id", "source_agent", "target_agent", "priority", "status", "claimed_by", "evidence", "blocker_detail", "approval_count", "title", "updated_at"])}
+    {render_task_table(tasks)}
     <h2>Long Task Delegation</h2>
     {render_table(["parent", "owner", "status", "review", "progress", "open/blocked", "children", "latest_child_update"], task_delegations, ["parent_id", "parent_owner", "parent_status", "review_state", "progress", "open_blocked", "child_summary", "latest_child_update"])}
     <h2>Conversations</h2>
@@ -1468,6 +1605,73 @@ def render(summary: dict) -> str:
       }} catch (err) {{
         setEmployeeApiStatus(`Offboard failed: ${{err.message}}`, true);
       }}
+    }}
+    async function correctTaskAttempt(taskId, attemptId) {{
+      const by = prompt(`Supervisor correcting ${{taskId}}`, 'hermes');
+      if (by === null) return;
+      const message = prompt('Correction message', '请回到原任务目标，更新 progress，并说明 blocker/evidence。');
+      if (message === null) return;
+      setEmployeeApiStatus(`Sending correction for ${{taskId}}...`, false);
+      try {{
+        await callCompanyApi(`/v1/tasks/${{encodeURIComponent(taskId)}}/correct`, {{attempt_id: attemptId, by: by || 'hermes', message}}, 'POST');
+        setEmployeeApiStatus(`Correction sent for ${{taskId}}. Reloading dashboard...`, false);
+        setTimeout(() => location.reload(), 800);
+      }} catch (err) {{
+        setEmployeeApiStatus(`Correction failed: ${{err.message}}`, true);
+      }}
+    }}
+    async function cancelTaskAttempt(taskId, attemptId) {{
+      const by = prompt(`Who cancels ${{taskId}}?`, 'hermes');
+      if (by === null) return;
+      const reason = prompt('Cancel reason', '用户停止或 supervisor 判定需要停止');
+      if (reason === null) return;
+      if (!confirm(`Cancel attempt ${{attemptId}} for task ${{taskId}}?`)) return;
+      setEmployeeApiStatus(`Cancelling ${{taskId}}...`, false);
+      try {{
+        await callCompanyApi(`/v1/tasks/${{encodeURIComponent(taskId)}}/cancel`, {{attempt_id: attemptId, by: by || 'hermes', reason}}, 'POST');
+        setEmployeeApiStatus(`Cancelled ${{taskId}}. Reloading dashboard...`, false);
+        setTimeout(() => location.reload(), 800);
+      }} catch (err) {{
+        setEmployeeApiStatus(`Cancel failed: ${{err.message}}`, true);
+      }}
+    }}
+    async function retryTask(taskId) {{
+      const by = prompt(`Who retries ${{taskId}}?`, 'hermes');
+      if (by === null) return;
+      const reason = prompt('Retry reason', '修复后重试');
+      if (reason === null) return;
+      setEmployeeApiStatus(`Retrying ${{taskId}}...`, false);
+      try {{
+        await callCompanyApi(`/v1/tasks/${{encodeURIComponent(taskId)}}/retry`, {{by: by || 'hermes', reason}}, 'POST');
+        setEmployeeApiStatus(`Retry attempt started for ${{taskId}}. Reloading dashboard...`, false);
+        setTimeout(() => location.reload(), 800);
+      }} catch (err) {{
+        setEmployeeApiStatus(`Retry failed: ${{err.message}}`, true);
+      }}
+    }}
+    async function reassignTask(taskId, currentTarget) {{
+      const by = prompt(`Who reassigns ${{taskId}}?`, 'hermes');
+      if (by === null) return;
+      const to = prompt('New employee id', currentTarget || 'codex');
+      if (to === null || !to.trim()) return;
+      const reason = prompt('Reassign reason', '更适合该员工执行');
+      if (reason === null) return;
+      setEmployeeApiStatus(`Reassigning ${{taskId}} to ${{to}}...`, false);
+      try {{
+        await callCompanyApi(`/v1/tasks/${{encodeURIComponent(taskId)}}/reassign`, {{by: by || 'hermes', to, reason}}, 'POST');
+        setEmployeeApiStatus(`Reassigned ${{taskId}}. Reloading dashboard...`, false);
+        setTimeout(() => location.reload(), 800);
+      }} catch (err) {{
+        setEmployeeApiStatus(`Reassign failed: ${{err.message}}`, true);
+      }}
+    }}
+    async function viewTaskTrace(traceId) {{
+      if (!traceId) {{
+        setEmployeeApiStatus('No trace_id for this task yet.', true);
+        return;
+      }}
+      setEmployeeApiStatus(`Trace ${{traceId}} is visible in the Traces panel/API.`, false);
+      location.hash = `trace-${{traceId}}`;
     }}
     window.addEventListener('DOMContentLoaded', checkCompanyApi);
   </script>

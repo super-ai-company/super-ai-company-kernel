@@ -6,5 +6,6 @@
   "workspace": "/Users/owner",
   "status": "active",
   "created_at": "2026-06-03T01:31:29+07:00",
-  "updated_at": "2026-06-04T10:51:18+07:00"
+  "updated_at": "2026-06-07T13:02:32+07:00",
+  "unavailable_reason": "  \"created_at\": \"2026-06-07T11:52:31+07:00\",\n        \"type\": \"message\",\n        \"communication_policy\": {\n          \"allowed\": true,\n          \"mode\": \"open\",\n          \"source\": \"antigravity\",\n          \"target\": \"main\",\n          \"action\": \"message.send\",\n          \"reason\": \"allowed\"\n        }\n      },\n      \"file\": \"/Users/owner/openclaw/workspace-xmanx/projects/super-ai-company-kernel/employees/main/inbox/msg-antigravity-status-20260607-115231.message.json\",\n      \"event_id\": \"evt-20260607-115231-0f8aa0\"\n    },\n    \"stderr\": \"\"\n  },\n  \"agy_exit_code\": 0,\n  \"agy_stderr\": \"\",\n  \"validation\": {\n    \"ok\": false,\n    \"mode\": \"execution\",\n    \"status\": \"blocked\",\n    \"activation_eligible\": false,\n    \"blocker\": \"missing structured fields: status, current_action, changed_files, verification_run, blocker\",\n    \"fields\": {},\n    \"changed_files\": []\n  },\n  \"blocked_execution\": true,\n  \"blocker\": \"missing structured fields: status, current_action, changed_files, verification_run, blocker\"\n}\n"
 }

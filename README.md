@@ -10,6 +10,12 @@
 
 本地环境、隐藏目录和 Skill 启用规范见：[docs/LOCAL_ENVIRONMENT_AND_SKILLS.md](docs/LOCAL_ENVIRONMENT_AND_SKILLS.md)
 
+Hermes 管理 Codex 项目开发的 PM 监督闭环见：[docs/CODEX_HERMES_PM_SUPERVISION.md](docs/CODEX_HERMES_PM_SUPERVISION.md)
+
+各类员工逐步接入规则见：[docs/EMPLOYEE_INTEGRATION_MATRIX.md](docs/EMPLOYEE_INTEGRATION_MATRIX.md)
+
+OpenClaw 员工与 Company Kernel 的桥接边界见：[docs/OPENCLAW_COMPANY_BRIDGE.md](docs/OPENCLAW_COMPANY_BRIDGE.md)
+
 ## Quick Start
 
 ```bash
@@ -27,6 +33,30 @@ python3 -m company_kernel.companyctl runtime verify-adapters --agents hermes,cod
 ```bash
 python3 -m unittest discover -s tests -v
 ```
+
+## v3 File Flow Kernel
+
+任务提交会自动创建授权 workspace：`state/task-workspaces/task_<task-id>/`，包含 `input/`、`work/`、`artifacts/`、`evidence/`、`final/` 和 `manifest.json`。员工产物必须登记为 Artifact，不能只靠聊天或随机路径交接文件；同名产物再次登记会生成新 version，并把旧版本标记为 `superseded`。
+
+最小链路：
+
+```bash
+bin/companyctl task artifact register --task-id <task-id> --employee <agent> --path <workspace-file> --type json --summary "产物说明"
+bin/companyctl task artifact scan --task-id <task-id> --employee <agent> --dir <workspace-dir> --type json --summary "自动登记目录产物"
+bin/companyctl task artifact approve --artifact-id <artifact-id> --by <agent>
+bin/companyctl task handoff create --from-task <task-a> --to-task <task-b> --from-employee <agent-a> --to-employee <agent-b> --summary "交接说明" --artifact <artifact-id>
+bin/companyctl task handoff accept --handoff-id <handoff-id> --by <agent-b>
+bin/companyctl task handoff reject --handoff-id <handoff-id> --by <agent-b> --reason "交接不完整"
+bin/companyctl task context --task-id <task-b> --employee <agent-b>
+bin/companyctl task artifact use --task-id <task-b> --employee <agent-b> --artifact-id <artifact-id> --summary "读取用途"
+bin/companyctl task attempt start --task-id <task-id> --employee <agent> --adapter-type local
+bin/companyctl task attempt finish --attempt-id <attempt-id> --status success
+bin/companyctl task retry --task-id <task-id> --by <agent> --reason "补齐后重试"
+bin/companyctl task evidence promote --artifact-id <artifact-id> --employee <agent> --summary "最终证据"
+bin/company-trace --task-id <task-id>
+```
+
+Trace JSON/HTML 与 dashboard trace summary 现在包含 tasks、events、adapter_runs、artifacts、handoffs、evidence、execution_attempts 和完整 timeline/counts。进入 v3 文件流的任务，`task done` 必须使用 promoted final evidence。
 
 ## Local Usability Smoke
 
@@ -61,6 +91,7 @@ python3 -m company_kernel.companyctl runtime test --runtime hermes
 bin/company-adapter-worker --agent codex --dry-run
 bin/company-codex-adapter
 bin/company-codex-adapter --execute --sandbox read-only
+bin/company-codex-pm-supervisor --agent codex --stale-minutes 15
 bin/company-openclaw-adapter --agent nestcar
 bin/company-openclaw-adapter --agent nestcar --execute
 bin/company-hermes-adapter
@@ -144,7 +175,7 @@ Required minimal payload:
     "id": "ext-telegram-hermes-001",
     "platform": "telegram",
     "account_id": "home",
-    "external_chat_id": "6066269036",
+    "external_chat_id": "CHAT_ID_PLACEHOLDER",
     "owner_agent": "hermes",
     "bridge_agent": "telegram-bridge",
     "title": "Shift ↔ Hermes"
@@ -748,6 +779,8 @@ bin/company-codex-adapter --execute --sandbox read-only
 
 `bin/company-openclaw-adapter` 会领取指定 OpenClaw 员工的 Company Kernel 任务，转换成 OpenClaw 旧 `ops/agent_bus` payload。
 
+Company Kernel 不替换 OpenClaw 原生内部通信。OpenClaw 员工只能通过 adapter bridge 接收 Company Kernel 任务，完成必须回 evidence 或 blocker；普通聊天只发短摘要，不发 raw queue counters。
+
 默认不写真实 OpenClaw bus：
 
 ```bash
@@ -813,6 +846,8 @@ bin/company-trae-adapter --execute
 ## Antigravity Adapter
 
 `bin/company-antigravity-adapter` 会领取 `antigravity` 员工的 Company Kernel 任务，生成 GUI task brief，并写入 evidence。
+
+如果本机存在 `agy` CLI，direct message 会用 `agy --print` 做真实回复校验，attendance sweep 会通过 `bin/company-antigravity-adapter --attendance-probe` 要求精确返回 `antigravity 在岗`。exact-token smoke 只证明通信，不证明 GUI/代码执行；复杂任务必须通过 `--complete` 或 `--block` 回写证据。
 
 默认不打开 Antigravity：
 

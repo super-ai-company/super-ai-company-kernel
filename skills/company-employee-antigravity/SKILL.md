@@ -81,6 +81,8 @@ Company Kernel usage rule: first use `agy --print` and/or an interactive `agy` s
 ## Execution Rules
 
 - Default adapter mode is dry-run: writes a GUI task brief and evidence.
+- If `agy` exists, use it for direct communication smoke and structured evidence checks. If `agy` is missing or times out, return a blocker; do not invent a GUI result.
+- `agy --print` exact-token success proves communication only. It does not prove page inspection, code edits, browser testing, or project completion.
 - Direct messages must not fail with “unsupported runtime”. They must write a direct GUI brief under `employees/antigravity/reports/direct/`, return an ACK to the sender, and send a structured `status: blocked` message back to the source when autonomous GUI execution is not verified.
 - Progress/status receipts should use the normalized 5-layer protocol:
   `received`, `working`, `waiting`, `blocked`, `done`
@@ -94,6 +96,7 @@ Company Kernel usage rule: first use `agy --print` and/or an interactive `agy` s
 - `--execute` only opens Antigravity; it does not prove task completion.
 - Use `--complete --task-id <id> --summary ... --evidence ...` or equivalent Company Kernel task completion after GUI work has real evidence.
 - Use `--block --task-id <id> --blocker ...` if the GUI cannot complete safely.
+- If a PM/supervisor wants to monitor Antigravity continuously, the runtime must first expose durable status evidence. Acceptable evidence is a task-scoped adapter report, structured direct report JSON, changed files, and browser/test output. Chat prose alone is not a monitorable status API.
 - Every received request must ACK or return a blocker reply to the sender.
 - A frontend implementation is not complete unless `git diff --stat` shows the expected files and tests/browser checks were run. If the reply references unrelated Hermes/Codex tasks, treat it as `blocked_context_mismatch`, not done.
 - Keep task prompts narrow: include the exact repo path, branch, allowed files, expected pages, and required verification commands. Reject stale conversation carry-over.

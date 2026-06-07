@@ -12,6 +12,8 @@ OpenClaw workspace agents are business/runtime agents that often have two differ
 
 Do not assume these surfaces are processed by the same loop. A common failure is that the agent handles the human chat but ignores agent-to-agent inbox/bus messages.
 
+Reference bridge contract: `docs/OPENCLAW_COMPANY_BRIDGE.md`. Company Kernel must not replace or mutate OpenClaw's native internal bus; it wraps OpenClaw workspaces with a separate task/evidence bridge.
+
 ## One-Sentence Onboarding
 
 “Onboard each OpenClaw workspace as a candidate first, prove it can process agent-to-agent tasks separately from human chat, then activate it only after it returns multi-round receipts and execution evidence.”
@@ -85,6 +87,13 @@ Preferred 5-layer progress protocol for supervisor heartbeat/API:
 - `done` -> `done|verified_complete|completed`
 - 如果 heartbeat 让 layer/state 发生变化，Kernel 应生成 repo 内 `progress.notification` 记录，并在 delivery 闭环后回写 `delivery_status/delivery_error/delivered_at`；只有 `sent` 才代表真的发给了 Shift。
 - 如果没有新的用户催促，也要允许 supervisor loop 主动扫 `progress.notification`；第一次失败可记 `retry_ready`，连续失败再记 `escalate_ready`。
+
+Human-facing chat rule:
+
+- Send only the final useful summary, for example `完成了 chindahotpot 的 04店日报检查任务。`
+- If blocked, send one blocker, owner, next action, and evidence path.
+- Do not send raw queue counters, monitor tables, inbox/done/failed deltas, or debug dumps to normal owner chats.
+- `ACK`, `submitted`, `delegated`, `receipt`, heartbeat, and inbox file creation are not completion.
 
 ## Minimum Agent-to-Agent Task Envelope
 

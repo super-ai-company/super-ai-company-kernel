@@ -11,11 +11,20 @@ employees/*/heartbeat.json
 employees/*/inbox/
 employees/*/outbox/
 employees/*/reports/
+employees/ecommerce-copy-skill/
 
 .ops/
 reports/heartbeats/
+reports/communication-acceptance/
 reports/tmp-chrome-profile/
 reports/*.log
+reports/antigravity-runs/
+reports/backend-runs/
+reports/codex-plans/
+reports/codex-runs/
+reports/frontend-runs/
+reports/progress_*.json
+reports/*-202606*.md
 
 .pytest_cache/
 .coverage

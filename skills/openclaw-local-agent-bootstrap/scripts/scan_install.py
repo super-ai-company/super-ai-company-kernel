@@ -28,7 +28,7 @@ RUNTIME_DETECTORS = [
     {"id": "codex", "name": "Codex", "role": "developer", "runtime": "codex", "paths": ["~/openclaw/workspace-xmanx/projects/openclaw-codex-controller"], "commands": ["codex"]},
     {"id": "claude", "name": "Claude", "role": "analyst", "runtime": "claude", "paths": ["~"], "commands": ["claude"]},
     {"id": "trae", "name": "Trae", "role": "developer", "runtime": "trae", "paths": ["~"], "commands": ["trae"]},
-    {"id": "antigravity", "name": "Antigravity", "role": "developer", "runtime": "antigravity", "paths": ["/Applications/Antigravity.app", "~"], "commands": []},
+    {"id": "antigravity", "name": "Antigravity", "role": "developer", "runtime": "antigravity", "paths": ["/Applications/Antigravity.app", "~"], "commands": ["agy"]},
     {"id": "cursor", "name": "Cursor", "role": "developer", "runtime": "local", "paths": ["~/openclaw/company-kernel/employees/cursor"], "commands": ["cursor"]},
     {"id": "devin", "name": "Devin", "role": "developer", "runtime": "local", "paths": ["~/openclaw/company-kernel/employees/devin"], "commands": ["devin"]},
     {"id": "github-copilot", "name": "GitHub Copilot", "role": "developer", "runtime": "local", "paths": ["~/openclaw/company-kernel/employees/github-copilot"], "commands": []},
@@ -87,6 +87,14 @@ def first_existing_path(paths: list[str]) -> str:
 
 def command_exists(commands: list[str]) -> list[str]:
     return [cmd for cmd in commands if shutil.which(cmd)]
+
+
+def runtime_commands_for(agent_id: str, runtime: str) -> list[str]:
+    commands: list[str] = []
+    for detector in RUNTIME_DETECTORS:
+        if detector["id"] == agent_id or detector["runtime"] == runtime:
+            commands.extend(detector["commands"])
+    return command_exists(sorted(set(commands)))
 
 
 def summarize_control_files(root: Path) -> list[dict]:
@@ -231,6 +239,8 @@ def classify_employee(employee: dict, kernel_root: Path) -> dict:
         runtime_agent_id = "default"
     inbox = kernel_root / "employees" / employee["id"] / "inbox"
     pending_inbox_messages = len(list(inbox.glob("*.message.json"))) if inbox.exists() else 0
+    available_commands = runtime_commands_for(employee["id"], employee.get("runtime", ""))
+    evidence.extend(available_commands)
     return {
         "agent_id": employee["id"],
         "name": employee.get("name", employee["id"]),
@@ -241,7 +251,7 @@ def classify_employee(employee: dict, kernel_root: Path) -> dict:
             "lookup_priority": ["id", "alias", "name", "display_name"],
             "rename_command": f"bin/companyctl employee update --id {employee['id']} --name <new-name>",
         },
-        "runtime": {"type": employee.get("runtime", ""), "workspace": employee.get("workspace", ""), "runtime_agent_id": runtime_agent_id},
+        "runtime": {"type": employee.get("runtime", ""), "workspace": employee.get("workspace", ""), "runtime_agent_id": runtime_agent_id, "available_commands": available_commands},
         "communication": {
             "default_reply_channel": "current-conversation",
             "default_reply_account": "",

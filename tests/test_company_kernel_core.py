@@ -11,6 +11,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from datetime import datetime, timedelta
 from http import HTTPStatus
 from pathlib import Path
 from unittest import mock
@@ -26,10 +27,12 @@ from company_kernel import company_service_smoke
 from company_kernel import company_trace
 from company_kernel import companyctl
 from company_kernel import codex_adapter
+from company_kernel import hermes_adapter
 from company_kernel import openclaw_adapter
 from company_kernel import policy_guard
 from company_kernel import sandboxing
 from company_kernel import schema_migrations
+from company_kernel import skill_package_worker
 
 
 def run_cli(*args: str) -> tuple[int, dict]:
@@ -62,7 +65,7 @@ class CompanyKernelCoreTest(unittest.TestCase):
         for source_file in source_templates.glob("*.html"):
             (root / "dashboard_templates" / source_file.name).write_text(source_file.read_text(encoding="utf-8"), encoding="utf-8")
         (root / "bin").mkdir()
-        for executable in ["companyctl", "company-adapter-worker", "company-codex-adapter", "company-openclaw-adapter", "company-trace", "company-api-rpc", "company-api-grpc", "company-service-smoke", "company-local-smoke"]:
+        for executable in ["companyctl", "company-adapter-worker", "company-skill-package-worker", "company-codex-adapter", "company-openclaw-adapter", "company-trace", "company-api-rpc", "company-api-grpc", "company-service-smoke", "company-local-smoke"]:
             target = root / "bin" / executable
             target.write_text((Path(__file__).resolve().parents[1] / "bin" / executable).read_text(encoding="utf-8"), encoding="utf-8")
             target.chmod(0o755)
@@ -209,6 +212,9 @@ class CompanyKernelCoreTest(unittest.TestCase):
             mock.patch.object(codex_adapter, "ROOT", root),
             mock.patch.object(codex_adapter, "DB_PATH", root / "company.sqlite"),
             mock.patch.object(codex_adapter, "DEFAULT_WORKSPACE", root / "workspace" / "codex"),
+            mock.patch.object(hermes_adapter, "ROOT", root),
+            mock.patch.object(hermes_adapter, "DB_PATH", root / "company.sqlite"),
+            mock.patch.object(hermes_adapter, "DEFAULT_WORKSPACE", root / "workspace" / "hermes"),
             mock.patch.object(openclaw_adapter, "ROOT", root),
             mock.patch.object(openclaw_adapter, "DB_PATH", root / "company.sqlite"),
             mock.patch.object(openclaw_adapter, "OPENCLAW_ROOT", root / "openclaw"),
@@ -257,6 +263,7 @@ class CompanyKernelCoreTest(unittest.TestCase):
             conn = sqlite3.connect(companyctl.DB_PATH)
             conn.row_factory = sqlite3.Row
             conn.executescript(companyctl.SCHEMA.read_text(encoding="utf-8"))
+            companyctl.sync_backlog_from_queue_file(conn)
             conn.commit()
             companyctl._TEST_OPEN_CONNECTIONS.append(conn)
             return conn
@@ -393,6 +400,15 @@ class CompanyKernelCoreTest(unittest.TestCase):
                     "20260603_adapter_runs_trace_id",
                     "20260603_company_events_trace_id",
                     "20260603_project_plan_items_task_id",
+                    "20260607_execution_attempts_cancel_requested_at",
+                    "20260607_execution_attempts_last_heartbeat_at",
+                    "20260607_execution_attempts_last_progress_at",
+                    "20260607_execution_attempts_pid",
+                    "20260607_execution_attempts_runtime",
+                    "20260607_execution_attempts_runtime_policy_json",
+                    "20260607_execution_attempts_session_key",
+                    "20260607_execution_attempts_supervisor_state_json",
+                    "20260607_v3_file_flow_tables",
                 ],
                 [row["id"] for row in migrations],
             )
@@ -956,6 +972,17 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertIn("--direct-source", calls[0])
         self.assertIn("--direct-session-key", calls[0])
         self.assertEqual("codex", sent["message"]["target_agent"])
+        with sqlite3.connect(self.root / "company.sqlite") as conn:
+            conn.row_factory = sqlite3.Row
+            direct_events = conn.execute("SELECT event_type, processed_at FROM company_events WHERE event_type = 'message.send' ORDER BY created_at").fetchall()
+        self.assertEqual(2, len(direct_events))
+        self.assertTrue(all(row["processed_at"] for row in direct_events))
+
+        code, normal = run_cli("message", "send", "--from", "main", "--to", "codex", "--body", "普通消息")
+        self.assertEqual(0, code, normal)
+        with sqlite3.connect(self.root / "company.sqlite") as conn:
+            pending = conn.execute("SELECT COUNT(*) FROM company_events WHERE event_type = 'message.send' AND processed_at = ''").fetchone()[0]
+        self.assertEqual(1, pending)
 
     def test_codex_direct_message_writes_progress_report(self) -> None:
         code, created = run_cli(
@@ -1015,6 +1042,8 @@ class CompanyKernelCoreTest(unittest.TestCase):
             "python3 -m unittest OK",
             "--risks",
             "none",
+            "--task-id",
+            "task-progress-helper-001",
             "--out-dir",
             str(out_dir),
         ]
@@ -1033,12 +1062,14 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertTrue(report.exists())
         payload = json.loads(report.read_text(encoding="utf-8"))
         self.assertTrue(payload["ok"])
+        self.assertEqual("task-progress-helper-001", payload["task_id"])
         self.assertEqual("completed", payload["report"]["state"])
         self.assertEqual("codex", payload["report"]["project"])
         self.assertEqual("completed direct task", payload["report"]["action"])
         self.assertEqual("python3 -m unittest OK", payload["report"]["checking"])
         self.assertEqual("none", payload["report"]["risks"])
         self.assertEqual(str(out_dir.parent.resolve()), payload["report"]["targets"])
+        self.assertIn("task-progress-helper-001", report.name)
 
     def test_codex_direct_execution_runs_worker_and_writes_repo_progress(self) -> None:
         workspace = self.root / "workspace" / "codex"
@@ -1226,7 +1257,7 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual(0, code, shown)
         self.assertEqual("candidate", shown["employee"]["status"])
 
-    def test_antigravity_cli_direct_rounds_can_activate_employee(self) -> None:
+    def test_antigravity_cli_direct_rounds_do_not_activate_without_execution_evidence(self) -> None:
         code, created = run_cli("employee", "create", "--id", "main", "--name", "main", "--role", "operator", "--runtime", "openclaw", "--workspace", str(self.root / "workspace" / "main"))
         self.assertEqual(0, code, created)
         code, created = run_cli("employee", "create", "--id", "antigravity", "--name", "Antigravity", "--role", "developer", "--runtime", "antigravity", "--workspace", str(self.root / "workspace" / "antigravity"))
@@ -1240,20 +1271,120 @@ class CompanyKernelCoreTest(unittest.TestCase):
 
             class Result:
                 returncode = 0
-                stdout = json.dumps({"ok": True, "agent": "antigravity", "direct_message": True, "reply": expected, "activation_eligible": True})
+                stdout = json.dumps({"ok": True, "agent": "antigravity", "direct_message": True, "reply": expected, "activation_eligible": False})
                 stderr = ""
 
             return Result()
 
         with mock.patch.object(companyctl.subprocess, "run", side_effect=fake_run):
             code, verified = run_cli("employee", "verify-direct", "--id", "antigravity", "--from", "main", "--rounds", "3", "--activate")
+        self.assertEqual(1, code, verified)
+        self.assertFalse(verified["ok"])
+        self.assertEqual(0, verified["rounds_completed"])
+        self.assertFalse(verified["activated"])
+        code, shown = run_cli("employee", "show", "antigravity")
+        self.assertEqual(0, code, shown)
+        self.assertEqual("candidate", shown["employee"]["status"])
+
+    def test_antigravity_runtime_execution_evidence_can_activate_employee(self) -> None:
+        code, created = run_cli("employee", "create", "--id", "main", "--name", "main", "--role", "operator", "--runtime", "openclaw", "--workspace", str(self.root / "workspace" / "main"))
+        self.assertEqual(0, code, created)
+        code, created = run_cli("employee", "create", "--id", "antigravity", "--name", "Antigravity", "--role", "developer", "--runtime", "antigravity", "--workspace", str(self.root / "workspace" / "antigravity"))
+        self.assertEqual(0, code, created)
+        structured_reply = "\n".join(
+            [
+                "status: done",
+                "current_action: inspected README.md and dashboard code",
+                "changed_files: -",
+                "verification_run: agy print inspected README.md and company_dashboard.py",
+                "browser_check: -",
+                "blocker: -",
+                "eta: -",
+            ]
+        )
+
+        def fake_run(cmd, cwd=None, text=None, capture_output=None, timeout=None):
+            self.assertIn("company-antigravity-adapter", cmd[0])
+            self.assertIn("--direct-message", cmd)
+
+            class Result:
+                returncode = 0
+                stdout = json.dumps({"ok": True, "agent": "antigravity", "direct_message": True, "reply": structured_reply, "activation_eligible": True})
+                stderr = ""
+
+            return Result()
+
+        with mock.patch.object(companyctl.subprocess, "run", side_effect=fake_run):
+            code, verified = run_cli("employee", "verify-runtime", "--id", "antigravity", "--from", "main", "--activate")
         self.assertEqual(0, code, verified)
         self.assertTrue(verified["ok"])
-        self.assertEqual(3, verified["rounds_completed"])
         self.assertTrue(verified["activated"])
+        self.assertEqual("execution_evidence", verified["verification"]["type"])
         code, shown = run_cli("employee", "show", "antigravity")
         self.assertEqual(0, code, shown)
         self.assertEqual("active", shown["employee"]["status"])
+
+    def test_runtime_verification_blocked_reply_cannot_activate_employee(self) -> None:
+        code, created = run_cli("employee", "create", "--id", "main", "--name", "main", "--role", "operator", "--runtime", "openclaw", "--workspace", str(self.root / "workspace" / "main"))
+        self.assertEqual(0, code, created)
+        code, created = run_cli("employee", "create", "--id", "antigravity", "--name", "Antigravity", "--role", "developer", "--runtime", "antigravity", "--workspace", str(self.root / "workspace" / "antigravity"))
+        self.assertEqual(0, code, created)
+        blocked_reply = "\n".join(
+            [
+                "status: blocked",
+                "current_action: tried to inspect files",
+                "changed_files: -",
+                "verification_run: find README.md company_dashboard.py",
+                "browser_check: -",
+                "blocker: missing target files",
+                "eta: -",
+            ]
+        )
+
+        def fake_run(cmd, cwd=None, text=None, capture_output=None, timeout=None):
+            class Result:
+                returncode = 0
+                stdout = json.dumps({"ok": True, "agent": "antigravity", "direct_message": True, "reply": blocked_reply, "activation_eligible": True})
+                stderr = ""
+
+            return Result()
+
+        with mock.patch.object(companyctl.subprocess, "run", side_effect=fake_run):
+            code, verified = run_cli("employee", "verify-runtime", "--id", "antigravity", "--from", "main", "--activate")
+        self.assertEqual(1, code, verified)
+        self.assertFalse(verified["ok"])
+        self.assertFalse(verified["activation_allowed"])
+        self.assertIn("runtime_reply_not_done", verified["verification"]["reason"])
+        self.assertFalse(verified["activated"])
+        code, shown = run_cli("employee", "show", "antigravity")
+        self.assertEqual(0, code, shown)
+        self.assertEqual("candidate", shown["employee"]["status"])
+
+    def test_candidate_runtime_verification_failure_does_not_pause_candidate(self) -> None:
+        code, created = run_cli("employee", "create", "--id", "main", "--name", "main", "--role", "operator", "--runtime", "openclaw", "--workspace", str(self.root / "workspace" / "main"))
+        self.assertEqual(0, code, created)
+        code, created = run_cli("employee", "create", "--id", "antigravity", "--name", "Antigravity", "--role", "developer", "--runtime", "antigravity", "--workspace", str(self.root / "workspace" / "antigravity"))
+        self.assertEqual(0, code, created)
+
+        def fake_run(cmd, cwd=None, text=None, capture_output=None, timeout=None):
+            self.assertIn("--timeout", cmd)
+            self.assertEqual("240", cmd[cmd.index("--timeout") + 1])
+
+            class Result:
+                returncode = 1
+                stdout = json.dumps({"ok": False, "reply": "", "blocker": "runtime timeout"})
+                stderr = "runtime timeout"
+
+            return Result()
+
+        with mock.patch.object(companyctl.subprocess, "run", side_effect=fake_run):
+            code, verified = run_cli("employee", "verify-runtime", "--id", "antigravity", "--from", "main", "--timeout", "240", "--activate")
+        self.assertEqual(1, code, verified)
+        self.assertFalse(verified["ok"])
+        code, shown = run_cli("employee", "show", "antigravity")
+        self.assertEqual(0, code, shown)
+        self.assertEqual("candidate", shown["employee"]["status"])
+        self.assertNotIn("unavailable_reason", shown["profile"])
 
     def test_task_submit_rejects_candidate_employee(self) -> None:
         code, created = run_cli("employee", "create", "--id", "main", "--name", "main", "--role", "operator", "--runtime", "openclaw", "--workspace", str(self.root / "workspace" / "main"))
@@ -1401,6 +1532,9 @@ class CompanyKernelCoreTest(unittest.TestCase):
         finally:
             conn.close()
         self.assertIn("trace-dashboard-live", [trace["trace_id"] for trace in summary["traces"]])
+        dashboard_trace = next(trace for trace in summary["traces"] if trace["trace_id"] == "trace-dashboard-live")
+        self.assertIn("counts", dashboard_trace)
+        self.assertEqual(1, dashboard_trace["counts"]["adapter_runs"])
         with contextlib.redirect_stdout(io.StringIO()):
             code = company_dashboard.main(["--output", str(output)])
         self.assertEqual(0, code)
@@ -1472,7 +1606,7 @@ class CompanyKernelCoreTest(unittest.TestCase):
                 "id": "ext-telegram-hermes-002",
                 "platform": "telegram",
                 "account_id": "home",
-                "external_chat_id": "6066269036",
+                "external_chat_id": "CHAT_ID_PLACEHOLDER",
                 "owner_agent": "hermes",
                 "bridge_agent": "telegram-bridge",
                 "title": "Shift ↔ Hermes",
@@ -1626,6 +1760,55 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual("waiting", employee["progress_layer"])
         self.assertEqual("blocked_on_input_or_dependency", employee["progress_state"])
         self.assertEqual("waiting / blocked_on_input_or_dependency", model["progress_display"])
+
+    def test_heartbeat_auto_attaches_latest_progress_bridge_for_active_task(self) -> None:
+        workspace = self.root / "workspace" / "codex-bridge"
+        reports = workspace / "reports"
+        reports.mkdir(parents=True)
+        progress = reports / "progress_in_progress_task-codex-bridge.json"
+        progress.write_text(
+            json.dumps(
+                {
+                    "ok": True,
+                    "task_id": "task-codex-bridge",
+                    "report": {
+                        "state": "in_progress",
+                        "project": "codex-bridge",
+                        "action": "实现 bridge",
+                        "checking": "unit",
+                        "created_at": "2026-06-06T00:00:01+07:00",
+                    },
+                },
+                ensure_ascii=False,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        code, created = run_cli("employee", "create", "--id", "codex-bridge", "--name", "codex-bridge", "--role", "engineer", "--runtime", "codex", "--workspace", str(workspace))
+        self.assertEqual(0, code, created)
+
+        conn = companyctl.connect()
+        try:
+            ts = companyctl.now()
+            conn.execute("UPDATE employees SET status = 'active', updated_at = ? WHERE id = ?", (ts, "codex-bridge"))
+            conn.execute(
+                "INSERT INTO tasks(id, source_agent, target_agent, title, description, priority, status, claimed_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 'P1', ?, ?, ?, ?)",
+                ("task-codex-bridge", "hermes", "codex-bridge", "桥接 heartbeat progress", "需要把 progress bridge 落到 heartbeat", "claimed", "codex-bridge", ts, ts),
+            )
+            hb = companyctl.heartbeat_internal(conn, "codex-bridge", {"source": "unit-test"})
+            row = conn.execute("SELECT metadata_json FROM heartbeats WHERE agent_id = ?", ("codex-bridge",)).fetchone()
+        finally:
+            conn.close()
+
+        self.assertIsNotNone(row)
+        metadata = json.loads(row["metadata_json"])
+        self.assertEqual("task-codex-bridge", metadata["task_id"])
+        self.assertEqual(str(progress.resolve()), metadata["latest_progress"]["path"])
+        self.assertEqual("working", metadata["latest_progress"]["layer"])
+        self.assertEqual("in_progress", metadata["latest_progress"]["state"])
+        self.assertEqual(str(progress.resolve()), hb["latest_progress"]["path"])
+        self.assertEqual("working", hb["progress"]["layer"])
+        self.assertEqual("in_progress", hb["progress"]["state"])
 
     def test_progress_protocol_normalizes_five_layers(self) -> None:
         self.assertEqual("received", companyctl.normalize_progress_state("acknowledged")["layer"])
@@ -1866,7 +2049,7 @@ class CompanyKernelCoreTest(unittest.TestCase):
                 "platform": "telegram",
                 "account_id": "home",
                 "external_user_id": "shift",
-                "external_chat_id": "6066269036",
+                "external_chat_id": "CHAT_ID_PLACEHOLDER",
                 "owner_agent": "hermes",
                 "bridge_agent": "telegram-bridge",
                 "title": "Shift ↔ Hermes",
@@ -2315,6 +2498,115 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertIn("done:Ship dashboard governance view [task-project-dashboard/completed]; done:Retrospective captured", html)
         self.assertIn("<td>ready</td><td>done:Ship dashboard governance view [task-project-dashboard/completed]; done:Retrospective captured</td><td>0</td>", html)
 
+    def test_project_status_completed_requires_review_ready(self) -> None:
+        code, project = run_cli(
+            "project",
+            "create",
+            "--project-id",
+            "project-status-guard",
+            "--title",
+            "Project Status Guard",
+            "--owner",
+            "ops",
+            "--acceptance",
+            "real evidence attached",
+        )
+        self.assertEqual(code, 0, project)
+
+        code, blocked = run_cli("project", "status", "--project-id", "project-status-guard", "--status", "completed")
+        self.assertEqual(code, 1, blocked)
+        self.assertEqual("project is not ready to complete; use project accept after review passes", blocked["error"])
+        self.assertFalse(blocked["review"]["ready_to_complete"])
+        self.assertEqual(0, blocked["review"]["task_counts"]["total"])
+
+        code, shown = run_cli("project", "show", "--project-id", "project-status-guard")
+        self.assertEqual(code, 0, shown)
+        self.assertEqual("active", shown["project"]["status"])
+
+    def test_project_backlog_sync_from_queue_file(self) -> None:
+        # Create a mock project in the DB first
+        run_cli("project", "create", "--project-id", "super-ai-company-kernel", "--title", "Super Kernel", "--owner", "ops")
+
+        # Create mock queue file
+        ops_dir = self.root / ".ops"
+        ops_dir.mkdir(parents=True, exist_ok=True)
+        queue_file = ops_dir / "super-ai-company-kernel-queue.json"
+
+        # Create reports dir and evidence file on disk
+        reports_dir = self.root / "reports"
+        reports_dir.mkdir(parents=True, exist_ok=True)
+        evidence_file = reports_dir / "test-evidence.md"
+        evidence_file.write_text("my evidence content", encoding="utf-8")
+
+        queue_data = {
+            "project": "super-ai-company-kernel",
+            "backlog": [
+                {
+                    "id": "P1-test-sync-completed",
+                    "owner": "codex",
+                    "status": "implemented_verified_workspace",
+                    "goal": "Test sync goal completed",
+                    "evidence": "reports/test-evidence.md"
+                },
+                {
+                    "id": "P1-test-sync-submitted",
+                    "owner": "hermes-main",
+                    "status": "submitted",
+                    "goal": "Test sync goal submitted"
+                }
+            ]
+        }
+        queue_file.write_text(json.dumps(queue_data), encoding="utf-8")
+
+        # Running any CLI command should trigger connection and sync
+        code, employees = run_cli("employee", "list")
+        self.assertEqual(code, 0)
+
+        # Check that the tasks were synced and linked
+        code, shown = run_cli("project", "show", "--project-id", "super-ai-company-kernel")
+        self.assertEqual(code, 0)
+        self.assertEqual(2, len(shown["tasks"]))
+
+        tasks_by_id = {t["id"]: t for t in shown["tasks"]}
+        self.assertIn("P1-test-sync-completed", tasks_by_id)
+        self.assertIn("P1-test-sync-submitted", tasks_by_id)
+
+        completed_task = tasks_by_id["P1-test-sync-completed"]
+        self.assertEqual("completed", completed_task["status"])
+        self.assertEqual("codex", completed_task["claimed_by"])
+        self.assertEqual(str(evidence_file.resolve()), completed_task["evidence_path"])
+
+        submitted_task = tasks_by_id["P1-test-sync-submitted"]
+        self.assertEqual("submitted", submitted_task["status"])
+        self.assertEqual("hermes", submitted_task["target_agent"]) # mapped hermes-main -> hermes
+
+        # Test the project review fallback to DB evidence table
+        # Let's delete the physical file from disk
+        evidence_file.unlink()
+
+        # Run review; it should fail because file does not exist on disk and is not in DB evidence table
+        code, review_res = run_cli("project", "review", "--project-id", "super-ai-company-kernel")
+        self.assertEqual(code, 0)
+        self.assertFalse(review_res["review"]["ready_to_complete"])
+        self.assertEqual(1, len(review_res["review"]["evidence_missing_on_disk"]))
+
+        # Now, let's insert the evidence into the database `evidence` table
+        conn = companyctl.connect()
+        conn.execute(
+            """
+            INSERT INTO evidence (evidence_id, task_id, employee_id, path_or_url, summary, is_final, created_at)
+            VALUES (?, ?, ?, ?, ?, 1, ?)
+            """,
+            ("ev-1", "P1-test-sync-completed", "codex", str(evidence_file.resolve()), "db evidence summary", "2026-06-07T12:00:00")
+        )
+        conn.commit()
+        conn.close()
+
+        # Run review again; it should no longer complain about missing evidence!
+        code, review_res2 = run_cli("project", "review", "--project-id", "super-ai-company-kernel")
+        self.assertEqual(code, 0)
+        self.assertEqual(0, len(review_res2["review"]["evidence_missing_on_disk"]))
+
     def test_project_plan_items_sync_from_task_status(self) -> None:
         code, project = run_cli("project", "create", "--project-id", "project-plan-sync", "--title", "Plan Sync", "--owner", "ops")
         self.assertEqual(code, 0, project)
@@ -2420,7 +2712,7 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertTrue(healthy_summary["daemon"]["ok"])
         self.assertTrue(healthy_summary["launchd"]["template_exists"])
         self.assertEqual("ai.openclaw.company-kernel.daemon", healthy_summary["launchd"]["label"])
-        self.assertEqual(300, healthy_summary["launchd"]["recommended_interval_seconds"])
+        self.assertEqual(180, healthy_summary["launchd"]["recommended_interval_seconds"])
         self.assertEqual("bash bin/company-daemon-install-launchd", healthy_summary["launchd"]["install_command"])
         self.assertEqual("bin/companyctl doctor --summary", healthy_summary["launchd"]["verify_command"])
         self.assertFalse(healthy_summary["launchd"]["matches_template"])
@@ -2457,7 +2749,7 @@ class CompanyKernelCoreTest(unittest.TestCase):
 
         installed = Path.home() / "Library" / "LaunchAgents" / "ai.openclaw.company-kernel.daemon.plist"
         installed.parent.mkdir(parents=True, exist_ok=True)
-        installed.write_text(companyctl.LAUNCHD_TEMPLATE.read_text(encoding="utf-8"), encoding="utf-8")
+        installed.write_text(companyctl.LAUNCHD_TEMPLATE.read_text(encoding="utf-8").replace("__COMPANY_KERNEL_ROOT__", str(self.root)), encoding="utf-8")
         code, strict_installed = run_cli("doctor", "--summary", "--strict-launchd")
         self.assertEqual(code, 0, strict_installed)
         self.assertTrue(strict_installed["launchd"]["installed"])
@@ -2702,7 +2994,7 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual(code, 0, detail)
         self.assertEqual("completed", detail["task"]["status"])
         self.assertTrue(detail["evidence"]["exists"])
-        self.assertEqual(1, len(detail["events"]))
+        self.assertIn("task.done", [event["event_type"] for event in detail["events"]])
         self.assertEqual(1, len(detail["approvals"]))
         self.assertEqual("approval-publish-task-video-001", detail["approvals"][0]["id"])
 
@@ -2977,6 +3269,754 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertTrue(payload["ok"])
         self.assertEqual(trace_id, payload["trace_id"])
         self.assertGreaterEqual(len(payload["timeline"]), 3)
+
+    def test_v3_workspace_artifact_handoff_attempt_and_trace_flow(self) -> None:
+        for employee_id, role in [("manager", "supervisor"), ("writer", "copywriter"), ("qa", "qa")]:
+            code, created = run_cli("employee", "create", "--id", employee_id, "--name", employee_id, "--role", role, "--runtime", "local", "--workspace", str(self.root / "workspace" / employee_id))
+            self.assertEqual(code, 0, created)
+        with sqlite3.connect(self.root / "company.sqlite") as conn:
+            conn.execute("UPDATE employees SET status = 'active' WHERE id IN ('manager', 'writer', 'qa')")
+            conn.commit()
+
+        code, submitted = run_cli("task", "submit", "--from", "manager", "--to", "writer", "--task-id", "task-v3-parent", "--title", "商品资料包", "--description", "生成电商上架资料包")
+        self.assertEqual(code, 0, submitted)
+        trace_id = submitted["task"]["metadata"]["trace_id"]
+        workspace = Path(submitted["task"]["workspace"]["path"])
+        for child in ["input", "work", "artifacts", "evidence", "final"]:
+            self.assertTrue((workspace / child).is_dir(), child)
+        self.assertTrue((workspace / "manifest.json").exists())
+
+        artifact_file = workspace / "work" / "title.json"
+        artifact_file.write_text('{"title":"A"}\n', encoding="utf-8")
+        code, artifact_v1 = run_cli("task", "artifact", "register", "--task-id", "task-v3-parent", "--employee", "writer", "--path", str(artifact_file), "--type", "json", "--name", "title.json", "--stage", "draft", "--summary", "标题草稿")
+        self.assertEqual(code, 0, artifact_v1)
+        artifact_file.write_text('{"title":"B"}\n', encoding="utf-8")
+        code, artifact_v2 = run_cli("task", "artifact", "register", "--task-id", "task-v3-parent", "--employee", "writer", "--path", str(artifact_file), "--type", "json", "--name", "title.json", "--stage", "intermediate", "--summary", "标题第二版")
+        self.assertEqual(code, 0, artifact_v2)
+        self.assertEqual(2, artifact_v2["artifact"]["version"])
+        self.assertEqual("superseded", artifact_v2["superseded"][0]["status"])
+        self.assertEqual('{"title":"A"}\n', Path(artifact_v1["artifact"]["path"]).read_text(encoding="utf-8"))
+        self.assertEqual('{"title":"B"}\n', Path(artifact_v2["artifact"]["path"]).read_text(encoding="utf-8"))
+
+        code, approved = run_cli("task", "artifact", "approve", "--artifact-id", artifact_v2["artifact"]["artifact_id"], "--by", "manager", "--summary", "可用于质检")
+        self.assertEqual(code, 0, approved)
+        code, child = run_cli("task", "submit", "--from", "manager", "--to", "qa", "--task-id", "task-v3-qa", "--title", "质检", "--description", "检查标题")
+        self.assertEqual(code, 0, child)
+        code, handoff = run_cli("task", "handoff", "create", "--from-task", "task-v3-parent", "--to-task", "task-v3-qa", "--from-employee", "writer", "--to-employee", "qa", "--summary", "标题交给质检", "--artifact", artifact_v2["artifact"]["artifact_id"], "--next-steps", "检查标题是否可用")
+        self.assertEqual(code, 0, handoff)
+        code, context = run_cli("task", "context", "--task-id", "task-v3-qa", "--employee", "qa")
+        self.assertEqual(code, 0, context)
+        self.assertEqual([artifact_v2["artifact"]["artifact_id"]], [item["artifact_id"] for item in context["context"]["available_artifacts"]])
+        self.assertEqual("标题交给质检", context["context"]["handoff_notes"][0]["summary"])
+        code, used = run_cli("task", "artifact", "use", "--task-id", "task-v3-qa", "--employee", "qa", "--artifact-id", artifact_v2["artifact"]["artifact_id"], "--summary", "质检读取标题")
+        self.assertEqual(code, 0, used)
+
+        code, attempt = run_cli("task", "attempt", "start", "--task-id", "task-v3-qa", "--employee", "qa", "--adapter-type", "local")
+        self.assertEqual(code, 0, attempt)
+        self.assertEqual(trace_id, attempt["attempt"]["trace_id"])
+        code, attempt_done = run_cli("task", "attempt", "finish", "--attempt-id", attempt["attempt"]["attempt_id"], "--status", "success")
+        self.assertEqual(code, 0, attempt_done)
+
+        final_file = workspace / "final" / "package.zip"
+        final_file.write_text("zip bytes\n", encoding="utf-8")
+        code, final_artifact = run_cli("task", "artifact", "register", "--task-id", "task-v3-parent", "--employee", "writer", "--path", str(final_file), "--type", "zip", "--name", "package.zip", "--stage", "final", "--summary", "最终资料包", "--final")
+        self.assertEqual(code, 0, final_artifact)
+        code, promoted = run_cli("task", "evidence", "promote", "--artifact-id", final_artifact["artifact"]["artifact_id"], "--employee", "writer", "--summary", "最终交付证据")
+        self.assertEqual(code, 0, promoted)
+        code, done = run_cli("task", "done", "--agent", "writer", "--task-id", "task-v3-parent", "--summary", "已完成", "--evidence", promoted["evidence"]["path_or_url"])
+        self.assertEqual(code, 0, done)
+
+        with sqlite3.connect(self.root / "company.sqlite") as conn:
+            conn.row_factory = sqlite3.Row
+            event_types = [row["event_type"] for row in conn.execute("SELECT event_type FROM company_events WHERE trace_id = ? ORDER BY created_at", (trace_id,))]
+            trace = company_trace.load_trace(conn, trace_id)
+        self.assertIn("artifact.created", event_types)
+        self.assertIn("artifact.superseded", event_types)
+        self.assertIn("artifact.used_by_task", event_types)
+        self.assertIn("handoff.created", event_types)
+        self.assertIn("artifact.promoted_to_evidence", event_types)
+        self.assertEqual(3, len(trace["artifacts"]))
+        self.assertEqual(1, len(trace["handoffs"]))
+        self.assertEqual(1, len(trace["evidence"]))
+        self.assertEqual(1, len(trace["execution_attempts"]))
+
+    def test_dashboard_trace_counts_include_v3_file_flow(self) -> None:
+        for employee_id in ["manager", "writer", "qa"]:
+            code, created = run_cli("employee", "create", "--id", employee_id, "--name", employee_id, "--role", "agent", "--runtime", "local", "--workspace", str(self.root / "workspace" / employee_id))
+            self.assertEqual(code, 0, created)
+        with sqlite3.connect(self.root / "company.sqlite") as conn:
+            conn.execute("UPDATE employees SET status = 'active' WHERE id IN ('manager', 'writer', 'qa')")
+            conn.commit()
+
+        code, submitted = run_cli("task", "submit", "--from", "manager", "--to", "writer", "--task-id", "task-v3-dashboard", "--title", "Dashboard v3")
+        self.assertEqual(code, 0, submitted)
+        workspace = Path(submitted["task"]["workspace"]["path"])
+        artifact_file = workspace / "work" / "brief.md"
+        artifact_file.write_text("brief\n", encoding="utf-8")
+        code, artifact = run_cli("task", "artifact", "register", "--task-id", "task-v3-dashboard", "--employee", "writer", "--path", str(artifact_file), "--type", "markdown", "--summary", "brief")
+        self.assertEqual(code, 0, artifact)
+        code, child = run_cli("task", "submit", "--from", "manager", "--to", "qa", "--task-id", "task-v3-dashboard-qa", "--title", "QA")
+        self.assertEqual(code, 0, child)
+        code, handoff = run_cli("task", "handoff", "create", "--from-task", "task-v3-dashboard", "--to-task", "task-v3-dashboard-qa", "--from-employee", "writer", "--to-employee", "qa", "--summary", "dashboard handoff", "--artifact", artifact["artifact"]["artifact_id"])
+        self.assertEqual(code, 0, handoff)
+        code, attempt = run_cli("task", "attempt", "start", "--task-id", "task-v3-dashboard-qa", "--employee", "qa")
+        self.assertEqual(code, 0, attempt)
+        code, evidence = run_cli("task", "evidence", "promote", "--artifact-id", artifact["artifact"]["artifact_id"], "--employee", "writer", "--summary", "dashboard evidence")
+        self.assertEqual(code, 0, evidence)
+
+        conn = companyctl.connect()
+        try:
+            summary = company_dashboard.load_summary(conn)
+        finally:
+            conn.close()
+        trace = next(item for item in summary["traces"] if item["trace_id"] == submitted["task"]["metadata"]["trace_id"])
+        self.assertEqual(1, trace["counts"]["artifacts"])
+        self.assertEqual(1, trace["counts"]["handoffs"])
+        self.assertEqual(1, trace["counts"]["evidence"])
+        self.assertEqual(1, trace["counts"]["execution_attempts"])
+
+    def test_v3_handoff_reject_scan_and_recovery_attempts(self) -> None:
+        for employee_id, role in [("manager", "supervisor"), ("writer", "copywriter"), ("qa", "qa"), ("backup", "copywriter")]:
+            code, created = run_cli("employee", "create", "--id", employee_id, "--name", employee_id, "--role", role, "--runtime", "local", "--workspace", str(self.root / "workspace" / employee_id))
+            self.assertEqual(code, 0, created)
+        with sqlite3.connect(self.root / "company.sqlite") as conn:
+            conn.execute("UPDATE employees SET status = 'active' WHERE id IN ('manager', 'writer', 'qa', 'backup')")
+            conn.commit()
+
+        code, submitted = run_cli("task", "submit", "--from", "manager", "--to", "writer", "--task-id", "task-v3-recovery", "--title", "资料包", "--description", "验证自动登记和恢复")
+        self.assertEqual(code, 0, submitted)
+        trace_id = submitted["task"]["metadata"]["trace_id"]
+        workspace = Path(submitted["task"]["workspace"]["path"])
+        draft = workspace / "work" / "draft.md"
+        draft.write_text("draft one\n", encoding="utf-8")
+        code, scanned = run_cli("task", "artifact", "scan", "--task-id", "task-v3-recovery", "--employee", "writer", "--dir", str(workspace / "work"), "--type", "markdown", "--stage", "draft", "--summary", "自动登记过程文件")
+        self.assertEqual(code, 0, scanned)
+        self.assertEqual(1, len(scanned["artifacts"]))
+        first_artifact_id = scanned["artifacts"][0]["artifact"]["artifact_id"]
+        draft.write_text("draft two\n", encoding="utf-8")
+        code, rescanned = run_cli("task", "artifact", "scan", "--task-id", "task-v3-recovery", "--employee", "writer", "--dir", str(workspace / "work"), "--type", "markdown", "--stage", "intermediate", "--summary", "自动登记更新")
+        self.assertEqual(code, 0, rescanned)
+        second_artifact = rescanned["artifacts"][0]["artifact"]
+        self.assertEqual(2, second_artifact["version"])
+        self.assertNotEqual(first_artifact_id, second_artifact["artifact_id"])
+        code, approved = run_cli("task", "artifact", "approve", "--artifact-id", second_artifact["artifact_id"], "--by", "manager")
+        self.assertEqual(code, 0, approved)
+
+        code, child = run_cli("task", "submit", "--from", "manager", "--to", "qa", "--task-id", "task-v3-recovery-qa", "--title", "质检", "--description", "验证拒绝交接")
+        self.assertEqual(code, 0, child)
+        code, handoff = run_cli("task", "handoff", "create", "--from-task", "task-v3-recovery", "--to-task", "task-v3-recovery-qa", "--from-employee", "writer", "--to-employee", "qa", "--summary", "交给质检", "--artifact", second_artifact["artifact_id"])
+        self.assertEqual(code, 0, handoff)
+        code, rejected = run_cli("task", "handoff", "reject", "--handoff-id", handoff["handoff"]["handoff_id"], "--by", "qa", "--reason", "缺少验收说明")
+        self.assertEqual(code, 0, rejected)
+        self.assertEqual("blocked", rejected["from_task"]["status"])
+
+        code, retry = run_cli("task", "retry", "--task-id", "task-v3-recovery", "--by", "manager", "--reason", "补交接说明")
+        self.assertEqual(code, 0, retry)
+        code, reassigned = run_cli("task", "reassign", "--task-id", "task-v3-recovery", "--by", "manager", "--to", "backup", "--reason", "换员工补齐")
+        self.assertEqual(code, 0, reassigned)
+        self.assertEqual("backup", reassigned["task"]["target_agent"])
+
+        code, bad_done = run_cli("task", "done", "--agent", "backup", "--task-id", "task-v3-recovery", "--summary", "不能直接完成", "--evidence", str(draft))
+        self.assertEqual(code, 2, bad_done)
+        self.assertIn("promoted final evidence", bad_done["error"])
+
+        final_file = workspace / "final" / "final.md"
+        final_file.write_text("final\n", encoding="utf-8")
+        code, final_artifact = run_cli("task", "artifact", "register", "--task-id", "task-v3-recovery", "--employee", "backup", "--path", str(final_file), "--type", "markdown", "--stage", "final", "--summary", "最终文件", "--final")
+        self.assertEqual(code, 0, final_artifact)
+        code, promoted = run_cli("task", "evidence", "promote", "--artifact-id", final_artifact["artifact"]["artifact_id"], "--employee", "backup", "--summary", "最终证据")
+        self.assertEqual(code, 0, promoted)
+        code, done = run_cli("task", "done", "--agent", "backup", "--task-id", "task-v3-recovery", "--summary", "已完成", "--evidence", promoted["evidence"]["path_or_url"])
+        self.assertEqual(code, 0, done)
+
+        with sqlite3.connect(self.root / "company.sqlite") as conn:
+            conn.row_factory = sqlite3.Row
+            event_types = [row["event_type"] for row in conn.execute("SELECT event_type FROM company_events WHERE trace_id = ? ORDER BY created_at", (trace_id,))]
+            attempts = [dict(row) for row in conn.execute("SELECT * FROM execution_attempts WHERE trace_id = ? ORDER BY started_at", (trace_id,))]
+        self.assertIn("artifact.updated", event_types)
+        self.assertIn("handoff.rejected", event_types)
+        self.assertIn("task.retrying", event_types)
+        self.assertTrue(any(item["adapter_type"] == "retry" and item["status"] == "starting" for item in attempts))
+        self.assertTrue(any(item["employee_id"] == "backup" and item["status"] == "running" for item in attempts))
+
+    def test_managed_attempt_policy_correction_stale_and_cancel(self) -> None:
+        for employee_id, role in [("main", "operator"), ("hermes", "supervisor"), ("codex", "developer")]:
+            code, created = run_cli("employee", "create", "--id", employee_id, "--name", employee_id, "--role", role, "--runtime", "local", "--workspace", str(self.root / "workspace" / employee_id))
+            self.assertEqual(code, 0, created)
+        self.mark_active("codex")
+        code, submitted = run_cli("task", "submit", "--from", "main", "--to", "codex", "--task-id", "task-long-managed", "--title", "Long managed task")
+        self.assertEqual(0, code, submitted)
+        code, run = run_cli(
+            "task",
+            "run",
+            "--task-id",
+            "task-long-managed",
+            "--agent",
+            "codex",
+            "--by",
+            "hermes",
+            "--max-runtime-seconds",
+            "36000",
+            "--heartbeat-interval-seconds",
+            "60",
+            "--progress-interval-seconds",
+            "300",
+            "--stale-after-seconds",
+            "1",
+            "--supervisor-check-interval-seconds",
+            "60",
+            "--max-corrections",
+            "2",
+            "--max-retries",
+            "1",
+            "--session-key",
+            "agent:codex:hermes",
+            "--pid",
+            "12345",
+        )
+        self.assertEqual(0, code, run)
+        attempt_id = run["attempt"]["attempt_id"]
+        self.assertEqual("starting", run["attempt"]["status"])
+        self.assertEqual("12345", run["attempt"]["pid"])
+        self.assertEqual(36000, run["runtime_policy"]["max_runtime_seconds"])
+        code, corrected = run_cli("task", "correct", "--task-id", "task-long-managed", "--attempt-id", attempt_id, "--by", "hermes", "--message", "请回到 README 总结任务")
+        self.assertEqual(0, code, corrected)
+        self.assertEqual("correcting", corrected["attempt"]["status"])
+        code, acked = run_cli("task", "correct", "--task-id", "task-long-managed", "--attempt-id", attempt_id, "--by", "codex", "--ack", "--message", "已收到纠偏")
+        self.assertEqual(0, code, acked)
+        self.assertEqual("running", acked["attempt"]["status"])
+        self.assertEqual(1, acked["supervisor_state"]["corrections_acknowledged"])
+        stale_now = (datetime.fromisoformat(acked["attempt"]["last_progress_at"]) + timedelta(seconds=2)).isoformat(timespec="seconds")
+        code, stale = run_cli("supervisor", "scan-attempts", "--by", "hermes", "--now", stale_now)
+        self.assertEqual(0, code, stale)
+        item = next(item for item in stale["attempts"] if item["attempt_id"] == attempt_id)
+        self.assertEqual("stale", item["status"])
+        self.assertEqual("stale", item["task_status"])
+        code, cancelled = run_cli("task", "cancel", "--task-id", "task-long-managed", "--attempt-id", attempt_id, "--by", "hermes", "--reason", "用户停止")
+        self.assertEqual(0, code, cancelled)
+        self.assertEqual("cancelled", cancelled["attempt"]["status"])
+        code, shown = run_cli("task", "show", "--task-id", "task-long-managed")
+        self.assertEqual(0, code, shown)
+        self.assertEqual("cancelled", shown["task"]["status"])
+        self.assertEqual(attempt_id, shown["attempts"][0]["attempt_id"])
+
+    def test_managed_attempt_progress_refresh_prevents_stale_until_progress_stops(self) -> None:
+        for employee_id, role in [("main", "operator"), ("hermes", "supervisor"), ("codex", "developer")]:
+            code, created = run_cli("employee", "create", "--id", employee_id, "--name", employee_id, "--role", role, "--runtime", "local", "--workspace", str(self.root / "workspace" / employee_id))
+            self.assertEqual(code, 0, created)
+        self.mark_active("codex")
+        code, submitted = run_cli("task", "submit", "--from", "main", "--to", "codex", "--task-id", "task-progress-managed", "--title", "Managed progress task")
+        self.assertEqual(0, code, submitted)
+        code, run = run_cli("task", "run", "--task-id", "task-progress-managed", "--agent", "codex", "--by", "hermes", "--stale-after-seconds", "5")
+        self.assertEqual(0, code, run)
+        attempt_id = run["attempt"]["attempt_id"]
+        progress_at = (datetime.fromisoformat(run["attempt"]["last_progress_at"]) + timedelta(seconds=4)).isoformat(timespec="seconds")
+        code, progress = run_cli(
+            "task",
+            "progress",
+            "--task-id",
+            "task-progress-managed",
+            "--agent",
+            "codex",
+            "--attempt-id",
+            attempt_id,
+            "--state",
+            "in_progress",
+            "--message",
+            "已完成第一段读取",
+            "--progress",
+            "25",
+            "--payload",
+            '{"step":"readme"}',
+            "--at",
+            progress_at,
+        )
+        self.assertEqual(0, code, progress)
+        self.assertEqual("running", progress["attempt"]["status"])
+        self.assertEqual(progress_at, progress["attempt"]["last_progress_at"])
+        self.assertEqual("working", progress["progress"]["progress_layer"])
+        safe_scan_at = (datetime.fromisoformat(progress_at) + timedelta(seconds=4)).isoformat(timespec="seconds")
+        code, safe_scan = run_cli("supervisor", "scan-attempts", "--by", "hermes", "--now", safe_scan_at)
+        self.assertEqual(0, code, safe_scan)
+        safe_item = next(item for item in safe_scan["attempts"] if item["attempt_id"] == attempt_id)
+        self.assertEqual("running", safe_item["status"])
+        stale_scan_at = (datetime.fromisoformat(progress_at) + timedelta(seconds=6)).isoformat(timespec="seconds")
+        code, stale_scan = run_cli("supervisor", "scan-attempts", "--by", "hermes", "--now", stale_scan_at)
+        self.assertEqual(0, code, stale_scan)
+        stale_item = next(item for item in stale_scan["attempts"] if item["attempt_id"] == attempt_id)
+        self.assertEqual("stale", stale_item["status"])
+        with sqlite3.connect(self.root / "company.sqlite") as conn:
+            conn.row_factory = sqlite3.Row
+            event = conn.execute("SELECT * FROM company_events WHERE event_type = 'task.progress' AND task_id = ?", ("task-progress-managed",)).fetchone()
+            self.assertIsNotNone(event)
+            payload = json.loads(event["payload_json"])
+        self.assertEqual(attempt_id, payload["attempt_id"])
+        self.assertEqual("in_progress", payload["progress_state"])
+        self.assertEqual(25, payload["progress"])
+
+    def test_retry_after_stale_starts_new_managed_attempt_with_same_trace(self) -> None:
+        for employee_id, role in [("main", "operator"), ("hermes", "supervisor"), ("codex", "developer")]:
+            code, created = run_cli("employee", "create", "--id", employee_id, "--name", employee_id, "--role", role, "--runtime", "local", "--workspace", str(self.root / "workspace" / employee_id))
+            self.assertEqual(code, 0, created)
+        self.mark_active("codex")
+        code, submitted = run_cli("task", "submit", "--from", "main", "--to", "codex", "--task-id", "task-retry-managed", "--title", "Retry managed task")
+        self.assertEqual(0, code, submitted)
+        code, run = run_cli(
+            "task",
+            "run",
+            "--task-id",
+            "task-retry-managed",
+            "--agent",
+            "codex",
+            "--by",
+            "hermes",
+            "--max-runtime-seconds",
+            "7200",
+            "--stale-after-seconds",
+            "1",
+            "--max-retries",
+            "2",
+        )
+        self.assertEqual(0, code, run)
+        original_attempt_id = run["attempt"]["attempt_id"]
+        trace_id = run["attempt"]["trace_id"]
+        stale_scan_at = (datetime.fromisoformat(run["attempt"]["last_progress_at"]) + timedelta(seconds=2)).isoformat(timespec="seconds")
+        code, stale_scan = run_cli("supervisor", "scan-attempts", "--by", "hermes", "--now", stale_scan_at)
+        self.assertEqual(0, code, stale_scan)
+        stale_item = next(item for item in stale_scan["attempts"] if item["attempt_id"] == original_attempt_id)
+        self.assertEqual("stale", stale_item["status"])
+
+        code, retry = run_cli("task", "retry", "--task-id", "task-retry-managed", "--by", "hermes", "--reason", "resume after stale")
+        self.assertEqual(0, code, retry)
+        retry_attempt = retry["attempt"]
+        self.assertNotEqual(original_attempt_id, retry_attempt["attempt_id"])
+        self.assertEqual(trace_id, retry_attempt["trace_id"])
+        self.assertEqual("starting", retry_attempt["status"])
+        self.assertEqual(7200, retry_attempt["runtime_policy"]["max_runtime_seconds"])
+        self.assertEqual(2, retry_attempt["runtime_policy"]["max_retries"])
+        self.assertEqual(original_attempt_id, retry_attempt["metadata"]["previous_attempt_id"])
+        self.assertEqual("claimed", retry["task"]["status"])
+        self.assertEqual("codex", retry["task"]["claimed_by"])
+
+        code, shown = run_cli("task", "show", "--task-id", "task-retry-managed")
+        self.assertEqual(0, code, shown)
+        attempts = shown["attempts"]
+        self.assertTrue(any(item["attempt_id"] == original_attempt_id and item["status"] == "stale" for item in attempts))
+        self.assertTrue(any(item["attempt_id"] == retry_attempt["attempt_id"] and item["status"] == "starting" for item in attempts))
+        event = next(item for item in shown["events"] if item["event_type"] == "task.retrying")
+        payload = event["payload_json"] if isinstance(event["payload_json"], dict) else json.loads(event["payload_json"])
+        self.assertEqual(retry_attempt["attempt_id"], payload["attempt_id"])
+        self.assertEqual(original_attempt_id, payload["previous_attempt_id"])
+
+    def test_supervisor_scan_warns_on_missing_heartbeat_without_marking_progress_stale(self) -> None:
+        for employee_id, role in [("main", "operator"), ("hermes", "supervisor"), ("codex", "developer")]:
+            code, created = run_cli("employee", "create", "--id", employee_id, "--name", employee_id, "--role", role, "--runtime", "local", "--workspace", str(self.root / "workspace" / employee_id))
+            self.assertEqual(code, 0, created)
+        self.mark_active("codex")
+        code, submitted = run_cli("task", "submit", "--from", "main", "--to", "codex", "--task-id", "task-heartbeat-warning", "--title", "Heartbeat warning task")
+        self.assertEqual(0, code, submitted)
+        code, run = run_cli(
+            "task",
+            "run",
+            "--task-id",
+            "task-heartbeat-warning",
+            "--agent",
+            "codex",
+            "--by",
+            "hermes",
+            "--heartbeat-interval-seconds",
+            "5",
+            "--stale-after-seconds",
+            "60",
+        )
+        self.assertEqual(0, code, run)
+        attempt_id = run["attempt"]["attempt_id"]
+        base = datetime.fromisoformat(run["attempt"]["started_at"])
+        stale_heartbeat_at = (base - timedelta(seconds=20)).isoformat(timespec="seconds")
+        fresh_progress_at = (base + timedelta(seconds=1)).isoformat(timespec="seconds")
+        with sqlite3.connect(self.root / "company.sqlite") as conn:
+            conn.execute(
+                "UPDATE execution_attempts SET status = 'running', last_heartbeat_at = ?, last_progress_at = ? WHERE attempt_id = ?",
+                (stale_heartbeat_at, fresh_progress_at, attempt_id),
+            )
+            conn.commit()
+        scan_at = (base + timedelta(seconds=2)).isoformat(timespec="seconds")
+        code, scanned = run_cli("supervisor", "scan-attempts", "--by", "hermes", "--now", scan_at)
+        self.assertEqual(0, code, scanned)
+        item = next(item for item in scanned["attempts"] if item["attempt_id"] == attempt_id)
+        self.assertEqual("running", item["status"])
+        self.assertEqual("heartbeat_warning", item["heartbeat_status"])
+        self.assertEqual(22, item["heartbeat_age_seconds"])
+        self.assertEqual("", item["task_status"])
+        with sqlite3.connect(self.root / "company.sqlite") as conn:
+            conn.row_factory = sqlite3.Row
+            warning = conn.execute("SELECT * FROM company_events WHERE task_id = 'task-heartbeat-warning' AND event_type = 'employee.warning'").fetchone()
+            attempt = conn.execute("SELECT * FROM execution_attempts WHERE attempt_id = ?", (attempt_id,)).fetchone()
+            task = conn.execute("SELECT * FROM tasks WHERE id = 'task-heartbeat-warning'").fetchone()
+        self.assertIsNotNone(warning)
+        payload = json.loads(warning["payload_json"])
+        self.assertEqual("codex", payload["employee_id"])
+        self.assertEqual(attempt_id, payload["attempt_id"])
+        self.assertEqual("heartbeat_stale", payload["reason"])
+        self.assertEqual("running", attempt["status"])
+        self.assertEqual("claimed", task["status"])
+
+    def test_correction_limit_blocks_attempt_instead_of_looping_forever(self) -> None:
+        for employee_id, role in [("main", "operator"), ("hermes", "supervisor"), ("codex", "developer")]:
+            code, created = run_cli("employee", "create", "--id", employee_id, "--name", employee_id, "--role", role, "--runtime", "local", "--workspace", str(self.root / "workspace" / employee_id))
+            self.assertEqual(code, 0, created)
+        self.mark_active("codex")
+        code, submitted = run_cli("task", "submit", "--from", "main", "--to", "codex", "--task-id", "task-correction-limit", "--title", "Correction limit task")
+        self.assertEqual(0, code, submitted)
+        code, run = run_cli("task", "run", "--task-id", "task-correction-limit", "--agent", "codex", "--by", "hermes", "--max-corrections", "1")
+        self.assertEqual(0, code, run)
+        attempt_id = run["attempt"]["attempt_id"]
+        code, first = run_cli("task", "correct", "--task-id", "task-correction-limit", "--attempt-id", attempt_id, "--by", "hermes", "--message", "第一次纠偏")
+        self.assertEqual(0, code, first)
+        self.assertEqual("correcting", first["attempt"]["status"])
+        self.assertEqual(1, first["supervisor_state"]["corrections_requested"])
+        code, second = run_cli("task", "correct", "--task-id", "task-correction-limit", "--attempt-id", attempt_id, "--by", "hermes", "--message", "第二次纠偏")
+        self.assertEqual(0, code, second)
+        self.assertEqual("blocked", second["status"])
+        self.assertEqual("max corrections exceeded", second["reason"])
+        with sqlite3.connect(self.root / "company.sqlite") as conn:
+            conn.row_factory = sqlite3.Row
+            attempt = conn.execute("SELECT * FROM execution_attempts WHERE attempt_id = ?", (attempt_id,)).fetchone()
+            task = conn.execute("SELECT * FROM tasks WHERE id = 'task-correction-limit'").fetchone()
+            blocked_event = conn.execute("SELECT * FROM company_events WHERE task_id = 'task-correction-limit' AND event_type = 'task.blocked'").fetchone()
+            correction_events = conn.execute("SELECT COUNT(*) AS count FROM company_events WHERE task_id = 'task-correction-limit' AND event_type = 'supervisor.correction_requested'").fetchone()["count"]
+        self.assertEqual("failed", attempt["status"])
+        self.assertEqual("max corrections exceeded", attempt["error_message"])
+        self.assertEqual("blocked", task["status"])
+        self.assertEqual("max corrections exceeded", task["blocker"])
+        self.assertIsNotNone(blocked_event)
+        self.assertEqual(1, correction_events)
+
+    def test_supervisor_scan_stales_attempt_when_max_runtime_exceeded(self) -> None:
+        for employee_id, role in [("main", "operator"), ("hermes", "supervisor"), ("codex", "developer")]:
+            code, created = run_cli("employee", "create", "--id", employee_id, "--name", employee_id, "--role", role, "--runtime", "local", "--workspace", str(self.root / "workspace" / employee_id))
+            self.assertEqual(code, 0, created)
+        self.mark_active("codex")
+        code, submitted = run_cli("task", "submit", "--from", "main", "--to", "codex", "--task-id", "task-runtime-limit", "--title", "Runtime limit task")
+        self.assertEqual(0, code, submitted)
+        code, run = run_cli(
+            "task",
+            "run",
+            "--task-id",
+            "task-runtime-limit",
+            "--agent",
+            "codex",
+            "--by",
+            "hermes",
+            "--max-runtime-seconds",
+            "10",
+            "--stale-after-seconds",
+            "300",
+            "--heartbeat-interval-seconds",
+            "60",
+        )
+        self.assertEqual(0, code, run)
+        attempt_id = run["attempt"]["attempt_id"]
+        base = datetime.fromisoformat(run["attempt"]["started_at"])
+        old_started_at = (base - timedelta(seconds=20)).isoformat(timespec="seconds")
+        fresh_seen_at = (base + timedelta(seconds=1)).isoformat(timespec="seconds")
+        with sqlite3.connect(self.root / "company.sqlite") as conn:
+            conn.execute(
+                "UPDATE execution_attempts SET status = 'running', started_at = ?, last_heartbeat_at = ?, last_progress_at = ? WHERE attempt_id = ?",
+                (old_started_at, fresh_seen_at, fresh_seen_at, attempt_id),
+            )
+            conn.commit()
+        scan_at = (base + timedelta(seconds=2)).isoformat(timespec="seconds")
+        code, scanned = run_cli("supervisor", "scan-attempts", "--by", "hermes", "--now", scan_at)
+        self.assertEqual(0, code, scanned)
+        item = next(item for item in scanned["attempts"] if item["attempt_id"] == attempt_id)
+        self.assertEqual("stale", item["status"])
+        self.assertEqual("stale", item["task_status"])
+        self.assertEqual("runtime_exceeded", item["stale_reason"])
+        self.assertEqual(22, item["runtime_age_seconds"])
+        with sqlite3.connect(self.root / "company.sqlite") as conn:
+            conn.row_factory = sqlite3.Row
+            attempt = conn.execute("SELECT * FROM execution_attempts WHERE attempt_id = ?", (attempt_id,)).fetchone()
+            task = conn.execute("SELECT * FROM tasks WHERE id = 'task-runtime-limit'").fetchone()
+            event = conn.execute("SELECT * FROM company_events WHERE task_id = 'task-runtime-limit' AND event_type = 'task.stale'").fetchone()
+        self.assertEqual("stale", attempt["status"])
+        self.assertEqual("max runtime exceeded for 22s", attempt["error_message"])
+        self.assertEqual("stale", task["status"])
+        self.assertEqual("max runtime exceeded for 22s", task["blocker"])
+        payload = json.loads(event["payload_json"])
+        self.assertEqual("runtime_exceeded", payload["reason"])
+        self.assertEqual(10, payload["max_runtime_seconds"])
+
+    def test_cancelled_attempt_rejects_late_progress(self) -> None:
+        for employee_id, role in [("main", "operator"), ("hermes", "supervisor"), ("codex", "developer")]:
+            code, created = run_cli("employee", "create", "--id", employee_id, "--name", employee_id, "--role", role, "--runtime", "local", "--workspace", str(self.root / "workspace" / employee_id))
+            self.assertEqual(code, 0, created)
+        self.mark_active("codex")
+        code, submitted = run_cli("task", "submit", "--from", "main", "--to", "codex", "--task-id", "task-cancel-late-progress", "--title", "Cancel late progress task")
+        self.assertEqual(0, code, submitted)
+        code, run = run_cli("task", "run", "--task-id", "task-cancel-late-progress", "--agent", "codex", "--by", "hermes")
+        self.assertEqual(0, code, run)
+        attempt_id = run["attempt"]["attempt_id"]
+        code, cancelled = run_cli("task", "cancel", "--task-id", "task-cancel-late-progress", "--attempt-id", attempt_id, "--by", "hermes", "--reason", "用户停止")
+        self.assertEqual(0, code, cancelled)
+        code, late_progress = run_cli(
+            "task",
+            "progress",
+            "--task-id",
+            "task-cancel-late-progress",
+            "--agent",
+            "codex",
+            "--attempt-id",
+            attempt_id,
+            "--state",
+            "completed",
+            "--message",
+            "旧进程迟到完成",
+            "--progress",
+            "100",
+        )
+        self.assertEqual(2, code, late_progress)
+        self.assertEqual("attempt is not active", late_progress["error"])
+        with sqlite3.connect(self.root / "company.sqlite") as conn:
+            conn.row_factory = sqlite3.Row
+            attempt = conn.execute("SELECT * FROM execution_attempts WHERE attempt_id = ?", (attempt_id,)).fetchone()
+            task = conn.execute("SELECT * FROM tasks WHERE id = 'task-cancel-late-progress'").fetchone()
+            progress_events = conn.execute("SELECT COUNT(*) AS count FROM company_events WHERE task_id = 'task-cancel-late-progress' AND event_type = 'task.progress'").fetchone()["count"]
+        self.assertEqual("cancelled", attempt["status"])
+        self.assertEqual("cancelled", task["status"])
+        self.assertEqual(0, progress_events)
+
+    def test_cancelled_task_rejects_late_done_evidence(self) -> None:
+        for employee_id, role in [("main", "operator"), ("hermes", "supervisor"), ("codex", "developer")]:
+            code, created = run_cli("employee", "create", "--id", employee_id, "--name", employee_id, "--role", role, "--runtime", "local", "--workspace", str(self.root / "workspace" / employee_id))
+            self.assertEqual(code, 0, created)
+        self.mark_active("codex")
+        code, submitted = run_cli("task", "submit", "--from", "main", "--to", "codex", "--task-id", "task-cancel-late-done", "--title", "Cancel late done task")
+        self.assertEqual(0, code, submitted)
+        workspace = Path(submitted["task"]["workspace"]["path"])
+        evidence = workspace / "evidence" / "late-done.txt"
+        evidence.write_text("late evidence from old process\n", encoding="utf-8")
+        code, run = run_cli("task", "run", "--task-id", "task-cancel-late-done", "--agent", "codex", "--by", "hermes")
+        self.assertEqual(0, code, run)
+        attempt_id = run["attempt"]["attempt_id"]
+        code, cancelled = run_cli("task", "cancel", "--task-id", "task-cancel-late-done", "--attempt-id", attempt_id, "--by", "hermes", "--reason", "用户停止")
+        self.assertEqual(0, code, cancelled)
+        code, late_done = run_cli("task", "done", "--agent", "codex", "--task-id", "task-cancel-late-done", "--summary", "旧进程迟到完成", "--evidence", str(evidence))
+        self.assertEqual(2, code, late_done)
+        self.assertEqual("task is not completable in status cancelled", late_done["error"])
+        with sqlite3.connect(self.root / "company.sqlite") as conn:
+            conn.row_factory = sqlite3.Row
+            task = conn.execute("SELECT * FROM tasks WHERE id = 'task-cancel-late-done'").fetchone()
+            done_events = conn.execute("SELECT COUNT(*) AS count FROM company_events WHERE task_id = 'task-cancel-late-done' AND event_type = 'task.done'").fetchone()["count"]
+            evidence_rows = conn.execute("SELECT COUNT(*) AS count FROM evidence WHERE task_id = 'task-cancel-late-done'").fetchone()["count"]
+        self.assertEqual("cancelled", task["status"])
+        self.assertEqual("", task["evidence_path"])
+        self.assertEqual(0, done_events)
+        self.assertEqual(0, evidence_rows)
+
+    def test_managed_attempt_api_control_endpoints(self) -> None:
+        for employee_id, role in [("main", "operator"), ("hermes", "supervisor"), ("codex", "developer")]:
+            code, created = run_cli("employee", "create", "--id", employee_id, "--name", employee_id, "--role", role, "--runtime", "local", "--workspace", str(self.root / "workspace" / employee_id))
+            self.assertEqual(code, 0, created)
+        self.mark_active("codex")
+        code, submitted = run_cli("task", "submit", "--from", "main", "--to", "codex", "--task-id", "task-long-api", "--title", "Long API task")
+        self.assertEqual(0, code, submitted)
+        status, run = api_gateway.route_post(
+            "/v1/tasks/task-long-api/run",
+            {"agent": "codex", "by": "hermes", "max_runtime_seconds": 36000, "stale_after_seconds": 900, "session_key": "agent:codex:hermes"},
+        )
+        self.assertEqual(200, status, run)
+        attempt_id = run["attempt"]["attempt_id"]
+        status, progressed = api_gateway.route_post("/v1/tasks/task-long-api/progress", {"agent": "codex", "attempt_id": attempt_id, "state": "acknowledged", "message": "已收到", "progress": 5, "payload": {"source": "api-test"}})
+        self.assertEqual(200, status, progressed)
+        self.assertEqual("running", progressed["attempt"]["status"])
+        self.assertEqual("received", progressed["progress"]["progress_layer"])
+        status, corrected = api_gateway.route_post("/v1/tasks/task-long-api/correct", {"attempt_id": attempt_id, "by": "hermes", "message": "继续按计划执行"})
+        self.assertEqual(200, status, corrected)
+        status, attempts = api_gateway.route_get("/v1/tasks/task-long-api/attempts", {})
+        self.assertEqual(200, status, attempts)
+        self.assertEqual(attempt_id, attempts["attempts"][0]["attempt_id"])
+        status, cancelled = api_gateway.route_post("/v1/tasks/task-long-api/cancel", {"attempt_id": attempt_id, "by": "hermes", "reason": "测试取消"})
+        self.assertEqual(200, status, cancelled)
+        self.assertEqual("cancelled", cancelled["attempt"]["status"])
+        status, retry = api_gateway.route_post("/v1/tasks/task-long-api/retry", {"by": "hermes", "reason": "API retry after cancel"})
+        self.assertEqual(200, status, retry)
+        self.assertNotEqual(attempt_id, retry["attempt"]["attempt_id"])
+        self.assertEqual("starting", retry["attempt"]["status"])
+        self.assertEqual(run["attempt"]["trace_id"], retry["attempt"]["trace_id"])
+        self.assertEqual(attempt_id, retry["attempt"]["metadata"]["previous_attempt_id"])
+        self.assertEqual("claimed", retry["task"]["status"])
+
+    def test_dashboard_employee_cards_include_managed_attempt_state(self) -> None:
+        for employee_id, role in [("main", "operator"), ("hermes", "supervisor"), ("codex", "developer")]:
+            code, created = run_cli("employee", "create", "--id", employee_id, "--name", employee_id, "--role", role, "--runtime", "local", "--workspace", str(self.root / "workspace" / employee_id))
+            self.assertEqual(code, 0, created)
+        self.mark_active("codex")
+        code, submitted = run_cli("task", "submit", "--from", "main", "--to", "codex", "--task-id", "task-long-dashboard", "--title", "Long dashboard task")
+        self.assertEqual(0, code, submitted)
+        code, run = run_cli("task", "run", "--task-id", "task-long-dashboard", "--agent", "codex", "--by", "hermes")
+        self.assertEqual(0, code, run)
+        conn = companyctl.connect()
+        try:
+            summary = company_dashboard.load_summary(conn)
+        finally:
+            conn.close()
+        codex = next(item for item in summary["employees"] if item["id"] == "codex")
+        self.assertEqual("task-long-dashboard", codex["current_attempt"]["task_id"])
+        self.assertEqual("starting", codex["current_attempt"]["status"])
+        self.assertEqual(run["attempt"]["attempt_id"], codex["current_attempt"]["attempt_id"])
+
+    def test_dashboard_renders_managed_task_control_buttons(self) -> None:
+        for employee_id, role in [("main", "operator"), ("hermes", "supervisor"), ("codex", "developer")]:
+            code, created = run_cli("employee", "create", "--id", employee_id, "--name", employee_id, "--role", role, "--runtime", "local", "--workspace", str(self.root / "workspace" / employee_id))
+            self.assertEqual(code, 0, created)
+            self.mark_active(employee_id)
+        code, submitted = run_cli("task", "submit", "--from", "main", "--to", "codex", "--task-id", "task-dashboard-controls", "--title", "Dashboard controls")
+        self.assertEqual(0, code, submitted)
+        code, run = run_cli("task", "run", "--task-id", "task-dashboard-controls", "--agent", "codex", "--by", "hermes")
+        self.assertEqual(0, code, run)
+        output = self.root / "state" / "dashboard-controls.html"
+        with contextlib.redirect_stdout(io.StringIO()):
+            code = company_dashboard.main(["--output", str(output)])
+        self.assertEqual(0, code)
+        html = output.read_text(encoding="utf-8")
+        self.assertIn("<th>attempt</th>", html)
+        self.assertIn("task-dashboard-controls", html)
+        self.assertIn(run["attempt"]["attempt_id"], html)
+        self.assertIn("correctTaskAttempt('task-dashboard-controls'", html)
+        self.assertIn("cancelTaskAttempt('task-dashboard-controls'", html)
+        self.assertIn("retryTask('task-dashboard-controls'", html)
+        self.assertIn("reassignTask('task-dashboard-controls'", html)
+        self.assertIn("viewTaskTrace('", html)
+        self.assertIn("/v1/tasks/${encodeURIComponent(taskId)}/correct", html)
+        self.assertIn("/v1/tasks/${encodeURIComponent(taskId)}/cancel", html)
+        self.assertIn("/v1/tasks/${encodeURIComponent(taskId)}/retry", html)
+        self.assertIn("/v1/tasks/${encodeURIComponent(taskId)}/reassign", html)
+
+    def test_agent_matrix_reports_employee_readiness_levels(self) -> None:
+        for employee_id, role, runtime, status in [
+            ("main", "operator", "openclaw", "active"),
+            ("codex", "developer", "codex", "active"),
+            ("antigravity", "developer", "antigravity", "candidate"),
+        ]:
+            code, created = run_cli("employee", "create", "--id", employee_id, "--name", employee_id, "--role", role, "--runtime", runtime, "--workspace", str(self.root / "workspace" / employee_id))
+            self.assertEqual(0, code, created)
+            if status == "active":
+                self.mark_active(employee_id)
+        verification_dir = self.root / "state" / "employee-verification" / "codex"
+        verification_dir.mkdir(parents=True)
+        (verification_dir / "latest-runtime.json").write_text(json.dumps({"ok": True, "activation_allowed": True}, ensure_ascii=False), encoding="utf-8")
+        attendance_dir = self.root / "state" / "attendance"
+        attendance_dir.mkdir(parents=True)
+        (attendance_dir / "latest.json").write_text(
+            json.dumps(
+                {
+                    "ok": False,
+                    "employees": [
+                        {"agent": "main", "status": "online", "reply": "main 在岗"},
+                        {"agent": "codex", "status": "online", "reply": "codex 在岗"},
+                        {"agent": "antigravity", "status": "online", "reply": "antigravity 在岗"},
+                    ],
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        code, matrix = run_cli("agent-matrix", "--agents", "main,codex,antigravity")
+        self.assertEqual(0, code, matrix)
+        rows = {item["agent"]: item for item in matrix["employees"]}
+        self.assertEqual("online_only", rows["main"]["level"])
+        self.assertEqual("active_ready", rows["codex"]["level"])
+        self.assertEqual("candidate_only", rows["antigravity"]["level"])
+        self.assertEqual("online", rows["codex"]["checks"]["attendance"])
+
+        status, api_matrix = api_gateway.route_get("/v1/agent-matrix", {"agents": ["main,codex,antigravity"]})
+        self.assertEqual(200, status, api_matrix)
+        api_rows = {item["agent"]: item for item in api_matrix["employees"]}
+        self.assertEqual("active_ready", api_rows["codex"]["level"])
+        self.assertEqual("candidate_only", api_rows["antigravity"]["level"])
+
+    def test_agent_matrix_accepts_successful_managed_attempt_as_runtime_evidence(self) -> None:
+        workspace = self.root / "workspace" / "antigravity"
+        for employee_id, role, runtime in [
+            ("main", "operator", "openclaw"),
+            ("hermes", "supervisor", "hermes"),
+            ("antigravity", "developer", "antigravity"),
+        ]:
+            code, created = run_cli("employee", "create", "--id", employee_id, "--name", employee_id, "--role", role, "--runtime", runtime, "--workspace", str(workspace if employee_id == "antigravity" else self.root / "workspace" / employee_id))
+            self.assertEqual(0, code, created)
+            self.mark_active(employee_id)
+        attendance_dir = self.root / "state" / "attendance"
+        attendance_dir.mkdir(parents=True)
+        (attendance_dir / "latest.json").write_text(
+            json.dumps(
+                {
+                    "ok": True,
+                    "employees": [
+                        {"agent": "main", "status": "online", "reply": "main 在岗"},
+                        {"agent": "hermes", "status": "online", "reply": "hermes 在岗"},
+                        {"agent": "antigravity", "status": "online", "reply": "antigravity 在岗"},
+                    ],
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        code, submitted = run_cli("task", "submit", "--from", "main", "--to", "antigravity", "--task-id", "task-antigravity-matrix-evidence", "--title", "Matrix evidence")
+        self.assertEqual(0, code, submitted)
+        structured_reply = "\n".join(
+            [
+                "status: done",
+                "current_action: completed structured matrix evidence task",
+                "changed_files: employees/antigravity/reports/task-antigravity-matrix-evidence/antigravity-managed-attempt.json",
+                "verification_run: managed attempt unit check passed",
+                "browser_check: -",
+                "blocker: -",
+                "eta: -",
+            ]
+        )
+        with mock.patch.object(antigravity_adapter, "run_agy_print", return_value=(0, structured_reply, "")):
+            captured = io.StringIO()
+            with contextlib.redirect_stdout(captured):
+                code = antigravity_adapter.main(["--agent", "antigravity", "--managed-attempt", "--by", "hermes"])
+        self.assertEqual(0, code, json.loads(captured.getvalue()))
+
+        code, matrix = run_cli("agent-matrix", "--agents", "antigravity")
+        self.assertEqual(0, code, matrix)
+        row = matrix["employees"][0]
+        self.assertEqual("active_ready", row["level"])
+        self.assertEqual("verified", row["checks"]["runtime"])
+        self.assertEqual("runtime_evidence", row["checks"]["evidence"])
+        self.assertEqual("success", row["latest_attempt"]["status"])
+
+    def test_v3_claim_returns_context_and_done_auto_promotes_workspace_evidence(self) -> None:
+        for employee_id in ["manager", "writer"]:
+            code, created = run_cli("employee", "create", "--id", employee_id, "--name", employee_id, "--role", "agent", "--runtime", "local", "--workspace", str(self.root / "workspace" / employee_id))
+            self.assertEqual(code, 0, created)
+        with sqlite3.connect(self.root / "company.sqlite") as conn:
+            conn.execute("UPDATE employees SET status = 'active' WHERE id IN ('manager', 'writer')")
+            conn.commit()
+
+        code, submitted = run_cli("task", "submit", "--from", "manager", "--to", "writer", "--task-id", "task-v3-claim-context", "--title", "claim context")
+        self.assertEqual(code, 0, submitted)
+        code, claimed = run_cli("task", "claim", "--agent", "writer", "--task-id", "task-v3-claim-context")
+        self.assertEqual(code, 0, claimed)
+        self.assertIn("context_package", claimed)
+        self.assertEqual("task-v3-claim-context", claimed["context_package"]["context"]["task_id"])
+        self.assertTrue(Path(claimed["task"]["workspace"]["path"]).exists())
+
+        evidence_path = Path(claimed["task"]["workspace"]["path"]) / "evidence" / "adapter-report.md"
+        evidence_path.write_text("adapter evidence\n", encoding="utf-8")
+        code, done = run_cli("task", "done", "--agent", "writer", "--task-id", "task-v3-claim-context", "--summary", "done through adapter-compatible path", "--evidence", str(evidence_path))
+        self.assertEqual(code, 0, done)
+        with sqlite3.connect(self.root / "company.sqlite") as conn:
+            conn.row_factory = sqlite3.Row
+            artifact = conn.execute("SELECT * FROM artifacts WHERE task_id = 'task-v3-claim-context' AND name = 'adapter-report.md'").fetchone()
+            evidence = conn.execute("SELECT * FROM evidence WHERE task_id = 'task-v3-claim-context' AND artifact_id = ?", (artifact["artifact_id"],)).fetchone()
+        self.assertIsNotNone(artifact)
+        self.assertIsNotNone(evidence)
+        self.assertEqual(str(evidence_path), json.loads(artifact["metadata_json"])["original_path"])
+        self.assertEqual(1, evidence["is_final"])
 
     def test_local_smoke_generates_usability_report(self) -> None:
         for employee_id, runtime in [("main", "openclaw"), ("nestcar", "openclaw"), ("codex", "codex")]:
@@ -3597,8 +4637,9 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual(200, status, plan_status)
         self.assertEqual("done", plan_status["plan_item"]["status"])
         status, project_status = api_gateway.route_post("/v1/projects/project-api-gateway/status", {"status": "completed"})
-        self.assertEqual(200, status, project_status)
-        self.assertEqual("completed", project_status["status"])
+        self.assertEqual(400, status, project_status)
+        self.assertEqual("project is not ready to complete; use project accept after review passes", project_status["error"])
+        self.assertIn("review", project_status)
         status, review = api_gateway.route_get("/v1/projects/project-api-gateway/review", {})
         self.assertEqual(200, status, review)
         self.assertEqual("project-api-gateway", review["review"]["project_id"])
@@ -4010,6 +5051,48 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual(code, 0, submitted)
         self.assertEqual(approval_id, submitted["task"]["metadata"]["approval"]["id"])
 
+    def test_direct_task_submit_reuses_deterministic_approved_route_gate(self) -> None:
+        task_id = "task-direct-submit-auto-approval"
+        code, blocked = run_cli(
+            "task",
+            "submit",
+            "--from",
+            "ops",
+            "--to",
+            "publisher",
+            "--task-id",
+            task_id,
+            "--title",
+            "发布客户通知",
+            "--description",
+            "需要外发给客户",
+            "--requires-approval",
+            "external_send",
+        )
+        self.assertEqual(code, 2, blocked)
+        approval_id = blocked["approval"]["id"]
+
+        code, approved = run_cli("approval", "approve", "--approval-id", approval_id, "--by", "ops", "--reason", "允许测试外发")
+        self.assertEqual(code, 0, approved)
+        code, submitted = run_cli(
+            "task",
+            "submit",
+            "--from",
+            "ops",
+            "--to",
+            "publisher",
+            "--task-id",
+            task_id,
+            "--title",
+            "发布客户通知",
+            "--description",
+            "需要外发给客户",
+            "--requires-approval",
+            "external_send",
+        )
+        self.assertEqual(code, 0, submitted)
+        self.assertEqual(approval_id, submitted["task"]["metadata"]["approval"]["id"])
+
     def test_custom_runtime_can_be_registered_and_onboarded_without_code_changes(self) -> None:
         with self.assertRaises(SystemExit):
             companyctl.main(["employee", "create", "--id", "cursor-agent", "--name", "Cursor", "--role", "developer", "--runtime", "cursor", "--workspace", str(self.root / "cursor")])
@@ -4136,6 +5219,93 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual(1, verified["count"])
         self.assertTrue(verified["results"][0]["evidence_exists"])
         self.assertEqual("completed", verified["results"][0]["task_status"])
+
+    def test_hermes_adapter_runs_codex_pm_supervisor_with_dev_roots_before_heartbeat(self) -> None:
+        codex_workspace = self.root / "workspace" / "codex-dev"
+        codex_workspace.mkdir(parents=True, exist_ok=True)
+        with companyctl.connect() as conn:
+            conn.execute("UPDATE employees SET workspace = ? WHERE id = 'codex'", (str(codex_workspace),))
+            conn.commit()
+
+        calls: list[list[str]] = []
+
+        def fake_run(cmd: list[str], cwd: str, text: bool, capture_output: bool, env: dict[str, str]) -> subprocess.CompletedProcess:
+            calls.append(cmd)
+            if Path(cmd[0]).name == "company-codex-pm-supervisor":
+                stdout = json.dumps(
+                    {
+                        "ok": True,
+                        "status": "idle",
+                        "db_path": str((self.root / "company.sqlite").resolve()),
+                        "workspace": str(codex_workspace.resolve()),
+                        "report_path": str((self.root / "employees" / "hermes" / "reports" / "codex-pm" / "report.json").resolve()),
+                    },
+                    ensure_ascii=False,
+                )
+                return subprocess.CompletedProcess(cmd, 0, stdout=stdout, stderr="")
+            if Path(cmd[0]).name == "companyctl":
+                stdout = json.dumps({"ok": True, "heartbeat": {"agent_id": "hermes"}}, ensure_ascii=False)
+                return subprocess.CompletedProcess(cmd, 0, stdout=stdout, stderr="")
+            self.fail(f"unexpected command: {cmd}")
+
+        captured = io.StringIO()
+        with mock.patch.object(hermes_adapter.subprocess, "run", fake_run), contextlib.redirect_stdout(captured):
+            exit_code = hermes_adapter.main(["--agent", "hermes"])
+
+        self.assertEqual(0, exit_code)
+        payload = json.loads(captured.getvalue())
+        self.assertEqual(0, payload["codex_pm_supervisor"]["exit_code"])
+        self.assertEqual(str(codex_workspace.resolve()), payload["codex_pm_supervisor"]["result"]["workspace"])
+        pm_cmd = calls[0]
+        self.assertEqual("company-codex-pm-supervisor", Path(pm_cmd[0]).name)
+        self.assertEqual(["--agent", "codex"], pm_cmd[1:3])
+        self.assertEqual("--db-path", pm_cmd[3])
+        self.assertEqual((self.root / "company.sqlite").resolve(), Path(pm_cmd[4]).resolve())
+        self.assertEqual("--workspace", pm_cmd[5])
+        self.assertEqual(codex_workspace.resolve(), Path(pm_cmd[6]).resolve())
+        self.assertEqual("--report-root", pm_cmd[7])
+        self.assertEqual(self.root.resolve(), Path(pm_cmd[8]).resolve())
+        self.assertEqual("companyctl", Path(calls[1][0]).name)
+        self.assertEqual(["heartbeat", "--agent", "hermes"], calls[1][1:])
+
+    def test_hermes_adapter_exposes_progress_bridge_from_pm_supervisor_result(self) -> None:
+        codex_workspace = self.root / "workspace" / "codex-dev-bridge"
+        codex_workspace.mkdir(parents=True, exist_ok=True)
+        progress = codex_workspace / "reports" / "progress_in_progress_task-codex-20260606-heartbeat-progress-bridge.json"
+        progress.parent.mkdir(parents=True, exist_ok=True)
+        progress.write_text("{}", encoding="utf-8")
+
+        def fake_run(cmd: list[str], cwd: str, text: bool, capture_output: bool, env: dict[str, str]) -> subprocess.CompletedProcess:
+            if Path(cmd[0]).name == "company-codex-pm-supervisor":
+                stdout = json.dumps(
+                    {
+                        "ok": True,
+                        "status": "in_progress",
+                        "task_id": "task-codex-20260606-heartbeat-progress-bridge",
+                        "workspace": str(codex_workspace.resolve()),
+                        "latest_progress_path": str(progress.resolve()),
+                        "progress_layer": "working",
+                        "progress_state": "in_progress",
+                    },
+                    ensure_ascii=False,
+                )
+                return subprocess.CompletedProcess(cmd, 0, stdout=stdout, stderr="")
+            if Path(cmd[0]).name == "companyctl":
+                stdout = json.dumps({"ok": True, "heartbeat": {"agent_id": "hermes"}}, ensure_ascii=False)
+                return subprocess.CompletedProcess(cmd, 0, stdout=stdout, stderr="")
+            self.fail(f"unexpected command: {cmd}")
+
+        captured = io.StringIO()
+        with mock.patch.object(hermes_adapter.subprocess, "run", fake_run), contextlib.redirect_stdout(captured):
+            exit_code = hermes_adapter.main(["--agent", "hermes"])
+
+        self.assertEqual(0, exit_code)
+        payload = json.loads(captured.getvalue())
+        pm_result = payload["codex_pm_supervisor"]["result"]
+        self.assertEqual("task-codex-20260606-heartbeat-progress-bridge", pm_result["task_id"])
+        self.assertEqual(str(progress.resolve()), pm_result["latest_progress_path"])
+        self.assertEqual("working", pm_result["progress_layer"])
+        self.assertEqual("in_progress", pm_result["progress_state"])
 
     def test_openclaw_adapter_dry_run_writes_payload_and_evidence(self) -> None:
         code, submitted = run_cli(
@@ -4419,6 +5589,122 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual("blocked", blocked_task["task"]["status"])
         self.assertEqual("GUI login required", blocked_task["task"]["blocker"])
 
+    def test_antigravity_managed_attempt_records_progress_and_evidence(self) -> None:
+        workspace = self.root / "workspace" / "antigravity"
+        for employee_id, role, runtime in [
+            ("main", "operator", "openclaw"),
+            ("hermes", "supervisor", "hermes"),
+            ("antigravity", "ide-agent", "antigravity"),
+        ]:
+            code, employee = run_cli(
+                "employee",
+                "create",
+                "--id",
+                employee_id,
+                "--name",
+                employee_id,
+                "--role",
+                role,
+                "--runtime",
+                runtime,
+                "--workspace",
+                str(workspace if employee_id == "antigravity" else self.root / "workspace" / employee_id),
+            )
+            self.assertEqual(code, 0, employee)
+            self.mark_active(employee_id)
+        task_id = "task-antigravity-managed-ok"
+        code, submitted = run_cli("task", "submit", "--from", "main", "--to", "antigravity", "--task-id", task_id, "--title", "Managed Antigravity task", "--description", "Inspect dashboard and return structured evidence")
+        self.assertEqual(code, 0, submitted)
+        structured_reply = "\n".join(
+            [
+                "status: done",
+                "current_action: inspected dashboard task controls and API retry path",
+                "changed_files: company_kernel/company_dashboard.py",
+                "verification_run: pytest tests/test_company_kernel_core.py::CompanyKernelCoreTest::test_dashboard_renders_managed_task_control_buttons -q passed",
+                "browser_check: not needed for adapter unit test",
+                "blocker: -",
+                "eta: -",
+            ]
+        )
+        captured = io.StringIO()
+        with mock.patch.object(antigravity_adapter, "run_agy_print", return_value=(0, structured_reply, "")), contextlib.redirect_stdout(captured):
+            code = antigravity_adapter.main(["--agent", "antigravity", "--managed-attempt", "--by", "hermes", "--timeout", "180"])
+        result = json.loads(captured.getvalue())
+        self.assertEqual(0, code, result)
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(task_id, result["task_id"])
+        self.assertTrue(result["managed_attempt"])
+        self.assertEqual("success", result["attempt"]["status"])
+        self.assertEqual("completed", result["task"]["status"])
+        self.assertTrue(Path(result["evidence"]).exists())
+
+        code, shown = run_cli("task", "show", "--task-id", task_id)
+        self.assertEqual(0, code, shown)
+        self.assertEqual("completed", shown["task"]["status"])
+        self.assertEqual(1, len(shown["attempts"]))
+        self.assertEqual("success", shown["attempts"][0]["status"])
+        event_types = [event["event_type"] for event in shown["events"]]
+        self.assertIn("task.progress", event_types)
+        self.assertIn("task.done", event_types)
+
+    def test_antigravity_managed_attempt_blocks_without_structured_evidence(self) -> None:
+        workspace = self.root / "workspace" / "antigravity"
+        for employee_id, role, runtime in [
+            ("main", "operator", "openclaw"),
+            ("hermes", "supervisor", "hermes"),
+            ("antigravity", "ide-agent", "antigravity"),
+        ]:
+            code, employee = run_cli(
+                "employee",
+                "create",
+                "--id",
+                employee_id,
+                "--name",
+                employee_id,
+                "--role",
+                role,
+                "--runtime",
+                runtime,
+                "--workspace",
+                str(workspace if employee_id == "antigravity" else self.root / "workspace" / employee_id),
+            )
+            self.assertEqual(code, 0, employee)
+            self.mark_active(employee_id)
+        task_id = "task-antigravity-managed-blocked"
+        code, submitted = run_cli("task", "submit", "--from", "main", "--to", "antigravity", "--task-id", task_id, "--title", "Managed Antigravity blocked")
+        self.assertEqual(code, 0, submitted)
+        blocked_reply = "\n".join(
+            [
+                "status: blocked",
+                "current_action: tried to inspect dashboard",
+                "changed_files: -",
+                "verification_run: agy print failed because login expired",
+                "browser_check: -",
+                "blocker: Antigravity login expired",
+                "eta: unknown",
+            ]
+        )
+        captured = io.StringIO()
+        with mock.patch.object(antigravity_adapter, "run_agy_print", return_value=(0, blocked_reply, "")), contextlib.redirect_stdout(captured):
+            code = antigravity_adapter.main(["--agent", "antigravity", "--managed-attempt", "--by", "hermes"])
+        result = json.loads(captured.getvalue())
+        self.assertEqual(1, code, result)
+        self.assertFalse(result["ok"])
+        self.assertEqual("blocked", result["status"])
+        self.assertIn("Antigravity login expired", result["blocker"])
+        self.assertEqual("failed", result["attempt"]["status"])
+
+        code, shown = run_cli("task", "show", "--task-id", task_id)
+        self.assertEqual(0, code, shown)
+        self.assertEqual("blocked", shown["task"]["status"])
+        self.assertEqual("", shown["task"]["evidence_path"])
+        self.assertEqual(1, len(shown["attempts"]))
+        self.assertEqual("failed", shown["attempts"][0]["status"])
+        event_types = [event["event_type"] for event in shown["events"]]
+        self.assertIn("task.progress", event_types)
+        self.assertIn("task.blocked", event_types)
+        self.assertNotIn("task.done", event_types)
+
     def test_antigravity_adapter_direct_message_writes_gui_brief(self) -> None:
         workspace = self.root / "workspace" / "antigravity"
         code, employee = run_cli(
@@ -4493,6 +5779,52 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertFalse(result["activation_eligible"])
         self.assertIn("expected exact token", result["blocker"])
         self.assertTrue(result["blocked_execution"])
+
+    def test_antigravity_readonly_done_allows_no_changed_files_with_verification(self) -> None:
+        reply = "\n".join(
+            [
+                "status: done",
+                "current_action: read README.md and company_dashboard.py",
+                "changed_files: -",
+                "verification_run: python3 -m py_compile company_kernel/company_dashboard.py passed",
+                "browser_check: -",
+                "blocker: -",
+                "eta: -",
+            ]
+        )
+        validation = antigravity_adapter.validate_agy_reply(
+            message="员工上岗执行验收。请在当前项目内做只读检查，不要改文件。",
+            reply=reply,
+            before_files=[],
+            after_files=[],
+        )
+        self.assertTrue(validation["ok"], validation)
+        self.assertTrue(validation["activation_eligible"], validation)
+
+    def test_antigravity_managed_prompt_requires_concrete_verification(self) -> None:
+        conn = antigravity_adapter.connect()
+        try:
+            conn.execute(
+                "INSERT INTO tasks (id, source_agent, target_agent, title, description, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    "task-antigravity-prompt-contract",
+                    "main",
+                    "antigravity",
+                    "Inspect dashboard retry button",
+                    "Read dashboard code and verify retry endpoint wiring.",
+                    "submitted",
+                    "2026-06-07T00:00:00+00:00",
+                    "2026-06-07T00:00:00+00:00",
+                ),
+            )
+            conn.commit()
+            task = conn.execute("SELECT * FROM tasks WHERE id = ?", ("task-antigravity-prompt-contract",)).fetchone()
+        finally:
+            conn.close()
+        prompt = antigravity_adapter.build_managed_task_prompt(task)
+        self.assertIn("verification_run must be a concrete command", prompt)
+        self.assertIn("python3 -m py_compile company_kernel/company_dashboard.py", prompt)
+        self.assertIn("status: blocked", prompt)
 
     def test_antigravity_complex_direct_blocks_stale_context_without_evidence(self) -> None:
         workspace = self.root / "workspace" / "antigravity"
@@ -4632,6 +5964,42 @@ class CompanyKernelCoreTest(unittest.TestCase):
         row = swept["employees"][0]
         self.assertEqual("online", row["status"])
         self.assertEqual("codex 在岗", row["reply"])
+        self.assertEqual("adapter_heartbeat_matched", row["reply_probe"]["reason"])
+
+    def test_attendance_sweep_can_mark_antigravity_online_via_adapter(self) -> None:
+        code, created = run_cli(
+            "employee",
+            "create",
+            "--id",
+            "antigravity",
+            "--name",
+            "Antigravity",
+            "--role",
+            "developer",
+            "--runtime",
+            "antigravity",
+            "--workspace",
+            str(self.root / "workspace" / "antigravity"),
+        )
+        self.assertEqual(code, 0, created)
+
+        def fake_run(cmd, cwd=None, text=None, capture_output=None, timeout=None):
+            self.assertIn("company-antigravity-adapter", cmd[0])
+            self.assertIn("--attendance-probe", cmd)
+
+            class Result:
+                returncode = 0
+                stdout = json.dumps({"ok": True, "processed": 0, "agent": "antigravity", "attendance_probe": True, "reply": "antigravity 在岗"})
+                stderr = ""
+
+            return Result()
+
+        with mock.patch.object(companyctl.subprocess, "run", side_effect=fake_run):
+            code, swept = run_cli("attendance", "sweep", "--source", "main", "--agents", "antigravity", "--sweep-id", "attendance-antigravity-test")
+        self.assertEqual(code, 0, swept)
+        row = swept["employees"][0]
+        self.assertEqual("online", row["status"])
+        self.assertEqual("antigravity 在岗", row["reply"])
         self.assertEqual("adapter_heartbeat_matched", row["reply_probe"]["reason"])
 
     def test_employee_onboard_writes_config_and_blocks_test_task_until_verified(self) -> None:
@@ -5139,6 +6507,245 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual("company-adapter-worker", worker["command"])
         self.assertEqual(["--dry-run"], worker["args"])
 
+    def test_daemon_enable_worker_uses_skill_package_worker_for_skill_runtime(self) -> None:
+        code, runtime = run_cli("runtime", "register", "--runtime", "skill", "--command", "company-skill-package-worker", "--notes", "Skill Package runtime")
+        self.assertEqual(0, code, runtime)
+        code, employee = run_cli(
+            "employee",
+            "create",
+            "--id",
+            "packaged-skill",
+            "--name",
+            "Packaged Skill",
+            "--role",
+            "skill-worker",
+            "--runtime",
+            "skill",
+            "--workspace",
+            str(self.root / "workspace" / "packaged-skill"),
+        )
+        self.assertEqual(0, code, employee)
+        self.mark_active("packaged-skill")
+        config_path = self.root / "config" / "daemon-worker-skill.json"
+        config_path.write_text(json.dumps({"version": 1, "run_repair": False, "run_scheduler": False, "heartbeat_agents": [], "adapter_workers": []}, ensure_ascii=False), encoding="utf-8")
+        seen_configs = []
+
+        def fake_tick(config: dict) -> dict:
+            seen_configs.append(config)
+            return {"ok": True, "at": "2026-06-03T04:41:30+07:00", "results": []}
+
+        with contextlib.redirect_stdout(io.StringIO()), mock.patch.object(company_daemon, "tick", fake_tick):
+            code = company_daemon.main(["--config", str(config_path), "--once", "--enable-worker", "packaged-skill"])
+        self.assertEqual(0, code)
+        worker = seen_configs[0]["adapter_workers"][0]
+        self.assertEqual("packaged-skill", worker["agent"])
+        self.assertEqual("skill", worker["runtime"])
+        self.assertEqual("company-skill-package-worker", worker["command"])
+        self.assertEqual([], worker["args"])
+
+    def test_skill_package_worker_runs_manifest_and_promotes_evidence(self) -> None:
+        code, runtime = run_cli("runtime", "register", "--runtime", "skill", "--command", "company-skill-package-worker", "--notes", "Skill Package runtime")
+        self.assertEqual(0, code, runtime)
+        code, employee = run_cli(
+            "employee",
+            "create",
+            "--id",
+            "image-copy-skill",
+            "--name",
+            "Image Copy Skill",
+            "--role",
+            "skill-worker",
+            "--runtime",
+            "skill",
+            "--workspace",
+            str(self.root / "workspace" / "image-copy-skill"),
+        )
+        self.assertEqual(0, code, employee)
+        self.mark_active("image-copy-skill")
+        package_dir = self.root / "skill-packages" / "image-copy"
+        package_dir.mkdir(parents=True)
+        manifest_path = package_dir / "skill.json"
+        manifest_path.write_text(
+            json.dumps(
+                {
+                    "id": "image-copy",
+                    "name": "Image copy package",
+                    "version": "0.1.0",
+                    "employee_id": "image-copy-skill",
+                    "input_schema": {"type": "object", "properties": {"prompt": {"type": "string"}}},
+                    "output_schema": {"type": "object", "properties": {"summary": {"type": "string"}}},
+                    "runtime": {"type": "local-script", "command": "python3 -c \"import os; from pathlib import Path; root=Path(os.environ['TASK_WORKSPACE']); (root/'final').mkdir(exist_ok=True); (root/'final/result.md').write_text('skill output for '+os.environ['TASK_ID'], encoding='utf-8')\""},
+                    "permissions": {"workspace": "task"},
+                    "pricing": {"unit": "task", "amount": 10, "currency": "USD"},
+                    "acceptance": {"final_artifact": "final/result.md"},
+                },
+                ensure_ascii=False,
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+        task_id = "task-skill-package-run"
+        code, submitted = run_cli(
+            "task",
+            "submit",
+            "--from",
+            "video-ops",
+            "--to",
+            "image-copy-skill",
+            "--task-id",
+            task_id,
+            "--title",
+            "Run image copy skill",
+            "--description",
+            "Use the packaged skill and return final evidence.",
+        )
+        self.assertEqual(0, code, submitted)
+        captured = io.StringIO()
+        with contextlib.redirect_stdout(captured):
+            code = skill_package_worker.main(["--agent", "image-copy-skill", "--package", str(manifest_path)])
+        result = json.loads(captured.getvalue())
+        self.assertEqual(0, code, result)
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(task_id, result["task_id"])
+        self.assertEqual("completed", result["status"])
+        self.assertTrue(result["artifact"]["artifact_id"])
+        self.assertTrue(result["evidence"]["evidence_id"])
+
+        code, shown = run_cli("task", "show", "--task-id", task_id)
+        self.assertEqual(0, code, shown)
+        self.assertEqual("completed", shown["task"]["status"])
+        self.assertTrue(shown["evidence"]["exists"])
+        conn = companyctl.connect()
+        try:
+            artifact_count = conn.execute("SELECT COUNT(*) FROM artifacts WHERE task_id = ?", (task_id,)).fetchone()[0]
+            evidence_count = conn.execute("SELECT COUNT(*) FROM evidence WHERE task_id = ?", (task_id,)).fetchone()[0]
+        finally:
+            conn.close()
+        self.assertEqual(1, artifact_count)
+        self.assertEqual(1, evidence_count)
+
+    def test_skill_package_worker_can_continue_claimed_retry_task(self) -> None:
+        code, runtime = run_cli("runtime", "register", "--runtime", "skill", "--command", "company-skill-package-worker", "--notes", "Skill Package runtime")
+        self.assertEqual(0, code, runtime)
+        code, employee = run_cli(
+            "employee",
+            "create",
+            "--id",
+            "retry-skill",
+            "--name",
+            "Retry Skill",
+            "--role",
+            "skill-worker",
+            "--runtime",
+            "skill",
+            "--workspace",
+            str(self.root / "workspace" / "retry-skill"),
+        )
+        self.assertEqual(0, code, employee)
+        self.mark_active("retry-skill")
+        package_dir = self.root / "skill-packages" / "retry-skill"
+        package_dir.mkdir(parents=True)
+        manifest_path = package_dir / "skill.json"
+        manifest_path.write_text(
+            json.dumps(
+                {
+                    "id": "retry-skill",
+                    "name": "Retry Skill",
+                    "version": "0.1.0",
+                    "input_schema": {"type": "object"},
+                    "output_schema": {"type": "object"},
+                    "runtime": {"type": "local-script", "command": "python3 -c \"import os; from pathlib import Path; root=Path(os.environ['TASK_WORKSPACE']); (root/'final').mkdir(exist_ok=True); (root/'final/result.md').write_text('retry ok', encoding='utf-8')\""},
+                    "permissions": {"workspace": "task"},
+                    "pricing": {"unit": "task", "amount": 1, "currency": "USD"},
+                    "acceptance": {"final_artifact": "final/result.md"},
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        task_id = "task-skill-claimed-retry"
+        code, submitted = run_cli("task", "submit", "--from", "video-ops", "--to", "retry-skill", "--task-id", task_id, "--title", "Retry skill task")
+        self.assertEqual(0, code, submitted)
+        code, claimed = run_cli("task", "claim", "--agent", "retry-skill", "--task-id", task_id)
+        self.assertEqual(0, code, claimed)
+        captured = io.StringIO()
+        with contextlib.redirect_stdout(captured):
+            code = skill_package_worker.main(["--agent", "retry-skill", "--package", str(manifest_path)])
+        result = json.loads(captured.getvalue())
+        self.assertEqual(0, code, result)
+        self.assertEqual("completed", result["status"])
+        self.assertEqual(task_id, result["task_id"])
+        code, attempts = run_cli("task", "attempts", "--task-id", task_id)
+        self.assertEqual(0, code, attempts)
+        self.assertEqual(1, len(attempts["attempts"]))
+        self.assertEqual("success", attempts["attempts"][0]["status"])
+
+    def test_skill_package_worker_reuses_retry_attempt_without_leaving_starting_attempt(self) -> None:
+        code, runtime = run_cli("runtime", "register", "--runtime", "skill", "--command", "company-skill-package-worker", "--notes", "Skill Package runtime")
+        self.assertEqual(0, code, runtime)
+        code, employee = run_cli(
+            "employee",
+            "create",
+            "--id",
+            "retry-attempt-skill",
+            "--name",
+            "Retry Attempt Skill",
+            "--role",
+            "skill-worker",
+            "--runtime",
+            "skill",
+            "--workspace",
+            str(self.root / "workspace" / "retry-attempt-skill"),
+        )
+        self.assertEqual(0, code, employee)
+        self.mark_active("retry-attempt-skill")
+        package_dir = self.root / "skill-packages" / "retry-attempt-skill"
+        package_dir.mkdir(parents=True)
+        manifest_path = package_dir / "skill.json"
+        manifest_path.write_text(
+            json.dumps(
+                {
+                    "id": "retry-attempt-skill",
+                    "name": "Retry Attempt Skill",
+                    "version": "0.1.0",
+                    "input_schema": {"type": "object"},
+                    "output_schema": {"type": "object"},
+                    "runtime": {"type": "local-script", "command": "python3 -c \"import os; from pathlib import Path; root=Path(os.environ['TASK_WORKSPACE']); (root/'final').mkdir(exist_ok=True); (root/'final/result.md').write_text('retry attempt ok', encoding='utf-8')\""},
+                    "permissions": {"workspace": "task"},
+                    "pricing": {"unit": "task", "amount": 1, "currency": "USD"},
+                    "acceptance": {"final_artifact": "final/result.md"},
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        task_id = "task-skill-retry-attempt"
+        code, submitted = run_cli("task", "submit", "--from", "video-ops", "--to", "retry-attempt-skill", "--task-id", task_id, "--title", "Retry attempt skill task")
+        self.assertEqual(0, code, submitted)
+        code, first_run = run_cli("task", "run", "--task-id", task_id, "--agent", "retry-attempt-skill", "--by", "video-ops", "--adapter-type", "skill")
+        self.assertEqual(0, code, first_run)
+        first_attempt_id = first_run["attempt"]["attempt_id"]
+        code, finished = run_cli("task", "attempt", "finish", "--attempt-id", first_attempt_id, "--status", "failed", "--error", "synthetic failure")
+        self.assertEqual(0, code, finished)
+        code, blocked = run_cli("task", "block", "--agent", "retry-attempt-skill", "--task-id", task_id, "--blocker", "synthetic failure")
+        self.assertEqual(0, code, blocked)
+        code, retry = run_cli("task", "retry", "--task-id", task_id, "--by", "video-ops", "--reason", "try again")
+        self.assertEqual(0, code, retry)
+        retry_attempt_id = retry["attempt"]["attempt_id"]
+
+        captured = io.StringIO()
+        with contextlib.redirect_stdout(captured):
+            code = skill_package_worker.main(["--agent", "retry-attempt-skill", "--package", str(manifest_path)])
+        result = json.loads(captured.getvalue())
+        self.assertEqual(0, code, result)
+        self.assertEqual("completed", result["status"])
+        self.assertEqual(retry_attempt_id, result["attempt"]["attempt_id"])
+
+        code, attempts = run_cli("task", "attempts", "--task-id", task_id)
+        self.assertEqual(0, code, attempts)
+        self.assertEqual(["failed", "success"], [attempt["status"] for attempt in attempts["attempts"]])
+        self.assertFalse(any(attempt["status"] in {"starting", "running", "correcting", "cancelling"} for attempt in attempts["attempts"]))
+
     def test_daemon_summary_omits_raw_command_output(self) -> None:
         state = {
             "ok": False,
@@ -5147,13 +6754,14 @@ class CompanyKernelCoreTest(unittest.TestCase):
             "results": [
                 {"step": "repair.reset-stale-claims", "result": {"returncode": 0, "stdout": "large repair output"}},
                 {"step": "scheduler.run", "result": {"returncode": 0, "stdout": "large scheduler output"}},
+                {"step": "supervisor.delivery-loop", "result": {"returncode": 0, "stdout": "large supervisor output"}},
                 {"step": "heartbeat.main", "result": {"returncode": 0, "stdout": "large heartbeat output"}},
                 {"step": "adapter.codex", "result": {"returncode": 1, "stdout": "large adapter output"}},
             ],
         }
         summary = company_daemon.summarize_state(state)
         self.assertFalse(summary["ok"])
-        self.assertEqual({"steps": 4, "heartbeats": 1, "adapters": 1, "repair": 1, "scheduler": 1, "failed": 1}, summary["counts"])
+        self.assertEqual({"steps": 5, "heartbeats": 1, "adapters": 1, "repair": 1, "scheduler": 1, "supervisor": 1, "failed": 1}, summary["counts"])
         self.assertEqual(["main"], summary["heartbeat_agents"])
         self.assertEqual(["adapter.codex"], summary["failed_steps"])
         self.assertNotIn("results", summary)
@@ -5162,7 +6770,8 @@ class CompanyKernelCoreTest(unittest.TestCase):
         plist_path = Path(__file__).resolve().parents[1] / "config" / "launchd" / "ai.openclaw.company-kernel.daemon.plist"
         payload = plistlib.loads(plist_path.read_bytes())
         self.assertEqual("ai.openclaw.company-kernel.daemon", payload["Label"])
-        self.assertEqual(300, payload["StartInterval"])
+        self.assertEqual(180, payload["StartInterval"])
+        self.assertLessEqual(payload["StartInterval"], 3 * 60)
         self.assertLess(payload["StartInterval"], 10 * 60)
         self.assertEqual(
             ["__COMPANY_KERNEL_ROOT__/bin/company-daemon", "--once", "--summary"],
@@ -5217,6 +6826,7 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertNotIn("hermes", [item["to"] for item in report["handshake"]["plan"]])
         self.assertNotIn("owner", [item["to"] for item in report["handshake"]["plan"]])
         self.assertEqual("default", hermes["runtime"]["runtime_agent_id"])
+        self.assertIn("available_commands", hermes["runtime"])
         self.assertEqual("agent:default:<source>", hermes["communication"]["session_key"])
         self.assertTrue(hermes["communication"]["ack_required"])
         self.assertTrue(hermes["coordination"]["human_notification_required"])
@@ -5289,6 +6899,7 @@ class CompanyKernelCoreTest(unittest.TestCase):
         acmeops = next(item for item in applied_report["employees"] if item["agent_id"] == "acmeops")
         self.assertEqual("candidate", acmeops["status"])
         self.assertEqual("openclaw", acmeops["runtime"]["type"])
+        self.assertIn("available_commands", acmeops["runtime"])
         self.assertEqual("agent:acmeops:<source>", acmeops["communication"]["session_key"])
 
 

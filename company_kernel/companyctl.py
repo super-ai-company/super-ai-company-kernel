@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import argparse
 import contextlib
-import filecmp
 import fnmatch
+import hashlib
 import io
 import json
+import mimetypes
 import os
 import shutil
 import sqlite3
@@ -36,6 +37,7 @@ PROTECTED_PATHS_CONFIG = CONFIG_DIR / "protected_paths.json"
 APPROVAL_STATE_DIR = STATE_DIR / "approvals"
 FOLLOWUP_STATE_DIR = STATE_DIR / "followups"
 SUPERVISOR_STATE_DIR = STATE_DIR / "supervisor"
+TASK_WORKSPACE_ROOT = STATE_DIR / "task-workspaces"
 SCHEMA = ROOT / "company_kernel" / "schema.sql"
 
 KNOWN_RUNTIMES = {
@@ -45,6 +47,7 @@ KNOWN_RUNTIMES = {
     "claude": "Claude Code / Claude CLI adapter",
     "trae": "Trae IDE/Agent adapter",
     "antigravity": "Google Antigravity adapter",
+    "skill": "Packaged Skill runtime adapter",
     "local": "Local script/manual adapter",
 }
 
@@ -123,6 +126,12 @@ def extract_progress_payload(payload: object) -> dict[str, str]:
             state = str(nested.get("state") or nested.get("status") or "")
             summary = str(nested.get("summary") or nested.get("message") or payload.get("summary") or "")
             return normalize_progress_state(state, summary=summary)
+        report = payload.get("report")
+        if isinstance(report, dict):
+            state = str(report.get("state") or report.get("status") or payload.get("state") or payload.get("status") or "")
+            summary = str(report.get("action") or report.get("summary") or payload.get("summary") or payload.get("message") or "")
+            if state:
+                return normalize_progress_state(state, summary=summary)
         state = str(payload.get("state") or payload.get("status") or "")
         summary = str(payload.get("summary") or payload.get("message") or "")
         if state:
@@ -130,6 +139,83 @@ def extract_progress_payload(payload: object) -> dict[str, str]:
     if isinstance(payload, str):
         return normalize_progress_state(payload)
     return normalize_progress_state("")
+
+
+def active_task_for_agent(conn: sqlite3.Connection, agent: str) -> sqlite3.Row | None:
+    return conn.execute(
+        """
+        SELECT * FROM tasks
+        WHERE target_agent = ?
+          AND status IN ('submitted', 'claimed')
+        ORDER BY updated_at DESC, created_at DESC
+        LIMIT 1
+        """,
+        (agent,),
+    ).fetchone()
+
+
+def report_progress_task_id(payload: dict) -> str:
+    report = payload.get("report") if isinstance(payload.get("report"), dict) else {}
+    return str(payload.get("task_id") or report.get("task_id") or "").strip()
+
+
+def workspace_progress_files(workspace: Path) -> list[Path]:
+    reports = workspace / "reports"
+    if not reports.exists():
+        return []
+    return sorted(reports.glob("progress_*.json"), key=lambda p: p.stat().st_mtime, reverse=True)
+
+
+def latest_workspace_progress(workspace: str, *, task_id: str = "") -> tuple[str, dict]:
+    workspace_path = Path(workspace or "").expanduser()
+    if not workspace_path.exists():
+        return "", {}
+    for path in workspace_progress_files(workspace_path):
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if not isinstance(payload, dict):
+            continue
+        report = payload.get("report")
+        if not isinstance(report, dict):
+            continue
+        if task_id and report_progress_task_id(payload) != task_id:
+            continue
+        return str(path.resolve()), payload
+    return "", {}
+
+
+def progress_bridge_metadata(conn: sqlite3.Connection, agent: str, workspace: str, metadata_payload: dict) -> dict:
+    enriched = dict(metadata_payload)
+    task_id = str(enriched.get("task_id", "") or "").strip()
+    if not task_id:
+        task = active_task_for_agent(conn, agent)
+        if task:
+            task_id = str(task["id"])
+            enriched["task_id"] = task_id
+    if not workspace:
+        return enriched
+    progress_path, progress_payload = latest_workspace_progress(workspace, task_id=task_id)
+    if not progress_path:
+        return enriched
+    progress = extract_progress_payload(progress_payload)
+    if progress.get("layer"):
+        enriched["progress"] = {
+            "layer": progress["layer"],
+            "state": progress["state"],
+            "label": progress["label"],
+            "summary": progress["summary"],
+        }
+    enriched["latest_progress"] = {
+        "task_id": task_id or report_progress_task_id(progress_payload),
+        "path": progress_path,
+        "layer": progress.get("layer", ""),
+        "state": progress.get("state", ""),
+        "label": progress.get("label", ""),
+        "summary": progress.get("summary", ""),
+    }
+    return enriched
 
 
 def progress_notification_message(agent: str, from_progress: dict[str, str], to_progress: dict[str, str]) -> str:
@@ -381,11 +467,80 @@ def future_seconds(seconds: int) -> str:
     return (datetime.now(timezone.utc).astimezone() + timedelta(seconds=seconds)).isoformat(timespec="seconds")
 
 
+def sync_backlog_from_queue_file(conn: sqlite3.Connection) -> None:
+    queue_path = ROOT / ".ops" / "super-ai-company-kernel-queue.json"
+    if not queue_path.exists():
+        return
+    try:
+        data = json.loads(queue_path.read_text(encoding="utf-8"))
+    except Exception:
+        return
+
+    project_id = data.get("project")
+    if not project_id:
+        return
+
+    backlog = data.get("backlog", [])
+    ts = now()
+    for item in backlog:
+        item_id = item.get("id")
+        if not item_id:
+            continue
+
+        db_task_id = item.get("task_id") or item_id
+
+        # Check if task already exists in database
+        exists = conn.execute("SELECT 1 FROM tasks WHERE id = ?", (db_task_id,)).fetchone()
+        if not exists:
+            source = "hermes"
+            target = item.get("owner", "codex")
+            if target == "hermes-main":
+                target = "hermes"
+            elif target == "hermes-main-rerouted-from-antigravity":
+                target = "hermes"
+            title = item.get("goal", db_task_id)
+            desc = item.get("goal", "")
+            priority = item_id.split('-')[0] if '-' in item_id else "P2"
+
+            q_status = item.get("status")
+            if q_status == "implemented_verified_workspace":
+                db_status = "completed"
+            elif q_status == "running":
+                db_status = "claimed"
+            elif q_status == "submitted":
+                db_status = "submitted"
+            else:
+                db_status = q_status or "submitted"
+
+            evidence_rel = item.get("evidence", "")
+            evidence_abs = ""
+            if evidence_rel:
+                evidence_abs = str((ROOT / evidence_rel).resolve())
+
+            conn.execute(
+                """
+                INSERT INTO tasks (id, source_agent, target_agent, title, description, priority, status, claimed_by, summary, evidence_path, blocker, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (db_task_id, source, target, title, desc, priority, db_status, target, "Imported from queue backlog", evidence_abs, "", ts, ts)
+            )
+
+        # Link to project
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO project_tasks (project_id, task_id, created_at)
+            VALUES (?, ?, ?)
+            """,
+            (project_id, db_task_id, ts)
+        )
+
+
 def connect() -> sqlite3.Connection:
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     conn.executescript(SCHEMA.read_text(encoding="utf-8"))
     ensure_schema_migrations(conn)
+    sync_backlog_from_queue_file(conn)
     conn.commit()
     return conn
 
@@ -449,6 +604,959 @@ def record_event(conn: sqlite3.Connection, event_type: str, source_agent: str, *
     )
     conn.commit()
     return event
+
+
+def safe_path_token(value: str) -> str:
+    token = "".join(ch if ch.isalnum() or ch in "._-" else "_" for ch in str(value or ""))
+    return token.strip("._-") or "task"
+
+
+def require_task(conn: sqlite3.Connection, task_id: str) -> dict:
+    row = conn.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
+    if not row:
+        raise SystemExit(f"task not found: {task_id}")
+    return dict(row)
+
+
+def workspace_dirs_for(path: Path) -> dict[str, str]:
+    return {name: str(path / name) for name in ["input", "work", "artifacts", "evidence", "final"]}
+
+
+def write_workspace_manifest(task_id: str, trace_id: str, path: Path) -> Path:
+    manifest_path = path / "manifest.json"
+    files = []
+    if path.exists():
+        for item in sorted(p for p in path.rglob("*") if p.is_file() and p.name != "manifest.json"):
+            try:
+                rel_path = str(item.relative_to(path))
+            except ValueError:
+                rel_path = str(item)
+            files.append({"path": rel_path, "size": item.stat().st_size, "checksum": sha256_file(item)})
+    manifest = {
+        "task_id": task_id,
+        "trace_id": trace_id,
+        "workspace_path": str(path),
+        "dirs": workspace_dirs_for(path),
+        "files": files,
+        "updated_at": now(),
+    }
+    manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    return manifest_path
+
+
+def ensure_task_workspace(conn: sqlite3.Connection, task_id: str, trace_id: str = "") -> dict:
+    require_task(conn, task_id)
+    task_trace_id = trace_id or trace_id_for_task(conn, task_id)
+    workspace_path = TASK_WORKSPACE_ROOT / f"task_{safe_path_token(task_id)}"
+    for subdir in ["input", "work", "artifacts", "evidence", "final"]:
+        (workspace_path / subdir).mkdir(parents=True, exist_ok=True)
+    manifest_path = write_workspace_manifest(task_id, task_trace_id, workspace_path)
+    ts = now()
+    conn.execute(
+        """
+        INSERT INTO task_workspaces(task_id, trace_id, path, manifest_path, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?)
+        ON CONFLICT(task_id) DO UPDATE SET
+          trace_id = excluded.trace_id,
+          path = excluded.path,
+          manifest_path = excluded.manifest_path,
+          updated_at = excluded.updated_at
+        """,
+        (task_id, task_trace_id, str(workspace_path), str(manifest_path), ts, ts),
+    )
+    conn.commit()
+    return {"task_id": task_id, "trace_id": task_trace_id, "path": str(workspace_path), "manifest_path": str(manifest_path), "dirs": workspace_dirs_for(workspace_path)}
+
+
+def task_workspace(conn: sqlite3.Connection, task_id: str) -> dict:
+    row = conn.execute("SELECT * FROM task_workspaces WHERE task_id = ?", (task_id,)).fetchone()
+    if row:
+        return dict(row)
+    return ensure_task_workspace(conn, task_id, trace_id_for_task(conn, task_id))
+
+
+def require_workspace_path(conn: sqlite3.Connection, task_id: str, raw_path: str) -> Path:
+    workspace = task_workspace(conn, task_id)
+    root = Path(workspace["path"]).resolve()
+    candidate = Path(raw_path).expanduser().resolve()
+    try:
+        candidate.relative_to(root)
+    except ValueError as exc:
+        raise ValueError(f"artifact path must be inside task workspace: {candidate}") from exc
+    return candidate
+
+
+def sha256_file(path: Path) -> str:
+    if not path.exists() or not path.is_file():
+        return ""
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def row_by_id(conn: sqlite3.Connection, table: str, id_column: str, item_id: str) -> dict:
+    row = conn.execute(f"SELECT * FROM {table} WHERE {id_column} = ?", (item_id,)).fetchone()
+    if not row:
+        raise SystemExit(f"{table.rstrip('s')} not found: {item_id}")
+    return dict(row)
+
+
+def parse_json_arg(raw: str, default: object) -> object:
+    if not raw:
+        return default
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise SystemExit(f"invalid json: {exc}") from exc
+
+
+def register_artifact_internal(
+    conn: sqlite3.Connection,
+    *,
+    task_id: str,
+    employee_id: str,
+    path: str,
+    artifact_type: str,
+    name: str = "",
+    stage: str = "intermediate",
+    summary: str = "",
+    is_input: bool = False,
+    is_final: bool = False,
+    metadata: dict | None = None,
+) -> dict:
+    task = require_task(conn, task_id)
+    require_employee(conn, employee_id)
+    artifact_path = require_workspace_path(conn, task_id, path)
+    artifact_name = name or artifact_path.name
+    trace_id = trace_id_for_task(conn, task_id)
+    ts = now()
+    previous = rows(
+        conn,
+        "SELECT * FROM artifacts WHERE task_id = ? AND name = ? AND status NOT IN ('rejected', 'superseded') ORDER BY version ASC",
+        (task_id, artifact_name),
+    )
+    version = (max([int(item.get("version") or 0) for item in previous] or [0]) + 1)
+    superseded = []
+    for item in previous:
+        conn.execute("UPDATE artifacts SET status = 'superseded', updated_at = ? WHERE artifact_id = ?", (ts, item["artifact_id"]))
+        superseded.append({**item, "status": "superseded"})
+        record_event(conn, "artifact.superseded", employee_id, task_id=task_id, trace_id=trace_id, payload={"artifact_id": item["artifact_id"], "name": artifact_name, "new_version": version})
+    artifact_id = f"artifact-{datetime.now().strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:8]}"
+    workspace_path = Path(task_workspace(conn, task_id)["path"])
+    snapshot_dir = workspace_path / "artifacts" / safe_path_token(artifact_name)
+    snapshot_dir.mkdir(parents=True, exist_ok=True)
+    snapshot_path = snapshot_dir / f"v{version}-{artifact_path.name}"
+    if artifact_path.resolve() != snapshot_path.resolve():
+        shutil.copy2(artifact_path, snapshot_path)
+    mime_type = mimetypes.guess_type(str(snapshot_path))[0] or "application/octet-stream"
+    metadata_obj = {**(metadata or {}), "original_path": str(artifact_path)}
+    artifact = {
+        "artifact_id": artifact_id,
+        "trace_id": trace_id,
+        "task_id": task_id,
+        "parent_task_id": str(task.get("parent_task_id", "") or task_metadata(conn, task_id).get("parent_task_id", "") or ""),
+        "employee_id": employee_id,
+        "artifact_type": artifact_type,
+        "name": artifact_name,
+        "path": str(snapshot_path),
+        "mime_type": mime_type,
+        "stage": stage,
+        "version": version,
+        "status": "created",
+        "is_input": int(is_input),
+        "is_output": 0 if is_input else 1,
+        "is_final": int(is_final),
+        "summary": summary,
+        "checksum": sha256_file(snapshot_path),
+        "metadata_json": json.dumps(metadata_obj, ensure_ascii=False),
+        "created_at": ts,
+        "updated_at": ts,
+    }
+    conn.execute(
+        """
+        INSERT INTO artifacts(
+          artifact_id, trace_id, task_id, parent_task_id, employee_id, artifact_type, name, path,
+          mime_type, stage, version, status, is_input, is_output, is_final, summary, checksum,
+          metadata_json, created_at, updated_at
+        ) VALUES (
+          :artifact_id, :trace_id, :task_id, :parent_task_id, :employee_id, :artifact_type, :name, :path,
+          :mime_type, :stage, :version, :status, :is_input, :is_output, :is_final, :summary, :checksum,
+          :metadata_json, :created_at, :updated_at
+        )
+        """,
+        artifact,
+    )
+    conn.commit()
+    write_workspace_manifest(task_id, trace_id, workspace_path)
+    if version > 1:
+        record_event(conn, "artifact.updated", employee_id, task_id=task_id, trace_id=trace_id, payload={"artifact_id": artifact_id, "name": artifact_name, "version": version, "superseded": [item["artifact_id"] for item in superseded]})
+    record_event(conn, "artifact.created", employee_id, task_id=task_id, trace_id=trace_id, payload={"artifact_id": artifact_id, "path": str(snapshot_path), "original_path": str(artifact_path), "name": artifact_name, "version": version, "stage": stage, "status": "created"})
+    return {"artifact": artifact, "superseded": superseded}
+
+
+def scan_artifacts_internal(
+    conn: sqlite3.Connection,
+    *,
+    task_id: str,
+    employee_id: str,
+    scan_dir: str,
+    artifact_type: str,
+    stage: str,
+    summary: str,
+    pattern: str = "*",
+) -> dict:
+    require_task(conn, task_id)
+    require_employee(conn, employee_id)
+    root = require_workspace_path(conn, task_id, scan_dir)
+    if not root.exists() or not root.is_dir():
+        raise ValueError(f"scan dir not found: {root}")
+    artifacts = []
+    for path in sorted(item for item in root.rglob(pattern) if item.is_file()):
+        if path.name == "manifest.json":
+            continue
+        artifacts.append(
+            register_artifact_internal(
+                conn,
+                task_id=task_id,
+                employee_id=employee_id,
+                path=str(path),
+                artifact_type=artifact_type,
+                name=path.name,
+                stage=stage,
+                summary=summary or f"auto-registered {path.name}",
+                metadata={"registered_by": "artifact.scan", "scan_dir": str(root), "pattern": pattern},
+            )
+        )
+    return {"task_id": task_id, "scan_dir": str(root), "artifacts": artifacts}
+
+
+def approve_artifact_internal(conn: sqlite3.Connection, *, artifact_id: str, by: str, status: str = "approved", reason: str = "") -> dict:
+    require_employee(conn, by)
+    artifact = row_by_id(conn, "artifacts", "artifact_id", artifact_id)
+    if status not in {"approved", "rejected"}:
+        raise SystemExit("status must be approved or rejected")
+    conn.execute("UPDATE artifacts SET status = ?, updated_at = ? WHERE artifact_id = ?", (status, now(), artifact_id))
+    conn.commit()
+    event_type = "artifact.approved" if status == "approved" else "artifact.rejected"
+    event = record_event(conn, event_type, by, task_id=artifact["task_id"], trace_id=artifact["trace_id"], payload={"artifact_id": artifact_id, "reason": reason})
+    updated = row_by_id(conn, "artifacts", "artifact_id", artifact_id)
+    return {"artifact": updated, "event_id": event["id"]}
+
+
+def use_artifact_internal(conn: sqlite3.Connection, *, task_id: str, artifact_id: str, employee_id: str, purpose: str = "") -> dict:
+    require_task(conn, task_id)
+    require_employee(conn, employee_id)
+    artifact = row_by_id(conn, "artifacts", "artifact_id", artifact_id)
+    if artifact["status"] in {"rejected", "superseded"}:
+        raise SystemExit(f"artifact is not usable: {artifact_id} status={artifact['status']}")
+    trace_id = trace_id_for_task(conn, task_id, artifact.get("trace_id", ""))
+    event = record_event(conn, "artifact.used_by_task", employee_id, task_id=task_id, trace_id=trace_id, payload={"artifact_id": artifact_id, "from_task_id": artifact["task_id"], "path": artifact["path"], "purpose": purpose})
+    return {"artifact": artifact, "event_id": event["id"]}
+
+
+def promote_artifact_to_evidence_internal(conn: sqlite3.Connection, *, artifact_id: str, by: str, summary: str = "", evidence_type: str = "") -> dict:
+    require_employee(conn, by)
+    artifact = row_by_id(conn, "artifacts", "artifact_id", artifact_id)
+    if artifact["status"] in {"rejected", "superseded"}:
+        raise SystemExit(f"artifact cannot be promoted: {artifact_id} status={artifact['status']}")
+    evidence_id = f"evidence-{datetime.now().strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:8]}"
+    ts = now()
+    evidence = {
+        "evidence_id": evidence_id,
+        "trace_id": artifact["trace_id"],
+        "task_id": artifact["task_id"],
+        "employee_id": by,
+        "artifact_id": artifact_id,
+        "type": evidence_type or artifact["artifact_type"],
+        "path_or_url": artifact["path"],
+        "summary": summary or artifact["summary"],
+        "checksum": artifact["checksum"],
+        "is_final": 1,
+        "metadata_json": json.dumps({"promoted_from_artifact": artifact_id}, ensure_ascii=False),
+        "created_at": ts,
+    }
+    conn.execute(
+        """
+        INSERT INTO evidence(evidence_id, trace_id, task_id, employee_id, artifact_id, type, path_or_url, summary, checksum, is_final, metadata_json, created_at)
+        VALUES (:evidence_id, :trace_id, :task_id, :employee_id, :artifact_id, :type, :path_or_url, :summary, :checksum, :is_final, :metadata_json, :created_at)
+        """,
+        evidence,
+    )
+    conn.execute("UPDATE artifacts SET is_final = 1, updated_at = ? WHERE artifact_id = ?", (ts, artifact_id))
+    conn.commit()
+    event = record_event(conn, "artifact.promoted_to_evidence", by, task_id=artifact["task_id"], trace_id=artifact["trace_id"], payload={"artifact_id": artifact_id, "evidence_id": evidence_id, "path": artifact["path"]})
+    return {"evidence": evidence, "event_id": event["id"]}
+
+
+def create_handoff_internal(
+    conn: sqlite3.Connection,
+    *,
+    from_task_id: str,
+    to_task_id: str,
+    from_employee_id: str,
+    to_employee_id: str = "",
+    summary: str,
+    artifacts: list[str],
+    known_issues: str = "",
+    next_steps: str = "",
+    required_actions: str = "",
+    acceptance_notes: str = "",
+) -> dict:
+    require_task(conn, from_task_id)
+    require_task(conn, to_task_id)
+    require_employee(conn, from_employee_id)
+    if to_employee_id:
+        require_employee(conn, to_employee_id)
+    for artifact_id in artifacts:
+        row_by_id(conn, "artifacts", "artifact_id", artifact_id)
+    trace_id = trace_id_for_task(conn, from_task_id)
+    update_task_metadata(conn, to_task_id, {"trace_id": trace_id, "upstream_task_id": from_task_id})
+    ensure_task_workspace(conn, to_task_id, trace_id)
+    handoff_id = f"handoff-{datetime.now().strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:8]}"
+    ts = now()
+    handoff = {
+        "handoff_id": handoff_id,
+        "trace_id": trace_id,
+        "from_task_id": from_task_id,
+        "to_task_id": to_task_id,
+        "from_employee_id": from_employee_id,
+        "to_employee_id": to_employee_id,
+        "summary": summary,
+        "artifacts_json": json.dumps(artifacts, ensure_ascii=False),
+        "known_issues": known_issues,
+        "next_steps": next_steps,
+        "required_actions": required_actions,
+        "acceptance_notes": acceptance_notes,
+        "status": "created",
+        "created_at": ts,
+        "updated_at": ts,
+    }
+    conn.execute(
+        """
+        INSERT INTO handoffs(handoff_id, trace_id, from_task_id, to_task_id, from_employee_id, to_employee_id, summary, artifacts_json, known_issues, next_steps, required_actions, acceptance_notes, status, created_at, updated_at)
+        VALUES (:handoff_id, :trace_id, :from_task_id, :to_task_id, :from_employee_id, :to_employee_id, :summary, :artifacts_json, :known_issues, :next_steps, :required_actions, :acceptance_notes, :status, :created_at, :updated_at)
+        """,
+        handoff,
+    )
+    conn.commit()
+    event = record_event(conn, "handoff.created", from_employee_id, task_id=from_task_id, trace_id=trace_id, payload={"handoff_id": handoff_id, "to_task_id": to_task_id, "artifacts": artifacts, "summary": summary})
+    return {"handoff": handoff, "event_id": event["id"]}
+
+
+def update_handoff_status_internal(conn: sqlite3.Connection, *, handoff_id: str, by: str, status: str, reason: str = "") -> dict:
+    require_employee(conn, by)
+    if status not in {"accepted", "rejected"}:
+        raise SystemExit("status must be accepted or rejected")
+    handoff = row_by_id(conn, "handoffs", "handoff_id", handoff_id)
+    ts = now()
+    conn.execute("UPDATE handoffs SET status = ?, updated_at = ? WHERE handoff_id = ?", (status, ts, handoff_id))
+    from_task = require_task(conn, handoff["from_task_id"])
+    if status == "rejected":
+        conn.execute(
+            "UPDATE tasks SET status = 'blocked', blocker = ?, updated_at = ? WHERE id = ?",
+            (f"handoff rejected by {by}: {reason}", ts, handoff["from_task_id"]),
+        )
+    conn.commit()
+    event = record_event(conn, f"handoff.{status}", by, task_id=handoff["from_task_id"], trace_id=handoff["trace_id"], payload={"handoff_id": handoff_id, "reason": reason, "to_task_id": handoff["to_task_id"]})
+    return {"handoff": row_by_id(conn, "handoffs", "handoff_id", handoff_id), "from_task": dict(conn.execute("SELECT * FROM tasks WHERE id = ?", (handoff["from_task_id"],)).fetchone()), "previous_from_task": from_task, "event_id": event["id"]}
+
+
+def build_task_context_package_internal(conn: sqlite3.Connection, *, task_id: str, employee_id: str = "") -> dict:
+    task = require_task(conn, task_id)
+    if employee_id:
+        require_employee(conn, employee_id)
+    trace_id = trace_id_for_task(conn, task_id)
+    handoffs = rows(conn, "SELECT * FROM handoffs WHERE to_task_id = ? AND status IN ('created', 'accepted') ORDER BY created_at ASC", (task_id,))
+    artifact_ids: list[str] = []
+    handoff_notes = []
+    for handoff in handoffs:
+        artifacts = parse_json_arg(handoff.get("artifacts_json", "") or "[]", [])
+        artifact_ids.extend(str(item) for item in artifacts)
+        handoff_notes.append(
+            {
+                "handoff_id": handoff["handoff_id"],
+                "from_task_id": handoff["from_task_id"],
+                "summary": handoff["summary"],
+                "known_issues": handoff["known_issues"],
+                "next_steps": handoff["next_steps"],
+                "required_actions": handoff["required_actions"],
+                "artifacts": artifacts,
+            }
+        )
+    available_artifacts = []
+    if artifact_ids:
+        placeholders = ",".join("?" for _ in artifact_ids)
+        artifact_rows = rows(
+            conn,
+            f"SELECT * FROM artifacts WHERE artifact_id IN ({placeholders}) AND status NOT IN ('rejected', 'superseded') ORDER BY created_at ASC",
+            tuple(artifact_ids),
+        )
+        available_artifacts = [
+            {
+                "artifact_id": artifact["artifact_id"],
+                "from_task_id": artifact["task_id"],
+                "from_employee_id": artifact["employee_id"],
+                "artifact_type": artifact["artifact_type"],
+                "path": artifact["path"],
+                "summary": artifact["summary"],
+                "version": artifact["version"],
+                "status": artifact["status"],
+                "stage": artifact["stage"],
+                "checksum": artifact["checksum"],
+            }
+            for artifact in artifact_rows
+        ]
+    context = {
+        "task_id": task_id,
+        "trace_id": trace_id,
+        "employee_id": employee_id or task["target_agent"],
+        "task": task,
+        "workspace": task_workspace(conn, task_id),
+        "available_artifacts": available_artifacts,
+        "handoff_notes": handoff_notes,
+        "created_at": now(),
+    }
+    package_id = f"context-{datetime.now().strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:8]}"
+    conn.execute(
+        "INSERT INTO task_context_packages(context_id, trace_id, task_id, employee_id, context_json, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+        (package_id, trace_id, task_id, context["employee_id"], json.dumps(context, ensure_ascii=False), context["created_at"]),
+    )
+    conn.commit()
+    event = record_event(conn, "task.context_package.created", context["employee_id"], task_id=task_id, trace_id=trace_id, payload={"package_id": package_id, "available_artifacts": [item["artifact_id"] for item in available_artifacts], "handoffs": [item["handoff_id"] for item in handoff_notes]})
+    conn.execute("UPDATE company_events SET processed_at = ? WHERE id = ?", (now(), event["id"]))
+    conn.commit()
+    return {"package_id": package_id, "context": context, "event_id": event["id"]}
+
+
+DEFAULT_RUNTIME_POLICY = {
+    "max_runtime_seconds": 36000,
+    "heartbeat_interval_seconds": 60,
+    "progress_interval_seconds": 300,
+    "stale_after_seconds": 900,
+    "supervisor_check_interval_seconds": 60,
+    "max_corrections": 3,
+    "max_retries": 1,
+}
+
+
+MANAGED_ATTEMPT_ACTIVE_STATUSES = {"starting", "running", "correcting"}
+
+
+def managed_runtime_policy(**overrides: int) -> dict:
+    policy = dict(DEFAULT_RUNTIME_POLICY)
+    for key, value in overrides.items():
+        if value is not None:
+            policy[key] = int(value)
+    return policy
+
+
+def parse_iso_datetime(value: str):
+    if not value:
+        return None
+    return datetime.fromisoformat(value)
+
+
+def seconds_since(value: str, now_value: str) -> int:
+    parsed = parse_iso_datetime(value)
+    current = parse_iso_datetime(now_value)
+    if not parsed or not current:
+        return 0
+    return max(0, int((current - parsed).total_seconds()))
+
+
+def attempt_json_field(attempt: dict, field: str, default: dict | None = None) -> dict:
+    try:
+        parsed = json.loads(attempt.get(field, "") or "{}")
+    except json.JSONDecodeError:
+        parsed = {}
+    return parsed if isinstance(parsed, dict) else (default or {})
+
+
+def hydrate_execution_attempt(attempt: dict) -> dict:
+    hydrated = dict(attempt)
+    hydrated["runtime_policy"] = attempt_json_field(hydrated, "runtime_policy_json")
+    hydrated["supervisor_state"] = attempt_json_field(hydrated, "supervisor_state_json")
+    hydrated["metadata"] = attempt_json_field(hydrated, "metadata_json")
+    return hydrated
+
+
+def latest_attempt_for_task(conn: sqlite3.Connection, task_id: str, employee_id: str = "") -> dict | None:
+    params: list[object] = [task_id]
+    employee_clause = ""
+    if employee_id:
+        employee_clause = "AND employee_id = ?"
+        params.append(employee_id)
+    row = conn.execute(
+        f"""
+        SELECT * FROM execution_attempts
+        WHERE task_id = ?
+          {employee_clause}
+        ORDER BY started_at DESC
+        LIMIT 1
+        """,
+        params,
+    ).fetchone()
+    return dict(row) if row else None
+
+
+def start_execution_attempt_internal(
+    conn: sqlite3.Connection,
+    *,
+    task_id: str,
+    employee_id: str,
+    adapter_type: str = "local",
+    metadata: dict | None = None,
+    status: str = "running",
+    runtime_policy: dict | None = None,
+    pid: str = "",
+    session_key: str = "",
+    last_heartbeat_at: str = "",
+    last_progress_at: str = "",
+) -> dict:
+    require_task(conn, task_id)
+    require_employee(conn, employee_id)
+    employee_row = conn.execute("SELECT * FROM employees WHERE id = ?", (employee_id,)).fetchone()
+    trace_id = trace_id_for_task(conn, task_id)
+    attempt_id = f"attempt-{datetime.now().strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:8]}"
+    ts = now()
+    first_seen = last_heartbeat_at or ts
+    first_progress = last_progress_at or ts
+    attempt = {
+        "attempt_id": attempt_id,
+        "trace_id": trace_id,
+        "task_id": task_id,
+        "employee_id": employee_id,
+        "adapter_type": adapter_type,
+        "status": status,
+        "runtime": employee_row["runtime"],
+        "pid": str(pid or ""),
+        "session_key": str(session_key or ""),
+        "runtime_policy_json": json.dumps(runtime_policy or {}, ensure_ascii=False),
+        "last_heartbeat_at": first_seen,
+        "last_progress_at": first_progress,
+        "cancel_requested_at": "",
+        "supervisor_state_json": json.dumps({"corrections_requested": 0, "corrections_acknowledged": 0}, ensure_ascii=False),
+        "started_at": ts,
+        "finished_at": "",
+        "error_message": "",
+        "metadata_json": json.dumps(metadata or {}, ensure_ascii=False),
+    }
+    conn.execute(
+        """
+        INSERT INTO execution_attempts(
+          attempt_id, trace_id, task_id, employee_id, adapter_type, status, runtime, pid, session_key,
+          runtime_policy_json, last_heartbeat_at, last_progress_at, cancel_requested_at, supervisor_state_json,
+          started_at, finished_at, error_message, metadata_json
+        )
+        VALUES (
+          :attempt_id, :trace_id, :task_id, :employee_id, :adapter_type, :status, :runtime, :pid, :session_key,
+          :runtime_policy_json, :last_heartbeat_at, :last_progress_at, :cancel_requested_at, :supervisor_state_json,
+          :started_at, :finished_at, :error_message, :metadata_json
+        )
+        """,
+        attempt,
+    )
+    conn.commit()
+    event = record_event(conn, "task.attempt.started", employee_id, task_id=task_id, trace_id=trace_id, payload={"attempt_id": attempt_id, "adapter_type": adapter_type, "status": status, "runtime_policy": runtime_policy or {}})
+    return {"attempt": attempt, "event_id": event["id"]}
+
+
+def finish_execution_attempt_internal(conn: sqlite3.Connection, *, attempt_id: str, status: str, error: str = "") -> dict:
+    if status not in {"success", "failed", "cancelled", "stale"}:
+        raise SystemExit("status must be success, failed, cancelled, or stale")
+    attempt = row_by_id(conn, "execution_attempts", "attempt_id", attempt_id)
+    conn.execute(
+        "UPDATE execution_attempts SET status = ?, finished_at = ?, error_message = ? WHERE attempt_id = ?",
+        (status, now(), error, attempt_id),
+    )
+    conn.commit()
+    event = record_event(conn, "task.attempt.finished", attempt["employee_id"], task_id=attempt["task_id"], trace_id=attempt["trace_id"], payload={"attempt_id": attempt_id, "status": status, "error": error})
+    return {"attempt": row_by_id(conn, "execution_attempts", "attempt_id", attempt_id), "event_id": event["id"]}
+
+
+def task_attempts(conn: sqlite3.Connection, task_id: str) -> list[dict]:
+    attempts = rows(conn, "SELECT * FROM execution_attempts WHERE task_id = ? ORDER BY started_at ASC", (task_id,))
+    return [hydrate_execution_attempt(attempt) for attempt in attempts]
+
+
+def latest_active_attempt_for_task(conn: sqlite3.Connection, task_id: str, employee_id: str) -> dict | None:
+    placeholders = ",".join("?" for _ in MANAGED_ATTEMPT_ACTIVE_STATUSES)
+    params = [task_id, employee_id, *sorted(MANAGED_ATTEMPT_ACTIVE_STATUSES)]
+    row = conn.execute(
+        f"""
+        SELECT * FROM execution_attempts
+        WHERE task_id = ?
+          AND employee_id = ?
+          AND status IN ({placeholders})
+        ORDER BY started_at DESC
+        LIMIT 1
+        """,
+        params,
+    ).fetchone()
+    return dict(row) if row else None
+
+
+def report_task_progress_internal(
+    conn: sqlite3.Connection,
+    *,
+    task_id: str,
+    employee_id: str,
+    attempt_id: str = "",
+    progress_state: str = "in_progress",
+    message: str = "",
+    progress: int | None = None,
+    payload: dict | None = None,
+    created_at: str = "",
+) -> dict:
+    require_task(conn, task_id)
+    require_employee(conn, employee_id)
+    if attempt_id:
+        attempt = row_by_id(conn, "execution_attempts", "attempt_id", attempt_id)
+        if attempt["task_id"] != task_id:
+            raise SystemExit(f"attempt does not belong to task: {attempt_id}")
+        if attempt["employee_id"] != employee_id:
+            raise SystemExit(f"attempt does not belong to employee: {attempt_id}")
+        if attempt["status"] not in MANAGED_ATTEMPT_ACTIVE_STATUSES:
+            raise SystemExit("attempt is not active")
+    else:
+        attempt = latest_active_attempt_for_task(conn, task_id, employee_id)
+        if not attempt:
+            raise SystemExit(f"active attempt not found for task {task_id} and employee {employee_id}")
+        attempt_id = attempt["attempt_id"]
+    ts = created_at or now()
+    normalized = normalize_progress_state(progress_state, summary=message)
+    next_status = "running" if attempt["status"] in {"starting", "correcting"} and normalized["layer"] in {"received", "working", "waiting"} else attempt["status"]
+    update_fields = ["last_progress_at = ?", "last_heartbeat_at = ?"]
+    params: list[object] = [ts, ts]
+    if next_status != attempt["status"]:
+        update_fields.append("status = ?")
+        params.append(next_status)
+    params.append(attempt_id)
+    conn.execute(f"UPDATE execution_attempts SET {', '.join(update_fields)} WHERE attempt_id = ?", params)
+    if normalized["layer"] in {"received", "working"} and next_status == "running":
+        conn.execute("UPDATE tasks SET status = 'claimed', claimed_by = ?, blocker = '', updated_at = ? WHERE id = ?", (employee_id, ts, task_id))
+    conn.commit()
+    event_payload = {
+        "attempt_id": attempt_id,
+        "employee_id": employee_id,
+        "progress_state": progress_state,
+        "progress_layer": normalized.get("layer", ""),
+        "progress_label": normalized.get("label", ""),
+        "message": message,
+        "progress": progress,
+        "payload": payload or {},
+    }
+    event = record_event(conn, "task.progress", employee_id, task_id=task_id, trace_id=attempt["trace_id"], payload=event_payload)
+    audit(conn, employee_id, "task.progress", task_id, {"attempt_id": attempt_id, "state": progress_state, "progress": progress, "event_id": event["id"]})
+    return {"attempt": row_by_id(conn, "execution_attempts", "attempt_id", attempt_id), "event_id": event["id"], "progress": event_payload}
+
+
+def cmd_task_run(args: argparse.Namespace) -> int:
+    conn = connect()
+    actor = resolve_employee_alias(args.by)
+    agent = resolve_employee_alias(args.agent)
+    require_employee(conn, actor)
+    require_employee(conn, agent)
+    task = conn.execute("SELECT * FROM tasks WHERE id = ?", (args.task_id,)).fetchone()
+    if not task:
+        emit({"ok": False, "error": "task not found", "task_id": args.task_id})
+        return 2
+    if agent != task["target_agent"] and agent != task["claimed_by"]:
+        emit({"ok": False, "error": "agent is not assigned to task", "task_id": args.task_id, "agent": agent})
+        return 2
+    policy = managed_runtime_policy(
+        max_runtime_seconds=args.max_runtime_seconds,
+        heartbeat_interval_seconds=args.heartbeat_interval_seconds,
+        progress_interval_seconds=args.progress_interval_seconds,
+        stale_after_seconds=args.stale_after_seconds,
+        supervisor_check_interval_seconds=args.supervisor_check_interval_seconds,
+        max_corrections=args.max_corrections,
+        max_retries=args.max_retries,
+    )
+    result = start_execution_attempt_internal(
+        conn,
+        task_id=args.task_id,
+        employee_id=agent,
+        adapter_type=args.adapter_type,
+        metadata={"started_by": actor, "managed": True},
+        status="starting",
+        runtime_policy=policy,
+        pid=args.pid,
+        session_key=args.session_key,
+    )
+    conn.execute("UPDATE tasks SET status = 'claimed', claimed_by = ?, blocker = '', updated_at = ? WHERE id = ?", (agent, now(), args.task_id))
+    conn.commit()
+    event = record_event(conn, "task.managed_run.started", actor, task_id=args.task_id, trace_id=result["attempt"]["trace_id"], payload={"attempt_id": result["attempt"]["attempt_id"], "agent": agent, "runtime_policy": policy})
+    audit(conn, actor, "task.run", args.task_id, {"attempt_id": result["attempt"]["attempt_id"], "agent": agent, "runtime_policy": policy, "event_id": event["id"]})
+    emit({"ok": True, "task_id": args.task_id, "attempt": row_by_id(conn, "execution_attempts", "attempt_id", result["attempt"]["attempt_id"]), "runtime_policy": policy, "event_id": event["id"]})
+    return 0
+
+
+def cmd_task_attempts(args: argparse.Namespace) -> int:
+    conn = connect()
+    require_task(conn, args.task_id)
+    emit({"ok": True, "task_id": args.task_id, "attempts": task_attempts(conn, args.task_id)})
+    return 0
+
+
+def cmd_task_progress(args: argparse.Namespace) -> int:
+    conn = connect()
+    agent = resolve_employee_alias(args.agent)
+    try:
+        payload = parse_json_arg(args.payload, {})
+        if not isinstance(payload, dict):
+            raise SystemExit("payload must be a JSON object")
+        result = report_task_progress_internal(
+            conn,
+            task_id=args.task_id,
+            employee_id=agent,
+            attempt_id=args.attempt_id,
+            progress_state=args.state,
+            message=args.message,
+            progress=args.progress,
+            payload=payload,
+            created_at=args.at,
+        )
+    except SystemExit as exc:
+        emit({"ok": False, "error": str(exc), "task_id": args.task_id, "agent": agent, "attempt_id": args.attempt_id})
+        return 2
+    emit({"ok": True, "task_id": args.task_id, "agent": agent, **result})
+    return 0
+
+
+def cmd_task_correct(args: argparse.Namespace) -> int:
+    conn = connect()
+    actor = resolve_employee_alias(args.by)
+    require_employee(conn, actor)
+    task = require_task(conn, args.task_id)
+    attempt = row_by_id(conn, "execution_attempts", "attempt_id", args.attempt_id)
+    if attempt["task_id"] != args.task_id:
+        emit({"ok": False, "error": "attempt does not belong to task", "task_id": args.task_id, "attempt_id": args.attempt_id})
+        return 2
+    supervisor_state = attempt_json_field(attempt, "supervisor_state_json")
+    ts = now()
+    if args.ack:
+        supervisor_state["corrections_acknowledged"] = int(supervisor_state.get("corrections_acknowledged", 0) or 0) + 1
+        event_type = "supervisor.correction_acknowledged"
+        status = "running"
+    else:
+        requested = int(supervisor_state.get("corrections_requested", 0) or 0)
+        policy = attempt_json_field(attempt, "runtime_policy_json")
+        max_corrections = int(policy.get("max_corrections", DEFAULT_RUNTIME_POLICY["max_corrections"]) or DEFAULT_RUNTIME_POLICY["max_corrections"])
+        if requested >= max_corrections:
+            reason = "max corrections exceeded"
+            supervisor_state["blocked_reason"] = reason
+            supervisor_state["last_blocked_at"] = ts
+            conn.execute(
+                "UPDATE execution_attempts SET status = 'failed', supervisor_state_json = ?, finished_at = ?, error_message = ? WHERE attempt_id = ?",
+                (json.dumps(supervisor_state, ensure_ascii=False), ts, reason, args.attempt_id),
+            )
+            conn.execute("UPDATE tasks SET status = 'blocked', blocker = ?, updated_at = ? WHERE id = ?", (reason, ts, args.task_id))
+            conn.commit()
+            event = record_event(conn, "task.blocked", actor, task_id=args.task_id, trace_id=attempt["trace_id"], payload={"attempt_id": args.attempt_id, "reason": reason, "max_corrections": max_corrections, "message": args.message})
+            audit(conn, actor, "task.blocked.max_corrections", args.task_id, {"attempt_id": args.attempt_id, "reason": reason, "event_id": event["id"]})
+            emit({"ok": True, "task_id": args.task_id, "status": "blocked", "reason": reason, "attempt": row_by_id(conn, "execution_attempts", "attempt_id", args.attempt_id), "supervisor_state": supervisor_state, "event_id": event["id"]})
+            return 0
+        supervisor_state["corrections_requested"] = requested + 1
+        supervisor_state["last_correction"] = {"by": actor, "message": args.message, "created_at": ts}
+        event_type = "supervisor.correction_requested"
+        status = "correcting"
+    conn.execute(
+        "UPDATE execution_attempts SET status = ?, supervisor_state_json = ?, last_heartbeat_at = ? WHERE attempt_id = ?",
+        (status, json.dumps(supervisor_state, ensure_ascii=False), ts, args.attempt_id),
+    )
+    conn.commit()
+    event = record_event(conn, event_type, actor, task_id=args.task_id, trace_id=attempt["trace_id"], payload={"attempt_id": args.attempt_id, "message": args.message})
+    audit(conn, actor, event_type, args.task_id, {"attempt_id": args.attempt_id, "message": args.message, "event_id": event["id"]})
+    emit({"ok": True, "task_id": args.task_id, "attempt": row_by_id(conn, "execution_attempts", "attempt_id", args.attempt_id), "supervisor_state": supervisor_state, "event_id": event["id"]})
+    return 0
+
+
+def cmd_task_cancel(args: argparse.Namespace) -> int:
+    conn = connect()
+    actor = resolve_employee_alias(args.by)
+    require_employee(conn, actor)
+    task = require_task(conn, args.task_id)
+    attempt = row_by_id(conn, "execution_attempts", "attempt_id", args.attempt_id)
+    if attempt["task_id"] != args.task_id:
+        emit({"ok": False, "error": "attempt does not belong to task", "task_id": args.task_id, "attempt_id": args.attempt_id})
+        return 2
+    ts = now()
+    conn.execute(
+        "UPDATE execution_attempts SET status = 'cancelled', cancel_requested_at = ?, finished_at = ?, error_message = ? WHERE attempt_id = ?",
+        (ts, ts, args.reason, args.attempt_id),
+    )
+    conn.execute("UPDATE tasks SET status = 'cancelled', blocker = ?, updated_at = ? WHERE id = ?", (args.reason, ts, args.task_id))
+    conn.execute("DELETE FROM locks WHERE resource_key = ?", (f"task:{args.task_id}",))
+    conn.commit()
+    event = record_event(conn, "supervisor.cancel_requested", actor, task_id=args.task_id, trace_id=attempt["trace_id"], payload={"attempt_id": args.attempt_id, "reason": args.reason, "pid": attempt.get("pid", "")})
+    audit(conn, actor, "task.cancel", args.task_id, {"attempt_id": args.attempt_id, "reason": args.reason, "event_id": event["id"]})
+    emit({"ok": True, "task_id": args.task_id, "status": "cancelled", "attempt": row_by_id(conn, "execution_attempts", "attempt_id", args.attempt_id), "event_id": event["id"]})
+    return 0
+
+
+def cmd_supervisor_scan_attempts(args: argparse.Namespace) -> int:
+    conn = connect()
+    actor = resolve_employee_alias(args.by)
+    require_employee(conn, actor)
+    current = args.now or now()
+    scan_rows = rows(conn, "SELECT * FROM execution_attempts WHERE status IN ('starting', 'running', 'correcting') ORDER BY started_at ASC")
+    results = []
+    for attempt in scan_rows:
+        policy = attempt_json_field(attempt, "runtime_policy_json")
+        max_runtime = int(policy.get("max_runtime_seconds", DEFAULT_RUNTIME_POLICY["max_runtime_seconds"]) or DEFAULT_RUNTIME_POLICY["max_runtime_seconds"])
+        runtime_age = seconds_since(attempt.get("started_at") or "", current)
+        stale_after = int(policy.get("stale_after_seconds", DEFAULT_RUNTIME_POLICY["stale_after_seconds"]) or DEFAULT_RUNTIME_POLICY["stale_after_seconds"])
+        heartbeat_interval = int(policy.get("heartbeat_interval_seconds", DEFAULT_RUNTIME_POLICY["heartbeat_interval_seconds"]) or DEFAULT_RUNTIME_POLICY["heartbeat_interval_seconds"])
+        heartbeat_warn_after = max(1, heartbeat_interval * 2)
+        last_heartbeat_at = attempt.get("last_heartbeat_at") or attempt.get("started_at")
+        heartbeat_age = seconds_since(last_heartbeat_at, current)
+        heartbeat_status = "ok"
+        heartbeat_event_id = ""
+        last_progress_at = attempt.get("last_progress_at") or attempt.get("started_at")
+        progress_age = seconds_since(last_progress_at, current)
+        status = attempt["status"]
+        task_status = ""
+        stale_reason = ""
+        event_id = ""
+        if heartbeat_age >= heartbeat_warn_after:
+            heartbeat_status = "heartbeat_warning"
+            event = record_event(
+                conn,
+                "employee.warning",
+                actor,
+                task_id=attempt["task_id"],
+                trace_id=attempt["trace_id"],
+                payload={
+                    "attempt_id": attempt["attempt_id"],
+                    "employee_id": attempt["employee_id"],
+                    "reason": "heartbeat_stale",
+                    "heartbeat_age_seconds": heartbeat_age,
+                    "heartbeat_warn_after_seconds": heartbeat_warn_after,
+                    "last_heartbeat_at": last_heartbeat_at,
+                },
+            )
+            heartbeat_event_id = event["id"]
+        if runtime_age >= max_runtime:
+            status = "stale"
+            task_status = "stale"
+            stale_reason = "runtime_exceeded"
+            error = f"max runtime exceeded for {runtime_age}s"
+            conn.execute("UPDATE execution_attempts SET status = 'stale', finished_at = ?, error_message = ? WHERE attempt_id = ?", (current, error, attempt["attempt_id"]))
+            conn.execute("UPDATE tasks SET status = 'stale', blocker = ?, updated_at = ? WHERE id = ?", (error, current, attempt["task_id"]))
+            conn.commit()
+            event = record_event(
+                conn,
+                "task.stale",
+                actor,
+                task_id=attempt["task_id"],
+                trace_id=attempt["trace_id"],
+                payload={"attempt_id": attempt["attempt_id"], "reason": stale_reason, "runtime_age_seconds": runtime_age, "max_runtime_seconds": max_runtime},
+            )
+            event_id = event["id"]
+        elif progress_age >= stale_after:
+            status = "stale"
+            task_status = "stale"
+            stale_reason = "progress_stale"
+            conn.execute("UPDATE execution_attempts SET status = 'stale', finished_at = ?, error_message = ? WHERE attempt_id = ?", (current, f"no progress for {progress_age}s", attempt["attempt_id"]))
+            conn.execute("UPDATE tasks SET status = 'stale', blocker = ?, updated_at = ? WHERE id = ?", (f"no progress for {progress_age}s", current, attempt["task_id"]))
+            conn.commit()
+            event = record_event(conn, "task.stale", actor, task_id=attempt["task_id"], trace_id=attempt["trace_id"], payload={"attempt_id": attempt["attempt_id"], "reason": stale_reason, "progress_age_seconds": progress_age, "stale_after_seconds": stale_after})
+            event_id = event["id"]
+        results.append({
+            **attempt,
+            "status": status,
+            "task_status": task_status,
+            "stale_reason": stale_reason,
+            "runtime_age_seconds": runtime_age,
+            "max_runtime_seconds": max_runtime,
+            "heartbeat_status": heartbeat_status,
+            "heartbeat_age_seconds": heartbeat_age,
+            "heartbeat_warn_after_seconds": heartbeat_warn_after,
+            "heartbeat_event_id": heartbeat_event_id,
+            "progress_age_seconds": progress_age,
+            "stale_after_seconds": stale_after,
+            "event_id": event_id,
+        })
+    audit(conn, actor, "supervisor.scan_attempts", "execution_attempts", {"count": len(results), "now": current})
+    emit({"ok": True, "by": actor, "now": current, "attempts": results})
+    return 0
+
+
+def has_v3_file_flow(conn: sqlite3.Connection, task_id: str) -> bool:
+    return bool(conn.execute("SELECT 1 FROM artifacts WHERE task_id = ? LIMIT 1", (task_id,)).fetchone() or conn.execute("SELECT 1 FROM evidence WHERE task_id = ? LIMIT 1", (task_id,)).fetchone())
+
+
+def final_evidence_for_path(conn: sqlite3.Connection, task_id: str, evidence_path: str) -> dict | None:
+    row = conn.execute(
+        """
+        SELECT * FROM evidence
+        WHERE task_id = ?
+          AND path_or_url = ?
+          AND is_final = 1
+        ORDER BY created_at DESC
+        LIMIT 1
+        """,
+        (task_id, evidence_path),
+    ).fetchone()
+    if row:
+        return dict(row)
+    artifact_rows = rows(conn, "SELECT artifact_id, metadata_json FROM artifacts WHERE task_id = ? AND is_final = 1", (task_id,))
+    matching_artifact_ids = []
+    for artifact in artifact_rows:
+        metadata = parse_json_arg(artifact.get("metadata_json", ""), {})
+        if isinstance(metadata, dict) and metadata.get("original_path") == evidence_path:
+            matching_artifact_ids.append(artifact["artifact_id"])
+    if not matching_artifact_ids:
+        return None
+    placeholders = ",".join("?" for _ in matching_artifact_ids)
+    row = conn.execute(
+        f"""
+        SELECT * FROM evidence
+        WHERE task_id = ?
+          AND artifact_id IN ({placeholders})
+          AND is_final = 1
+        ORDER BY created_at DESC
+        LIMIT 1
+        """,
+        (task_id, *matching_artifact_ids),
+    ).fetchone()
+    return dict(row) if row else None
+
+
+def auto_promote_workspace_evidence(conn: sqlite3.Connection, *, task_id: str, agent: str, evidence_path: str, summary: str) -> dict | None:
+    try:
+        path = require_workspace_path(conn, task_id, evidence_path)
+    except ValueError:
+        return None
+    if not path.exists() or not path.is_file():
+        return None
+    existing = final_evidence_for_path(conn, task_id, str(path))
+    if existing:
+        return existing
+    workspace_root = Path(task_workspace(conn, task_id)["path"]).resolve()
+    try:
+        rel_path = path.relative_to(workspace_root)
+    except ValueError:
+        return None
+    if not rel_path.parts or rel_path.parts[0] not in {"evidence", "final"}:
+        return None
+    artifact = register_artifact_internal(
+        conn,
+        task_id=task_id,
+        employee_id=agent,
+        path=str(path),
+        artifact_type=path.suffix.lstrip(".") or "file",
+        name=path.name,
+        stage="final",
+        summary=summary or "auto-promoted task evidence",
+        is_final=True,
+        metadata={"registered_by": "task.done.auto_promote"},
+    )
+    promoted = promote_artifact_to_evidence_internal(conn, artifact_id=artifact["artifact"]["artifact_id"], by=agent, summary=summary)
+    return promoted["evidence"]
 
 
 def ensure_runtime(conn: sqlite3.Connection, runtime: str) -> None:
@@ -947,7 +2055,10 @@ def launchd_health() -> dict:
     installed_path = Path.home() / "Library" / "LaunchAgents" / f"{LAUNCHD_LABEL}.plist"
     installed = installed_path.exists()
     template_exists = LAUNCHD_TEMPLATE.exists()
-    matches_template = bool(installed and template_exists and filecmp.cmp(LAUNCHD_TEMPLATE, installed_path, shallow=False))
+    matches_template = False
+    if installed and template_exists:
+        rendered_template = LAUNCHD_TEMPLATE.read_text(encoding="utf-8").replace("__COMPANY_KERNEL_ROOT__", str(ROOT))
+        matches_template = rendered_template == installed_path.read_text(encoding="utf-8")
     return {
         "label": LAUNCHD_LABEL,
         "template": str(LAUNCHD_TEMPLATE),
@@ -955,7 +2066,7 @@ def launchd_health() -> dict:
         "installed_path": str(installed_path),
         "installed": installed,
         "matches_template": matches_template,
-        "recommended_interval_seconds": 300,
+        "recommended_interval_seconds": 180,
         "install_command": "bash bin/company-daemon-install-launchd",
         "uninstall_command": "bash bin/company-daemon-uninstall-launchd",
         "verify_command": "bin/companyctl doctor --summary",
@@ -1170,6 +2281,27 @@ def attendance_reply_probe(employee_id: str, runtime: str, timeout: int) -> dict
             "stdout": payload,
             "stderr": cp.stderr[-2000:],
         }
+    if runtime == "antigravity":
+        command = ROOT / "bin" / "company-antigravity-adapter"
+        try:
+            cp = subprocess.run([str(command), "--agent", employee_id, "--attendance-probe", "--timeout", str(timeout)], cwd=str(ROOT), text=True, capture_output=True, timeout=timeout + 10)
+        except Exception as exc:
+            return {"enabled": True, "ok": False, "adapter": str(command), "expected": expected, "reply": "", "exit_code": 127, "reason": str(exc)}
+        payload = parse_json_output(cp.stdout)
+        reply = str(payload.get("reply") or "").strip()
+        ok = cp.returncode == 0 and bool(payload.get("ok")) and reply == expected
+        return {
+            "enabled": True,
+            "ok": ok,
+            "adapter": str(command),
+            "expected": expected,
+            "reply": reply,
+            "exit_code": cp.returncode,
+            "reason": "adapter_heartbeat_matched" if ok else str(payload.get("error") or payload.get("blocker") or payload.get("reason") or "adapter_failed"),
+            "processed": payload.get("processed"),
+            "stdout": payload,
+            "stderr": cp.stderr[-2000:],
+        }
     return {"enabled": False, "ok": False, "reason": f"unsupported_runtime:{runtime}", "reply": "", "expected": expected}
 
 
@@ -1265,6 +2397,165 @@ def cmd_attendance_sweep(args: argparse.Namespace) -> int:
     latest_path.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     emit(report)
     return 0 if report["ok"] else 1
+
+
+def load_latest_attendance() -> dict:
+    return load_json_or_default(STATE_DIR / "attendance" / "latest.json", {})
+
+
+def attendance_row_map(report: dict) -> dict[str, dict]:
+    result = {}
+    employees = report.get("employees", [])
+    if not isinstance(employees, list):
+        return result
+    for item in employees:
+        if isinstance(item, dict) and str(item.get("agent") or "").strip():
+            result[str(item["agent"])] = item
+    return result
+
+
+def employee_has_managed_runtime_evidence(conn: sqlite3.Connection, employee_id: str) -> bool:
+    row = conn.execute(
+        """
+        SELECT a.attempt_id, a.task_id, a.status, t.status AS task_status, t.evidence_path
+        FROM execution_attempts a
+        JOIN tasks t ON t.id = a.task_id
+        WHERE a.employee_id = ?
+          AND a.status = 'success'
+          AND t.status = 'completed'
+          AND t.evidence_path != ''
+        ORDER BY a.started_at DESC
+        LIMIT 1
+        """,
+        (employee_id,),
+    ).fetchone()
+    if not row:
+        return False
+    evidence_path = str(row["evidence_path"] or "")
+    if not evidence_path or not Path(evidence_path).exists():
+        return False
+    evidence_row = conn.execute(
+        """
+        SELECT 1 FROM evidence
+        WHERE task_id = ?
+          AND employee_id = ?
+          AND is_final = 1
+        LIMIT 1
+        """,
+        (row["task_id"], employee_id),
+    ).fetchone()
+    return True if evidence_row else bool(evidence_path)
+
+
+def employee_has_runtime_evidence(employee_id: str, conn: sqlite3.Connection | None = None) -> bool:
+    latest = verified_direct_evidence_dir(employee_id) / "latest-runtime.json"
+    payload = load_json_or_default(latest, {})
+    if bool(payload.get("ok") and payload.get("activation_allowed")):
+        verification = payload.get("verification") if isinstance(payload.get("verification"), dict) else {}
+        response = verification.get("response") if isinstance(verification.get("response"), dict) else {}
+        if "reply" in response:
+            passed, _reason, _fields = runtime_reply_passed(str(response.get("reply") or ""))
+            if passed:
+                return True
+        else:
+            return True
+    if conn is not None:
+        return employee_has_managed_runtime_evidence(conn, employee_id)
+    return False
+
+
+def latest_attempt_for_employee(conn: sqlite3.Connection, employee_id: str) -> dict:
+    row = conn.execute(
+        """
+        SELECT *
+        FROM execution_attempts
+        WHERE employee_id = ?
+        ORDER BY started_at DESC
+        LIMIT 1
+        """,
+        (employee_id,),
+    ).fetchone()
+    return dict(row) if row else {}
+
+
+def classify_agent_matrix_row(conn: sqlite3.Connection, employee: dict, attendance: dict) -> dict:
+    employee_id = employee["id"]
+    attendance_status = str(attendance.get("status") or "missing")
+    runtime_ok = employee_has_runtime_evidence(employee_id, conn)
+    latest_attempt = latest_attempt_for_employee(conn, employee_id)
+    employee_status = str(employee.get("status") or "")
+    if employee_status == "missing":
+        level = "no_reply"
+        reason = "employee_not_registered"
+    elif attendance_status != "online":
+        level = "no_reply"
+        reason = f"attendance_{attendance_status}"
+    elif employee_status == "candidate":
+        level = "candidate_only"
+        reason = "candidate_requires_structured_runtime_evidence_before_activation"
+    elif latest_attempt.get("status") in {"failed", "stale"}:
+        level = "unsafe"
+        reason = f"latest_attempt_{latest_attempt['status']}"
+    elif employee_status == "active" and runtime_ok:
+        level = "active_ready"
+        reason = "online_active_with_runtime_evidence"
+    elif employee_status == "active":
+        level = "online_only"
+        reason = "online_but_runtime_task_evidence_missing"
+    else:
+        level = "task_unsupported"
+        reason = f"employee_status_{employee_status}"
+    return {
+        "agent": employee_id,
+        "name": employee.get("name", employee_id),
+        "runtime": employee.get("runtime", ""),
+        "employee_status": employee_status,
+        "level": level,
+        "reason": reason,
+        "checks": {
+            "attendance": attendance_status,
+            "direct": "verified" if employee_has_verified_direct_evidence(employee_id) else "not_verified",
+            "runtime": "verified" if runtime_ok else "missing",
+            "task": "supported" if employee_status == "active" else "not_active",
+            "progress": "observable" if latest_attempt else "not_checked",
+            "evidence": "runtime_evidence" if runtime_ok else "missing",
+            "stale": latest_attempt.get("status", "not_checked"),
+        },
+        "latest_attempt": latest_attempt,
+        "attendance": attendance,
+    }
+
+
+def cmd_agent_matrix(args: argparse.Namespace) -> int:
+    conn = connect()
+    requested = parse_csv(args.agents)
+    if requested:
+        placeholders = ",".join("?" for _ in requested)
+        known = {
+            row["id"]: dict(row)
+            for row in conn.execute(f"SELECT * FROM employees WHERE id IN ({placeholders}) ORDER BY id", tuple(requested)).fetchall()
+        }
+        employees = []
+        for employee_id in requested:
+            employees.append(known.get(employee_id, {"id": employee_id, "name": employee_id, "runtime": "unknown", "status": "missing"}))
+    else:
+        employees = rows(conn, "SELECT * FROM employees WHERE status IN ('active', 'candidate') ORDER BY id")
+    attendance_report = load_latest_attendance()
+    attendance_by_agent = attendance_row_map(attendance_report)
+    matrix_rows = [classify_agent_matrix_row(conn, employee, attendance_by_agent.get(employee["id"], {})) for employee in employees]
+    counts = {}
+    for row in matrix_rows:
+        counts[row["level"]] = counts.get(row["level"], 0) + 1
+    report = {
+        "ok": True,
+        "generated_at": now(),
+        "employees": matrix_rows,
+        "counts": counts,
+        "attendance_evidence": str(STATE_DIR / "attendance" / "latest.json"),
+        "rule": "online attendance is not enough for active_ready; active_ready requires active employee plus structured runtime evidence",
+    }
+    emit(report)
+    return 0
 
 
 def write_employee_capabilities(employee_id: str, profile: dict, *, dry_run: bool) -> str:
@@ -1783,6 +3074,123 @@ def cmd_employee_verify_direct(args: argparse.Namespace) -> int:
     return 0 if report["ok"] else 1
 
 
+def runtime_verification_body(employee_id: str) -> str:
+    readme_path = ROOT / "README.md"
+    dashboard_path = ROOT / "company_kernel" / "company_dashboard.py"
+    return "\n".join(
+        [
+            "员工上岗执行验收。请在当前项目内做只读检查，不要改文件。",
+            f"任务：读取 {readme_path} 和 {dashboard_path}，判断你能否作为 Company Kernel 员工执行前端/GUI/代码检查任务。",
+            "必须按以下字段逐行回复，不能只回 token：",
+            "status: working|done|blocked",
+            "current_action: <你实际读取/检查了什么>",
+            "changed_files: -",
+            "verification_run: <你实际执行或完成的只读检查>",
+            "browser_check: <如果没跑浏览器就填 ->",
+            "blocker: <没有阻塞填 ->",
+            "eta: -",
+            f"employee_id: {employee_id}",
+        ]
+    )
+
+
+def parse_runtime_reply_fields(reply: str) -> dict[str, str]:
+    fields = {}
+    for line in str(reply or "").splitlines():
+        if ":" not in line:
+            continue
+        key, value = line.split(":", 1)
+        key = key.strip().lower()
+        if key and key not in fields:
+            fields[key] = value.strip()
+    return fields
+
+
+def runtime_reply_passed(reply: str) -> tuple[bool, str, dict[str, str]]:
+    fields = parse_runtime_reply_fields(reply)
+    status = fields.get("status", "").lower()
+    blocker = fields.get("blocker", "")
+    verification_run = fields.get("verification_run", "")
+    if status != "done":
+        return False, f"runtime_reply_not_done:{status or 'missing'}", fields
+    if blocker and blocker != "-":
+        return False, "runtime_reply_has_blocker", fields
+    if not verification_run or verification_run == "-":
+        return False, "runtime_reply_missing_verification_run", fields
+    return True, "runtime_reply_done_with_evidence", fields
+
+
+def cmd_employee_verify_runtime(args: argparse.Namespace) -> int:
+    conn = connect()
+    employee_id = resolve_employee_alias(args.id, strict=True)
+    row = conn.execute("SELECT * FROM employees WHERE id = ?", (employee_id,)).fetchone()
+    if not row:
+        conn.close()
+        emit({"ok": False, "error": "unknown employee", "employee_id": employee_id})
+        return 1
+    source = resolve_employee_alias(args.source, strict=True)
+    require_employee(conn, source)
+    direct_args = argparse.Namespace(
+        source=source,
+        target=employee_id,
+        body=runtime_verification_body(employee_id),
+        message_id=f"verify-runtime-{slug(employee_id)}-{datetime.now().strftime('%Y%m%d%H%M%S')}",
+        timeout=args.timeout,
+        session_key="",
+        deliver=False,
+        reply_channel="",
+        reply_account="",
+        reply_to="",
+    )
+    captured = io.StringIO()
+    with contextlib.redirect_stdout(captured):
+        code = cmd_message_direct(direct_args)
+    try:
+        payload = json.loads(captured.getvalue())
+    except json.JSONDecodeError:
+        payload = {"ok": False, "error": "invalid direct response", "raw": captured.getvalue()}
+    reply = str(payload.get("reply") or "")
+    structured_ok, structured_reason, structured_fields = runtime_reply_passed(reply)
+    verification = {
+        "type": "execution_evidence",
+        "passed": code == 0 and payload.get("ok") is True and payload.get("activation_eligible") is True and bool(payload.get("receipt")) and structured_ok,
+        "reason": structured_reason,
+        "parsed_fields": structured_fields,
+        "response": payload,
+    }
+    report = {
+        "ok": bool(verification["passed"]),
+        "employee_id": employee_id,
+        "source": source,
+        "generated_at": now(),
+        "verification": verification,
+        "activation_allowed": bool(verification["passed"]),
+        "rule": "runtime activation requires structured execution evidence; exact-token smoke is not enough",
+    }
+    evidence_dir = verified_direct_evidence_dir(employee_id)
+    evidence_dir.mkdir(parents=True, exist_ok=True)
+    report_path = evidence_dir / f"verify-runtime-{datetime.now().strftime('%Y%m%d-%H%M%S')}.json"
+    latest_path = evidence_dir / "latest-runtime.json"
+    report["evidence"] = {"json": str(report_path), "latest": str(latest_path)}
+    if args.activate and report["activation_allowed"]:
+        ts = now()
+        conn.execute("UPDATE employees SET status = 'active', updated_at = ? WHERE id = ?", (ts, employee_id))
+        conn.commit()
+        profile_path = employee_paths(employee_id)["profile"]
+        profile = load_json_or_default(profile_path, {})
+        profile.update({"status": "active", "updated_at": ts})
+        profile_path.write_text(json.dumps(profile, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        report["activated"] = True
+    else:
+        report["activated"] = False
+    report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    latest_path.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    audit(conn, "companyctl", "employee.verify_runtime", employee_id, report)
+    conn.close()
+    emit(report)
+    return 0 if report["ok"] else 1
+
+
 def cmd_employee_import_openclaw(args: argparse.Namespace) -> int:
     config_path = Path(args.config)
     if not config_path.exists():
@@ -1887,6 +3295,11 @@ def set_employee_communication_enabled(employee_id: str, enabled: bool, *, dry_r
 def mark_employee_unavailable(conn: sqlite3.Connection, employee_id: str, reason: str) -> dict:
     employee_id = resolve_employee_alias(employee_id)
     ts = now()
+    row = conn.execute("SELECT status FROM employees WHERE id = ?", (employee_id,)).fetchone()
+    previous_status = str(row["status"] if row else "")
+    if previous_status != "active":
+        audit(conn, "companyctl", "employee.unavailable_probe_failed", employee_id, {"reason": reason, "status": previous_status})
+        return {"agent": employee_id, "status": previous_status or "unknown", "communication_paused": False, "reason": reason, "downgraded": False}
     conn.execute("UPDATE employees SET status = 'candidate', updated_at = ? WHERE id = ? AND status = 'active'", (ts, employee_id))
     result = set_employee_communication_enabled(employee_id, False, dry_run=False)
     paths = employee_paths(employee_id)
@@ -1896,7 +3309,7 @@ def mark_employee_unavailable(conn: sqlite3.Connection, employee_id: str, reason
     profile["updated_at"] = ts
     paths["profile"].write_text(json.dumps(profile, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     audit(conn, "companyctl", "employee.unavailable", employee_id, {"reason": reason, "communication": result})
-    return {"agent": employee_id, "status": "candidate", "communication_paused": True, "reason": reason}
+    return {"agent": employee_id, "status": "candidate", "communication_paused": True, "reason": reason, "downgraded": True}
 
 
 def workspace_is_managed(path: Path) -> bool:
@@ -2160,6 +3573,18 @@ def require_employee(conn: sqlite3.Connection, employee_id: str) -> None:
         raise SystemExit(f"unknown employee: {employee_id}")
 
 
+def is_supervisor_employee(conn: sqlite3.Connection, employee_id: str) -> bool:
+    row = conn.execute("SELECT role FROM employees WHERE id = ?", (employee_id,)).fetchone()
+    if not row:
+        return False
+    return str(row["role"] or "").lower() in {"supervisor", "manager", "project-manager", "pm"}
+
+
+def can_manage_task_recovery(conn: sqlite3.Connection, task: sqlite3.Row, actor: str) -> bool:
+    participants = {task["source_agent"], task["target_agent"], task["claimed_by"]}
+    return actor in participants or is_supervisor_employee(conn, actor)
+
+
 def require_active_employee(conn: sqlite3.Connection, employee_id: str, action: str) -> dict | None:
     row = conn.execute("SELECT * FROM employees WHERE id = ?", (employee_id,)).fetchone()
     if not row:
@@ -2210,6 +3635,7 @@ def cmd_task_submit(args: argparse.Namespace) -> int:
         (task_id, json.dumps(metadata, ensure_ascii=False), ts),
     )
     conn.commit()
+    workspace = ensure_task_workspace(conn, task_id, metadata["trace_id"])
     inbox = employee_paths(target)["inbox"]
     inbox.mkdir(parents=True, exist_ok=True)
     task_file = inbox / f"{task_id}.json"
@@ -2222,6 +3648,7 @@ def cmd_task_submit(args: argparse.Namespace) -> int:
         "priority": args.priority,
         "status": "submitted",
         "metadata": metadata,
+        "workspace": workspace,
         "communication_policy": policy,
         "created_at": ts,
     }
@@ -2258,10 +3685,9 @@ def route_approval_gate(conn: sqlite3.Connection, args: argparse.Namespace, sour
         return {"allowed": True}
     task_id = args.task_id or f"route-{slug(args.title)}"
     approval_id = args.approval_id or f"approval-route-{slug(task_id)}-{slug(approval_action)}"
-    if args.approval_id:
-        gate = approved_gate(conn, args.approval_id, approval_action, source, target)
-        if gate["allowed"]:
-            return gate
+    gate = approved_gate(conn, approval_id, approval_action, source, target)
+    if gate["allowed"]:
+        return gate
     result = create_approval_internal(
         conn,
         source=source,
@@ -2351,6 +3777,7 @@ def submit_task_internal(
         (tid, json.dumps(task_metadata_obj, ensure_ascii=False), ts),
     )
     conn.commit()
+    workspace = ensure_task_workspace(conn, tid, task_metadata_obj["trace_id"])
     inbox = employee_paths(target)["inbox"]
     inbox.mkdir(parents=True, exist_ok=True)
     task_file = inbox / f"{tid}.json"
@@ -2363,6 +3790,7 @@ def submit_task_internal(
         "priority": priority,
         "status": "submitted",
         "metadata": task_metadata_obj,
+        "workspace": workspace,
         "communication_policy": policy,
         "created_at": ts,
     }
@@ -2381,6 +3809,13 @@ def complete_task_internal(
 ) -> dict:
     if not evidence.strip():
         raise ValueError("task evidence is required")
+    task = require_task(conn, task_id)
+    completable_statuses = {"submitted", "claimed", "running", "correcting"}
+    if task["status"] not in completable_statuses:
+        raise ValueError(f"task is not completable in status {task['status']}")
+    auto_promote_workspace_evidence(conn, task_id=task_id, agent=agent, evidence_path=evidence, summary=summary)
+    if has_v3_file_flow(conn, task_id) and not final_evidence_for_path(conn, task_id, evidence):
+        raise ValueError("task done requires promoted final evidence for v3 file-flow tasks")
     cur = conn.execute(
         "UPDATE tasks SET status = 'completed', claimed_by = CASE WHEN claimed_by = '' THEN ? ELSE claimed_by END, summary = ?, evidence_path = ?, blocker = '', updated_at = ? WHERE id = ? AND (target_agent = ? OR claimed_by = ?)",
         (agent, summary, evidence, now(), task_id, agent, agent),
@@ -2748,6 +4183,8 @@ def direct_runtime_command(runtime: str, target: str, source: str, body: str, ti
             source,
             "--direct-session-key",
             session_key,
+            "--timeout",
+            str(timeout),
         ], target
     raise ValueError(f"direct send unsupported runtime: {runtime}")
 
@@ -2798,6 +4235,10 @@ def cmd_message_direct(args: argparse.Namespace) -> int:
             body=reply,
             message_id=receipt_id,
         )
+    for event_id in [message_record.get("event_id"), receipt_record.get("event_id") if receipt_record else ""]:
+        if event_id:
+            conn.execute("UPDATE company_events SET processed_at = ? WHERE id = ?", (now(), event_id))
+    conn.commit()
     delivery_status = adapter_payload.get("deliveryStatus") if isinstance(adapter_payload.get("deliveryStatus"), dict) else {}
     delivery_failed = bool(delivery_status.get("attempted") and delivery_status.get("succeeded") is False)
     ok = cp.returncode == 0 and not delivery_failed
@@ -4251,6 +5692,7 @@ def cmd_task_show(args: argparse.Namespace) -> int:
             "children": children,
             "events": events,
             "hook_runs": hook_runs,
+            "attempts": task_attempts(conn, task_id),
             "approvals": task_approvals(conn, task_id),
             "lock": dict(lock) if lock else {},
             "audit_logs": audit_rows,
@@ -4421,7 +5863,10 @@ def cmd_task_claim(args: argparse.Namespace) -> int:
     )
     conn.commit()
     audit(conn, agent, "task.claim", task["id"], {"lease_until": lease_until})
-    emit({"ok": True, "task": dict(conn.execute("SELECT * FROM tasks WHERE id = ?", (task["id"],)).fetchone())})
+    updated = dict(conn.execute("SELECT * FROM tasks WHERE id = ?", (task["id"],)).fetchone())
+    workspace = ensure_task_workspace(conn, task["id"], trace_id_for_task(conn, task["id"]))
+    context_package = build_task_context_package_internal(conn, task_id=task["id"], employee_id=agent)
+    emit({"ok": True, "task": {**updated, "metadata": task_metadata(conn, task["id"]), "workspace": workspace}, "context_package": context_package})
     return 0
 
 
@@ -4440,21 +5885,179 @@ def cmd_task_done(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_task_artifact_register(args: argparse.Namespace) -> int:
+    conn = connect()
+    employee = resolve_employee_alias(args.employee)
+    try:
+        result = register_artifact_internal(
+            conn,
+            task_id=args.task_id,
+            employee_id=employee,
+            path=args.path,
+            artifact_type=args.type,
+            name=args.name,
+            stage=args.stage,
+            summary=args.summary,
+            is_input=args.input,
+            is_final=args.final,
+            metadata=parse_json_arg(args.metadata, {}),
+        )
+    except ValueError as exc:
+        emit({"ok": False, "error": str(exc), "task_id": args.task_id, "path": args.path})
+        return 2
+    emit({"ok": True, **result})
+    return 0
+
+
+def cmd_task_artifact_scan(args: argparse.Namespace) -> int:
+    conn = connect()
+    employee = resolve_employee_alias(args.employee)
+    try:
+        result = scan_artifacts_internal(
+            conn,
+            task_id=args.task_id,
+            employee_id=employee,
+            scan_dir=args.dir,
+            artifact_type=args.type,
+            stage=args.stage,
+            summary=args.summary,
+            pattern=args.pattern,
+        )
+    except ValueError as exc:
+        emit({"ok": False, "error": str(exc), "task_id": args.task_id, "dir": args.dir})
+        return 2
+    emit({"ok": True, **result})
+    return 0
+
+
+def cmd_task_artifact_approve(args: argparse.Namespace) -> int:
+    conn = connect()
+    actor = resolve_employee_alias(args.by)
+    result = approve_artifact_internal(conn, artifact_id=args.artifact_id, by=actor, status=args.status, reason=args.reason or args.summary)
+    emit({"ok": True, **result})
+    return 0
+
+
+def cmd_task_artifact_use(args: argparse.Namespace) -> int:
+    conn = connect()
+    employee = resolve_employee_alias(args.employee)
+    result = use_artifact_internal(conn, task_id=args.task_id, artifact_id=args.artifact_id, employee_id=employee, purpose=args.purpose or args.summary)
+    emit({"ok": True, **result})
+    return 0
+
+
+def cmd_task_evidence_promote(args: argparse.Namespace) -> int:
+    conn = connect()
+    actor = resolve_employee_alias(args.by or args.employee)
+    result = promote_artifact_to_evidence_internal(conn, artifact_id=args.artifact_id, by=actor, summary=args.summary, evidence_type=args.type)
+    emit({"ok": True, **result})
+    return 0
+
+
+def cmd_task_handoff_create(args: argparse.Namespace) -> int:
+    conn = connect()
+    from_employee = resolve_employee_alias(args.from_employee)
+    to_employee = resolve_employee_alias(args.to_employee) if args.to_employee else ""
+    result = create_handoff_internal(
+        conn,
+        from_task_id=args.from_task,
+        to_task_id=args.to_task,
+        from_employee_id=from_employee,
+        to_employee_id=to_employee,
+        summary=args.summary,
+        artifacts=args.artifact,
+        known_issues=args.known_issues,
+        next_steps=args.next_steps,
+        required_actions=args.required_actions,
+        acceptance_notes=args.acceptance_notes,
+    )
+    emit({"ok": True, **result})
+    return 0
+
+
+def cmd_task_handoff_status(args: argparse.Namespace) -> int:
+    conn = connect()
+    actor = resolve_employee_alias(args.by)
+    result = update_handoff_status_internal(conn, handoff_id=args.handoff_id, by=actor, status=args.handoff_status, reason=args.reason)
+    emit({"ok": True, **result})
+    return 0
+
+
+def cmd_task_context(args: argparse.Namespace) -> int:
+    conn = connect()
+    employee = resolve_employee_alias(args.employee) if args.employee else ""
+    result = build_task_context_package_internal(conn, task_id=args.task_id, employee_id=employee)
+    emit({"ok": True, **result})
+    return 0
+
+
+def cmd_task_attempt_start(args: argparse.Namespace) -> int:
+    conn = connect()
+    employee = resolve_employee_alias(args.employee)
+    result = start_execution_attempt_internal(conn, task_id=args.task_id, employee_id=employee, adapter_type=args.adapter_type, metadata=parse_json_arg(args.metadata, {}))
+    emit({"ok": True, **result})
+    return 0
+
+
+def cmd_task_attempt_finish(args: argparse.Namespace) -> int:
+    conn = connect()
+    result = finish_execution_attempt_internal(conn, attempt_id=args.attempt_id, status=args.status, error=args.error)
+    emit({"ok": True, **result})
+    return 0
+
+
 def cmd_task_block(args: argparse.Namespace) -> int:
     conn = connect()
     agent = resolve_employee_alias(args.agent)
+    task = conn.execute("SELECT * FROM tasks WHERE id = ? AND (target_agent = ? OR claimed_by = ?)", (args.task_id, agent, agent)).fetchone()
+    if not task:
+        emit({"ok": False, "error": "task not found or not owned by agent", "task_id": args.task_id})
+        return 1
     conn.execute(
         "UPDATE tasks SET status = 'blocked', blocker = ?, updated_at = ? WHERE id = ? AND (target_agent = ? OR claimed_by = ?)",
         (args.blocker, now(), args.task_id, agent, agent),
     )
-    if conn.total_changes == 0:
-        emit({"ok": False, "error": "task not found or not owned by agent", "task_id": args.task_id})
-        return 1
     conn.execute("DELETE FROM locks WHERE resource_key = ?", (f"task:{args.task_id}",))
     synced_plan_items = sync_project_plan_for_task(conn, task_id=args.task_id, task_status="blocked", actor=agent)
     conn.commit()
-    audit(conn, agent, "task.block", args.task_id, {"blocker": args.blocker})
-    emit({"ok": True, "task_id": args.task_id, "status": "blocked", "blocker": args.blocker, "synced_plan_items": synced_plan_items})
+    event = record_event(conn, "task.blocked", agent, task_id=args.task_id, trace_id=trace_id_for_task(conn, args.task_id), payload={"blocker": args.blocker})
+    audit(conn, agent, "task.block", args.task_id, {"blocker": args.blocker, "event_id": event["id"]})
+    emit({"ok": True, "task_id": args.task_id, "status": "blocked", "blocker": args.blocker, "event_id": event["id"], "synced_plan_items": synced_plan_items})
+    return 0
+
+
+def cmd_task_retry(args: argparse.Namespace) -> int:
+    conn = connect()
+    actor = resolve_employee_alias(args.by)
+    require_employee(conn, actor)
+    task = conn.execute("SELECT * FROM tasks WHERE id = ?", (args.task_id,)).fetchone()
+    if not task:
+        emit({"ok": False, "error": "task not found", "task_id": args.task_id})
+        return 2
+    if not can_manage_task_recovery(conn, task, actor):
+        emit({"ok": False, "error": "actor cannot retry task", "task_id": args.task_id, "by": actor})
+        return 2
+    ts = now()
+    target = task["target_agent"]
+    previous_attempt = latest_attempt_for_task(conn, args.task_id, target) or latest_attempt_for_task(conn, args.task_id)
+    inherited_policy = attempt_json_field(previous_attempt, "runtime_policy_json") if previous_attempt else {}
+    previous_attempt_id = previous_attempt["attempt_id"] if previous_attempt else ""
+    conn.execute("UPDATE tasks SET status = 'claimed', claimed_by = ?, blocker = '', updated_at = ? WHERE id = ?", (target, ts, args.task_id))
+    conn.execute("DELETE FROM locks WHERE resource_key = ?", (f"task:{args.task_id}",))
+    metadata = update_task_metadata(conn, args.task_id, {"recovery": {"retry_requested_by": actor, "retry_reason": args.reason, "retried_at": ts}})
+    conn.commit()
+    attempt = start_execution_attempt_internal(
+        conn,
+        task_id=args.task_id,
+        employee_id=target,
+        adapter_type="retry",
+        status="starting",
+        runtime_policy=inherited_policy,
+        metadata={"reason": args.reason, "by": actor, "previous_attempt_id": previous_attempt_id},
+    )
+    event = record_event(conn, "task.retrying", actor, task_id=args.task_id, payload={"reason": args.reason, "attempt_id": attempt["attempt"]["attempt_id"], "previous_attempt_id": previous_attempt_id})
+    audit(conn, actor, "task.retry", args.task_id, {"reason": args.reason, "event_id": event["id"], "attempt_id": attempt["attempt"]["attempt_id"]})
+    emit({"ok": True, "task_id": args.task_id, "status": "claimed", "task": dict(conn.execute("SELECT * FROM tasks WHERE id = ?", (args.task_id,)).fetchone()), "metadata": metadata, "attempt": hydrate_execution_attempt(row_by_id(conn, "execution_attempts", "attempt_id", attempt["attempt"]["attempt_id"])), "event_id": event["id"]})
     return 0
 
 
@@ -4494,7 +6097,7 @@ def cmd_task_reassign(args: argparse.Namespace) -> int:
     if not task:
         emit({"ok": False, "error": "task not found", "task_id": args.task_id})
         return 2
-    if actor not in {task["source_agent"], task["target_agent"], task["claimed_by"]}:
+    if not can_manage_task_recovery(conn, task, actor):
         emit({"ok": False, "error": "actor cannot reassign task", "task_id": args.task_id, "by": actor})
         return 2
     policy = require_communication_allowed(actor, target, "task.submit")
@@ -4506,9 +6109,10 @@ def cmd_task_reassign(args: argparse.Namespace) -> int:
     synced_plan_items = sync_project_plan_owner_for_task(conn, task_id=args.task_id, owner=target, actor=actor)
     conn.commit()
     updated = dict(conn.execute("SELECT * FROM tasks WHERE id = ?", (args.task_id,)).fetchone())
+    attempt = start_execution_attempt_internal(conn, task_id=args.task_id, employee_id=target, adapter_type="reassign", metadata={"reason": args.reason, "by": actor})
     task_file = write_task_inbox_file({**updated, "metadata": task_metadata(conn, args.task_id), "communication_policy": policy})
-    audit(conn, actor, "task.reassign", args.task_id, {"to": target, "reason": args.reason, "file": task_file})
-    emit({"ok": True, "task": updated, "file": task_file, "synced_plan_items": synced_plan_items})
+    audit(conn, actor, "task.reassign", args.task_id, {"to": target, "reason": args.reason, "file": task_file, "attempt_id": attempt["attempt"]["attempt_id"]})
+    emit({"ok": True, "task": updated, "file": task_file, "attempt": attempt["attempt"], "synced_plan_items": synced_plan_items})
     return 0
 
 
@@ -4694,6 +6298,21 @@ def cmd_project_status(args: argparse.Namespace) -> int:
     conn = connect()
     if args.status not in {"active", "paused", "completed", "blocked"}:
         raise SystemExit(f"unknown project status: {args.status}")
+    if args.status == "completed":
+        row = conn.execute("SELECT * FROM projects WHERE id = ?", (args.project_id,)).fetchone()
+        if not row:
+            emit({"ok": False, "error": "project not found", "project_id": args.project_id})
+            return 1
+        review = project_review_internal(conn, row, args.project_id)["review"]
+        emit(
+            {
+                "ok": False,
+                "error": "project is not ready to complete; use project accept after review passes",
+                "project_id": args.project_id,
+                "review": review,
+            }
+        )
+        return 1
     cur = conn.execute("UPDATE projects SET status = ?, updated_at = ? WHERE id = ?", (args.status, now(), args.project_id))
     if cur.rowcount == 0:
         emit({"ok": False, "error": "project not found", "project_id": args.project_id})
@@ -4749,7 +6368,15 @@ def project_review_internal(conn: sqlite3.Connection, project_row: sqlite3.Row |
     open_tasks = [task for task in tasks if task["status"] not in {"completed", "blocked"}]
     open_plan_items = [item for item in plan_items if item["status"] not in {"done", "completed", "cancelled"}]
     completed_without_evidence = [task for task in completed if not task.get("evidence_path")]
-    evidence_missing_on_disk = [task for task in completed if task.get("evidence_path") and not Path(task["evidence_path"]).exists()]
+    evidence_missing_on_disk = []
+    for task in completed:
+        ep = task.get("evidence_path")
+        if ep:
+            if Path(ep).exists():
+                continue
+            if final_evidence_for_path(conn, task["id"], ep):
+                continue
+            evidence_missing_on_disk.append(task)
     ready = total > 0 and not open_tasks and not blocked and not open_plan_items and not completed_without_evidence and not evidence_missing_on_disk
     review = {
         "project_id": project_id,
@@ -4945,6 +6572,7 @@ def heartbeat_internal(conn: sqlite3.Connection, agent: str, metadata: dict | No
     previous_progress = extract_progress_payload(previous_metadata)
     ts = now()
     metadata_payload = dict(metadata or {"source": "companyctl"})
+    metadata_payload = progress_bridge_metadata(conn, agent, workspace, metadata_payload)
     progress = extract_progress_payload(metadata_payload)
     if progress.get("layer"):
         metadata_payload["progress"] = {
@@ -4970,6 +6598,9 @@ def heartbeat_internal(conn: sqlite3.Connection, agent: str, metadata: dict | No
     hb = {"agent_id": agent, "runtime": runtime, "workspace": workspace, "status": "alive", "last_seen_at": ts}
     if progress.get("layer"):
         hb["progress"] = progress
+    latest_progress = metadata_payload.get("latest_progress")
+    if isinstance(latest_progress, dict) and latest_progress.get("path"):
+        hb["latest_progress"] = latest_progress
     progress_notification = maybe_record_progress_transition(
         conn,
         agent,
@@ -5090,6 +6721,7 @@ ADAPTER_COMMANDS = {
     "claude": "company-claude-adapter",
     "trae": "company-trae-adapter",
     "antigravity": "company-antigravity-adapter",
+    "skill": "company-skill-package-worker",
 }
 
 
@@ -5292,6 +6924,10 @@ def cmd_runtime_retry_adapter_run(args: argparse.Namespace) -> int:
         (ts, task_id),
     )
     conn.execute("DELETE FROM locks WHERE resource_key = ?", (f"task:{task_id}",))
+    conn.execute(
+        "UPDATE company_events SET processed_at = ? WHERE task_id = ? AND event_type = 'task.blocked' AND processed_at = ''",
+        (ts, task_id),
+    )
     conn.execute(
         """
         UPDATE adapter_runs
@@ -5635,6 +7271,12 @@ def build_parser() -> argparse.ArgumentParser:
     emp_verify_direct.add_argument("--activate", action="store_true")
     emp_verify_direct.add_argument("--continue-on-failure", action="store_true")
     emp_verify_direct.set_defaults(func=cmd_employee_verify_direct)
+    emp_verify_runtime = emp_sub.add_parser("verify-runtime")
+    emp_verify_runtime.add_argument("--id", required=True)
+    emp_verify_runtime.add_argument("--from", dest="source", default="main")
+    emp_verify_runtime.add_argument("--timeout", type=int, default=180)
+    emp_verify_runtime.add_argument("--activate", action="store_true")
+    emp_verify_runtime.set_defaults(func=cmd_employee_verify_runtime)
     emp_capabilities = emp_sub.add_parser("capabilities")
     emp_capabilities.add_argument("--id", required=True)
     emp_capabilities.add_argument("--set-skills", default="", help="comma-separated replacement list")
@@ -5708,6 +7350,10 @@ def build_parser() -> argparse.ArgumentParser:
     attendance_sweep.add_argument("--probe-replies", action=argparse.BooleanOptionalAction, default=True, help="ask each supported runtime to reply <agent_id> 在岗")
     attendance_sweep.add_argument("--reply-timeout", type=int, default=120)
     attendance_sweep.set_defaults(func=cmd_attendance_sweep)
+
+    agent_matrix = sub.add_parser("agent-matrix")
+    agent_matrix.add_argument("--agents", default="", help="comma-separated employee ids; default active/candidate employees")
+    agent_matrix.set_defaults(func=cmd_agent_matrix)
 
     task = sub.add_parser("task")
     task_sub = task.add_subparsers(dest="task_cmd", required=True)
@@ -5789,11 +7435,144 @@ def build_parser() -> argparse.ArgumentParser:
     task_done.add_argument("--summary", required=True)
     task_done.add_argument("--evidence", required=True)
     task_done.set_defaults(func=cmd_task_done)
+    task_artifact = task_sub.add_parser("artifact")
+    task_artifact_sub = task_artifact.add_subparsers(dest="artifact_cmd", required=True)
+    task_artifact_register = task_artifact_sub.add_parser("register")
+    task_artifact_register.add_argument("--task-id", required=True)
+    task_artifact_register.add_argument("--employee", required=True)
+    task_artifact_register.add_argument("--path", required=True)
+    task_artifact_register.add_argument("--type", required=True)
+    task_artifact_register.add_argument("--name", default="")
+    task_artifact_register.add_argument("--stage", choices=["draft", "intermediate", "final"], default="intermediate")
+    task_artifact_register.add_argument("--summary", default="")
+    task_artifact_register.add_argument("--input", action="store_true")
+    task_artifact_register.add_argument("--final", action="store_true")
+    task_artifact_register.add_argument("--metadata", default="")
+    task_artifact_register.set_defaults(func=cmd_task_artifact_register)
+    task_artifact_scan = task_artifact_sub.add_parser("scan")
+    task_artifact_scan.add_argument("--task-id", required=True)
+    task_artifact_scan.add_argument("--employee", required=True)
+    task_artifact_scan.add_argument("--dir", required=True)
+    task_artifact_scan.add_argument("--type", required=True)
+    task_artifact_scan.add_argument("--stage", choices=["draft", "intermediate", "final"], default="intermediate")
+    task_artifact_scan.add_argument("--summary", default="")
+    task_artifact_scan.add_argument("--pattern", default="*")
+    task_artifact_scan.set_defaults(func=cmd_task_artifact_scan)
+    task_artifact_approve = task_artifact_sub.add_parser("approve")
+    task_artifact_approve.add_argument("--artifact-id", required=True)
+    task_artifact_approve.add_argument("--by", required=True)
+    task_artifact_approve.add_argument("--status", choices=["approved", "rejected"], default="approved")
+    task_artifact_approve.add_argument("--reason", default="")
+    task_artifact_approve.add_argument("--summary", default="")
+    task_artifact_approve.set_defaults(func=cmd_task_artifact_approve)
+    task_artifact_use = task_artifact_sub.add_parser("use")
+    task_artifact_use.add_argument("--task-id", required=True)
+    task_artifact_use.add_argument("--artifact-id", required=True)
+    task_artifact_use.add_argument("--employee", required=True)
+    task_artifact_use.add_argument("--purpose", default="")
+    task_artifact_use.add_argument("--summary", default="")
+    task_artifact_use.set_defaults(func=cmd_task_artifact_use)
+    task_evidence = task_sub.add_parser("evidence")
+    task_evidence_sub = task_evidence.add_subparsers(dest="evidence_cmd", required=True)
+    task_evidence_promote = task_evidence_sub.add_parser("promote")
+    task_evidence_promote.add_argument("--artifact-id", required=True)
+    task_evidence_promote.add_argument("--by", default="")
+    task_evidence_promote.add_argument("--employee", default="")
+    task_evidence_promote.add_argument("--summary", default="")
+    task_evidence_promote.add_argument("--type", default="")
+    task_evidence_promote.set_defaults(func=cmd_task_evidence_promote)
+    task_handoff = task_sub.add_parser("handoff")
+    task_handoff_sub = task_handoff.add_subparsers(dest="handoff_cmd", required=True)
+    task_handoff_create = task_handoff_sub.add_parser("create")
+    task_handoff_create.add_argument("--from-task", required=True)
+    task_handoff_create.add_argument("--to-task", required=True)
+    task_handoff_create.add_argument("--from-employee", required=True)
+    task_handoff_create.add_argument("--to-employee", default="")
+    task_handoff_create.add_argument("--summary", required=True)
+    task_handoff_create.add_argument("--artifact", action="append", default=[])
+    task_handoff_create.add_argument("--known-issues", default="")
+    task_handoff_create.add_argument("--next-steps", default="")
+    task_handoff_create.add_argument("--required-actions", default="")
+    task_handoff_create.add_argument("--acceptance-notes", default="")
+    task_handoff_create.set_defaults(func=cmd_task_handoff_create)
+    task_handoff_accept = task_handoff_sub.add_parser("accept")
+    task_handoff_accept.add_argument("--handoff-id", required=True)
+    task_handoff_accept.add_argument("--by", required=True)
+    task_handoff_accept.add_argument("--reason", default="")
+    task_handoff_accept.set_defaults(func=cmd_task_handoff_status, handoff_status="accepted")
+    task_handoff_reject = task_handoff_sub.add_parser("reject")
+    task_handoff_reject.add_argument("--handoff-id", required=True)
+    task_handoff_reject.add_argument("--by", required=True)
+    task_handoff_reject.add_argument("--reason", required=True)
+    task_handoff_reject.set_defaults(func=cmd_task_handoff_status, handoff_status="rejected")
+    task_context = task_sub.add_parser("context")
+    task_context.add_argument("--task-id", required=True)
+    task_context.add_argument("--employee", default="")
+    task_context.set_defaults(func=cmd_task_context)
+    task_run = task_sub.add_parser("run")
+    task_run.add_argument("--task-id", required=True)
+    task_run.add_argument("--agent", required=True)
+    task_run.add_argument("--by", required=True)
+    task_run.add_argument("--adapter-type", default="managed")
+    task_run.add_argument("--pid", default="")
+    task_run.add_argument("--session-key", default="")
+    task_run.add_argument("--max-runtime-seconds", type=int, default=DEFAULT_RUNTIME_POLICY["max_runtime_seconds"])
+    task_run.add_argument("--heartbeat-interval-seconds", type=int, default=DEFAULT_RUNTIME_POLICY["heartbeat_interval_seconds"])
+    task_run.add_argument("--progress-interval-seconds", type=int, default=DEFAULT_RUNTIME_POLICY["progress_interval_seconds"])
+    task_run.add_argument("--stale-after-seconds", type=int, default=DEFAULT_RUNTIME_POLICY["stale_after_seconds"])
+    task_run.add_argument("--supervisor-check-interval-seconds", type=int, default=DEFAULT_RUNTIME_POLICY["supervisor_check_interval_seconds"])
+    task_run.add_argument("--max-corrections", type=int, default=DEFAULT_RUNTIME_POLICY["max_corrections"])
+    task_run.add_argument("--max-retries", type=int, default=DEFAULT_RUNTIME_POLICY["max_retries"])
+    task_run.set_defaults(func=cmd_task_run)
+    task_attempts = task_sub.add_parser("attempts")
+    task_attempts.add_argument("--task-id", required=True)
+    task_attempts.set_defaults(func=cmd_task_attempts)
+    task_progress = task_sub.add_parser("progress")
+    task_progress.add_argument("--task-id", required=True)
+    task_progress.add_argument("--agent", required=True)
+    task_progress.add_argument("--attempt-id", default="")
+    task_progress.add_argument("--state", default="in_progress")
+    task_progress.add_argument("--message", required=True)
+    task_progress.add_argument("--progress", type=int)
+    task_progress.add_argument("--payload", default="")
+    task_progress.add_argument("--at", default="")
+    task_progress.set_defaults(func=cmd_task_progress)
+    task_correct = task_sub.add_parser("correct")
+    task_correct.add_argument("--task-id", required=True)
+    task_correct.add_argument("--attempt-id", required=True)
+    task_correct.add_argument("--by", required=True)
+    task_correct.add_argument("--message", required=True)
+    task_correct.add_argument("--ack", action="store_true")
+    task_correct.set_defaults(func=cmd_task_correct)
+    task_cancel = task_sub.add_parser("cancel")
+    task_cancel.add_argument("--task-id", required=True)
+    task_cancel.add_argument("--attempt-id", required=True)
+    task_cancel.add_argument("--by", required=True)
+    task_cancel.add_argument("--reason", required=True)
+    task_cancel.set_defaults(func=cmd_task_cancel)
+    task_attempt = task_sub.add_parser("attempt")
+    task_attempt_sub = task_attempt.add_subparsers(dest="attempt_cmd", required=True)
+    task_attempt_start = task_attempt_sub.add_parser("start")
+    task_attempt_start.add_argument("--task-id", required=True)
+    task_attempt_start.add_argument("--employee", required=True)
+    task_attempt_start.add_argument("--adapter-type", default="local")
+    task_attempt_start.add_argument("--metadata", default="")
+    task_attempt_start.set_defaults(func=cmd_task_attempt_start)
+    task_attempt_finish = task_attempt_sub.add_parser("finish")
+    task_attempt_finish.add_argument("--attempt-id", required=True)
+    task_attempt_finish.add_argument("--status", choices=["success", "failed", "cancelled", "stale"], required=True)
+    task_attempt_finish.add_argument("--error", default="")
+    task_attempt_finish.set_defaults(func=cmd_task_attempt_finish)
     task_block = task_sub.add_parser("block")
     task_block.add_argument("--agent", required=True)
     task_block.add_argument("--task-id", required=True)
     task_block.add_argument("--blocker", required=True)
     task_block.set_defaults(func=cmd_task_block)
+    task_retry = task_sub.add_parser("retry")
+    task_retry.add_argument("--task-id", required=True)
+    task_retry.add_argument("--by", required=True)
+    task_retry.add_argument("--reason", required=True)
+    task_retry.set_defaults(func=cmd_task_retry)
     task_reopen = task_sub.add_parser("reopen")
     task_reopen.add_argument("--task-id", required=True)
     task_reopen.add_argument("--by", required=True)
@@ -5986,6 +7765,10 @@ def build_parser() -> argparse.ArgumentParser:
     supervisor_loop.add_argument("--limit", type=int, default=20)
     supervisor_loop.add_argument("--by", default="supervisor-loop")
     supervisor_loop.set_defaults(func=cmd_supervisor_delivery_loop)
+    supervisor_scan = supervisor_sub.add_parser("scan-attempts")
+    supervisor_scan.add_argument("--by", default="hermes")
+    supervisor_scan.add_argument("--now", default="")
+    supervisor_scan.set_defaults(func=cmd_supervisor_scan_attempts)
 
     policy = sub.add_parser("policy")
     policy_sub = policy.add_subparsers(dest="policy_cmd", required=True)
