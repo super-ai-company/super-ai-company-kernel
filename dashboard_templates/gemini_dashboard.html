@@ -3843,6 +3843,16 @@
     }).join('\n');
   }
 
+  function supervisionChainSummary(chain) {
+    const rows = Array.isArray(chain) ? chain : [];
+    if (!rows.length) return 'No supervisor correction chain for this trace yet.';
+    return rows.map(item => {
+      const attempt = item.attempt_id ? ` · attempt=${item.attempt_id}` : '';
+      const message = item.message ? ` · ${item.message}` : '';
+      return `${item.at || '-'} · ${item.summary || `${item.actor || '-'} -> ${item.target || '-'} · ${item.action || '-'}`}${attempt}${message}`;
+    }).join('\n');
+  }
+
   async function openTraceTimeline(traceId) {
     if (!traceId) {
       companyApiLog('ERROR', 'No trace_id for this task yet.', 'error');
@@ -3855,6 +3865,7 @@
         ['Trace ID', payload.trace_id || traceId],
         ['Counts', payload.counts || {}],
         ['Tasks', (payload.tasks || []).map(task => `${task.id || '-'} · ${task.status || '-'} · ${task.target_agent || '-'}`).join('\n') || '-'],
+        ['Supervisor Chain', supervisionChainSummary(payload.supervision_chain || [])],
         ['Timeline', traceTimelineSummary(payload.timeline || [])],
         ['Raw', payload],
       ], payload);
