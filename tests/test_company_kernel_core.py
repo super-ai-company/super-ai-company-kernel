@@ -2450,6 +2450,9 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertIn("event: stream_status", output)
         self.assertIn("event: company_event", output)
         self.assertIn("task.progress", output)
+        self.assertIn("single_company_kernel_ledger", output)
+        self.assertIn("sync_wait_window", output)
+        self.assertIn("task_failure_decided_by_attempt_evidence", output)
 
     def test_api_gateway_sse_resumes_after_last_event_id_without_replaying_old_events(self) -> None:
         conn = companyctl.connect()

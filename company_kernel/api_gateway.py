@@ -1265,7 +1265,18 @@ class ApiHandler(BaseHTTPRequestHandler):
         last_id = str(self.headers.get("Last-Event-ID", "") or "")
         self.send_sse_event(
             "stream_status",
-            {"ok": True, "mode": "sqlite_short_poll", "poll_seconds": poll_seconds, "timeout_is_sync_wait_only": True},
+            {
+                "ok": True,
+                "mode": "sqlite_short_poll",
+                "poll_seconds": poll_seconds,
+                "timeout_is_sync_wait_only": True,
+                "timeout_semantics": "sync_wait_window",
+                "failure_semantics": "task_failure_decided_by_attempt_evidence",
+                "ledger_consistency": {
+                    "source": "single_company_kernel_ledger",
+                    "surfaces": ["api", "cli", "dashboard"],
+                },
+            },
         )
         for _ in range(max_cycles):
             try:
