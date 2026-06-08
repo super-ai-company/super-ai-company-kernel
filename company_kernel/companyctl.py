@@ -3582,6 +3582,9 @@ def classify_agent_matrix_row(conn: sqlite3.Connection, employee: dict, attendan
     if employee_status == "missing":
         level = "no_reply"
         reason = "employee_not_registered"
+    elif employee_status == "candidate":
+        level = "candidate_only"
+        reason = "candidate_requires_structured_runtime_evidence_before_activation"
     elif runtime == "skill" and employee_status == "active" and runtime_ok:
         level = "active_ready"
         reason = "skill_runtime_evidence_no_direct_chat_required"
@@ -3594,9 +3597,6 @@ def classify_agent_matrix_row(conn: sqlite3.Connection, employee: dict, attendan
     elif attendance_status != "online":
         level = "no_reply"
         reason = f"attendance_{attendance_status}"
-    elif employee_status == "candidate":
-        level = "candidate_only"
-        reason = "candidate_requires_structured_runtime_evidence_before_activation"
     elif latest_attempt.get("status") in {"failed", "stale"}:
         level = "unsafe"
         reason = f"latest_attempt_{latest_attempt['status']}"

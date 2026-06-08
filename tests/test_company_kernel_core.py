@@ -2276,6 +2276,9 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual("active_ready", cockpit_employees["codex-cockpit"]["readiness_level"])
         self.assertIn("runtime_evidence", cockpit_employees["codex-cockpit"]["readiness_reason"])
         self.assertEqual("candidate", cockpit_employees["agy-cockpit"]["status"])
+        self.assertIn("active_limited_reasons", cockpit)
+        self.assertIn("agy-cockpit", cockpit["active_limited_reasons"])
+        self.assertIn("candidate_requires_structured_runtime_evidence", cockpit["active_limited_reasons"]["agy-cockpit"])
         agy_attention = next(item for item in cockpit["owner_attention"] if item["kind"] == "employee_readiness" and item["employee_id"] == "agy-cockpit")
         self.assertEqual("candidate_only", agy_attention["state"])
         self.assertEqual("agy-cockpit", agy_attention["title"])
@@ -6480,8 +6483,13 @@ class CompanyKernelCoreTest(unittest.TestCase):
             conn.close()
         codex = next(item for item in summary["employees"] if item["id"] == "codex")
         self.assertEqual("task-long-dashboard", codex["current_attempt"]["task_id"])
+        self.assertEqual("Long dashboard task", codex["current_attempt"]["task_title"])
         self.assertEqual("starting", codex["current_attempt"]["status"])
         self.assertEqual(run["attempt"]["attempt_id"], codex["current_attempt"]["attempt_id"])
+        models = company_dashboard.employee_view_models(summary)
+        codex_model = next(item for item in models if item["id"] == "codex")
+        self.assertEqual("Long dashboard task", codex_model["current_task_title"])
+        self.assertEqual("task-long-dashboard", codex_model["current_task_id"])
 
     def test_dashboard_employee_view_models_include_readiness_badges(self) -> None:
         for employee_id, role, runtime in [

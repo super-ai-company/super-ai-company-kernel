@@ -830,6 +830,8 @@ def build_cockpit_summary(summary: dict) -> dict:
                 "progress_layer": employee.get("progress_layer", ""),
                 "progress_state": employee.get("progress_state", ""),
                 "current_attempt": employee.get("current_attempt", {}),
+                "current_task_id": employee.get("current_task_id", ""),
+                "current_task_title": employee.get("current_task_title", ""),
                 "last_seen_at": employee.get("last_seen_at", ""),
             }
         )
@@ -848,6 +850,12 @@ def build_cockpit_summary(summary: dict) -> dict:
         readiness_level = str(item.get("readiness_level") or "unknown")
         employee_status_counts[employee_status] = employee_status_counts.get(employee_status, 0) + 1
         readiness_counts[readiness_level] = readiness_counts.get(readiness_level, 0) + 1
+    active_limited_reasons = {
+        str(item.get("id") or ""): str(item.get("readiness_reason") or item.get("status") or "limited")
+        for item in employee_states
+        if str(item.get("status") or "") in {"active-limited", "candidate"}
+        or str(item.get("readiness_level") or "") in {"candidate_only", "online_only", "task_unsupported", "unsafe", "no_reply"}
+    }
     employee_counts = {
         "total": employees_total,
         "online": employees_online,
@@ -931,6 +939,7 @@ def build_cockpit_summary(summary: dict) -> dict:
         "registry_reconciliation": registry_reconciliation,
         "doctor": doctor,
         "employees": employee_states,
+        "active_limited_reasons": active_limited_reasons,
         "long_tasks": long_tasks,
         "runtime_sessions": summary.get("runtime_sessions", [])[:20],
         "tool_calls": summary.get("tool_calls", [])[:30],
@@ -1674,6 +1683,7 @@ def load_summary(conn: sqlite3.Connection) -> dict:
             SELECT execution_attempts.attempt_id,
                    execution_attempts.trace_id,
                    execution_attempts.task_id,
+                   tasks.title AS task_title,
                    execution_attempts.employee_id,
                    execution_attempts.adapter_type,
                    execution_attempts.runtime,
@@ -1993,6 +2003,7 @@ def employee_view_models(summary: dict) -> list[dict]:
                 {"status": "online" if kernel_state == "online" else "missing"},
             )
             schedulable = readiness.get("level") == "active_ready"
+            current_attempt = employee.get("current_attempt", {}) if isinstance(employee.get("current_attempt", {}), dict) else {}
             employees.append(
                 {
                     **employee,
@@ -2008,6 +2019,8 @@ def employee_view_models(summary: dict) -> list[dict]:
                     "communication_paused": bool(communication_profile.get("communication_paused")),
                     "communication_status": "paused" if communication_profile.get("communication_paused") else "enabled",
                     "backlog": f"{employee.get('submitted_tasks', 0)} submitted, {employee.get('claimed_tasks', 0)} claimed",
+                    "current_task_id": str(current_attempt.get("task_id", "") or ""),
+                    "current_task_title": str(current_attempt.get("task_title", "") or ""),
                     "progress_layer": heartbeat_progress.get("layer", ""),
                     "progress_state": heartbeat_progress.get("state", ""),
                     "progress_label": heartbeat_progress.get("label", ""),
