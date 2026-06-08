@@ -240,6 +240,20 @@ def recent_event_rows(*, limit: int = 20, after_created_at: str = "", after_id: 
     conn = companyctl.connect_readonly()
     try:
         limit = max(1, min(int(limit), 200))
+        if after_id:
+            anchor = conn.execute("SELECT rowid FROM company_events WHERE id = ?", (after_id,)).fetchone()
+            if anchor:
+                return companyctl.rows(
+                    conn,
+                    """
+                    SELECT id, trace_id, event_type, source_agent, task_id, payload_json, created_at, processed_at
+                    FROM company_events
+                    WHERE rowid > ?
+                    ORDER BY rowid ASC
+                    LIMIT ?
+                    """,
+                    (anchor["rowid"], limit),
+                )
         if after_created_at:
             return companyctl.rows(
                 conn,

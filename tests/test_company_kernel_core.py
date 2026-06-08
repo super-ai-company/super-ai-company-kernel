@@ -2314,6 +2314,34 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertIn("event: company_event", output)
         self.assertIn("task.progress", output)
 
+    def test_api_gateway_sse_resumes_after_last_event_id_without_replaying_old_events(self) -> None:
+        conn = companyctl.connect()
+        try:
+            first = companyctl.record_event(conn, "task.progress", "codex", task_id="task-sse-resume", payload={"message": "old event"}, trace_id="trace-sse-resume")
+            second = companyctl.record_event(conn, "task.progress", "codex", task_id="task-sse-resume", payload={"message": "new event"}, trace_id="trace-sse-resume")
+        finally:
+            conn.close()
+
+        handler = object.__new__(api_gateway.ApiHandler)
+        handler.headers = {"Last-Event-ID": first["id"]}
+        handler.wfile = io.BytesIO()
+        sent = []
+        handler.send_response = lambda code: sent.append(("status", code))
+        handler.send_header = lambda name, value: sent.append((name, value))
+        handler.end_headers = lambda: sent.append(("end", ""))
+        handler.server = SimpleNamespace(quiet=True)
+
+        with mock.patch.object(api_gateway.time, "sleep", return_value=None):
+            handler.stream_events({"max_cycles": ["1"], "poll_seconds": ["0"], "limit": ["5"]})
+
+        output = handler.wfile.getvalue().decode("utf-8")
+        self.assertIn("event: stream_status", output)
+        self.assertIn("timeout_is_sync_wait_only", output)
+        self.assertIn(f"id: {second['id']}", output)
+        self.assertIn("new event", output)
+        self.assertNotIn(f"id: {first['id']}", output)
+        self.assertNotIn("old event", output)
+
     def test_evidence_sanitizer_blocks_absolute_secret_paths(self) -> None:
         secret = self.root / ".ssh" / "id_rsa"
         secret.parent.mkdir(parents=True, exist_ok=True)
