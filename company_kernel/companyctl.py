@@ -3272,6 +3272,62 @@ def audit_evidence_records(conn: sqlite3.Connection, *, task_id: str = "", limit
     return evidence
 
 
+def safe_evidence_content(conn: sqlite3.Connection, evidence_id: str, *, max_bytes: int = 65536) -> dict:
+    safe_id = str(evidence_id or "").strip()
+    if not safe_id or "/" in safe_id:
+        return {"ok": False, "error": "invalid evidence id", "evidence_id": safe_id, "display": sanitize_evidence_path_for_display(""), "content": {"text": ""}}
+    record = conn.execute(
+        """
+        SELECT evidence_id, trace_id, task_id, attempt_id, employee_id, artifact_id,
+               type, path_or_url, summary, checksum, is_final, metadata_json, created_at
+        FROM evidence
+        WHERE evidence_id = ?
+        """,
+        (safe_id,),
+    ).fetchone()
+    if not record:
+        return {"ok": False, "error": "evidence not found", "evidence_id": safe_id, "display": sanitize_evidence_path_for_display(""), "content": {"text": ""}}
+    item = dict(record)
+    raw_path = item.pop("path_or_url", "")
+    display = sanitize_evidence_path_for_display(raw_path)
+    payload = {
+        "ok": bool(display.get("allowed")),
+        "evidence": item,
+        "display": display,
+        "content": {
+            "text": "",
+            "truncated": False,
+            "bytes": 0,
+            "mode": "blocked" if not display.get("allowed") else "text",
+            "policy": "read-only sanitized evidence preview; no downloads and no absolute paths",
+        },
+    }
+    if not display.get("allowed"):
+        payload["error"] = display.get("reason") or "evidence path blocked by display policy"
+        return payload
+    candidate = Path(str(raw_path or "")).expanduser()
+    if not candidate.is_absolute():
+        candidate = ROOT / candidate
+    try:
+        path = candidate.resolve()
+    except OSError:
+        payload["ok"] = False
+        payload["error"] = "sanitized evidence file missing"
+        payload["content"]["mode"] = "missing"
+        return payload
+    size = path.stat().st_size
+    payload["content"]["bytes"] = size
+    if size > max_bytes:
+        payload["content"]["truncated"] = True
+    data = path.read_bytes()[:max_bytes]
+    try:
+        payload["content"]["text"] = data.decode("utf-8")
+    except UnicodeDecodeError:
+        payload["content"]["mode"] = "binary"
+        payload["content"]["text"] = ""
+    return payload
+
+
 def audit_artifact_records(conn: sqlite3.Connection, *, task_id: str = "", limit: int | str | None = 50) -> list[dict]:
     sql = """
         SELECT artifact_id, trace_id, task_id, parent_task_id, employee_id, artifact_type,

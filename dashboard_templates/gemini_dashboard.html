@@ -2733,6 +2733,7 @@
                   <th>Safe Path</th>
                   <th>Display State</th>
                   <th>Created</th>
+                  <th>Action</th>
                 </tr>
               </thead>
               <tbody id="audit-evidence-tbody">
@@ -3536,6 +3537,22 @@
     companyApiLog('SYSTEM', `Opening sanitized logs for ${taskId}. Raw stdout/stderr remains hidden.`, 'normal');
     openTaskDetailDrawer(taskId);
   }
+
+  async function viewEvidenceContent(evidenceId) {
+    if (!evidenceId) return;
+    companyApiLog('SYSTEM', `Loading safe evidence preview ${evidenceId}. Absolute paths and downloads stay disabled.`, 'normal');
+    try {
+      const payload = await companyApiGet(`/v1/evidence/${encodeURIComponent(evidenceId)}/content`);
+      const display = payload.display || {};
+      const content = payload.content || {};
+      const location = display.relative_path || display.basename || '-';
+      const text = content.text ? ` · preview=${shortText(content.text, 320)}` : '';
+      companyApiLog('EVIDENCE', `${evidenceId} · ${location} · bytes=${content.bytes || 0} · absolute_path_exposed=${display.absolute_path_exposed ? 'yes' : 'no'}${text}`, 'success');
+    } catch (err) {
+      companyApiLog('EVIDENCE', `Evidence preview blocked for ${evidenceId}: ${err.message}. No absolute path or file content was exposed.`, 'warn');
+    }
+  }
+  window.viewEvidenceContent = viewEvidenceContent;
 
   function recordWaitDecision(taskId, attemptId) {
     companyApiLog('SYSTEM', `Waiting is recorded locally only; no external send is triggered. task=${taskId || '-'} attempt=${attemptId || '-'}`, 'normal');
@@ -5238,9 +5255,12 @@
           </td>
           <td><span class="long-task-state ${allowed ? 'success' : 'blocked'}">${escapeHtml(state)}</span></td>
           <td>${formatDate(item.created_at || '')}</td>
+          <td>
+            <button class="mini-btn" data-evidence-id="${escapeHtml(item.evidence_id || '')}" data-dangerous="false" onclick="event.stopPropagation(); viewEvidenceContent('${escapeHtml(item.evidence_id || '')}')">View Safe Evidence<small>whitelist preview</small></button>
+          </td>
         </tr>
       `;
-    }).join('') : '<tr><td colspan="7" style="color:var(--text-muted);text-align:center;padding:24px;">No evidence records.</td></tr>';
+    }).join('') : '<tr><td colspan="8" style="color:var(--text-muted);text-align:center;padding:24px;">No evidence records.</td></tr>';
   }
 
   function refreshAuditArtifactsTable(artifactRecords) {
