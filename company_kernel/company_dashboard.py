@@ -1494,13 +1494,29 @@ def load_summary(conn: sqlite3.Connection) -> dict:
         employee["progress_summary"] = progress.get("summary", "")
         current_attempt = conn.execute(
             """
-            SELECT attempt_id, trace_id, task_id, employee_id, adapter_type, runtime, pid, session_key,
-                   status, runtime_policy_json, metadata_json, supervisor_state_json,
-                   last_heartbeat_at, last_progress_at, started_at, finished_at, error_message
+            SELECT execution_attempts.attempt_id,
+                   execution_attempts.trace_id,
+                   execution_attempts.task_id,
+                   execution_attempts.employee_id,
+                   execution_attempts.adapter_type,
+                   execution_attempts.runtime,
+                   execution_attempts.pid,
+                   execution_attempts.session_key,
+                   execution_attempts.status,
+                   execution_attempts.runtime_policy_json,
+                   execution_attempts.metadata_json,
+                   execution_attempts.supervisor_state_json,
+                   execution_attempts.last_heartbeat_at,
+                   execution_attempts.last_progress_at,
+                   execution_attempts.started_at,
+                   execution_attempts.finished_at,
+                   execution_attempts.error_message
             FROM execution_attempts
+            JOIN tasks ON tasks.id = execution_attempts.task_id
             WHERE employee_id = ?
-              AND status IN ('starting', 'running', 'correcting')
-            ORDER BY started_at DESC
+              AND execution_attempts.status IN ('starting', 'running', 'correcting')
+              AND LOWER(tasks.status) NOT IN ('completed', 'done', 'cancelled', 'failed')
+            ORDER BY execution_attempts.started_at DESC
             LIMIT 1
             """,
             (employee["id"],),
@@ -1640,12 +1656,28 @@ def load_summary(conn: sqlite3.Connection) -> dict:
         "active_attempts": rows(
             conn,
             """
-            SELECT attempt_id, trace_id, task_id, employee_id, adapter_type, runtime, pid, session_key,
-                   status, runtime_policy_json, metadata_json, supervisor_state_json,
-                   last_heartbeat_at, last_progress_at, started_at, finished_at, error_message
+            SELECT execution_attempts.attempt_id,
+                   execution_attempts.trace_id,
+                   execution_attempts.task_id,
+                   execution_attempts.employee_id,
+                   execution_attempts.adapter_type,
+                   execution_attempts.runtime,
+                   execution_attempts.pid,
+                   execution_attempts.session_key,
+                   execution_attempts.status,
+                   execution_attempts.runtime_policy_json,
+                   execution_attempts.metadata_json,
+                   execution_attempts.supervisor_state_json,
+                   execution_attempts.last_heartbeat_at,
+                   execution_attempts.last_progress_at,
+                   execution_attempts.started_at,
+                   execution_attempts.finished_at,
+                   execution_attempts.error_message
             FROM execution_attempts
-            WHERE status IN ('starting', 'running', 'correcting')
-            ORDER BY started_at DESC
+            JOIN tasks ON tasks.id = execution_attempts.task_id
+            WHERE execution_attempts.status IN ('starting', 'running', 'correcting')
+              AND LOWER(tasks.status) NOT IN ('completed', 'done', 'cancelled', 'failed')
+            ORDER BY execution_attempts.started_at DESC
             LIMIT 50
             """,
         ),

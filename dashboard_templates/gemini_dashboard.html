@@ -2172,12 +2172,18 @@
 
     .dashboard-layout-fix .main-panel {
       min-width: 0;
+      width: calc(100vw - 280px);
+      max-width: calc(100vw - 280px);
     }
 
     .dashboard-layout-fix .content-area {
       box-sizing: border-box;
       min-height: calc(100vh - 80px);
       overflow: visible;
+      width: 100%;
+      max-width: min(1400px, calc(100vw - 280px));
+      padding-left: clamp(20px, 3vw, 40px);
+      padding-right: clamp(20px, 3vw, 40px);
     }
 
     .dashboard-layout-fix .tab-pane.active {
@@ -2199,6 +2205,65 @@
 
     .dashboard-layout-fix .trace-item-card {
       cursor: pointer;
+    }
+
+    .dashboard-layout-fix .dashboard-layout {
+      grid-template-columns: minmax(0, 1.25fr) minmax(320px, 0.85fr);
+    }
+
+    .dashboard-layout-fix .section-card,
+    .dashboard-layout-fix .metric-card,
+    .dashboard-layout-fix .cockpit-row {
+      min-width: 0;
+    }
+
+    .dashboard-layout-fix .cockpit-row {
+      align-items: start;
+    }
+
+    .dashboard-layout-fix .modal {
+      box-sizing: border-box;
+      overflow: hidden;
+    }
+
+    .dashboard-layout-fix .modal-content {
+      box-sizing: border-box;
+      max-width: min(960px, calc(100vw - 40px));
+      max-height: calc(100vh - 40px);
+    }
+
+    .dashboard-layout-fix .modal-body {
+      max-height: calc(100vh - 132px);
+      overflow: auto;
+    }
+
+    @media (max-width: 980px) {
+      body {
+        display: block;
+      }
+      .app-container {
+        display: block;
+        width: 100%;
+      }
+      .sidebar {
+        position: relative;
+        width: auto;
+        height: auto;
+      }
+      .main-panel,
+      .dashboard-layout-fix .main-panel {
+        margin-left: 0;
+        width: 100%;
+        max-width: 100%;
+      }
+      .dashboard-layout-fix .content-area {
+        max-width: 100%;
+      }
+      .dashboard-layout,
+      .dashboard-layout-fix .dashboard-layout,
+      .chat-layout {
+        grid-template-columns: 1fr;
+      }
     }
 
     .detail-summary {
@@ -2252,7 +2317,7 @@
     }
   </style>
 </head>
-<body>
+<body class="dashboard-layout-fix">
 
 <div class="app-container">
   <!-- Sidebar -->
@@ -3983,14 +4048,31 @@
     const attemptId = attempt.attempt_id || '';
     const target = task.claimed_by || task.target_agent || '';
     const traceId = attempt.trace_id || task.trace_id || '';
-    return `
-      <button class="filter-tab" onclick="event.stopPropagation(); openTaskDetailDrawer('${escapeHtml(taskId)}')">Detail</button>
-      <button class="filter-tab" data-ledger-action="task.correct" data-requires-owner-approval="true" onclick="event.stopPropagation(); correctTaskAttempt('${escapeHtml(taskId)}', '${escapeHtml(attemptId)}')">Correct <small>owner approval</small></button>
-      <button class="filter-tab" data-ledger-action="task.cancel" data-requires-owner-approval="true" data-dangerous="true" onclick="event.stopPropagation(); cancelTaskAttempt('${escapeHtml(taskId)}', '${escapeHtml(attemptId)}')">Cancel <small>danger</small></button>
-      <button class="filter-tab" data-ledger-action="task.retry" data-requires-owner-approval="true" onclick="event.stopPropagation(); retryTask('${escapeHtml(taskId)}')">Retry <small>owner approval</small></button>
-      <button class="filter-tab" data-ledger-action="task.reassign" data-requires-owner-approval="true" onclick="event.stopPropagation(); reassignTask('${escapeHtml(taskId)}', '${escapeHtml(target)}')">Reassign <small>owner approval</small></button>
-      <button class="filter-tab" onclick="event.stopPropagation(); viewTaskTrace('${escapeHtml(traceId)}')">Trace</button>
-    `;
+    const taskStatus = String(task.status || '').toLowerCase();
+    const attemptStatus = String(attempt.status || '').toLowerCase();
+    const isDone = ['completed', 'done', 'success'].includes(taskStatus) || attemptStatus === 'success';
+    const isCancelled = taskStatus === 'cancelled' || attemptStatus === 'cancelled';
+    const isRunning = ['claimed', 'running', 'starting', 'correcting'].includes(taskStatus) || ['starting', 'running', 'correcting'].includes(attemptStatus);
+    const isRecoverable = ['blocked', 'failed', 'stale'].includes(taskStatus) || ['failed', 'stale', 'cancelled'].includes(attemptStatus);
+    const buttons = [
+      `<button class="filter-tab" onclick="event.stopPropagation(); openTaskDetailDrawer('${escapeHtml(taskId)}')">Detail</button>`
+    ];
+    if (isRunning && !isDone && !isCancelled) {
+      buttons.push(`<button class="filter-tab" data-ledger-action="task.correct" data-requires-owner-approval="true" onclick="event.stopPropagation(); correctTaskAttempt('${escapeHtml(taskId)}', '${escapeHtml(attemptId)}')">Correct <small>owner approval</small></button>`);
+      buttons.push(`<button class="filter-tab" data-ledger-action="task.cancel" data-requires-owner-approval="true" data-dangerous="true" onclick="event.stopPropagation(); cancelTaskAttempt('${escapeHtml(taskId)}', '${escapeHtml(attemptId)}')">Cancel <small>danger</small></button>`);
+    }
+    if (isRecoverable && !isDone) {
+      buttons.push(`<button class="filter-tab" data-ledger-action="task.retry" data-requires-owner-approval="true" onclick="event.stopPropagation(); retryTask('${escapeHtml(taskId)}')">Retry <small>owner approval</small></button>`);
+      buttons.push(`<button class="filter-tab" data-ledger-action="task.reassign" data-requires-owner-approval="true" onclick="event.stopPropagation(); reassignTask('${escapeHtml(taskId)}', '${escapeHtml(target)}')">Reassign <small>owner approval</small></button>`);
+    }
+    if (isDone) {
+      buttons.push(`<button class="filter-tab" onclick="event.stopPropagation(); handleOwnerAttentionAction('${escapeHtml(taskId)}', '${escapeHtml(attemptId)}', '', 'review_evidence')">Evidence</button>`);
+    }
+    buttons.push(`<button class="filter-tab" onclick="event.stopPropagation(); viewTaskTrace('${escapeHtml(traceId)}')">Trace</button>`);
+    if (!isRunning && !isRecoverable && !isDone && !isCancelled) {
+      buttons.push(`<span style="color:var(--text-muted);font-size:11px;">no runtime action</span>`);
+    }
+    return buttons.join('');
   }
 
   function approvalDetail(approval) {
