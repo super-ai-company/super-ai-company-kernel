@@ -3793,6 +3793,16 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertIn("external_send_executed=${String(!!safety.external_send_executed)}", html)
         self.assertIn("owner approval required before real external delivery", html)
 
+    def test_dashboard_approvals_render_owner_control_summary(self) -> None:
+        template = Path(__file__).resolve().parents[1] / "dashboard_templates" / "gemini_dashboard.html"
+        html = template.read_text(encoding="utf-8")
+        self.assertIn('id="approval-control-summary"', html)
+        self.assertIn("approvalControlSummary(summary.approval_control_summary", html)
+        self.assertIn("approval_control_summary: approvals.approval_control_summary", html)
+        self.assertIn("pending_high_risk_actions", html)
+        self.assertIn("real_execution_blockers", html)
+        self.assertIn("blocked until owner approval", html)
+
     def test_dashboard_owner_attention_actions_render_safety_metadata(self) -> None:
         template = Path(__file__).resolve().parents[1] / "dashboard_templates" / "gemini_dashboard.html"
         html = template.read_text(encoding="utf-8")
@@ -3951,6 +3961,79 @@ class CompanyKernelCoreTest(unittest.TestCase):
         code, task = run_cli("task", "show", "--task-id", "task-approval-mock-resolve")
         self.assertEqual(0, code, task)
         self.assertEqual("mock", task["approvals"][0]["safety"]["resolution_mode"])
+
+    def test_approval_list_exposes_owner_control_summary_for_high_risk_actions(self) -> None:
+        code, submitted = run_cli("task", "submit", "--from", "ops", "--to", "maker", "--task-id", "task-approval-control", "--title", "approval control task")
+        self.assertEqual(code, 0, submitted)
+        code, pending = run_cli(
+            "approval",
+            "request",
+            "--from",
+            "ops",
+            "--action",
+            "external_send",
+            "--reason",
+            "real customer send needs owner approval",
+            "--target",
+            "maker",
+            "--risk",
+            "P1",
+            "--task-id",
+            "task-approval-control",
+            "--approval-id",
+            "approval-control-pending",
+        )
+        self.assertEqual(code, 0, pending)
+        code, rule_change = run_cli(
+            "approval",
+            "request",
+            "--from",
+            "ops",
+            "--action",
+            "rule_change",
+            "--reason",
+            "kernel rule change needs owner approval",
+            "--risk",
+            "P0",
+            "--approval-id",
+            "approval-control-rule-change",
+        )
+        self.assertEqual(code, 0, rule_change)
+        code, mock = run_cli(
+            "approval",
+            "request",
+            "--from",
+            "ops",
+            "--action",
+            "external_send",
+            "--reason",
+            "mock customer send",
+            "--target",
+            "maker",
+            "--risk",
+            "P1",
+            "--task-id",
+            "task-approval-control",
+            "--approval-id",
+            "approval-control-mock",
+        )
+        self.assertEqual(code, 0, mock)
+        code, resolved = run_cli("approval", "resolve", "--approval-id", "approval-control-mock", "--by", "ops", "--reason", "mock only", "--mock")
+        self.assertEqual(code, 0, resolved)
+
+        status, listed = api_gateway.route_get("/v1/approvals", {"status": ["all"], "limit": ["10"]})
+        self.assertEqual(200, status, listed)
+        summary = listed["approval_control_summary"]
+        self.assertEqual(3, summary["total"])
+        self.assertEqual(2, summary["by_status"]["pending"])
+        self.assertEqual(1, summary["by_status"]["resolved"])
+        self.assertEqual(["external_send", "rule_change"], summary["high_risk_actions"])
+        self.assertEqual(["external_send", "rule_change"], summary["pending_high_risk_actions"])
+        self.assertEqual(1, summary["dry_run_resolved"])
+        self.assertEqual(0, summary["external_send_executed"])
+        self.assertEqual(2, summary["real_execution_blockers"]["external_send"])
+        self.assertTrue(summary["real_external_send_requires_owner_approval"])
+        self.assertIn("blocked until owner approval", summary["summary"])
 
     def test_dashboard_renders_project_goal_acceptance_review_and_retro(self) -> None:
         code, project = run_cli(

@@ -2988,6 +2988,10 @@
         </div>
         <div class="section-card">
           <h2 data-i18n="pending_approvals_title"><i class="fa-solid fa-scale-balanced"></i> Pending approvals & Requests</h2>
+          <div id="approval-control-summary" class="cockpit-row" style="margin-bottom:12px;">
+            <div><strong>Approval Control Summary</strong><span>High-risk approvals, dry-run resolves, and external-send blockers will appear here.</span></div>
+            <div class="long-task-state running">loading</div>
+          </div>
           <div class="table-container">
             <table>
               <thead>
@@ -3681,6 +3685,7 @@
         events: events.events || [],
         adapter_runs: adapterRuns.adapter_runs || [],
         approvals: approvals.approvals || [],
+        approval_control_summary: approvals.approval_control_summary || currentSummaryFallback('approval_control_summary', {}),
         evidence_records: evidence.evidence || [],
         artifact_records: artifacts.artifacts || [],
         handoff_records: handoffs.handoffs || [],
@@ -4724,6 +4729,28 @@
   function approvalTableSafetySummary(app) {
     const safety = (app && app.safety) || {};
     return `mode=${escapeHtml(safety.resolution_mode || '-')} · dry_run=${String(!!safety.dry_run)} · external_send_executed=${String(!!safety.external_send_executed)} · ${escapeHtml(safety.summary || 'owner approval required before real external delivery')}`;
+  }
+
+  function approvalControlSummary(controlSummary) {
+    const summary = controlSummary && typeof controlSummary === 'object' && !Array.isArray(controlSummary) ? controlSummary : {};
+    const byStatus = summary.by_status || {};
+    const highRisk = Array.isArray(summary.high_risk_actions) ? summary.high_risk_actions : [];
+    const pendingHighRisk = Array.isArray(summary.pending_high_risk_actions) ? summary.pending_high_risk_actions : [];
+    const blockers = summary.real_execution_blockers || {};
+    const blockerCount = Number(blockers.external_send || 0);
+    const state = blockerCount || pendingHighRisk.length ? 'blocked' : 'success';
+    const text = [
+      `total=${summary.total || 0}`,
+      `pending=${byStatus.pending || 0}`,
+      `resolved=${byStatus.resolved || 0}`,
+      `high_risk=${highRisk.join(',') || '-'}`,
+      `pending_high_risk_actions=${pendingHighRisk.join(',') || '-'}`,
+      `dry_run_resolved=${summary.dry_run_resolved || 0}`,
+      `external_send_executed=${summary.external_send_executed || 0}`,
+      `real_execution_blockers=${blockerCount}`,
+      summary.summary || 'real external delivery blocked until owner approval'
+    ].join(' · ');
+    return `<div><strong>Approval Control Summary</strong><span>${escapeHtml(text)}</span></div><div class="long-task-state ${state}">${state === 'blocked' ? 'owner gate' : 'clear'}</div>`;
   }
 
   function evidenceRecordsSummary(records) {
@@ -6345,6 +6372,10 @@
 
   function refreshGovernanceTables() {
     const summary = getDashboardSummary();
+    const approvalControlEl = document.getElementById('approval-control-summary');
+    if (approvalControlEl) {
+      approvalControlEl.innerHTML = approvalControlSummary(summary.approval_control_summary || {});
+    }
     const approvalsTbody = document.getElementById('approvals-tbody');
     if (approvalsTbody) {
       const approvals = summary.approvals || [];

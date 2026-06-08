@@ -7413,6 +7413,68 @@ def normalize_approval(row: sqlite3.Row | dict) -> dict:
     return obj
 
 
+HIGH_RISK_APPROVAL_ACTIONS = {
+    "external_send",
+    "telegram_send",
+    "openclaw_send",
+    "rule_change",
+    "delete_file",
+    "sensitive_file",
+    "publish",
+    "payment",
+    "compensation",
+    "salary",
+    "penalty",
+    "budget_overrun",
+    "budget.overrun",
+}
+
+
+def approval_is_high_risk(approval: dict) -> bool:
+    action = str(approval.get("action") or "")
+    detail = approval.get("detail", {}) if isinstance(approval.get("detail", {}), dict) else {}
+    risk = str(detail.get("risk") or "").upper()
+    return action in HIGH_RISK_APPROVAL_ACTIONS or risk in {"P0", "P1"}
+
+
+def approval_control_summary(approvals: list[dict]) -> dict:
+    by_status: dict[str, int] = {}
+    by_action: dict[str, int] = {}
+    high_risk_actions: set[str] = set()
+    pending_high_risk_actions: set[str] = set()
+    real_execution_blockers: dict[str, int] = {}
+    dry_run_resolved = 0
+    external_send_executed = 0
+    for approval in approvals:
+        status = str(approval.get("status") or "")
+        action = str(approval.get("action") or "")
+        safety = approval.get("safety", {}) if isinstance(approval.get("safety", {}), dict) else {}
+        by_status[status] = by_status.get(status, 0) + 1
+        by_action[action] = by_action.get(action, 0) + 1
+        if approval_is_high_risk(approval):
+            high_risk_actions.add(action)
+            if status == "pending":
+                pending_high_risk_actions.add(action)
+        if safety.get("dry_run"):
+            dry_run_resolved += 1
+        if safety.get("external_send_executed"):
+            external_send_executed += 1
+        if action in {"external_send", "telegram_send", "openclaw_send"} and not safety.get("external_send_executed"):
+            real_execution_blockers["external_send"] = real_execution_blockers.get("external_send", 0) + 1
+    return {
+        "total": len(approvals),
+        "by_status": by_status,
+        "by_action": by_action,
+        "high_risk_actions": sorted(high_risk_actions),
+        "pending_high_risk_actions": sorted(pending_high_risk_actions),
+        "dry_run_resolved": dry_run_resolved,
+        "external_send_executed": external_send_executed,
+        "real_external_send_requires_owner_approval": True,
+        "real_execution_blockers": real_execution_blockers,
+        "summary": "Real external delivery is blocked until owner approval and an explicit delivery worker execution.",
+    }
+
+
 def write_approval_state(approval: dict) -> str:
     status = approval["status"]
     for existing_status in APPROVAL_STATUSES:
@@ -7664,7 +7726,7 @@ def cmd_approval_list(args: argparse.Namespace) -> int:
     where = "WHERE " + " AND ".join(clauses) if clauses else ""
     params.append(args.limit)
     approvals = [normalize_approval(r) for r in conn.execute(f"SELECT * FROM approvals {where} ORDER BY updated_at DESC LIMIT ?", tuple(params)).fetchall()]
-    emit({"ok": True, "approvals": approvals})
+    emit({"ok": True, "approvals": approvals, "approval_control_summary": approval_control_summary(approvals)})
     return 0
 
 
