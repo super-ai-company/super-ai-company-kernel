@@ -1396,6 +1396,13 @@
       word-break: break-word;
     }
 
+    .details-render-target {
+      display: block;
+      white-space: normal;
+      font-family: inherit;
+      color: var(--text-primary);
+    }
+
     .lock-item {
       background: rgba(255, 255, 255, 0.015);
       border: 1px solid var(--border-color);
@@ -2708,7 +2715,7 @@
         <div id="recruiter-drawer" class="recruiter-drawer">
           <div class="drawer-header">
             <h3 data-i18n="recruiter_portal_title"><i class="fa-solid fa-flask-vial"></i> AI Recruiter Portal</h3>
-            <button class="close-btn" onclick="closeRecruiterDrawer()">&times;</button>
+            <button type="button" class="close-btn" data-testid="recruiter-drawer-close" aria-label="Close recruiter drawer" onclick="closeRecruiterDrawer()">&times;</button>
           </div>
           <div class="drawer-body">
             <div class="form-group">
@@ -3089,14 +3096,14 @@
 </div>
 
 <!-- Modal for details -->
-<div id="details-modal" class="modal" onclick="if(event.target===this) closeModal()">
+<div id="details-modal" class="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title" onclick="if(event.target===this) closeModal()">
   <div class="modal-content detail-modal-content">
     <div class="modal-header">
       <h3 id="modal-title">Details Information</h3>
-      <button class="close-btn" onclick="closeModal()">&times;</button>
+      <button type="button" class="close-btn" data-testid="details-modal-close" aria-label="Close task detail modal" onclick="closeModal()">&times;</button>
     </div>
     <div class="modal-body" id="modal-body">
-      <pre><code id="modal-code"></code></pre>
+      <div id="modal-code" class="details-render-target"></div>
     </div>
   </div>
 </div>
@@ -3106,7 +3113,7 @@
   <div class="modal-content" style="max-width: 500px; border: 1px solid rgba(239, 68, 68, 0.3);">
     <div class="modal-header" style="border-bottom: 1px solid rgba(239, 68, 68, 0.2);">
       <h3 id="fire-modal-title" style="color: #f87171;" data-i18n="fire_title"><i class="fa-solid fa-triangle-exclamation"></i> Fire AI Employee Warning</h3>
-      <button class="close-btn" onclick="closeFireEmployeeModal()">&times;</button>
+      <button type="button" class="close-btn" data-testid="fire-employee-modal-close" aria-label="Close fire employee modal" onclick="closeFireEmployeeModal()">&times;</button>
     </div>
     <div class="modal-body" style="color: var(--text-primary); font-size: 13px; display: flex; flex-direction: column; gap: 15px;">
       <div style="background: rgba(239, 68, 68, 0.1); border: 1px solid rgba(239, 68, 68, 0.2); padding: 12px; border-radius: 8px; color: #f87171;">
@@ -3162,7 +3169,7 @@
   <div class="modal-content" style="max-width: 500px; border: 1px solid rgba(129, 140, 248, 0.25);">
     <div class="modal-header" style="border-bottom: 1px solid rgba(255, 255, 255, 0.05);">
       <h3 id="edit-modal-title" style="font-family: 'Outfit', sans-serif;"><i class="fa-solid fa-user-gear"></i> Edit AI Employee Profile</h3>
-      <button class="close-btn" onclick="closeEditEmployeeModal()">&times;</button>
+      <button type="button" class="close-btn" data-testid="edit-employee-modal-close" aria-label="Close edit employee modal" onclick="closeEditEmployeeModal()">&times;</button>
     </div>
     <div class="modal-body" style="color: var(--text-primary); font-size: 13px; display: flex; flex-direction: column; gap: 15px; font-family: 'Inter', sans-serif; background: #0d111d;">
       <input type="hidden" id="edit-employee-id">
@@ -3216,7 +3223,7 @@
   <div class="modal-content" style="max-width: 550px;">
     <div class="modal-header">
       <h3 id="new-conv-modal-title" style="font-family: 'Outfit', sans-serif;"><i class="fa-solid fa-comments"></i> Start New Conversation</h3>
-      <button class="close-btn" onclick="closeNewConversationModal()">&times;</button>
+      <button type="button" class="close-btn" data-testid="new-conversation-modal-close" aria-label="Close new conversation modal" onclick="closeNewConversationModal()">&times;</button>
     </div>
     <div class="modal-body" style="color: var(--text-primary); font-size: 13px; display: flex; flex-direction: column; gap: 15px; font-family: 'Inter', sans-serif; background: #0d111d; padding: 20px 24px;">
       
@@ -3253,7 +3260,7 @@
   <div class="modal-content" style="max-width: 500px;">
     <div class="modal-header">
       <h3 id="kanban-trans-title" style="font-family: 'Outfit', sans-serif;"><i class="fa-solid fa-arrows-spin"></i> Update Task Status</h3>
-      <button class="close-btn" onclick="closeKanbanTransitionModal()">&times;</button>
+      <button type="button" class="close-btn" data-testid="kanban-transition-modal-close" aria-label="Close kanban transition modal" onclick="closeKanbanTransitionModal()">&times;</button>
     </div>
     <div class="modal-body" style="color: var(--text-primary); font-size: 13px; display: flex; flex-direction: column; gap: 15px; font-family: 'Inter', sans-serif; background: #0d111d; padding: 20px 24px;">
       <input type="hidden" id="trans-task-id">
@@ -4925,17 +4932,17 @@
       return;
     }
     
-    container.innerHTML = hiddenChatNotice(filtered.hiddenCount) + displayMessages.map((message) => {
+    container.innerHTML = hiddenChatNotice(filtered.hiddenCount) + displayMessages.map((message, index) => {
       // Inline System Event Cards inside conversations
       if (message.source_agent === 'system' || message.source_agent === 'SYSTEM') {
-        return `<div class="chat-system-log">${escapeHtml(message.body)}</div>`;
+        return `<div class="chat-system-log" data-message-id="${escapeHtml(message.id || message.message_id || `system-${index}`)}" data-chat-classification="system">${escapeHtml(message.body)}</div>`;
       }
       
       const isOwner = message.source_agent === HUMAN_OWNER_ID;
       const avatarChar = String(message.source_agent || '--').slice(0, 2).toUpperCase();
       const messageTask = extractTaskContext(message) || taskContext;
       return `
-        <div class="chat-bubble-container ${isOwner ? 'sent' : ''}">
+        <div class="chat-bubble-container ${isOwner ? 'sent' : ''}" data-message-id="${escapeHtml(message.id || message.message_id || `${conversation.id || 'conversation'}-${index}`)}" data-task-context="${escapeHtml(messageTask || '')}" data-chat-classification="${escapeHtml(message.chat_classification || (messageTask ? 'task_bound' : 'work_relevant'))}">
           <div class="chat-bubble-avatar">${escapeHtml(avatarChar)}</div>
           <div class="chat-bubble-wrapper">
             <div class="chat-bubble-sender">${escapeHtml(message.source_agent || '-')}${messageTask ? ` <span class="chat-task-context-pill">Task-bound ${escapeHtml(messageTask)}</span>` : ''}</div>
@@ -4977,14 +4984,14 @@
       container.innerHTML = `${hiddenChatNotice(filtered.hiddenCount)}<div class="chat-direct-empty">Only greeting/handshake/idle messages are hidden in the current direct-message feed.</div>`;
       return;
     }
-    container.innerHTML = hiddenChatNotice(filtered.hiddenCount) + displayMessages.slice().reverse().map(message => {
+    container.innerHTML = hiddenChatNotice(filtered.hiddenCount) + displayMessages.slice().reverse().map((message, index) => {
       const source = message.source_agent || '-';
       const target = message.target_agent || '-';
       const avatarChar = String(source || '--').slice(0, 2).toUpperCase();
       const taskContext = extractTaskContext(message);
       const classification = message.chat_classification || (message.low_signal ? 'handshake_or_idle' : (taskContext ? 'task_bound' : 'work_relevant'));
       return `
-        <div class="chat-bubble-container">
+        <div class="chat-bubble-container" data-message-id="${escapeHtml(message.id || message.message_id || `direct-${index}`)}" data-task-context="${escapeHtml(taskContext || '')}" data-chat-classification="${escapeHtml(classification)}">
           <div class="chat-bubble-avatar">${escapeHtml(avatarChar)}</div>
           <div class="chat-bubble-wrapper">
             <div class="chat-bubble-sender">${escapeHtml(source)} → ${escapeHtml(target)} <span class="direct-message-pill">direct</span><span class="chat-task-context-pill">${escapeHtml(classification)}</span>${taskContext ? ` <span class="chat-task-context-pill">Task-bound ${escapeHtml(taskContext)}</span>` : ''}</div>
