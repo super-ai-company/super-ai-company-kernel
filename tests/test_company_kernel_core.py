@@ -3244,6 +3244,17 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertIn("event.stopPropagation()", html)
         self.assertNotIn("Promise.all([\n        companyApiGet('/v1/health')", html)
 
+    def test_dashboard_owner_attention_actions_render_safety_metadata(self) -> None:
+        template = Path(__file__).resolve().parents[1] / "dashboard_templates" / "gemini_dashboard.html"
+        html = template.read_text(encoding="utf-8")
+        self.assertIn("data-method=\"${escapeHtml(action.method || 'GET')}\"", html)
+        self.assertIn("data-requires-owner-approval=\"${action.requires_owner_approval ? 'true' : 'false'}\"", html)
+        self.assertIn("data-dry-run-default=\"${action.dry_run_default === false ? 'false' : 'true'}\"", html)
+        self.assertIn("data-dangerous=\"${action.dangerous ? 'true' : 'false'}\"", html)
+        self.assertIn("action.requires_owner_approval ? 'owner approval' : ''", html)
+        self.assertIn("action.dry_run_default === false ? 'live action' : 'dry-run default'", html)
+        self.assertIn("action.dangerous ? 'danger' : ''", html)
+
     def test_dashboard_renders_task_evidence_blocker_and_approval_counts(self) -> None:
         code, submitted = run_cli("task", "submit", "--from", "ops", "--to", "maker", "--task-id", "task-dashboard-blocked", "--title", "blocked task")
         self.assertEqual(code, 0, submitted)
