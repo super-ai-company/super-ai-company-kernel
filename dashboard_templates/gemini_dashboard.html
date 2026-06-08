@@ -5088,6 +5088,59 @@
   
   bindChatControlButtons();
 
+  let generatedRecruitData = null;
+  let selectedFireEmployee = null;
+
+  window.openRecruiterDrawer = function() {
+    const drawer = document.getElementById('recruiter-drawer');
+    if (drawer) drawer.classList.add('open');
+  };
+
+  window.closeRecruiterDrawer = function() {
+    const drawer = document.getElementById('recruiter-drawer');
+    if (drawer) drawer.classList.remove('open');
+  };
+
+  window.generateAgentSpecs = function() {
+    const id = (document.getElementById('recruit-id')?.value || '').trim();
+    const desc = (document.getElementById('recruit-desc')?.value || '').trim();
+    const runtime = document.getElementById('recruit-engine')?.value || 'local';
+    const sandbox = document.getElementById('recruit-sandbox')?.value || 'none';
+    if (!id) {
+      companyApiLog('ERROR', 'Employee ID is required before generating specs.', 'error');
+      return;
+    }
+    const role = desc ? desc.split(/[.;\n]/)[0].slice(0, 80) : `${runtime} employee`;
+    const skills = [runtime, sandbox, 'managed-task', 'evidence-required'].filter(Boolean);
+    generatedRecruitData = {
+      id,
+      name: id.replace(/[-_]+/g, ' ').replace(/\b\w/g, ch => ch.toUpperCase()),
+      role,
+      runtime,
+      workspace: `workspace/${id}`,
+      skills: skills.join(','),
+      tools: runtime,
+      task_types: 'managed-task,review,progress-report',
+      sandbox,
+      permissions: {
+        can_submit_tasks: true,
+        can_claim_tasks: true,
+        can_modify_kernel: false,
+        requires_approval_for: ['external_send', 'rule_change', 'hard_delete']
+      },
+      description: desc || 'Generated locally from dashboard recruiter form.'
+    };
+    const loader = document.getElementById('recruiter-loader');
+    const result = document.getElementById('recruiter-result');
+    const pills = document.getElementById('synthesized-skills-pills');
+    const code = document.getElementById('synthesized-json-code');
+    if (loader) loader.style.display = 'none';
+    if (result) result.style.display = 'block';
+    if (pills) pills.innerHTML = skills.map(skill => `<span class="capability-tag">${escapeHtml(skill)}</span>`).join(' ');
+    if (code) code.innerText = JSON.stringify(generatedRecruitData, null, 2);
+    companyApiLog('SYSTEM', `Generated candidate employee spec for ${id}; approve to onboard through Kernel API.`, 'success');
+  };
+
   async function realOnboardGeneratedEmployee() {
     if (!generatedRecruitData) return;
     printTerminalLine({tag: 'SYSTEM', text: `Calling Company Kernel API to onboard '${generatedRecruitData.id}'...`, type: 'normal'});
@@ -5110,6 +5163,11 @@
       printTerminalLine({tag: 'ERROR', text: `Onboard failed: ${err.message}`, type: 'error'});
     }
   }
+
+  window.confirmAgentOnboarding = async function() {
+    await realOnboardGeneratedEmployee();
+    closeRecruiterDrawer();
+  };
 
   async function realDirectEmployeeMessage(id, source, body) {
     companyApiLog('SYSTEM', `Calling Company Kernel API direct message '${source}' -> '${id}'...`, 'normal');
@@ -5187,13 +5245,51 @@
   async function realOffboardEmployee(id, hardDelete) {
     printTerminalLine({tag: 'SYSTEM', text: `Calling Company Kernel API to offboard '${id}'...`, type: 'normal'});
     try {
-      await companyApiRequest(`/v1/employees/${encodeURIComponent(id)}`, {hard_delete: !!hardDelete}, 'DELETE');
+      await companyApiPost(`/v1/employees/${encodeURIComponent(id)}/offboard`, {hard_delete: !!hardDelete, dry_run: false});
       printTerminalLine({tag: 'SYSTEM', text: `Offboarded '${id}'. Reloading live dashboard...`, type: 'success'});
       setTimeout(() => location.reload(), 800);
     } catch (err) {
       printTerminalLine({tag: 'ERROR', text: `Offboard failed: ${err.message}`, type: 'error'});
     }
   }
+
+  window.openFireEmployeeModal = function(employeeId, runtime, workspace) {
+    selectedFireEmployee = {employeeId, runtime, workspace};
+    const title = document.getElementById('fire-modal-title');
+    const input = document.getElementById('fire-confirm-id-input');
+    const list = document.getElementById('fire-files-list');
+    const soft = document.getElementById('delete-mode-soft');
+    const button = document.getElementById('fire-confirm-action-btn');
+    if (title) title.innerHTML = `<i class="fa-solid fa-triangle-exclamation"></i> Fire AI Employee: ${escapeHtml(employeeId)}`;
+    if (input) input.value = '';
+    if (soft) soft.checked = true;
+    if (button) button.disabled = false;
+    if (list) list.innerHTML = `<li>${escapeHtml(workspace || 'workspace not recorded')}</li><li>runtime=${escapeHtml(runtime || '-')}</li>`;
+    toggleDeleteMode('soft');
+    const modal = document.getElementById('fire-employee-modal');
+    if (modal) modal.style.display = 'flex';
+  };
+
+  window.closeFireEmployeeModal = function() {
+    selectedFireEmployee = null;
+    const modal = document.getElementById('fire-employee-modal');
+    if (modal) modal.style.display = 'none';
+  };
+
+  window.executeEmployeeOffboard = async function() {
+    const employeeId = selectedFireEmployee && selectedFireEmployee.employeeId;
+    if (!employeeId) return;
+    const hard = !!document.getElementById('delete-mode-hard')?.checked;
+    if (hard) {
+      const typed = (document.getElementById('fire-confirm-id-input')?.value || '').trim();
+      if (typed !== employeeId) {
+        companyApiLog('ERROR', `Hard delete requires typing exact employee id: ${employeeId}`, 'error');
+        return;
+      }
+    }
+    closeFireEmployeeModal();
+    await realOffboardEmployee(employeeId, hard);
+  };
 
   function installNotificationSettingsPanel() {
     if (document.getElementById('notification-settings-panel')) return;

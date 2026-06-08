@@ -3414,6 +3414,24 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertIn("modal-content detail-modal-content", html)
         self.assertIn("id=\"modal-body\"", html)
 
+    def test_real_dashboard_template_defines_visible_employee_actions(self) -> None:
+        template = Path(__file__).resolve().parents[1] / "dashboard_templates" / "gemini_dashboard.html"
+        html = template.read_text(encoding="utf-8")
+        for snippet in [
+            "window.openRecruiterDrawer = function()",
+            "window.closeRecruiterDrawer = function()",
+            "window.generateAgentSpecs = function()",
+            "window.confirmAgentOnboarding = async function()",
+            "window.openFireEmployeeModal = function(employeeId, runtime, workspace)",
+            "window.closeFireEmployeeModal = function()",
+            "window.executeEmployeeOffboard = async function()",
+            "/v1/employees/onboard",
+            "/v1/employees/${encodeURIComponent(id)}/offboard",
+            "dry_run: false",
+            "hard_delete: !!hardDelete",
+        ]:
+            self.assertIn(snippet, html)
+
     def test_dashboard_versioned_template_initializes_chat_state(self) -> None:
         template = Path(__file__).resolve().parents[1] / "dashboard_templates" / "gemini_dashboard.html"
         html = template.read_text(encoding="utf-8")
