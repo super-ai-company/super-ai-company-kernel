@@ -3626,7 +3626,6 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertIn("'task_delegations'", html)
         self.assertIn("if (!Array.isArray(window.summaryData[key])) window.summaryData[key] = [];", html)
         self.assertIn("window.summaryData.counts = window.summaryData.counts || {};", html)
-        self.assertIn("Optional API ${path} failed", html)
         self.assertIn("const tasks = await companyApiGetOptional('/v1/tasks?limit=50', {tasks: currentSummaryFallback('tasks', [])});", html)
         self.assertIn("const recentDirect = await companyApiGetOptional('/v1/messages/recent-direct?limit=20', {direct_messages_recent: currentSummaryFallback('direct_messages_recent', [])});", html)
         self.assertIn("const adapterRuns = await companyApiGetOptional('/v1/adapter-runs?limit=20', {adapter_runs: currentSummaryFallback('adapter_runs', [])});", html)
@@ -3638,6 +3637,9 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertIn("const workspacePrune = await companyApiGetOptional('/v1/workspaces/prune?dry_run=true&older_than_days=30&limit=50', currentSummaryFallback('workspace_prune_preview', {}));", html)
         self.assertIn("const telemetry = await companyApiGetOptional('/v1/telemetry/traces?limit=20', {traces: currentSummaryFallback('traces', [])});", html)
         self.assertIn("const openclawInventory = await companyApiGetOptional('/v1/openclaw/runtime-inventory', currentSummaryFallback('openclaw_runtime_inventory', {}));", html)
+        self.assertIn("window.dashboardOptionalApiWarnings = window.dashboardOptionalApiWarnings || [];", html)
+        self.assertIn("Live refresh partial:", html)
+        self.assertNotIn("Optional API ${path} failed: ${err.message}; continuing refresh.", html)
 
     def test_real_dashboard_template_task_detail_modal_is_closeable(self) -> None:
         template = Path(__file__).resolve().parents[1] / "dashboard_templates" / "gemini_dashboard.html"

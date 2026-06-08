@@ -3499,7 +3499,8 @@
     try {
       return await companyApiGet(path);
     } catch (err) {
-      companyApiLog('ERROR', `Optional API ${path} failed: ${err.message}; continuing refresh.`, 'error');
+      window.dashboardOptionalApiWarnings = window.dashboardOptionalApiWarnings || [];
+      window.dashboardOptionalApiWarnings.push({path, message: err.message, at: new Date().toISOString()});
       return fallback || {};
     }
   }
@@ -3596,6 +3597,7 @@
       return false;
     }
     liveRefreshInFlight = true;
+    window.dashboardOptionalApiWarnings = [];
     try {
       const health = await companyApiGetOptional('/v1/health', currentSummaryFallback('runtime_health', {}));
       const cockpit = await companyApiGetOptional('/v1/dashboard/cockpit', currentSummaryFallback('cockpit', {}));
@@ -3641,6 +3643,11 @@
       if (typeof window.populateTasks === 'function') window.populateTasks();
       if (typeof window.populateEmployees === 'function') window.populateEmployees(window.summaryData);
       populateKanban(window.summaryData);
+      const optionalWarnings = window.dashboardOptionalApiWarnings || [];
+      if (optionalWarnings.length) {
+        const warningList = optionalWarnings.slice(0, 4).map(item => item.path).join(', ');
+        companyApiLog('SYSTEM', `Live refresh partial: ${optionalWarnings.length} optional API fallback(s): ${warningList}`, 'warn');
+      }
       companyApiLog('SYSTEM', `Live refresh ok: tasks=${taskRows.length} stalled=${stalledTasks.length}`, 'success');
       return true;
     } catch (err) {
@@ -7598,7 +7605,7 @@
         setSseStatus('connected', 'SSE heartbeat · 2s stream alive');
       });
       eventStream.onerror = () => {
-        companyApiLog('ERROR', 'SSE stream disconnected; falling back to 10s REST polling.', 'error');
+        companyApiLog('SYSTEM', 'SSE stream disconnected; falling back to 10s REST polling.', 'warn');
         stopEventStream();
         setSseStatus('fallback', 'SSE disconnected · REST polling 10s');
         if (!refreshInterval) {
@@ -7607,7 +7614,7 @@
       };
       return true;
     } catch (err) {
-      companyApiLog('ERROR', `SSE setup failed: ${err.message}; using REST polling fallback.`, 'error');
+      companyApiLog('SYSTEM', `SSE setup failed: ${err.message}; using REST polling fallback.`, 'warn');
       stopEventStream();
       setSseStatus('fallback', 'SSE setup failed · REST polling 10s');
       return false;
