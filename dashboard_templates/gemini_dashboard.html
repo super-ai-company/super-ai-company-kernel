@@ -3574,7 +3574,14 @@
     const level = String(employee.readiness_level || employee.status || 'unknown');
     const safeLevel = level.replace(/[^a-zA-Z0-9_-]/g, '-');
     const reason = employee.readiness_reason || employee.kernel_state || '';
-    return `<span class="readiness-badge readiness-${escapeHtml(safeLevel)}" title="${escapeHtml(reason)}"><i class="fa-solid fa-id-badge"></i>${escapeHtml(level)}</span>`;
+    const label = readinessBadgeLabel(level, !!employee.schedulable);
+    return `<span class="readiness-badge readiness-${escapeHtml(safeLevel)}" title="${escapeHtml(reason)}"><i class="fa-solid fa-id-badge"></i>${escapeHtml(level)} · ${escapeHtml(label)} · reason=${escapeHtml(shortText(reason, 90))}</span>`;
+  }
+
+  function readinessBadgeLabel(level, schedulable) {
+    if (schedulable || level === 'active_ready') return 'Ready to schedule';
+    if (['active-limited', 'online_only', 'candidate_only'].includes(level)) return 'Limited / review';
+    return 'Not schedulable';
   }
 
   function sandboxProfileChip(employee) {
