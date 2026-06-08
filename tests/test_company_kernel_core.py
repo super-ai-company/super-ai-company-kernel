@@ -2520,17 +2520,17 @@ class CompanyKernelCoreTest(unittest.TestCase):
 
         self.assertIn("direct_messages_recent", summary)
         self.assertEqual(1, len(summary["direct_messages_recent"]))
-        self.assertEqual(
-            {
-                "id": "msg-dashboard-direct-001",
-                "source_agent": "main",
-                "target_agent": "worker-x",
-                "body": "dashboard direct ping",
-                "evidence_path": "",
-                "created_at": "2026-06-04T22:45:00+07:00",
-            },
-            summary["direct_messages_recent"][0],
-        )
+        recent = summary["direct_messages_recent"][0]
+        self.assertEqual("msg-dashboard-direct-001", recent["id"])
+        self.assertEqual("main", recent["source_agent"])
+        self.assertEqual("worker-x", recent["target_agent"])
+        self.assertEqual("dashboard direct ping", recent["body"])
+        self.assertEqual("", recent["evidence_path"])
+        self.assertEqual("2026-06-04T22:45:00+07:00", recent["created_at"])
+        self.assertEqual("", recent["task_context"])
+        self.assertFalse(recent["task_bound"])
+        self.assertFalse(recent["low_signal"])
+        self.assertEqual("work_relevant", recent["chat_classification"])
         status, api_payload = api_gateway.route_get("/v1/messages/recent-direct", {"limit": ["5"]})
         self.assertEqual(200, int(status))
         self.assertEqual(summary["direct_messages_recent"], api_payload["direct_messages_recent"])
@@ -6022,13 +6022,23 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertIn("processed_at", events["events"][0])
 
     def test_api_gateway_exposes_communication_observability_summary(self) -> None:
-        code, sent_a = run_cli("message", "send", "--from", "openclaw-main", "--to", "codex", "--body", "请确认 adapter-run summary")
+        code, handshake = run_cli("message", "send", "--from", "openclaw-main", "--to", "codex", "--body", "handshake")
+        self.assertEqual(code, 0, handshake)
+        code, sent_a = run_cli("message", "send", "--from", "openclaw-main", "--to", "codex", "--body", "请确认 task-api-observability progress evidence")
         self.assertEqual(code, 0, sent_a)
         code, sent_b = run_cli("message", "send", "--from", "codex", "--to", "openclaw-main", "--body", "已同步 external mirror")
         self.assertEqual(code, 0, sent_b)
-        status, direct = api_gateway.route_get("/v1/messages/recent-direct", {"limit": ["1"]})
+        status, direct = api_gateway.route_get("/v1/messages/recent-direct", {"limit": ["3"]})
         self.assertEqual(200, status, direct)
-        self.assertEqual(1, len(direct["direct_messages_recent"]))
+        self.assertEqual(3, len(direct["direct_messages_recent"]))
+        task_message = next(item for item in direct["direct_messages_recent"] if "task-api-observability" in item["body"])
+        self.assertEqual("task-api-observability", task_message["task_context"])
+        self.assertTrue(task_message["task_bound"])
+        self.assertFalse(task_message["low_signal"])
+        handshake_message = next(item for item in direct["direct_messages_recent"] if item["body"] == "handshake")
+        self.assertFalse(handshake_message["task_bound"])
+        self.assertTrue(handshake_message["low_signal"])
+        self.assertEqual("handshake_or_idle", handshake_message["chat_classification"])
 
         imported_at = companyctl.now()
         status, imported = api_gateway.route_post(
@@ -6097,8 +6107,8 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertTrue(payload["ok"])
         direct_bodies = [item["body"] for item in payload["direct_messages"]["items"]]
         self.assertIn("已同步 external mirror", direct_bodies)
-        self.assertIn("请确认 adapter-run summary", direct_bodies)
-        self.assertEqual(2, payload["direct_messages"]["counts"]["total"])
+        self.assertIn("请确认 task-api-observability progress evidence", direct_bodies)
+        self.assertGreaterEqual(payload["direct_messages"]["counts"]["total"], 2)
         self.assertEqual(1, payload["external_mirror"]["counts"]["threads"])
         self.assertEqual("telegram", payload["external_mirror"]["threads"][0]["platform"])
         self.assertEqual("codex", payload["external_mirror"]["threads"][0]["bridge_agent"])
