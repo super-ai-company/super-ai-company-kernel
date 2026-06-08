@@ -4635,14 +4635,60 @@ def employee_file_bundle(conn: sqlite3.Connection, employee_id: str) -> dict:
         """,
         (employee_id, employee_id, employee_id),
     )
-    current_tasks = [dict(item) for item in task_rows if str(item.get("status", "")).lower() in {"submitted", "claimed", "running", "waiting_approval", "blocked", "stale", "retrying"}][:10]
-    recent_tasks = [dict(item) for item in task_rows[:10]]
     attempt_rows = [hydrate_execution_attempt(item) for item in rows(conn, "SELECT * FROM execution_attempts WHERE employee_id = ? ORDER BY started_at DESC LIMIT 50", (employee_id,))]
     runtime_sessions = list_runtime_sessions(conn, employee_id=employee_id, limit=50)
     tool_calls = list_tool_calls(conn, employee_id=employee_id, limit=100)
     budget_events = list_budget_events(conn, employee_id=employee_id, limit=100)
     employee_budget_summary = budget_summary(conn, employee_id=employee_id)
     evidence_records = [item for item in audit_evidence_records(conn, limit=200) if item.get("employee_id") == employee_id][:50]
+    task_rollups: dict[str, dict] = {}
+    for task in task_rows:
+        task_id = str(task.get("id") or "")
+        task_rollups[task_id] = {
+            "attempt_count": 0,
+            "latest_attempt_id": "",
+            "latest_attempt_status": "",
+            "runtime_session_count": 0,
+            "tool_call_count": 0,
+            "budget_event_count": 0,
+            "budget_total": 0.0,
+            "budget_currency": "",
+            "token_input": 0,
+            "token_output": 0,
+            "evidence_count": 0,
+        }
+    for attempt in attempt_rows:
+        task_id = str(attempt.get("task_id") or "")
+        if task_id in task_rollups:
+            task_rollups[task_id]["attempt_count"] += 1
+            if not task_rollups[task_id]["latest_attempt_id"]:
+                task_rollups[task_id]["latest_attempt_id"] = str(attempt.get("attempt_id") or "")
+                task_rollups[task_id]["latest_attempt_status"] = str(attempt.get("status") or "")
+    for session in runtime_sessions:
+        task_id = str(session.get("task_id") or "")
+        if task_id in task_rollups:
+            task_rollups[task_id]["runtime_session_count"] += 1
+    for tool_call in tool_calls:
+        task_id = str(tool_call.get("task_id") or "")
+        if task_id in task_rollups:
+            task_rollups[task_id]["tool_call_count"] += 1
+    for budget_event in budget_events:
+        task_id = str(budget_event.get("task_id") or "")
+        if task_id in task_rollups:
+            rollup = task_rollups[task_id]
+            rollup["budget_event_count"] += 1
+            rollup["budget_total"] = round(float(rollup["budget_total"]) + float(budget_event.get("amount") or 0), 10)
+            rollup["budget_currency"] = str(budget_event.get("currency") or rollup["budget_currency"] or "")
+            rollup["token_input"] += int(budget_event.get("token_input") or 0)
+            rollup["token_output"] += int(budget_event.get("token_output") or 0)
+    for evidence in evidence_records:
+        task_id = str(evidence.get("task_id") or "")
+        if task_id in task_rollups:
+            task_rollups[task_id]["evidence_count"] += 1
+
+    enriched_tasks = [{**dict(item), **task_rollups.get(str(item.get("id") or ""), {})} for item in task_rows]
+    current_tasks = [dict(item) for item in enriched_tasks if str(item.get("status", "")).lower() in {"submitted", "claimed", "running", "waiting_approval", "blocked", "stale", "retrying"}][:10]
+    recent_tasks = [dict(item) for item in enriched_tasks[:10]]
     return {
         "employee": profile,
         "profile": file_profile,
@@ -4653,7 +4699,7 @@ def employee_file_bundle(conn: sqlite3.Connection, employee_id: str) -> dict:
         "work_history": {
             "current_tasks": current_tasks,
             "recent_tasks": recent_tasks,
-            "tasks": [dict(item) for item in task_rows],
+            "tasks": enriched_tasks,
             "counts": {
                 "tasks": len(task_rows),
                 "current_tasks": len(current_tasks),
