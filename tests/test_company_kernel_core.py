@@ -1957,6 +1957,7 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertIn("cancelTaskAttempt(taskId, attemptId)", html)
         self.assertIn('data-ledger-action="task.correct"', html)
         self.assertIn('data-ledger-action="task.cancel"', html)
+        self.assertIn('data-ledger-action="task.probe"', html)
         self.assertIn('data-requires-owner-approval="true"', html)
         self.assertIn('data-dangerous="true"', html)
         self.assertIn("retryTask(taskId)", html)
