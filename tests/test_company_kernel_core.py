@@ -5536,6 +5536,8 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertIn("previous_attempt_id", html)
         self.assertIn("Sanitized Logs", html)
         self.assertIn("sanitizedLogsSummary", html)
+        self.assertIn("Log Policy", html)
+        self.assertIn("adapterRunLogPolicySummary", html)
         self.assertIn("readiness-badge", html)
 
     def test_agent_matrix_reports_employee_readiness_levels(self) -> None:

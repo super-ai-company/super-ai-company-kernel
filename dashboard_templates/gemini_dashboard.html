@@ -2953,6 +2953,7 @@
                   <th>Ack By</th>
                   <th>Ack Reason</th>
                   <th>Sanitized Log</th>
+                  <th>Log Policy</th>
                   <th>Created</th>
                 </tr>
               </thead>
@@ -3779,6 +3780,11 @@
       const sourceFields = Array.isArray(policy.source_fields) ? policy.source_fields.join(',') : '-';
       return `${formatDate(item.created_at || '') || '-'} · ${item.run_id || '-'} · ${item.agent_id || '-'} · ok=${item.ok ? 'yes' : 'no'} · raw_available=${item.raw_available ? 'yes' : 'no'} · policy=${policy.mode || 'sanitized_only'} · ${policy.summary || 'raw stdout/stderr hidden'} · source_fields=${sourceFields} · ${item.sanitized_log || ''}`;
     }).join('\n');
+  }
+
+  function adapterRunLogPolicySummary(run) {
+    const policy = (run && run.log_policy) || {};
+    return `${policy.mode || 'sanitized_only'} · ${policy.summary || 'raw stdout/stderr hidden'}`;
   }
 
   function latestAttemptDetail(attempts) {
@@ -5854,6 +5860,7 @@
           <td>${escapeHtml(run.acknowledged_by || '-')}</td>
           <td>${escapeHtml(run.acknowledgement_reason || '-')}</td>
           <td>${escapeHtml(shortText(run.sanitized_log || '-', 120))}</td>
+          <td>${escapeHtml(adapterRunLogPolicySummary(run))}</td>
           <td>${formatDate(run.created_at)}</td>
         </tr>
       `;
