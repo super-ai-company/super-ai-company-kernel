@@ -5439,6 +5439,11 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertIn("readiness_reason", html)
         self.assertIn("active_ready", html)
         self.assertIn("online_only", html)
+        self.assertIn("readinessBadgeLabel", html)
+        self.assertIn("Ready to schedule", html)
+        self.assertIn("Limited / review", html)
+        self.assertIn("Not schedulable", html)
+        self.assertIn("reason=${escapeHtml(shortText(reason, 90))}", html)
 
     def test_skill_registry_lists_packages_in_cli_api_and_dashboard(self) -> None:
         manifest_path = self.write_skill_manifest()
