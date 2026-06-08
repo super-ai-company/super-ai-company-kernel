@@ -2560,6 +2560,13 @@
           <div class="dashboard-layout">
             <div class="left-col">
               <h3 style="font-size:13px;color:var(--text-secondary);margin-bottom:10px;">Long-Running Attempts</h3>
+              <div class="cockpit-row" data-testid="stagnant-guidance-static">
+                <div>
+                  <strong>Progress stagnant is not timeout</strong>
+                  <span>员工仍在线，但 15 分钟没有新进度。可继续等待、发送探针、查看日志或请求 Hermes 纠偏。</span>
+                </div>
+                <div class="long-task-state progress_stagnant">stagnant</div>
+              </div>
               <div class="cockpit-list" id="cockpit-long-tasks">
                 <!-- Populated by JS -->
               </div>
@@ -2664,6 +2671,7 @@
           <h2><i class="fa-solid fa-clock-rotate-left"></i> Attempt History</h2>
           <p style="font-size: 12px; color: var(--text-secondary); margin-bottom: 12px;">
             Retry and reassign create new attempt_id records while preserving older attempts under the same trace_id.
+            Sanitized Logs only show cleaned attempt summaries, not raw stdout/stderr.
           </p>
           <div class="cockpit-list" id="attempt-history-container">
             <!-- Populated by JS -->
