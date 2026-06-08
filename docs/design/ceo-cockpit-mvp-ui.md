@@ -12,6 +12,17 @@ The CEO Cockpit must answer this in one screen:
 
 This is an AI employee operations cockpit, not a chat playground. The UI must use real Company Kernel API/database records. No mock data, no "online means active", no ACK-as-done, and no evidence-free completion.
 
+## 3-Day MVP Implementation Lock
+
+Build only the operational visibility layer needed for a local CEO dashboard:
+
+1. Budget Center MVP: show estimated task/employee/project cost from the internal ledger only.
+2. Tool Call automatic recording: show command/API/browser/file/model actions as ledger records, not chat claims.
+3. Runtime Session visualization: show live/stale/stopped execution sessions separately from employee identity.
+4. Employee work visibility: show what each employee is doing, which task/attempt/session it belongs to, which tools it used, what it cost, and what evidence it submitted.
+
+Do not include Marketplace, WorkGraph large canvas, Skill pricing, distributed renting, multi-tenant billing, payment, public node onboarding, or complex tenant/account management.
+
 ## Current API Contract
 
 Use these current or near-term APIs. If a field is missing, backend must add it before the UI claims support.
@@ -22,10 +33,10 @@ Use these current or near-term APIs. If a field is missing, backend must add it 
 | Employees | `GET /v1/employees`, `GET /v1/employees/{employee_id}` | Available; detail should include work history, sessions, tool calls, budget, evidence. |
 | Readiness matrix | `GET /v1/agent-matrix` | Available; use for readiness badge, not just heartbeat. |
 | Runtime sessions | `GET /v1/runtime-sessions?employee_id=&task_id=&trace_id=` | Available; add UI filters by employee/task. |
-| Tool calls | `GET /v1/tool-calls?employee_id=&task_id=&attempt_id=&session_id=` | `session_id` filter should be added if missing. |
+| Tool calls | `GET /v1/tool-calls?employee_id=&task_id=&attempt_id=&session_id=` | Available; session filtering is required for runtime-session drilldown. |
 | Budget | `GET /v1/budget-summary`, `GET /v1/budget-events` | Available; add soft/hard limit rollup from budget accounts. |
 | Evidence | `GET /v1/evidence`, `GET /v1/evidence/{evidence_id}/content` | Available; preview must be safe and path-whitelisted. |
-| Task detail | `GET /v1/tasks/{task_id}` | Available; must show attempts, progress, sessions, tools, budget, evidence. |
+| Task detail | `GET /v1/tasks/{task_id}` | Available; must show attempts, progress, sessions, tools, budget, evidence, and completion contract. |
 | Task control | `POST /v1/tasks/{task_id}/correct/cancel/retry/reassign` | Available; high-risk actions should route through approval if configured. |
 | Approvals | `GET /v1/approvals`, approve/deny endpoints | Available; keep inside cockpit/audit, not separate MVP product. |
 
@@ -134,6 +145,7 @@ API:
 Backend rollup needed:
 
 - Employee detail must return `work_history`, `runtime_sessions`, `tool_calls`, `budget_summary`, `budget_events`, and `evidence_records` so the card/detail does not infer from unrelated global data.
+- Employee card may show a compact subset, but the detail drawer must be backed by `GET /v1/employees/{employee_id}` rather than client-side guessing from global lists.
 
 ## 3. Running Task Cards
 
@@ -163,6 +175,7 @@ Abnormal state:
 - `failed`: red bar with failed attempt/error.
 - `cancelled`: grey disabled state; old attempt cannot submit done.
 - Done-like state without final evidence: red `completion invalid`.
+- `completion_contract.valid=false`: block accept/done actions and show the exact reason from `GET /v1/tasks/{task_id}`.
 
 Click actions:
 
@@ -229,6 +242,7 @@ Security:
 - Never show raw stdout/stderr by default.
 - Use sanitized summaries only.
 - Hide tokens, `.env`, `~/.ssh`, `api key`, absolute private paths.
+- If backend returns no `sanitized` flag, the frontend still treats raw output as unsafe and renders only summaries.
 
 ## 5. Budget Panel
 
@@ -255,6 +269,7 @@ Abnormal state:
 - over hard limit: red `budget locked` state.
 - missing currency or mixed currency: `mixed currency` warning.
 - task has model/tool activity but no budget event: yellow `cost missing` marker.
+- soft/hard limit exceeded: show `limit_status` from `GET /v1/budget-summary` and require owner approval before starting more paid work.
 
 Click actions:
 
@@ -334,6 +349,7 @@ Displayed sections:
 - Budget: total cost, tokens, runtime seconds, event list, budget limit warnings.
 - Timeline: task/event/attempt/session/tool/budget/artifact/handoff/evidence in time order.
 - Evidence: final evidence and safe preview link.
+- Completion contract: `valid`, `reason`, `final_evidence_count`, `safe_final_evidence_count`, and summary.
 - Approvals: pending or decided approvals.
 
 Empty state:
@@ -351,6 +367,7 @@ Abnormal state:
 - pending approval: sticky yellow action bar.
 - cancelled attempt: grey state; disable `accept done`.
 - done without final evidence: red `completion invalid` banner.
+- legacy `tasks.evidence_path` without final evidence table record: red `missing_final_evidence`; old path alone is not accepted as done.
 
 Click actions:
 
@@ -404,6 +421,14 @@ Day 3: make it verifiable on this Mac.
 - Sanitized marker: return `sanitized: true` for tool/timeline summaries that hide raw output or secrets.
 - Completion guard: task drawer must flag done-like task without final evidence.
 
+Current implementation status:
+
+- Employee detail rollup: implemented in `GET /v1/employees/{employee_id}`.
+- Budget limit rollup: implemented in `GET /v1/budget-summary` as `limit_status`.
+- Tool call `session_id` filter: implemented in `GET /v1/tool-calls`.
+- Completion contract: implemented in `GET /v1/tasks/{task_id}` as `completion_contract`.
+- Sanitized flag: still target-state; frontend must stay conservative until every backend producer marks records.
+
 ## Acceptance Commands
 
 ```bash
@@ -455,3 +480,26 @@ Round 2 passed the revised design as a focused 3-day MVP. Deferrals:
 - Full approval workflow can be delayed behind direct `cancel/retry/reassign/correct` controls in MVP, as long as dangerous real external sends remain approval-gated elsewhere.
 - Supervisor Signal can be basic/read-only first; core employee/task/tool/budget/evidence rendering has priority.
 - If backend does not yet return `sanitized: true`, frontend may still hide raw output and apply conservative client-side redaction, but backend sanitization remains the target.
+
+Round 3 reviewed the implementation lock. Required constraints:
+
+- Keep the MVP centered on Budget Center, Tool Calls, Runtime Sessions, and Evidence-backed employee work visibility.
+- Treat `GET /v1/employees/{employee_id}` as the required rollup source for employee detail.
+- Treat `GET /v1/tool-calls?session_id=...` as required for session drilldown.
+- Treat `completion_contract.valid=false` as a UI blocker for accepting done-like tasks.
+- Keep Marketplace, WorkGraph canvas, Skill pricing, distributed renting, and multi-tenant billing out of this 3-day scope.
+
+Round 4 passed the final 3-day MVP scope with these implementation risks:
+
+- Backend `sanitized: true` is not guaranteed on every producer yet, so frontend must keep raw output hidden and render conservative summaries.
+- REST polling 5-10 seconds is acceptable for MVP, but the page should avoid independently hammering all panels when one cockpit payload can supply rollups.
+- Evidence preview must keep using the safe content API and must never render unsafe paths or executable HTML/JS as trusted content.
+- Seven visible zones plus one task drawer can become visually noisy; MVP should prioritize dense operational cards/tables over extra decoration.
+
+Round 4 explicit non-goals:
+
+- No WorkGraph canvas, DAG, or SVG topology.
+- No Marketplace, Skill pricing, store, Stripe, wallet, invoices, or rental billing.
+- No distributed node renting or complex tenant/account management.
+- No WebSocket-first realtime or global free-chat playground.
+- No mock data in production dashboard views.

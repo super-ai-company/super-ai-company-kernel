@@ -4593,18 +4593,29 @@
     const progressState = sourceTask.progress_state || sourceAttempt.progress_state || '';
     const heartbeatState = sourceTask.heartbeat_state || sourceAttempt.heartbeat_state || '';
     const evidence = sourcePayload.evidence || {};
+    const completionContract = sourcePayload.completion_contract || {};
     const blocker = sourcePayload.blocker || sourceTask.blocker || sourceAttempt.error_message || '';
     let action = 'wait for progress';
     if (longTaskState === 'progress_stagnant' || progressState === 'stagnant') action = 'send probe, view sanitized logs, or request Hermes correction';
     if (longTaskState === 'correcting' || sourceAttempt.status === 'correcting') action = 'wait for correction acknowledgement or send another bounded correction';
     if (longTaskState === 'heartbeat_stale' || heartbeatState === 'stale') action = 'check employee heartbeat, then retry, reassign, or cancel';
     if (['blocked', 'failed', 'stale'].includes(longTaskState) || blocker) action = 'review blocker, then retry, reassign, or request owner approval';
-    if (['done', 'success', 'completed'].includes(longTaskState) || sourceTask.status === 'completed') action = evidence.allowed ? 'review final evidence and accept delivery' : 'block completion until final evidence is attached';
+    if (['done', 'success', 'completed'].includes(longTaskState) || sourceTask.status === 'completed') action = completionContract.valid === false ? 'block completion until final evidence is attached' : 'review final evidence and accept delivery';
     if (['cancelled', 'cancelling'].includes(longTaskState) || sourceAttempt.status === 'cancelled') action = 'do not accept late progress or late evidence from this attempt';
     return [
       `Recommended action: ${action}.`,
       `state=${longTaskState || '-'} · heartbeat=${heartbeatState || '-'} · progress=${progressState || '-'} · blocker=${blocker || '-'}`,
-      `Done is valid only with task_id/attempt_id bound final evidence. evidence_allowed=${String(!!evidence.allowed)}`
+      `Done is valid only with task_id/attempt_id bound final evidence. completion_valid=${String(completionContract.valid !== false)} · reason=${completionContract.reason || '-'} · evidence_allowed=${String(!!evidence.allowed)}`
+    ].join('\n');
+  }
+
+  function completionContractSummary(contract) {
+    const item = contract || {};
+    const status = item.valid === false ? 'invalid' : 'valid';
+    return [
+      `completion=${status} · reason=${item.reason || '-'}`,
+      `done_like=${String(!!item.done_like)} · final_evidence=${item.final_evidence_count || 0} · safe_final=${item.safe_final_evidence_count || 0}`,
+      item.summary || 'Done requires task_id/attempt_id-bound final evidence.'
     ].join('\n');
   }
 
@@ -5023,6 +5034,7 @@
       const toolCalls = payload.tool_calls || [];
       const budgetSummary = payload.budget_summary || {};
       const budgetEvents = payload.budget_events || [];
+      const completionContract = payload.completion_contract || {};
       const supervisorState = payload.supervisor_state || {};
       const correctionSummary = payload.correction_summary || {};
       const attemptHistory = payload.attempt_history || {};
@@ -5053,6 +5065,7 @@
         ['Tool Calls', toolCallsSummary(toolCalls)],
         ['Budget Summary', budgetSummaryDetail(budgetSummary)],
         ['Budget Events', budgetEventsSummary(budgetEvents)],
+        ['Completion Contract', completionContractSummary(completionContract)],
         ['Evidence Records Summary', evidenceRecordsSummary(evidenceRecords)],
         ['Sanitized Logs Summary', sanitizedLogsSummary(sanitizedLogs)],
         ['Heartbeat State', task.heartbeat_state || latestAttempt.heartbeat_state || '-'],

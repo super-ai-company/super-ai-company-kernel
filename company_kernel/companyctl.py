@@ -1930,6 +1930,35 @@ def task_evidence_records(conn: sqlite3.Connection, task_id: str) -> list[dict]:
     return records
 
 
+def task_completion_contract(task: dict, evidence_records: list[dict]) -> dict:
+    status = str(task.get("status") or "").lower()
+    done_like = status in {"completed", "done", "success"}
+    final_records = [record for record in evidence_records if bool(record.get("is_final"))]
+    safe_final_records = [record for record in final_records if bool((record.get("display") or {}).get("allowed"))]
+    legacy_evidence_path_present = bool(str(task.get("evidence_path") or "").strip())
+    if not done_like:
+        reason = "not_done"
+        valid = True
+        summary = "Task is not in a done-like state yet; final evidence is required before completion."
+    elif final_records:
+        reason = "final_evidence_present"
+        valid = True
+        summary = f"Task completion has {len(final_records)} task-bound final evidence record(s)."
+    else:
+        reason = "missing_final_evidence"
+        valid = False
+        summary = "Done-like task is invalid until task_id/attempt_id-bound final evidence is submitted."
+    return {
+        "done_like": done_like,
+        "valid": valid,
+        "reason": reason,
+        "final_evidence_count": len(final_records),
+        "safe_final_evidence_count": len(safe_final_records),
+        "legacy_evidence_path_present": legacy_evidence_path_present,
+        "summary": summary,
+    }
+
+
 def task_supervisor_state(attempts: list[dict]) -> tuple[dict, dict]:
     state = {
         "corrections_requested": 0,
@@ -7795,6 +7824,7 @@ def cmd_task_show(args: argparse.Namespace) -> int:
     attempts = task_attempts(conn, task_id)
     attempt_history = task_attempt_history(attempts)
     evidence_records = task_evidence_records(conn, task_id)
+    completion_contract = task_completion_contract(task_obj, evidence_records)
     runtime_sessions = list_runtime_sessions(conn, task_id=task_id, limit=50)
     tool_calls = list_tool_calls(conn, task_id=task_id, limit=100)
     budget_events = list_budget_events(conn, task_id=task_id, limit=100)
@@ -7843,6 +7873,7 @@ def cmd_task_show(args: argparse.Namespace) -> int:
             "metadata": metadata,
             "evidence": evidence,
             "evidence_records": evidence_records,
+            "completion_contract": completion_contract,
             "blocker": task_obj.get("blocker", ""),
             "parents": parents,
             "children": children,

@@ -5323,6 +5323,38 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual(["tool-task-detail-control-plane"], [item["tool_call_id"] for item in api_payload["tool_calls"]])
         self.assertEqual(0.25, api_payload["budget_summary"]["total_amount"])
 
+    def test_task_detail_marks_completed_task_without_final_evidence_invalid(self) -> None:
+        with sqlite3.connect(self.root / "company.sqlite") as conn:
+            conn.execute(
+                """
+                INSERT INTO tasks(id, source_agent, target_agent, title, description, priority, status, claimed_by, summary, evidence_path, blocker, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "task-completed-missing-final-evidence",
+                    "main",
+                    "codex",
+                    "Missing final evidence",
+                    "",
+                    "P1",
+                    "completed",
+                    "codex",
+                    "claimed done without final evidence",
+                    "",
+                    "",
+                    companyctl.now(),
+                    companyctl.now(),
+                ),
+            )
+            conn.commit()
+
+        status, shown = api_gateway.route_get("/v1/tasks/task-completed-missing-final-evidence", {})
+        self.assertEqual(HTTPStatus.OK, status, shown)
+        self.assertFalse(shown["completion_contract"]["valid"])
+        self.assertEqual("missing_final_evidence", shown["completion_contract"]["reason"])
+        self.assertEqual(0, shown["completion_contract"]["final_evidence_count"])
+        self.assertIn("final evidence", shown["completion_contract"]["summary"])
+
     def test_dashboard_task_detail_drawer_renders_control_plane_ledgers(self) -> None:
         template = Path(__file__).resolve().parents[1] / "dashboard_templates" / "gemini_dashboard.html"
         html = template.read_text(encoding="utf-8")
@@ -5331,15 +5363,18 @@ class CompanyKernelCoreTest(unittest.TestCase):
             "const toolCalls = payload.tool_calls || [];",
             "const budgetSummary = payload.budget_summary || {};",
             "const budgetEvents = payload.budget_events || [];",
+            "const completionContract = payload.completion_contract || {};",
             "['Runtime Sessions', runtimeSessionsSummary(runtimeSessions)]",
             "['Tool Calls', toolCallsSummary(toolCalls)]",
             "['Budget Summary', budgetSummaryDetail(budgetSummary)]",
             "['Budget Events', budgetEventsSummary(budgetEvents)]",
+            "['Completion Contract', completionContractSummary(completionContract)]",
             "function runtimeSessionsSummary",
             "function toolCallsSummary",
             "function budgetSummaryDetail",
             "budgetLimitStatusSummary",
             "function budgetEventsSummary",
+            "function completionContractSummary",
         ]:
             self.assertIn(snippet, html)
 
