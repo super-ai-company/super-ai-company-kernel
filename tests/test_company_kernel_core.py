@@ -2214,6 +2214,58 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertFalse(shown["evidence"]["absolute_path_exposed"])
         self.assertNotIn(str(self.root), json.dumps(shown["evidence"], ensure_ascii=False))
 
+    def test_cockpit_ignores_orphan_active_attempts_on_finished_tasks(self) -> None:
+        code, created = run_cli("employee", "create", "--id", "main", "--name", "main", "--role", "operator", "--runtime", "openclaw", "--workspace", str(self.root / "workspace" / "main"))
+        self.assertEqual(0, code, created)
+        code, created = run_cli("employee", "create", "--id", "skill-worker", "--name", "Skill Worker", "--role", "skill-worker", "--runtime", "skill", "--workspace", str(self.root / "workspace" / "skill-worker"))
+        self.assertEqual(0, code, created)
+        conn = companyctl.connect()
+        try:
+            conn.execute("UPDATE employees SET status = 'active', updated_at = ? WHERE id = ?", (companyctl.now(), "skill-worker"))
+            conn.commit()
+        finally:
+            conn.close()
+        code, heartbeat = run_cli("heartbeat", "--agent", "skill-worker")
+        self.assertEqual(0, code, heartbeat)
+        task_id = "task-finished-orphan-attempt"
+        code, submitted = run_cli("task", "submit", "--from", "main", "--to", "skill-worker", "--task-id", task_id, "--title", "Finished task with old attempt")
+        self.assertEqual(0, code, submitted)
+        code, run = run_cli("task", "run", "--task-id", task_id, "--agent", "skill-worker", "--by", "main", "--adapter-type", "retry")
+        self.assertEqual(0, code, run)
+        conn = companyctl.connect()
+        try:
+            workspace = companyctl.ensure_task_workspace(conn, task_id)
+            final_path = Path(workspace["path"]) / "final" / "result.md"
+            final_path.write_text("finished task evidence\n", encoding="utf-8")
+            artifact = companyctl.register_artifact_internal(
+                conn,
+                task_id=task_id,
+                employee_id="skill-worker",
+                artifact_type="text",
+                path=str(final_path),
+                name="result.md",
+                stage="final",
+                summary="finished task evidence",
+                is_final=True,
+            )
+            companyctl.promote_artifact_to_evidence_internal(
+                conn,
+                artifact_id=artifact["artifact"]["artifact_id"],
+                by="skill-worker",
+                summary="finished task evidence",
+            )
+            conn.execute("UPDATE tasks SET status = 'completed', claimed_by = 'skill-worker', summary = 'done', updated_at = ? WHERE id = ?", (companyctl.now(), task_id))
+            conn.commit()
+        finally:
+            conn.close()
+
+        status, cockpit = api_gateway.route_get("/v1/dashboard/cockpit", {})
+        self.assertEqual(200, status, cockpit)
+        self.assertEqual(0, cockpit["counts"]["active_attempts"])
+        employee = next(item for item in cockpit["employees"] if item["id"] == "skill-worker")
+        self.assertEqual("active", employee["status"])
+        self.assertEqual({}, employee["current_attempt"])
+
     def test_api_gateway_lists_sanitized_evidence_records(self) -> None:
         code, created = run_cli("employee", "create", "--id", "main", "--name", "main", "--role", "operator", "--runtime", "openclaw", "--workspace", str(self.root / "workspace" / "main"))
         self.assertEqual(0, code, created)
@@ -5649,6 +5701,7 @@ class CompanyKernelCoreTest(unittest.TestCase):
             code = company_dashboard.main(["--output", str(output), "--variant", "advanced"])
         self.assertEqual(0, code)
         html = output.read_text(encoding="utf-8")
+        self.assertIn('<body class="dashboard-layout-fix">', html)
         self.assertIn("Tasks & Workflows", html)
         self.assertIn("openTaskDetailDrawer", html)
         self.assertIn("task-dashboard-controls", html)
@@ -5657,6 +5710,10 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertIn("cancelTaskAttempt", html)
         self.assertIn("retryTask", html)
         self.assertIn("reassignTask", html)
+        self.assertIn("const isDone = ['completed', 'done', 'success'].includes(taskStatus)", html)
+        self.assertIn("if (isRunning && !isDone && !isCancelled)", html)
+        self.assertIn("if (isRecoverable && !isDone)", html)
+        self.assertIn("handleOwnerAttentionAction('${escapeHtml(taskId)}', '${escapeHtml(attemptId)}', '', 'review_evidence')", html)
         self.assertIn("viewTaskTrace('", html)
         self.assertIn("/v1/tasks/${encodeURIComponent(taskId)}/correct", html)
         self.assertIn("/v1/tasks/${encodeURIComponent(taskId)}/cancel", html)
