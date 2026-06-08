@@ -1898,6 +1898,9 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertIn("long_task_state || task.status", html)
         self.assertIn("handleOwnerAttentionAction", html)
         self.assertIn("data-action-id", html)
+        self.assertIn("item.correction", html)
+        self.assertIn("needs_ack", html)
+        self.assertIn("last_message", html)
         self.assertIn("approval_action", html)
         self.assertIn("risk=${item.risk}", html)
         self.assertIn("correctTaskAttempt(taskId, attemptId)", html)
@@ -1972,6 +1975,8 @@ class CompanyKernelCoreTest(unittest.TestCase):
         code, run = run_cli("task", "run", "--task-id", "task-cockpit-long", "--agent", "codex-cockpit", "--by", "main", "--stale-after-seconds", "900")
         self.assertEqual(0, code, run)
         attempt_id = run["attempt"]["attempt_id"]
+        code, corrected = run_cli("task", "correct", "--task-id", "task-cockpit-long", "--attempt-id", attempt_id, "--by", "hermes", "--message", "请收口 evidence，不要继续扩散")
+        self.assertEqual(0, code, corrected)
         conn = companyctl.connect()
         try:
             current = datetime.now(timezone.utc).astimezone()
@@ -2002,9 +2007,12 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertIn("runtime_evidence", cockpit_employees["codex-cockpit"]["readiness_reason"])
         self.assertEqual("abnormal", cockpit_employees["agy-cockpit"]["status"])
         long_task = next(item for item in cockpit["long_tasks"] if item["task_id"] == "task-cockpit-long")
-        self.assertEqual("progress_stagnant", long_task["long_task_state"])
+        self.assertEqual("correcting", long_task["long_task_state"])
         self.assertEqual("fresh", long_task["heartbeat_state"])
         self.assertEqual("stagnant", long_task["progress_state"])
+        self.assertTrue(long_task["correction"]["needs_ack"])
+        self.assertEqual("hermes", long_task["correction"]["last_by"])
+        self.assertIn("请收口 evidence", long_task["correction"]["last_message"])
         self.assertTrue(long_task["evidence"]["allowed"])
         self.assertFalse(long_task["evidence"]["absolute_path_exposed"])
         self.assertIn("evidence/result.md", long_task["evidence"]["relative_path"])
@@ -2014,10 +2022,13 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertIn("evidence/result.md", recent_evidence["evidence"]["relative_path"])
         attention = next(item for item in cockpit["owner_attention"] if item["task_id"] == "task-cockpit-long" and item["kind"] == "stagnant_task")
         self.assertEqual("stagnant_task", attention["kind"])
-        self.assertEqual("progress_stagnant", attention["state"])
+        self.assertEqual("correcting", attention["state"])
         self.assertEqual("codex-cockpit", attention["target_agent"])
         self.assertEqual(attempt_id, attention["attempt_id"])
-        self.assertIn("15 分钟没有新进度", attention["message"])
+        self.assertTrue(attention["correction"]["needs_ack"])
+        self.assertEqual("hermes", attention["correction"]["last_by"])
+        self.assertIn("请收口 evidence", attention["correction"]["last_message"])
+        self.assertIn("Hermes 已发纠偏", attention["message"])
         self.assertEqual(
             ["send_correction", "view_logs", "wait", "cancel_attempt"],
             [action["id"] for action in attention["actions"]],

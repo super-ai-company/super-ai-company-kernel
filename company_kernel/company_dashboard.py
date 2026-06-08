@@ -303,6 +303,18 @@ def build_cockpit_summary(summary: dict) -> dict:
         task = tasks_by_id.get(str(attempt.get("task_id", "")), {})
         state = long_task_state(attempt, generated_at=generated_at)
         evidence = companyctl.sanitize_evidence_path_for_display(str(task.get("evidence_path") or ""))
+        supervisor_state = companyctl.attempt_json_field(dict(attempt), "supervisor_state_json")
+        last_correction = supervisor_state.get("last_correction", {}) if isinstance(supervisor_state.get("last_correction", {}), dict) else {}
+        requested = int(supervisor_state.get("corrections_requested", 0) or 0)
+        acknowledged = int(supervisor_state.get("corrections_acknowledged", 0) or 0)
+        correction = {
+            "requested": requested,
+            "acknowledged": acknowledged,
+            "needs_ack": requested > acknowledged,
+            "last_by": str(last_correction.get("by", "") or ""),
+            "last_message": str(last_correction.get("message", "") or ""),
+            "last_created_at": str(last_correction.get("created_at", "") or ""),
+        }
         long_tasks.append(
             {
                 "task_id": attempt.get("task_id", ""),
@@ -317,6 +329,7 @@ def build_cockpit_summary(summary: dict) -> dict:
                 "last_progress_at": attempt.get("last_progress_at", ""),
                 "blocker": task.get("blocker", "") or attempt.get("error_message", ""),
                 "evidence": evidence,
+                "correction": correction,
                 **state,
             }
         )
@@ -391,13 +404,21 @@ def build_cockpit_summary(summary: dict) -> dict:
 
     for item in long_tasks:
         state = str(item.get("long_task_state") or "")
-        if state == "progress_stagnant":
+        if state in {"progress_stagnant", "correcting"}:
             task_id = str(item.get("task_id", ""))
             attempt_id = str(item.get("attempt_id", ""))
+            correction = item.get("correction", {}) if isinstance(item.get("correction", {}), dict) else {}
+            message = "员工仍在线，但 15 分钟没有新进度。可继续等待、发送探针、查看日志或请求 Hermes 纠偏。"
+            if correction.get("needs_ack"):
+                last_by = correction.get("last_by") or "Hermes"
+                if str(last_by).lower() == "hermes":
+                    last_by = "Hermes"
+                last_message = correction.get("last_message") or "纠偏已发出"
+                message = f"{last_by} 已发纠偏，等待员工确认：{last_message}"
             owner_attention.append(
                 {
                     "kind": "stagnant_task",
-                    "state": state,
+                    "state": "correcting" if correction.get("needs_ack") else state,
                     "approval_id": "",
                     "task_id": task_id,
                     "approval_action": "",
@@ -406,7 +427,8 @@ def build_cockpit_summary(summary: dict) -> dict:
                     "target_agent": item.get("target_agent", ""),
                     "attempt_id": attempt_id,
                     "trace_id": item.get("trace_id", ""),
-                    "message": "员工仍在线，但 15 分钟没有新进度。可继续等待、发送探针、查看日志或请求 Hermes 纠偏。",
+                    "message": message,
+                    "correction": correction,
                     "updated_at": item.get("last_progress_at") or item.get("started_at", ""),
                     "actions": attention_actions("stagnant_task", task_id=task_id, attempt_id=attempt_id),
                 }
@@ -1249,7 +1271,8 @@ def load_summary(conn: sqlite3.Connection) -> dict:
         current_attempt = conn.execute(
             """
             SELECT attempt_id, trace_id, task_id, employee_id, adapter_type, runtime, pid, session_key,
-                   status, last_heartbeat_at, last_progress_at, started_at, finished_at, error_message
+                   status, runtime_policy_json, metadata_json, supervisor_state_json,
+                   last_heartbeat_at, last_progress_at, started_at, finished_at, error_message
             FROM execution_attempts
             WHERE employee_id = ?
               AND status IN ('starting', 'running', 'correcting')
@@ -1390,7 +1413,8 @@ def load_summary(conn: sqlite3.Connection) -> dict:
             conn,
             """
             SELECT attempt_id, trace_id, task_id, employee_id, adapter_type, runtime, pid, session_key,
-                   status, last_heartbeat_at, last_progress_at, started_at, finished_at, error_message
+                   status, runtime_policy_json, metadata_json, supervisor_state_json,
+                   last_heartbeat_at, last_progress_at, started_at, finished_at, error_message
             FROM execution_attempts
             WHERE status IN ('starting', 'running', 'correcting')
             ORDER BY started_at DESC

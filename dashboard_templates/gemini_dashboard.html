@@ -3393,6 +3393,7 @@
     attention.innerHTML = attentionRows.length ? attentionRows.map(item => `
       <div class="cockpit-row" ${item.task_id ? `onclick="openTaskDetailDrawer('${escapeHtml(item.task_id || '')}')"` : ''}>
         <div>
+          ${(() => { const correction = item.correction || {}; return correction.needs_ack ? `<span>${escapeHtml(`correction pending ack · by=${correction.last_by || '-'} · ${correction.last_message || ''}`)}</span>` : ''; })()}
           <strong>${escapeHtml(item.kind)} · ${escapeHtml(item.title || '-')}</strong>
           <span>${escapeHtml([item.target_agent ? `target=${item.target_agent}` : '', item.task_id ? `task=${item.task_id}` : '', item.approval_id ? `approval=${item.approval_id}` : '', item.approval_action ? `action=${item.approval_action}` : '', item.risk ? `risk=${item.risk}` : ''].filter(Boolean).join(' · '))}</span>
           <span>${escapeHtml(item.message || item.meta || '')}</span>
