@@ -1577,6 +1577,12 @@ def hydrate_tool_call(tool_call: dict) -> dict:
     item["input_summary"] = sanitize_log_text(item.get("input_summary", ""))
     item["output_summary"] = sanitize_log_text(item.get("output_summary", ""))
     item["error_message"] = sanitize_log_text(item.get("error_message", ""))
+    item["sanitized"] = True
+    item["raw_available"] = False
+    item["redaction_policy"] = {
+        **sanitized_log_policy(),
+        "summary": "raw tool payload hidden; input/output/error summaries are sanitized before dashboard/API display",
+    }
     return item
 
 
