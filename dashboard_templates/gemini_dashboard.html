@@ -3927,6 +3927,10 @@
       const topEmployees = Object.entries(byEmployee).slice(0, 4).map(([employee, amount]) => `${employee}=${amount}`).join(' · ');
       const mixedWarning = mixedCurrencyBudgetWarning(budget);
       const currencyRows = budgetCurrencyRows(budget);
+      const topTasks = budgetBreakdownRows('by_task', budget.by_task);
+      const costTypes = budgetBreakdownRows('by_cost_type', budget.by_cost_type);
+      const models = budgetBreakdownRows('by_model', budget.by_model);
+      const providers = budgetBreakdownRows('by_provider', budget.by_provider);
       budgetSummary.innerHTML = `
         <div class="cockpit-row">
           <div>
@@ -3936,6 +3940,10 @@
             ${mixedWarning ? `<span>${escapeHtml(mixedWarning)}</span>` : ''}
             ${currencyRows ? `<span>${escapeHtml(currencyRows)}</span>` : ''}
             <span>${escapeHtml(topEmployees || 'No employee cost rows yet')}</span>
+            <span>${escapeHtml(topTasks)}</span>
+            <span>${escapeHtml(costTypes)}</span>
+            <span>${escapeHtml(models)}</span>
+            <span>${escapeHtml(providers)}</span>
           </div>
           <div class="long-task-state ${['soft_exceeded', 'hard_exceeded'].includes(budget.limit_status || '') ? 'blocked' : (Number(budget.total_amount || 0) ? 'progress_stagnant' : 'running')}">${escapeHtml(budget.limit_status || 'budget')}</div>
         </div>
@@ -4561,6 +4569,12 @@
     return rows.slice(0, 10).map(item => {
       return sanitizeDisplayText(`${item.created_at || '-'} · ${item.cost_type || '-'} · ${item.currency || 'USD'} ${item.amount || 0} · employee=${item.employee_id || '-'} · attempt=${item.attempt_id || '-'} · tokens=${item.token_input || 0}/${item.token_output || 0} · ${item.summary || ''}`);
     }).join('\n');
+  }
+
+  function budgetBreakdownRows(label, values) {
+    const rows = values && typeof values === 'object' && !Array.isArray(values) ? Object.entries(values) : [];
+    if (!rows.length) return `${label}: none`;
+    return `${label}: ${rows.slice(0, 5).map(([key, amount]) => `${key || '-'}=${amount}`).join(' · ')}`;
   }
 
   function employeeWorkHistorySummary(workHistory) {
