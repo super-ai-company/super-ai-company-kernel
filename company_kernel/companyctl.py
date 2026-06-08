@@ -1782,31 +1782,48 @@ def budget_summary(conn: sqlite3.Connection, *, task_id: str = "", employee_id: 
     by_employee: dict[str, float] = {}
     by_task: dict[str, float] = {}
     by_cost_type: dict[str, float] = {}
+    by_currency: dict[str, float] = {}
+    by_employee_by_currency: dict[str, dict[str, float]] = {}
+    by_task_by_currency: dict[str, dict[str, float]] = {}
+    by_cost_type_by_currency: dict[str, dict[str, float]] = {}
     currencies = sorted({str(item.get("currency") or "USD") for item in events})
     for item in events:
         amount = float(item.get("amount") or 0)
+        currency_key = str(item.get("currency") or "USD")
         employee_key = str(item.get("employee_id") or "")
         task_key = str(item.get("task_id") or "")
         cost_key = str(item.get("cost_type") or "unknown")
+        by_currency[currency_key] = round(by_currency.get(currency_key, 0.0) + amount, 6)
         if employee_key:
             by_employee[employee_key] = round(by_employee.get(employee_key, 0.0) + amount, 6)
+            employee_currency = by_employee_by_currency.setdefault(employee_key, {})
+            employee_currency[currency_key] = round(employee_currency.get(currency_key, 0.0) + amount, 6)
         if task_key:
             by_task[task_key] = round(by_task.get(task_key, 0.0) + amount, 6)
+            task_currency = by_task_by_currency.setdefault(task_key, {})
+            task_currency[currency_key] = round(task_currency.get(currency_key, 0.0) + amount, 6)
         by_cost_type[cost_key] = round(by_cost_type.get(cost_key, 0.0) + amount, 6)
+        cost_currency = by_cost_type_by_currency.setdefault(cost_key, {})
+        cost_currency[currency_key] = round(cost_currency.get(currency_key, 0.0) + amount, 6)
     total_amount = round(sum(float(item.get("amount") or 0) for item in events), 6)
     currency = currencies[0] if len(currencies) == 1 else ("mixed" if currencies else "USD")
     limits = budget_limit_summary(conn, task_id=task_id, employee_id=employee_id, trace_id=trace_id, attempt_id=attempt_id, total_amount=total_amount, currency=currency)
     return {
         "event_count": len(events),
         "total_amount": total_amount,
+        "total_amounts_by_currency": by_currency,
         "currency": currency,
         "currencies": currencies,
         "token_input": sum(int(item.get("token_input") or 0) for item in events),
         "token_output": sum(int(item.get("token_output") or 0) for item in events),
         "runtime_seconds": sum(int(item.get("runtime_seconds") or 0) for item in events),
+        "by_currency": by_currency,
         "by_employee": by_employee,
+        "by_employee_by_currency": by_employee_by_currency,
         "by_task": by_task,
+        "by_task_by_currency": by_task_by_currency,
         "by_cost_type": by_cost_type,
+        "by_cost_type_by_currency": by_cost_type_by_currency,
         "limit_status": limits["status"],
         "budget_limits": limits,
     }

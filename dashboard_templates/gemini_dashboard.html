@@ -4306,7 +4306,7 @@
 
   function budgetCurrencyRows(summary) {
     const item = summary || {};
-    const rows = item.by_currency || item.currency_totals || {};
+    const rows = item.by_currency || item.total_amounts_by_currency || item.currency_totals || {};
     if (rows && typeof rows === 'object' && !Array.isArray(rows) && Object.keys(rows).length) {
       return Object.entries(rows).map(([currency, amount]) => `${currency}=${amount}`).join(' · ');
     }

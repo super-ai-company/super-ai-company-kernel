@@ -408,8 +408,8 @@ Deliver:
 - Show API gap banners for missing doctor-in-cockpit and missing completion-invalid task markers.
 
 Verification:
-- `curl -s http://127.0.0.1:8780/v1/dashboard/cockpit | python3 -m json.tool`
-- `curl -s http://127.0.0.1:8780/v1/doctor | python3 -m json.tool`
+- `curl -s http://127.0.0.1:8765/v1/dashboard/cockpit | python3 -m json.tool`
+- `curl -s http://127.0.0.1:8765/v1/doctor | python3 -m json.tool`
 - Browser: open `http://127.0.0.1:8780/dashboard.html` and confirm values are not static placeholders.
 
 ### Day 2: Task Drawer, Runtime Sessions, and Tool Calls
@@ -422,9 +422,9 @@ Deliver:
 - Direct Message modal is either wired to a real Kernel API or hidden with explicit `API unavailable`; skill workers never show chat/direct actions.
 
 Verification:
-- `curl -s http://127.0.0.1:8780/v1/tool-calls?limit=200 | python3 -m json.tool`
-- `curl -s http://127.0.0.1:8780/v1/runtime-sessions | python3 -m json.tool`
-- `curl -s http://127.0.0.1:8780/v1/tasks/{known_task_id} | python3 -m json.tool`
+- `curl -s http://127.0.0.1:8765/v1/tool-calls?limit=200 | python3 -m json.tool`
+- `curl -s http://127.0.0.1:8765/v1/runtime-sessions | python3 -m json.tool`
+- `curl -s http://127.0.0.1:8765/v1/tasks/{known_task_id} | python3 -m json.tool`
 - Browser: open a real task from the latest local smoke and confirm attempt/session/tool/budget/evidence sections render.
 
 ### Day 3: Budget, Evidence Safety, and Local Closed-Loop Verification
@@ -437,8 +437,8 @@ Deliver:
 - Mixed-currency display uses backend per-currency rows only; no frontend conversion or fake combined amount.
 
 Verification:
-- `curl -s http://127.0.0.1:8780/v1/budget-summary | python3 -m json.tool`
-- `curl -s http://127.0.0.1:8780/v1/evidence | python3 -m json.tool`
+- `curl -s http://127.0.0.1:8765/v1/budget-summary | python3 -m json.tool`
+- `curl -s http://127.0.0.1:8765/v1/evidence | python3 -m json.tool`
 - `bin/company-local-smoke --json-only --agents codex --direct-targets codex --reply-timeout 30 --skill-closed-loop --skill-timeout 60`
 - `python3 -m unittest discover -s tests -p 'test*.py'`
 - `bin/companyctl doctor --summary`

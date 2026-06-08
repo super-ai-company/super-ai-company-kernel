@@ -3843,6 +3843,7 @@ class CompanyKernelCoreTest(unittest.TestCase):
             "No /v1/tool-calls/{tool_call_id} detail endpoint in MVP",
             "employeeEvidenceClientSideFilter",
             "Evidence employee filters use hydrated rows; /v1/evidence supports task_id only.",
+            "item.by_currency || item.total_amounts_by_currency || item.currency_totals",
             "No kill or archive session action in MVP",
             "POST /v1/tasks/{task_id}/reopen",
         ]:
@@ -5344,6 +5345,42 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual(0.5, budget_summary["summary"]["budget_limits"]["soft_limit"])
         self.assertEqual(1.0, budget_summary["summary"]["budget_limits"]["hard_limit"])
         self.assertEqual(0.25, budget_summary["summary"]["budget_limits"]["remaining_to_hard"])
+
+    def test_budget_summary_reports_mixed_currency_ledger_rows(self) -> None:
+        code, submitted = run_cli("task", "submit", "--from", "openclaw-main", "--to", "codex", "--task-id", "task-budget-mixed", "--title", "Mixed currency budget")
+        self.assertEqual(0, code, submitted)
+        for event_id, amount, currency in [
+            ("budget-event-mixed-usd", "1.25", "USD"),
+            ("budget-event-mixed-thb", "40", "THB"),
+        ]:
+            code, budget = run_cli(
+                "budget",
+                "record",
+                "--budget-event-id",
+                event_id,
+                "--task-id",
+                "task-budget-mixed",
+                "--employee",
+                "codex",
+                "--cost-type",
+                "model_api",
+                "--amount",
+                amount,
+                "--currency",
+                currency,
+                "--summary",
+                f"mixed currency {currency}",
+            )
+            self.assertEqual(0, code, budget)
+
+        status, budget_summary = api_gateway.route_get("/v1/budget-summary", {"task_id": ["task-budget-mixed"]})
+        self.assertEqual(HTTPStatus.OK, status, budget_summary)
+        summary = budget_summary["summary"]
+        self.assertEqual("mixed", summary["currency"])
+        self.assertEqual({"THB": 40.0, "USD": 1.25}, summary["total_amounts_by_currency"])
+        self.assertEqual({"THB": 40.0, "USD": 1.25}, summary["by_currency"])
+        self.assertEqual({"codex": {"THB": 40.0, "USD": 1.25}}, summary["by_employee_by_currency"])
+        self.assertEqual({"task-budget-mixed": {"THB": 40.0, "USD": 1.25}}, summary["by_task_by_currency"])
 
     def test_task_detail_includes_runtime_tool_call_and_budget_ledgers(self) -> None:
         code, submitted = run_cli("task", "submit", "--from", "openclaw-main", "--to", "codex", "--task-id", "task-detail-control-plane", "--title", "Task detail control plane")

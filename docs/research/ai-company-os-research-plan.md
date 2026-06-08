@@ -1542,7 +1542,7 @@ Acceptance commands:
 ```bash
 bin/companyctl budget record --task-id task-demo --employee codex --cost-type model_api --amount 0.12 --currency USD --token-input 1000 --token-output 400 --model-name gpt-5
 bin/companyctl budget summary --task-id task-demo
-curl -s http://127.0.0.1:8780/v1/budget-summary | python3 -m json.tool
+curl -s http://127.0.0.1:8765/v1/budget-summary | python3 -m json.tool
 python3 -m unittest discover -s tests -p 'test*.py'
 ```
 
@@ -1564,10 +1564,10 @@ Acceptance commands:
 
 ```bash
 bin/companyctl doctor --summary
-curl -s http://127.0.0.1:8780/v1/dashboard/cockpit | python3 -m json.tool
-curl -s http://127.0.0.1:8780/v1/tool-calls | python3 -m json.tool
-curl -s http://127.0.0.1:8780/v1/runtime-sessions | python3 -m json.tool
-curl -s http://127.0.0.1:8780/v1/budget-summary | python3 -m json.tool
+curl -s http://127.0.0.1:8765/v1/dashboard/cockpit | python3 -m json.tool
+curl -s http://127.0.0.1:8765/v1/tool-calls | python3 -m json.tool
+curl -s http://127.0.0.1:8765/v1/runtime-sessions | python3 -m json.tool
+curl -s http://127.0.0.1:8765/v1/budget-summary | python3 -m json.tool
 python3 -m unittest discover -s tests -p 'test*.py'
 ```
 
