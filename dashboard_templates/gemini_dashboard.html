@@ -3409,6 +3409,7 @@
         <div>
           <strong>${escapeHtml(item.title || item.task_id || '-')}</strong>
           <span>${escapeHtml(item.target_agent || '-')} · attempt=${escapeHtml(item.attempt_id || '-')} · progress_age=${escapeHtml(item.progress_age_seconds ?? '-')}s</span>
+          <span>heartbeat=${escapeHtml(item.heartbeat_state || '-')} · progress_state=${escapeHtml(item.progress_state || '-')}</span>
           ${hasLatestProgress(item) ? `<span>Latest Progress · ${latestProgressSummary(item.latest_progress)}</span>` : ''}
           ${item.progress_state === 'stagnant' ? `<span>${escapeHtml(stagnantGuidance)}</span>` : ''}
         </div>

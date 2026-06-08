@@ -1911,6 +1911,8 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertIn("hasLatestProgress(item)", html)
         self.assertIn("item.latest_progress", html)
         self.assertNotIn("item.latest_progress ? `<span>Latest Progress", html)
+        self.assertIn("heartbeat=${escapeHtml(item.heartbeat_state || '-')}", html)
+        self.assertIn("progress_state=${escapeHtml(item.progress_state || '-')}", html)
         self.assertIn("progress=${escapeHtml(item.progress ?? '-')}", html)
         self.assertIn("owner_attention", html)
         self.assertIn("Supervisor Activity", html)
