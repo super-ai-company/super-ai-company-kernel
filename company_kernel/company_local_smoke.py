@@ -110,12 +110,160 @@ def run_local_smoke(agents: str, source: str, direct_targets: str, reply_timeout
     return report
 
 
+def run_skill_closed_loop_smoke(source: str, agent: str, package: str, timeout: int) -> dict:
+    task_id = f"task-local-smoke-skill-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
+    run_cmd([str(ROOT / "bin" / "companyctl"), "runtime", "register", "--runtime", "skill", "--command", "company-skill-package-worker", "--notes", "Skill Package runtime"], timeout=60)
+    run_cmd(
+        [
+            str(ROOT / "bin" / "companyctl"),
+            "employee",
+            "create",
+            "--id",
+            agent,
+            "--name",
+            "Ecommerce Copy Skill",
+            "--role",
+            "skill-worker",
+            "--runtime",
+            "skill",
+            "--workspace",
+            str(ROOT / "employees" / agent),
+        ],
+        timeout=60,
+    )
+    submitted = run_cmd(
+        [
+            str(ROOT / "bin" / "companyctl"),
+            "task",
+            "submit",
+            "--from",
+            source,
+            "--to",
+            agent,
+            "--task-id",
+            task_id,
+            "--title",
+            "Local smoke ecommerce copy skill closed loop",
+            "--description",
+            "Verify runtime session, tool call, budget, artifact, evidence, and trace timeline.",
+        ],
+        timeout=60,
+    )
+    worker = run_cmd([str(ROOT / "bin" / "company-skill-package-worker"), "--agent", agent, "--package", package, "--by", source, "--timeout", str(timeout)], timeout=timeout + 60)
+    task_payload = submitted.get("payload", {}).get("task", {}) if isinstance(submitted.get("payload"), dict) else {}
+    trace_id = str((task_payload.get("metadata") or {}).get("trace_id") or "")
+    worker_payload = worker.get("payload") if isinstance(worker.get("payload"), dict) else {}
+    review_task_id = f"{task_id}-review"
+    review_task = run_cmd(
+        [
+            str(ROOT / "bin" / "companyctl"),
+            "task",
+            "submit",
+            "--from",
+            source,
+            "--to",
+            source,
+            "--task-id",
+            review_task_id,
+            "--title",
+            "Review local smoke skill evidence",
+            "--description",
+            "Downstream review task for local skill closed-loop handoff validation.",
+        ],
+        timeout=60,
+    )
+    artifact_id = str((worker_payload.get("artifact") or {}).get("artifact_id") or "")
+    handoff = (
+        run_cmd(
+            [
+                str(ROOT / "bin" / "companyctl"),
+                "task",
+                "handoff",
+                "create",
+                "--from-task",
+                task_id,
+                "--to-task",
+                review_task_id,
+                "--from-employee",
+                agent,
+                "--to-employee",
+                source,
+                "--summary",
+                "Local smoke skill final artifact handed to owner review",
+                "--artifact",
+                artifact_id,
+                "--next-steps",
+                "Review final evidence in CEO cockpit.",
+            ],
+            timeout=60,
+        )
+        if artifact_id
+        else {"ok": False, "payload": {}, "stderr": "missing artifact_id"}
+    )
+    shown = run_cmd([str(ROOT / "bin" / "companyctl"), "task", "show", "--task-id", task_id], timeout=60)
+    trace = run_cmd([str(ROOT / "bin" / "companyctl"), "trace", "timeline", "--trace-id", trace_id], timeout=60) if trace_id else {"ok": False, "payload": {"timeline": []}, "stderr": "missing trace_id"}
+    shown_payload = shown.get("payload") if isinstance(shown.get("payload"), dict) else {}
+    task = shown_payload.get("task", {}) if isinstance(shown_payload.get("task"), dict) else {}
+    completion_contract = shown_payload.get("completion_contract", {}) if isinstance(shown_payload.get("completion_contract"), dict) else {}
+    attempts = shown_payload.get("attempts", []) if isinstance(shown_payload.get("attempts"), list) else []
+    runtime_sessions = shown_payload.get("runtime_sessions", []) if isinstance(shown_payload.get("runtime_sessions"), list) else []
+    tool_calls = shown_payload.get("tool_calls", []) if isinstance(shown_payload.get("tool_calls"), list) else []
+    evidence = shown_payload.get("evidence_records", []) if isinstance(shown_payload.get("evidence_records"), list) else []
+    handoffs = shown_payload.get("handoffs", []) if isinstance(shown_payload.get("handoffs"), list) else []
+    budget_summary = shown_payload.get("budget_summary", {}) if isinstance(shown_payload.get("budget_summary"), dict) else {}
+    timeline = trace.get("payload", {}).get("timeline", []) if isinstance(trace.get("payload"), dict) else []
+    trace_counts = trace.get("payload", {}).get("counts", {}) if isinstance(trace.get("payload"), dict) and isinstance(trace.get("payload", {}).get("counts", {}), dict) else {}
+    trace_kinds = sorted({str(item.get("kind") or "") for item in timeline if isinstance(item, dict) and item.get("kind")})
+    counts = {
+        "attempts": len(attempts),
+        "runtime_sessions": len(runtime_sessions),
+        "tool_calls": len(tool_calls),
+        "budget_events": int(budget_summary.get("event_count") or 0),
+        "evidence": len(evidence),
+        "handoffs": int(trace_counts.get("handoffs") or len(handoffs)),
+    }
+    ok = (
+        bool(worker.get("ok") and worker_payload.get("ok"))
+        and bool(review_task.get("ok") and handoff.get("ok"))
+        and str(task.get("status") or "") == "completed"
+        and bool(completion_contract.get("valid"))
+        and all(counts[key] > 0 for key in ["attempts", "runtime_sessions", "tool_calls", "budget_events", "evidence", "handoffs"])
+        and {"tool_call", "budget_event", "evidence", "handoff"}.issubset(set(trace_kinds))
+    )
+    return {
+        "ok": ok,
+        "task_id": task_id,
+        "trace_id": trace_id,
+        "task_status": str(task.get("status") or ""),
+        "completion_contract": completion_contract,
+        "counts": counts,
+        "trace_kinds": trace_kinds,
+        "worker": worker_payload,
+        "review_task": review_task.get("payload", {}),
+        "handoff": handoff.get("payload", {}),
+        "task_show": shown_payload,
+        "trace": trace.get("payload", {}),
+        "errors": {
+            "submit": submitted.get("stderr", ""),
+            "worker": worker.get("stderr", ""),
+            "review_task": review_task.get("stderr", ""),
+            "handoff": handoff.get("stderr", ""),
+            "show": shown.get("stderr", ""),
+            "trace": trace.get("stderr", ""),
+        },
+    }
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Run local Super AI Company usability smoke")
     parser.add_argument("--agents", default="nestcar,chindahotpot,codex", help="comma-separated employees to attendance probe")
     parser.add_argument("--source", default="main")
     parser.add_argument("--direct-targets", default="nestcar,chindahotpot,codex", help="comma-separated employees to direct message")
     parser.add_argument("--reply-timeout", type=int, default=120)
+    parser.add_argument("--skill-closed-loop", action="store_true", help="also run a local Skill Package task and verify attempt/session/tool/budget/evidence/trace ledgers")
+    parser.add_argument("--skill-agent", default="ecommerce-copy-skill")
+    parser.add_argument("--skill-package", default="skill-packages/ecommerce-copy-demo/skill.json")
+    parser.add_argument("--skill-timeout", type=int, default=120)
     parser.add_argument("--json-only", action="store_true")
     return parser
 
@@ -123,6 +271,9 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     report = run_local_smoke(args.agents, args.source, args.direct_targets, args.reply_timeout)
+    if args.skill_closed_loop:
+        report["skill_closed_loop"] = run_skill_closed_loop_smoke(args.source, args.skill_agent, args.skill_package, args.skill_timeout)
+        report["ok"] = bool(report["ok"] and report["skill_closed_loop"].get("ok"))
     print(json.dumps(report, ensure_ascii=False, indent=None if args.json_only else 2))
     return 0 if report["ok"] else 1
 

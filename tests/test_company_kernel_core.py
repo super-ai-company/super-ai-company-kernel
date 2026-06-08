@@ -6826,6 +6826,61 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertTrue(any("attendance" in cmd for cmd in calls))
         self.assertTrue(any("direct" in cmd for cmd in calls))
 
+    def test_local_smoke_can_verify_skill_closed_loop_ledgers(self) -> None:
+        calls = []
+
+        def fake_run(cmd, cwd=None, text=None, capture_output=None, timeout=None):
+            calls.append(cmd)
+
+            class Result:
+                returncode = 0
+                stderr = ""
+
+            result = Result()
+            if "company-skill-package-worker" in cmd[0]:
+                result.stdout = json.dumps({
+                    "ok": True,
+                    "status": "completed",
+                    "task_id": "task-local-smoke-skill",
+                    "attempt": {"attempt_id": "attempt-local-smoke-skill", "status": "success"},
+                    "runtime_session": {"session_id": "skill-session-ecommerce-copy-skill-task-local-smoke-skill"},
+                    "tool_call_id": "skill-tool-ecommerce-copy-skill-task-local-smoke-skill",
+                    "artifact": {"artifact_id": "artifact-local-smoke-skill"},
+                    "evidence": {"evidence_id": "evidence-local-smoke-skill", "path_or_url": "final/listing-summary.md"},
+                })
+            elif "task" in cmd and "show" in cmd:
+                result.stdout = json.dumps({
+                    "ok": True,
+                    "task": {"id": "task-local-smoke-skill", "status": "completed"},
+                    "completion_contract": {"valid": True, "final_evidence_count": 1},
+                    "attempts": [{"attempt_id": "attempt-local-smoke-skill", "status": "success"}],
+                    "runtime_sessions": [{"session_id": "skill-session-ecommerce-copy-skill-task-local-smoke-skill"}],
+                    "tool_calls": [{"tool_call_id": "skill-tool-ecommerce-copy-skill-task-local-smoke-skill"}],
+                    "budget_summary": {"event_count": 1, "total_amount": 10, "currency": "USD"},
+                    "evidence_records": [{"evidence_id": "evidence-local-smoke-skill"}],
+                    "handoffs": [{"handoff_id": "handoff-local-smoke-skill"}],
+                })
+            elif "trace" in cmd and "timeline" in cmd:
+                result.stdout = json.dumps({"ok": True, "timeline": [{"kind": "tool_call"}, {"kind": "budget_event"}, {"kind": "evidence"}, {"kind": "handoff"}]})
+            else:
+                result.stdout = json.dumps({"ok": True, "task": {"id": "task-local-smoke-skill", "metadata": {"trace_id": "trace-local-smoke-skill"}}})
+            return result
+
+        with mock.patch.object(company_local_smoke.subprocess, "run", side_effect=fake_run):
+            result = company_local_smoke.run_skill_closed_loop_smoke(source="main", agent="ecommerce-copy-skill", package="skill-packages/ecommerce-copy-demo/skill.json", timeout=30)
+        self.assertTrue(result["ok"], result)
+        self.assertTrue(result["task_id"].startswith("task-local-smoke-skill-"))
+        self.assertEqual("completed", result["task_status"])
+        self.assertEqual(1, result["counts"]["attempts"])
+        self.assertEqual(1, result["counts"]["runtime_sessions"])
+        self.assertEqual(1, result["counts"]["tool_calls"])
+        self.assertEqual(1, result["counts"]["budget_events"])
+        self.assertEqual(1, result["counts"]["evidence"])
+        self.assertEqual(1, result["counts"]["handoffs"])
+        self.assertTrue(result["completion_contract"]["valid"])
+        self.assertEqual(["budget_event", "evidence", "handoff", "tool_call"], result["trace_kinds"])
+        self.assertTrue(any("company-skill-package-worker" in cmd[0] for cmd in calls))
+
     def test_api_gateway_exposes_health_tasks_messages_and_heartbeats(self) -> None:
         status, descriptor = api_gateway.route_get("/v1", {})
         self.assertEqual(200, status, descriptor)
