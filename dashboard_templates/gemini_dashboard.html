@@ -3449,6 +3449,14 @@
       sendStagnantProbe(taskId, attemptId);
       return;
     }
+    if (actionId === 'view_logs') {
+      viewTaskLogs(taskId);
+      return;
+    }
+    if (actionId === 'wait') {
+      recordWaitDecision(taskId, attemptId);
+      return;
+    }
     if (actionId === 'send_correction') {
       correctTaskAttempt(taskId, attemptId);
       return;
@@ -3471,6 +3479,17 @@
       return;
     }
     if (taskId) openTaskDetailDrawer(taskId);
+  }
+
+  function viewTaskLogs(taskId) {
+    if (!taskId) return;
+    companyApiLog('SYSTEM', `Opening sanitized logs for ${taskId}. Raw stdout/stderr remains hidden.`, 'normal');
+    openTaskDetailDrawer(taskId);
+  }
+
+  function recordWaitDecision(taskId, attemptId) {
+    companyApiLog('SYSTEM', `Waiting is recorded locally only; no external send is triggered. task=${taskId || '-'} attempt=${attemptId || '-'}`, 'normal');
+    refreshLiveDashboardFromApi();
   }
 
   async function companyApiRequest(path, payload, method) {
