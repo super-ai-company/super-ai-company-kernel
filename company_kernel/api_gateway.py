@@ -573,7 +573,17 @@ def route_get(path: str, query: dict[str, list[str]]) -> tuple[int, dict]:
         try:
             summary = company_dashboard.load_summary(conn)
             employees = company_dashboard.employee_view_models(summary)
-            return HTTPStatus.OK, company_dashboard.build_cockpit_summary({**summary, "employees": employees, "all_employees": summary.get("employees", [])})
+            doctor_code, doctor_payload = run_companyctl(["doctor", "--summary"])
+            doctor = {
+                "ok": bool(doctor_payload.get("ok")),
+                "exit_code": doctor_code,
+                "issue_count": len(doctor_payload.get("issues", []) or []),
+                "issues": doctor_payload.get("issues", []) or [],
+                "generated_at": companyctl.now(),
+                "counts": doctor_payload.get("counts", {}),
+                "heartbeat": doctor_payload.get("heartbeat", {}),
+            }
+            return HTTPStatus.OK, company_dashboard.build_cockpit_summary({**summary, "employees": employees, "all_employees": summary.get("employees", []), "doctor": doctor})
         finally:
             conn.close()
     if path == "/v1/telemetry/traces":
