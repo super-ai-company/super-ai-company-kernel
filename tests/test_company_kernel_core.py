@@ -5429,6 +5429,32 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertIsNotNone(evidence_row)
         self.assertEqual(attempt_id, evidence_row["attempt_id"])
 
+    def test_task_done_accepts_promoted_evidence_when_cli_uses_original_relative_path(self) -> None:
+        for employee_id, role in [("main", "operator"), ("codex", "developer")]:
+            code, created = run_cli("employee", "create", "--id", employee_id, "--name", employee_id, "--role", role, "--runtime", "local", "--workspace", str(self.root / "workspace" / employee_id))
+            self.assertEqual(code, 0, created)
+        self.mark_active("codex")
+        task_id = "task-done-relative-promoted-evidence"
+        code, submitted = run_cli("task", "submit", "--from", "main", "--to", "codex", "--task-id", task_id, "--title", "relative promoted evidence")
+        self.assertEqual(0, code, submitted)
+        workspace = Path(submitted["task"]["workspace"]["path"])
+        evidence_file = workspace / "evidence" / "relative.md"
+        evidence_file.parent.mkdir(parents=True, exist_ok=True)
+        evidence_file.write_text("relative promoted evidence\n", encoding="utf-8")
+        relative_evidence = os.path.relpath(evidence_file, Path.cwd())
+        code, claimed = run_cli("task", "claim", "--task-id", task_id, "--agent", "codex")
+        self.assertEqual(0, code, claimed)
+        code, attempt = run_cli("task", "attempt", "start", "--task-id", task_id, "--employee", "codex", "--adapter-type", "codex")
+        self.assertEqual(0, code, attempt)
+        code, artifact = run_cli("task", "artifact", "register", "--task-id", task_id, "--employee", "codex", "--path", str(evidence_file), "--type", "md", "--name", "relative.md", "--stage", "final", "--summary", "relative final", "--final")
+        self.assertEqual(0, code, artifact)
+        code, promoted = run_cli("task", "evidence", "promote", "--artifact-id", artifact["artifact"]["artifact_id"], "--employee", "codex", "--summary", "relative promoted")
+        self.assertEqual(0, code, promoted)
+
+        code, done = run_cli("task", "done", "--agent", "codex", "--task-id", task_id, "--summary", "done with relative path", "--evidence", relative_evidence)
+        self.assertEqual(0, code, done)
+        self.assertEqual(attempt["attempt"]["attempt_id"], done["attempt_id"])
+
     def test_managed_attempt_api_control_endpoints(self) -> None:
         for employee_id, role in [("main", "operator"), ("hermes", "supervisor"), ("codex", "developer")]:
             code, created = run_cli("employee", "create", "--id", employee_id, "--name", employee_id, "--role", role, "--runtime", "local", "--workspace", str(self.root / "workspace" / employee_id))
