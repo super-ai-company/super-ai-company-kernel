@@ -3346,11 +3346,13 @@
     const recentEvidence = document.getElementById('cockpit-recent-evidence');
     if (!cards || !longTasks || !attention || !recentEvidence) return;
     const counts = (cockpit && cockpit.counts) || {};
+    const employeeStatusCounts = counts.employee_status_counts || {};
+    const readinessCounts = counts.readiness_counts || {};
     cards.innerHTML = `
       <div class="cockpit-card">
         <h3>Employees Online</h3>
         <div class="cockpit-value">${escapeHtml(counts.employees_online ?? 0)}</div>
-        <div class="cockpit-subtext">${escapeHtml(counts.employees_total ?? counts.employees ?? 0)} total · ${escapeHtml(counts.employees_abnormal ?? 0)} abnormal · busy / candidate / active-limited / abnormal visible below</div>
+        <div class="cockpit-subtext">${escapeHtml(counts.employees_total ?? counts.employees ?? 0)} total · ${escapeHtml(counts.employees_abnormal ?? 0)} abnormal · busy ${escapeHtml(employeeStatusCounts.busy || 0)} · active-limited ${escapeHtml(employeeStatusCounts['active-limited'] || 0)} · candidate ${escapeHtml(employeeStatusCounts.candidate || 0)} · active_ready ${escapeHtml(readinessCounts.active_ready || 0)} · online_only ${escapeHtml(readinessCounts.online_only || 0)}</div>
       </div>
       <div class="cockpit-card">
         <h3>Active Attempts</h3>
