@@ -4185,6 +4185,28 @@
     return attempt;
   }
 
+  function isTerminalTaskState(task, attempt) {
+    const taskStatus = String(task && task.status || '').toLowerCase();
+    const attemptStatus = String(attempt && attempt.status || '').toLowerCase();
+    const longTaskState = String((task && task.long_task_state) || (attempt && attempt.long_task_state) || '').toLowerCase();
+    return ['completed', 'done', 'success', 'cancelled', 'failed'].includes(taskStatus)
+      || ['success', 'cancelled', 'failed'].includes(attemptStatus)
+      || ['completed', 'done', 'success', 'cancelled', 'failed'].includes(longTaskState);
+  }
+
+  function taskStateMetaSummary(task) {
+    const attempt = currentTaskAttempt(task);
+    const taskStatus = task && task.status ? String(task.status) : '-';
+    if (isTerminalTaskState(task, attempt)) {
+      const finalState = String((task && task.long_task_state) || (attempt && attempt.long_task_state) || taskStatus || (attempt && attempt.status) || '-');
+      const hasEvidence = !!(task && (task.evidence_path || task.evidence || task.final_evidence || task.evidence_records));
+      return `task=${taskStatus} · final=${finalState} · evidence=${hasEvidence ? 'present' : 'missing'}`;
+    }
+    const heartbeat = (task && task.heartbeat_state) || (attempt && attempt.heartbeat_state) || '-';
+    const progress = (task && task.progress_state) || (attempt && attempt.progress_state) || '-';
+    return `task=${taskStatus} · heartbeat=${heartbeat} · progress=${progress}`;
+  }
+
   function taskActionButtons(task) {
     const taskId = task && task.id ? String(task.id) : '';
     if (!taskId) return '-';
@@ -4195,7 +4217,7 @@
     const taskStatus = String(task.status || '').toLowerCase();
     const attemptStatus = String(attempt.status || '').toLowerCase();
     const longTaskState = String(task.long_task_state || attempt.long_task_state || '').toLowerCase();
-    const isDone = ['completed', 'done', 'success'].includes(taskStatus) || attemptStatus === 'success';
+    const isDone = isTerminalTaskState(task, attempt) && !['failed', 'cancelled'].includes(taskStatus) && !['failed', 'cancelled'].includes(attemptStatus);
     const isCancelled = taskStatus === 'cancelled' || attemptStatus === 'cancelled';
     const isRunning = ['claimed', 'running', 'starting', 'correcting'].includes(taskStatus) || ['starting', 'running', 'correcting'].includes(attemptStatus);
     const isObservable = isRunning || ['heartbeat_stale', 'progress_stagnant', 'stale', 'correcting'].includes(longTaskState);
@@ -6231,7 +6253,7 @@
     const tasksTbody = document.getElementById('tasks-tbody');
     tasksTbody.innerHTML = summary.tasks.map(task => {
       const taskState = task.long_task_state || task.status;
-      const taskStateMeta = task.long_task_state ? `task=${task.status || '-'} · heartbeat=${task.heartbeat_state || '-'} · progress=${task.progress_state || '-'}` : '';
+      const taskStateMeta = taskStateMetaSummary(task);
       const taskId = task.id || '';
       return `
         <tr data-status="${escapeHtml(task.status)}" onclick="openTaskDetailDrawer('${escapeHtml(taskId)}')">
