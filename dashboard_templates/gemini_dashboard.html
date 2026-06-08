@@ -6119,19 +6119,54 @@
     const endpoint = `/v1/approvals/${encodeURIComponent(approvalId)}/${normalized}`;
     companyApiLog('SYSTEM', `${normalized} approval ${approvalId}...`, 'normal');
     try {
-      await companyApiPost(endpoint, {
+      const decided = await companyApiPost(endpoint, {
         by: HUMAN_OWNER_ID,
         reason,
         mock: normalized === 'resolve'
       });
       const suffix = normalized === 'resolve' ? 'mock-resolved without external delivery' : `${normalized}d`;
       companyApiLog('SYSTEM', `Approval ${approvalId} ${suffix}.`, 'success');
+      if (normalized === 'approve') {
+        await executeApprovedDashboardAction(decided.approval || {});
+      }
       await refreshLiveDashboardFromApi();
     } catch (err) {
       companyApiLog('ERROR', `Approval ${approvalId} ${normalized} failed: ${err.message}`, 'error');
     }
   }
   window.decideApprovalFromDashboard = decideApprovalFromDashboard;
+
+  async function executeApprovedDashboardAction(approval) {
+    const detail = approval.detail || {};
+    const requestDetail = parseApprovalRequestReason(detail.request_reason);
+    const action = detail.action || approval.action || '';
+    if (action !== 'task.correct') return;
+    const taskId = detail.task_id || requestDetail.task_id || (detail.metadata && detail.metadata.task_id) || detail.target || '';
+    const attemptId = detail.attempt_id || requestDetail.attempt_id || '';
+    const message = detail.correction_message || requestDetail.correction_message || requestDetail.reason || detail.reason || '';
+    const by = detail.requested_by || requestDetail.requested_by || detail.by || 'hermes';
+    if (!taskId || !message) {
+      companyApiLog('ERROR', `Approved correction ${approval.id || ''} is missing task_id or message; no correction sent.`, 'error');
+      return;
+    }
+    companyApiLog('SYSTEM', `Owner-approved correction dispatching to ledger: task=${taskId} attempt=${attemptId || '-'}`, 'normal');
+    await companyApiPost(`/v1/tasks/${encodeURIComponent(taskId)}/correct`, {
+      attempt_id: attemptId,
+      by,
+      message
+    });
+    companyApiLog('SYSTEM', `Owner-approved correction recorded for ${taskId}.`, 'success');
+  }
+
+  function parseApprovalRequestReason(raw) {
+    if (!raw || typeof raw !== 'string') return {};
+    try {
+      const parsed = JSON.parse(raw);
+      return parsed && typeof parsed === 'object' ? parsed : {};
+    } catch (err) {
+      return {};
+    }
+  }
 
   function refreshTraceTelemetry() {
     const summary = getDashboardSummary();
