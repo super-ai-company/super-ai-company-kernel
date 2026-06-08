@@ -3888,16 +3888,17 @@
           </div>
           <div class="long-task-state ${escapeHtml(item.status || 'running')}">${escapeHtml(item.status || 'running')}</div>
         </div>
-      `).join('') : `<div class="cockpit-row"><div><strong>No runtime sessions</strong><span>CLI/GUI/script sessions will appear after an adapter starts a managed attempt.</span></div><div class="long-task-state running">empty</div></div>`;
+      `).join('') : `<div class="cockpit-row"><div><strong>No runtime sessions</strong><span>CLI/GUI/script sessions will appear after an adapter starts a managed attempt. No kill or archive session action in MVP; use task/attempt cancel.</span></div><div class="long-task-state running">empty</div></div>`;
     }
     const calls = (cockpit && cockpit.tool_calls) || [];
     if (toolCalls) {
       toolCalls.innerHTML = calls.length ? calls.slice(0, 6).map(item => `
-        <div class="cockpit-row" ${item.task_id ? `onclick="openTaskDetailDrawer('${escapeHtml(item.task_id || '')}')"` : ''}>
+        <div class="cockpit-row" onclick="showHydratedToolCallDetails(${escapeHtml(JSON.stringify(item))})">
           <div>
             <strong>${escapeHtml(item.tool_name || item.tool_call_id || '-')}</strong>
             <span>${escapeHtml(item.employee_id || '-')} · ${escapeHtml(item.tool_type || '-')} · task=${escapeHtml(item.task_id || '-')}</span>
             <span>${escapeHtml(item.input_summary || item.output_summary || item.error_message || 'No sanitized summary yet')}</span>
+            <span>No /v1/tool-calls/{tool_call_id} detail endpoint in MVP; row detail is hydrated and sanitized client-side.</span>
           </div>
           <div class="long-task-state ${escapeHtml(item.status || 'running')}">${escapeHtml(item.status || 'running')}</div>
         </div>
@@ -3907,12 +3908,16 @@
     if (budgetSummary) {
       const byEmployee = budget.by_employee || {};
       const topEmployees = Object.entries(byEmployee).slice(0, 4).map(([employee, amount]) => `${employee}=${amount}`).join(' · ');
+      const mixedWarning = mixedCurrencyBudgetWarning(budget);
+      const currencyRows = budgetCurrencyRows(budget);
       budgetSummary.innerHTML = `
         <div class="cockpit-row">
           <div>
             <strong>Estimated spend ${escapeHtml(budget.currency || 'USD')} ${escapeHtml(budget.total_amount || 0)}</strong>
             <span>events=${escapeHtml(budget.event_count || 0)} · input=${escapeHtml(budget.token_input || 0)} · output=${escapeHtml(budget.token_output || 0)} · runtime=${escapeHtml(budget.runtime_seconds || 0)}s</span>
             <span>${escapeHtml(budgetLimitStatusSummary(budget))}</span>
+            ${mixedWarning ? `<span>${escapeHtml(mixedWarning)}</span>` : ''}
+            ${currencyRows ? `<span>${escapeHtml(currencyRows)}</span>` : ''}
             <span>${escapeHtml(topEmployees || 'No employee cost rows yet')}</span>
           </div>
           <div class="long-task-state ${['soft_exceeded', 'hard_exceeded'].includes(budget.limit_status || '') ? 'blocked' : (Number(budget.total_amount || 0) ? 'progress_stagnant' : 'running')}">${escapeHtml(budget.limit_status || 'budget')}</div>
@@ -4273,6 +4278,41 @@
     return displayPath(raw);
   }
 
+  function employeeEvidenceClientSideFilter(records, employeeId) {
+    // Evidence employee filters use hydrated rows; /v1/evidence supports task_id only.
+    const rows = Array.isArray(records) ? records : [];
+    if (!employeeId) return rows;
+    return rows.filter(item => String(item.employee_id || '') === String(employeeId));
+  }
+
+  function showHydratedToolCallDetails(toolCall) {
+    // No /v1/tool-calls/{tool_call_id} detail endpoint in MVP; use the sanitized hydrated row only.
+    const row = toolCall && typeof toolCall === 'object' ? toolCall : {};
+    const safe = row.sanitized === true;
+    const detail = safe ? row : {
+      tool_call_id: row.tool_call_id || '',
+      status: row.status || 'unknown',
+      warning: '[Raw output redacted for safety]',
+      note: 'Unsanitized tool-call detail was blocked in the CEO Cockpit.'
+    };
+    showDetails(`Tool Call: ${row.tool_call_id || row.tool_name || 'detail'}`, detail);
+  }
+
+  function mixedCurrencyBudgetWarning(summary) {
+    const item = summary || {};
+    if (item.currency !== 'mixed') return '';
+    return 'Mixed currencies: totals are ledger sums, not converted values. Use per-currency ledger rows.';
+  }
+
+  function budgetCurrencyRows(summary) {
+    const item = summary || {};
+    const rows = item.by_currency || item.currency_totals || {};
+    if (rows && typeof rows === 'object' && !Array.isArray(rows) && Object.keys(rows).length) {
+      return Object.entries(rows).map(([currency, amount]) => `${currency}=${amount}`).join(' · ');
+    }
+    return item.currency === 'mixed' ? 'per-currency ledger rows unavailable; inspect Budget Events.' : '';
+  }
+
   function readinessBadge(employee) {
     const level = String(employee.readiness_level || employee.status || 'unknown');
     const safeLevel = level.replace(/[^a-zA-Z0-9_-]/g, '-');
@@ -4469,7 +4509,10 @@
     if (!rows.length) return 'No tool calls recorded for this task.';
     return rows.slice(0, 10).map(item => {
       const policy = item.redaction_policy || {};
-      return sanitizeDisplayText(`${item.status || '-'} · ${item.tool_name || item.tool_call_id || '-'} · type=${item.tool_type || '-'} · employee=${item.employee_id || '-'} · attempt=${item.attempt_id || '-'} · sanitized=${String(item.sanitized !== false)} · raw_available=${String(!!item.raw_available)} · policy=${policy.mode || 'sanitized_only'} · ${item.output_summary || item.input_summary || item.error_message || ''}`);
+      const sanitized = item.sanitized === true;
+      const detailPolicy = 'No /v1/tool-calls/{tool_call_id} detail endpoint in MVP; use hydrated row only.';
+      const summary = sanitized ? (item.output_summary || item.input_summary || item.error_message || '') : '[Raw output redacted for safety]';
+      return sanitizeDisplayText(`${item.status || '-'} · ${item.tool_name || item.tool_call_id || '-'} · type=${item.tool_type || '-'} · employee=${item.employee_id || '-'} · attempt=${item.attempt_id || '-'} · sanitized=${String(sanitized)} · raw_available=${String(!!item.raw_available)} · policy=${policy.mode || 'sanitized_only'} · ${detailPolicy} · ${summary}`);
     }).join('\n');
   }
 
@@ -4479,6 +4522,8 @@
     const employeeRows = Object.entries(byEmployee).slice(0, 6).map(([employee, amount]) => `${employee}=${amount}`).join(' · ');
     return [
       `events=${item.event_count || 0} · total=${item.currency || 'USD'} ${item.total_amount || 0}`,
+      mixedCurrencyBudgetWarning(item) || 'single currency ledger view',
+      budgetCurrencyRows(item) || 'per-currency ledger rows not required',
       budgetLimitStatusSummary(item),
       `tokens input=${item.token_input || 0} · output=${item.token_output || 0} · runtime=${item.runtime_seconds || 0}s`,
       employeeRows || 'No employee cost rows yet.'
@@ -4519,6 +4564,8 @@
     const item = summary || {};
     return [
       `events=${item.event_count || 0} · total=${item.currency || 'USD'} ${item.total_amount || 0}`,
+      mixedCurrencyBudgetWarning(item) || 'single currency ledger view',
+      budgetCurrencyRows(item) || 'per-currency ledger rows not required',
       budgetLimitStatusSummary(item),
       `tokens input=${item.token_input || 0} · output=${item.token_output || 0} · runtime=${item.runtime_seconds || 0}s`
     ].join('\n');
@@ -4529,17 +4576,19 @@
     if (!rows.length) return 'No tool calls recorded for this employee.';
     return rows.slice(0, 8).map(item => {
       const policy = item.redaction_policy || {};
-      return sanitizeDisplayText(`${item.status || '-'} · ${item.tool_name || item.tool_call_id || '-'} · task=${item.task_id || '-'} · attempt=${item.attempt_id || '-'} · session=${item.session_id || '-'} · sanitized=${String(item.sanitized !== false)} · raw_available=${String(!!item.raw_available)} · policy=${policy.mode || 'sanitized_only'} · ${item.output_summary || item.input_summary || item.error_message || ''}`);
+      const sanitized = item.sanitized === true;
+      const summary = sanitized ? (item.output_summary || item.input_summary || item.error_message || '') : '[Raw output redacted for safety]';
+      return sanitizeDisplayText(`${item.status || '-'} · ${item.tool_name || item.tool_call_id || '-'} · task=${item.task_id || '-'} · attempt=${item.attempt_id || '-'} · session=${item.session_id || '-'} · sanitized=${String(sanitized)} · raw_available=${String(!!item.raw_available)} · policy=${policy.mode || 'sanitized_only'} · No /v1/tool-calls/{tool_call_id} detail endpoint in MVP · ${summary}`);
     }).join('\n');
   }
 
   function employeeEvidenceSummary(records) {
-    const rows = Array.isArray(records) ? records : [];
+    const rows = employeeEvidenceClientSideFilter(records, '');
     if (!rows.length) return 'No evidence recorded for this employee.';
     return rows.slice(0, 8).map(item => {
       const display = item.display || {};
       const path = display.relative_path || display.basename || item.path_or_url || '-';
-      return sanitizeDisplayText(`${item.evidence_id || '-'} · task=${item.task_id || '-'} · attempt=${item.attempt_id || '-'} · final=${item.is_final} · ${path} · ${item.summary || ''}`);
+      return sanitizeDisplayText(`${item.evidence_id || '-'} · task=${item.task_id || '-'} · attempt=${item.attempt_id || '-'} · final=${item.is_final} · Evidence employee filters use hydrated rows; /v1/evidence supports task_id only. · ${path} · ${item.summary || ''}`);
     }).join('\n');
   }
 
@@ -5115,6 +5164,7 @@
         ['Budget Summary', budgetSummaryDetail(budgetSummary)],
         ['Budget Events', budgetEventsSummary(budgetEvents)],
         ['Completion Contract', completionContractSummary(completionContract)],
+        ['Owner Control Contract', 'Correction: POST /v1/tasks/{task_id}/correct · Cancel: POST /v1/tasks/{task_id}/cancel · Retry: POST /v1/tasks/{task_id}/retry · Reassign: POST /v1/tasks/{task_id}/reassign · Reject/Reopen: POST /v1/tasks/{task_id}/reopen with by=owner and status=submitted.'],
         ['Evidence Records Summary', evidenceRecordsSummary(evidenceRecords)],
         ['Sanitized Logs Summary', sanitizedLogsSummary(sanitizedLogs)],
         ['Heartbeat State', task.heartbeat_state || latestAttempt.heartbeat_state || '-'],

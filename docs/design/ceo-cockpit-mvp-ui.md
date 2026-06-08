@@ -4,6 +4,25 @@ Date: 2026-06-09
 
 Scope: local Super AI Company Kernel CEO Cockpit MVP. This is a UI and API implementation contract for the next 3 development days. It intentionally does not design marketplace, WorkGraph canvas, skill pricing, distributed rental, payments, public users, or complex multi-tenant features.
 
+## 0. Three-Day MVP Boundary
+
+This document designs only the 3-day CEO Cockpit UI contract. It is not a product expansion plan.
+
+In scope:
+- Budget Center MVP: ledger totals, per-currency rows, task/employee cost rows, budget events.
+- Tool Call automatic visibility: sanitized tool-call rows, status, risk, task/attempt/session linkage.
+- Runtime Session visibility: session id, runtime type, heartbeat/progress freshness, current task/attempt.
+- Dashboard truth surface: what each employee is doing, which tools were used, what it cost, and what evidence was submitted.
+
+Out of scope:
+- Marketplace.
+- WorkGraph large canvas.
+- Skill pricing.
+- Distributed rental.
+- Complex multi-tenant user/account management.
+
+Backend gap rule: if the API does not provide a trusted field, the frontend must show `API gap` or an empty state. It must not infer business truth from chat, stdout, inbox files, ACK, or heartbeat alone.
+
 ## 1. MVP Goal
 
 The CEO Cockpit must answer one operational question without fake data:
@@ -38,6 +57,18 @@ Use existing backend surfaces first. Do not invent new endpoints unless implemen
 | Reassign | `POST /v1/tasks/{task_id}/reassign` | Body: `by="owner"`, `to`, `reason`. |
 | Reject evidence / reopen | `POST /v1/tasks/{task_id}/reopen` | Body: `by="owner"`, `reason`, `status="submitted"`. MVP has reject/reopen, not a new task-accept endpoint. |
 
+### 2.1 Required API Gaps Before Final UI Wiring
+
+These are not frontend workarounds. They are backend/API requirements that must be implemented or explicitly shown as unavailable:
+
+| Gap | Required backend contract | Frontend fallback until implemented |
+|---|---|---|
+| Mixed-currency budget | `/v1/budget-summary` must return per-currency totals, and preferably per-currency `by_employee` and `by_task` rows. Example: `total_amounts_by_currency: {"USD": 1.50, "THB": 120.00}`. | Show mixed-currency warning and per-currency rows only when provided. Do not show `total_amount` as a comparable money value. |
+| Doctor health in cockpit | `/v1/dashboard/cockpit` should include `doctor.ok`, `doctor.issue_count`, `doctor.exit_code`, and `doctor.generated_at` to avoid double polling during the 8-second refresh loop. | Poll `/v1/doctor` separately and show a slower diagnostics banner. |
+| Completion invalid marker | `long_tasks[]`, task cards, and `GET /v1/tasks/{task_id}` should include `completion_invalid: true/false` and `completion_invalid_reason`. | Show invalid count if present, but do not guess which task is invalid from unrelated evidence counts. |
+| Tool-call detail payload size | Either keep `/v1/tool-calls?limit=200` strictly summarized and sanitized, or add `GET /v1/tool-calls/{tool_call_id}` for lazy sanitized detail. | Row click opens only the hydrated sanitized summary row; no invented detail endpoint. |
+| Direct message action | If enabled, backend must expose a direct-message API with sender, target employee, message, optional task/trace binding, and receipt. | Hide direct message button for skill-only workers and show `Direct message API unavailable` if endpoint is absent. |
+
 ## 3. Global UI Rules
 
 1. Poll `/v1/dashboard/cockpit` every 8 seconds. No WebSocket in the 3-day MVP; SSE can remain a future hook.
@@ -48,6 +79,8 @@ Use existing backend surfaces first. Do not invent new endpoints unless implemen
 6. Do not add `Kill Session`, `Archive Stale Sessions`, marketplace actions, skill pricing, or user/account management in this MVP.
 7. Skill-only or `task_unsupported` workers must hide chat/direct buttons, but still show task progress, tool calls, budget, artifacts, and evidence.
 8. Candidate employees must not be visually promoted to active. Use explicit badges: `active_ready`, `active_limited`, `candidate_only`, `online_only`, `task_unsupported`, `no_reply`, `unsafe`.
+9. Stale/stagnant/running labels are backend-owned. The frontend may display relative time labels, but must not decide task failure from local browser time.
+10. For every action button, the UI must show the target API path and actor `owner` in the confirmation modal before sending.
 
 ## 4. Page Layout
 
@@ -75,6 +108,7 @@ Displayed fields:
 - Budget: backend total by currency, token input, token output, runtime seconds, soft/hard limit status if present.
 - Evidence: recent final evidence count, evidence issues count.
 - Supervisor: latest Hermes correction or pending correction ack from `supervisor_activity`.
+- Doctor: `doctor.ok`, `doctor.issue_count`, `doctor.exit_code` if included by `/v1/dashboard/cockpit`; otherwise show `/v1/doctor` as separately polled.
 
 Empty states:
 - No employees: `No AI employees registered.`
@@ -87,6 +121,7 @@ Abnormal states:
 - Doctor unhealthy: yellow banner, click opens `/v1/doctor` JSON modal.
 - Hard budget limit: red banner; disable run/retry/reassign/new paid task actions, but keep cancel/correction/reopen visible.
 - Completion invalid: red count and filter to invalid task cards.
+- API gap: gray banner such as `Completion invalid task list unavailable from cockpit API.` Do not guess.
 
 Click actions:
 - Employee count click: filter Employee Cards by badge/status.
@@ -136,6 +171,14 @@ API:
 - `GET /v1/agent-matrix?agents={employee_id}`
 - Optional filters: `/v1/tool-calls?employee_id=...`, `/v1/budget-summary?employee_id=...`, `/v1/evidence?employee_id=...` if supported; otherwise filter client-side from hydrated rows.
 
+Direct Message modal:
+- Only visible for employees that support chat/direct communication.
+- Fields: target employee, optional task id, optional trace id, message, expected receipt timeout.
+- Confirmation text: `This sends a direct message through Kernel ledger. It is not task completion evidence.`
+- API: `POST /v1/messages/direct` if available; otherwise disabled with `Direct message API unavailable`.
+- Success state: show message id and sender-visible receipt.
+- Failure state: show blocker reason; do not mark employee active from DM success alone.
+
 ## 7. Running Task Cards
 
 Purpose: show long-running task state without treating CLI timeout as failure.
@@ -148,6 +191,7 @@ Displayed fields:
 - Latest progress message and timestamp.
 - Heartbeat/progress freshness.
 - Completion contract: valid/invalid and reason.
+- Completion invalid marker: backend `completion_invalid` and `completion_invalid_reason` when available.
 - Cost summary and evidence count.
 
 Empty states:
@@ -159,6 +203,7 @@ Abnormal states:
 - Blocked: show blocker reason.
 - Failed: show failure reason and retry/reassign controls.
 - Done without final evidence: red `Completion Invalid`.
+- Missing completion marker: neutral `Completion API gap`; do not infer from count-only data.
 
 Click actions:
 - Click card: open Task Detail Drawer via `GET /v1/tasks/{task_id}`.
@@ -215,6 +260,7 @@ Purpose: show ledger-owned cost, not frontend-estimated cost.
 
 Displayed fields:
 - Total amount grouped by currency.
+- Per-currency totals when the backend returns `total_amounts_by_currency` or equivalent ledger rows.
 - Token input/output if backend returns them.
 - Runtime seconds.
 - Cost by employee, task, and type using simple tables/progress bars.
@@ -242,6 +288,7 @@ API:
 Mixed currency rule:
 - If `budget_summary.currency === "mixed"`, show a warning icon and the text `Mixed currencies: totals are ledger sums, not converted values.`
 - In mixed mode, the primary visual must be per-currency ledger rows. Do not present the numeric `total_amount` as a single comparable money value.
+- If the backend does not return per-currency totals, show `API gap: per-currency budget totals unavailable` instead of fabricating rows.
 
 ## 10. Evidence Panel
 
@@ -308,6 +355,7 @@ Empty states:
 - No tool calls: `No tools used yet.`
 - No budget: `No cost recorded yet.`
 - No evidence: `No evidence submitted yet.`
+- New submitted task: collapse Tool Calls, Budget, and Evidence by default until at least one row exists.
 
 Abnormal states:
 - Stagnant attempt: amber attempt row and owner action hint.
@@ -357,6 +405,7 @@ Deliver:
 - Show `/v1/doctor` banner/modal.
 - Show skill-only employees without chat buttons.
 - Show candidate employees as candidate, not active.
+- Show API gap banners for missing doctor-in-cockpit and missing completion-invalid task markers.
 
 Verification:
 - `curl -s http://127.0.0.1:8780/v1/dashboard/cockpit | python3 -m json.tool`
@@ -370,6 +419,7 @@ Deliver:
 - Runtime Sessions visible in home and drawer.
 - Tool Calls panel with max 200 rows and filters.
 - Correction/cancel/retry/reassign/reopen controls wired to existing APIs.
+- Direct Message modal is either wired to a real Kernel API or hidden with explicit `API unavailable`; skill workers never show chat/direct actions.
 
 Verification:
 - `curl -s http://127.0.0.1:8780/v1/tool-calls?limit=200 | python3 -m json.tool`
@@ -384,6 +434,7 @@ Deliver:
 - Evidence panel and safe preview modal.
 - Defensive rendering for unsanitized tool calls.
 - Local skill worker smoke creates visible task/evidence/tool/budget data.
+- Mixed-currency display uses backend per-currency rows only; no frontend conversion or fake combined amount.
 
 Verification:
 - `curl -s http://127.0.0.1:8780/v1/budget-summary | python3 -m json.tool`
@@ -418,3 +469,5 @@ Round 1 design review was used as critique input only. Product decisions after r
 3. Sessions: no kill or archive session action in MVP. Cancel task/attempt is the supported control. Backend/session lifecycle cleanup is a later backend issue, not a 3-day UI action.
 4. Doctor: browser shows `/v1/doctor`, never links to local shell command.
 5. Drawer loading: use one task detail endpoint first to avoid N+1 polling.
+6. Backend gap handling: mixed-currency rows, completion-invalid task markers, doctor summary in cockpit, tool-call detail payload size, and direct-message API are explicit API contracts. The dashboard must show `API gap` instead of inventing state.
+7. Stagnant state: browser renders backend-owned long-task state; it does not use local clock drift to decide failure.
