@@ -4450,6 +4450,41 @@
     }).join('\n');
   }
 
+  function runtimeSessionsSummary(sessions) {
+    const rows = Array.isArray(sessions) ? sessions : [];
+    if (!rows.length) return 'No runtime sessions recorded for this task.';
+    return rows.slice(0, 8).map(item => {
+      return sanitizeDisplayText(`${item.status || '-'} · session=${item.session_id || '-'} · employee=${item.employee_id || '-'} · adapter=${item.adapter_type || '-'} · runtime=${item.runtime_type || '-'} · attempt=${item.attempt_id || '-'} · heartbeat=${item.last_heartbeat_at || '-'}`);
+    }).join('\n');
+  }
+
+  function toolCallsSummary(calls) {
+    const rows = Array.isArray(calls) ? calls : [];
+    if (!rows.length) return 'No tool calls recorded for this task.';
+    return rows.slice(0, 10).map(item => {
+      return sanitizeDisplayText(`${item.status || '-'} · ${item.tool_name || item.tool_call_id || '-'} · type=${item.tool_type || '-'} · employee=${item.employee_id || '-'} · attempt=${item.attempt_id || '-'} · ${item.output_summary || item.input_summary || item.error_message || ''}`);
+    }).join('\n');
+  }
+
+  function budgetSummaryDetail(summary) {
+    const item = summary || {};
+    const byEmployee = item.by_employee || {};
+    const employeeRows = Object.entries(byEmployee).slice(0, 6).map(([employee, amount]) => `${employee}=${amount}`).join(' · ');
+    return [
+      `events=${item.event_count || 0} · total=${item.currency || 'USD'} ${item.total_amount || 0}`,
+      `tokens input=${item.token_input || 0} · output=${item.token_output || 0} · runtime=${item.runtime_seconds || 0}s`,
+      employeeRows || 'No employee cost rows yet.'
+    ].join('\n');
+  }
+
+  function budgetEventsSummary(events) {
+    const rows = Array.isArray(events) ? events : [];
+    if (!rows.length) return 'No budget events recorded for this task.';
+    return rows.slice(0, 10).map(item => {
+      return sanitizeDisplayText(`${item.created_at || '-'} · ${item.cost_type || '-'} · ${item.currency || 'USD'} ${item.amount || 0} · employee=${item.employee_id || '-'} · attempt=${item.attempt_id || '-'} · tokens=${item.token_input || 0}/${item.token_output || 0} · ${item.summary || ''}`);
+    }).join('\n');
+  }
+
   function adapterRunLogPolicySummary(run) {
     const policy = (run && run.log_policy) || {};
     return `${policy.mode || 'sanitized_only'} · ${policy.summary || 'raw stdout/stderr hidden'}`;
@@ -4933,6 +4968,10 @@
       const sanitizedLogs = payload.sanitized_logs || [];
       const approvals = payload.approvals || [];
       const evidenceRecords = payload.evidence_records || [];
+      const runtimeSessions = payload.runtime_sessions || [];
+      const toolCalls = payload.tool_calls || [];
+      const budgetSummary = payload.budget_summary || {};
+      const budgetEvents = payload.budget_events || [];
       const supervisorState = payload.supervisor_state || {};
       const correctionSummary = payload.correction_summary || {};
       const attemptHistory = payload.attempt_history || {};
@@ -4959,6 +4998,10 @@
         ['Task Decision', taskDecisionSummary(task, latestAttempt, payload)],
         ['Latest Attempt Summary', latestAttemptSummary(latestAttempt)],
         ['Attempt History Summary', attemptHistoryContractSummary(attemptHistory, attempts)],
+        ['Runtime Sessions', runtimeSessionsSummary(runtimeSessions)],
+        ['Tool Calls', toolCallsSummary(toolCalls)],
+        ['Budget Summary', budgetSummaryDetail(budgetSummary)],
+        ['Budget Events', budgetEventsSummary(budgetEvents)],
         ['Evidence Records Summary', evidenceRecordsSummary(evidenceRecords)],
         ['Sanitized Logs Summary', sanitizedLogsSummary(sanitizedLogs)],
         ['Heartbeat State', task.heartbeat_state || latestAttempt.heartbeat_state || '-'],

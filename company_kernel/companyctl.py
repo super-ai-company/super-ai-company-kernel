@@ -7683,6 +7683,10 @@ def cmd_task_show(args: argparse.Namespace) -> int:
     attempts = task_attempts(conn, task_id)
     attempt_history = task_attempt_history(attempts)
     evidence_records = task_evidence_records(conn, task_id)
+    runtime_sessions = list_runtime_sessions(conn, task_id=task_id, limit=50)
+    tool_calls = list_tool_calls(conn, task_id=task_id, limit=100)
+    budget_events = list_budget_events(conn, task_id=task_id, limit=100)
+    task_budget_summary = budget_summary(conn, task_id=task_id)
     sanitized_logs = []
     log_policy = sanitized_log_policy()
     for run in rows(
@@ -7734,6 +7738,10 @@ def cmd_task_show(args: argparse.Namespace) -> int:
             "hook_runs": hook_runs,
             "attempts": attempts,
             "attempt_history": attempt_history,
+            "runtime_sessions": runtime_sessions,
+            "tool_calls": tool_calls,
+            "budget_events": budget_events,
+            "budget_summary": task_budget_summary,
             "conversation_summary": task_conversation_summary(conn, metadata),
             "progress_events": task_progress_events(events),
             "correction_events": task_correction_events(events),

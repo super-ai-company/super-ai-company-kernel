@@ -5153,6 +5153,124 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual(1200, cockpit["budget_summary"]["token_input"])
         self.assertEqual(340, cockpit["budget_summary"]["token_output"])
 
+    def test_task_detail_includes_runtime_tool_call_and_budget_ledgers(self) -> None:
+        code, submitted = run_cli("task", "submit", "--from", "openclaw-main", "--to", "codex", "--task-id", "task-detail-control-plane", "--title", "Task detail control plane")
+        self.assertEqual(0, code, submitted)
+        code, running = run_cli("task", "run", "--task-id", "task-detail-control-plane", "--agent", "codex", "--by", "hermes", "--adapter-type", "codex")
+        self.assertEqual(0, code, running)
+        attempt_id = running["attempt"]["attempt_id"]
+        trace_id = running["attempt"]["trace_id"]
+        code, session = run_cli(
+            "runtime",
+            "session",
+            "start",
+            "--session-id",
+            "session-task-detail-control-plane",
+            "--task-id",
+            "task-detail-control-plane",
+            "--attempt-id",
+            attempt_id,
+            "--employee",
+            "codex",
+            "--adapter-type",
+            "codex",
+            "--runtime-type",
+            "cli",
+        )
+        self.assertEqual(0, code, session)
+        code, tool = run_cli(
+            "tool-call",
+            "start",
+            "--tool-call-id",
+            "tool-task-detail-control-plane",
+            "--task-id",
+            "task-detail-control-plane",
+            "--attempt-id",
+            attempt_id,
+            "--employee",
+            "codex",
+            "--session-id",
+            "session-task-detail-control-plane",
+            "--tool-name",
+            "shell",
+            "--tool-type",
+            "shell",
+            "--input-summary",
+            "inspect task detail",
+        )
+        self.assertEqual(0, code, tool)
+        code, finished_tool = run_cli(
+            "tool-call",
+            "finish",
+            "--tool-call-id",
+            "tool-task-detail-control-plane",
+            "--status",
+            "success",
+            "--output-summary",
+            "task detail inspected",
+        )
+        self.assertEqual(0, code, finished_tool)
+        code, budget = run_cli(
+            "budget",
+            "record",
+            "--budget-event-id",
+            "budget-task-detail-control-plane",
+            "--task-id",
+            "task-detail-control-plane",
+            "--attempt-id",
+            attempt_id,
+            "--employee",
+            "codex",
+            "--cost-type",
+            "model_api",
+            "--amount",
+            "0.25",
+            "--currency",
+            "USD",
+            "--token-input",
+            "500",
+            "--token-output",
+            "120",
+            "--runtime-seconds",
+            "30",
+            "--summary",
+            "task detail budget",
+        )
+        self.assertEqual(0, code, budget)
+
+        code, shown = run_cli("task", "show", "--task-id", "task-detail-control-plane")
+        self.assertEqual(0, code, shown)
+        self.assertEqual(["session-task-detail-control-plane"], [item["session_id"] for item in shown["runtime_sessions"]])
+        self.assertEqual(["tool-task-detail-control-plane"], [item["tool_call_id"] for item in shown["tool_calls"]])
+        self.assertEqual(["budget-task-detail-control-plane"], [item["budget_event_id"] for item in shown["budget_events"]])
+        self.assertEqual(0.25, shown["budget_summary"]["total_amount"])
+        self.assertEqual(500, shown["budget_summary"]["token_input"])
+        self.assertEqual(trace_id, shown["runtime_sessions"][0]["trace_id"])
+
+        status, api_payload = api_gateway.route_get("/v1/tasks/task-detail-control-plane", {})
+        self.assertEqual(HTTPStatus.OK, status, api_payload)
+        self.assertEqual(["tool-task-detail-control-plane"], [item["tool_call_id"] for item in api_payload["tool_calls"]])
+        self.assertEqual(0.25, api_payload["budget_summary"]["total_amount"])
+
+    def test_dashboard_task_detail_drawer_renders_control_plane_ledgers(self) -> None:
+        template = Path(__file__).resolve().parents[1] / "dashboard_templates" / "gemini_dashboard.html"
+        html = template.read_text(encoding="utf-8")
+        for snippet in [
+            "const runtimeSessions = payload.runtime_sessions || [];",
+            "const toolCalls = payload.tool_calls || [];",
+            "const budgetSummary = payload.budget_summary || {};",
+            "const budgetEvents = payload.budget_events || [];",
+            "['Runtime Sessions', runtimeSessionsSummary(runtimeSessions)]",
+            "['Tool Calls', toolCallsSummary(toolCalls)]",
+            "['Budget Summary', budgetSummaryDetail(budgetSummary)]",
+            "['Budget Events', budgetEventsSummary(budgetEvents)]",
+            "function runtimeSessionsSummary",
+            "function toolCallsSummary",
+            "function budgetSummaryDetail",
+            "function budgetEventsSummary",
+        ]:
+            self.assertIn(snippet, html)
+
     def test_v3_workspace_artifact_handoff_attempt_and_trace_flow(self) -> None:
         for employee_id, role in [("manager", "supervisor"), ("writer", "copywriter"), ("qa", "qa")]:
             code, created = run_cli("employee", "create", "--id", employee_id, "--name", employee_id, "--role", role, "--runtime", "local", "--workspace", str(self.root / "workspace" / employee_id))
