@@ -632,7 +632,7 @@ def build_cockpit_summary(summary: dict) -> dict:
 
 
 def recent_direct_messages(conn: sqlite3.Connection, *, limit: int = 20) -> list[dict]:
-    return rows(
+    messages = rows(
         conn,
         """
         SELECT id,
@@ -647,6 +647,38 @@ def recent_direct_messages(conn: sqlite3.Connection, *, limit: int = 20) -> list
         """,
         (limit,),
     )
+    for message in messages:
+        task_context = extract_task_context_from_chat_item(message)
+        low_signal = is_low_signal_chat_message(message, task_context=task_context)
+        message["task_context"] = task_context
+        message["task_bound"] = bool(task_context)
+        message["low_signal"] = low_signal
+        message["chat_classification"] = "task_bound" if task_context else ("handshake_or_idle" if low_signal else "work_relevant")
+    return messages
+
+
+def extract_task_context_from_chat_item(item: dict) -> str:
+    direct = str(item.get("task_id") or item.get("taskId") or "").strip()
+    if direct:
+        return direct
+    text = " ".join(str(item.get(key, "") or "") for key in ("title", "body", "evidence_path", "id", "conversation_id"))
+    match = re.search(r"\b(task[-_:][A-Za-z0-9._-]+|TASK[-_:][A-Za-z0-9._-]+)\b", text)
+    return match.group(1) if match else ""
+
+
+def is_low_signal_chat_message(item: dict, *, task_context: str = "") -> bool:
+    body = str(item.get("body") or "").strip()
+    if not body:
+        return True
+    if task_context:
+        return False
+    if re.search(r"(attempt_id|task_id|trace_id|evidence|artifact|handoff|progress|blocked|failed|completed|done|stale|correction|approval)", body, re.IGNORECASE):
+        return False
+    if len(body) > 160:
+        return False
+    if re.search(r"^(hi|hello|hey|ping|pong|ack|ok|okay|thanks|thank you|收到|在|在线|你好|谢谢|感谢|早上好|晚上好|direct channel opened|dashboard direct ui ping|rest ping|smoke|handshake|greeting|idle|round\s*\d+|direct_ok|message direct ok)[\s.!。！]*$", body, re.IGNORECASE):
+        return True
+    return bool(re.search(r"\b(handshake|greeting|idle chatter|direct_ok|message direct ok)\b", body, re.IGNORECASE))
 
 
 def internal_communication_watchdog(conn: sqlite3.Connection, *, generated_at: str, limit: int = 20) -> dict:
