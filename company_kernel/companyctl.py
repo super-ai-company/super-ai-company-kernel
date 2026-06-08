@@ -7553,6 +7553,8 @@ def approval_control_summary(approvals: list[dict]) -> dict:
             external_send_executed += 1
         if action in {"external_send", "telegram_send", "openclaw_send"} and not safety.get("external_send_executed"):
             real_execution_blockers["external_send"] = real_execution_blockers.get("external_send", 0) + 1
+        if action in {"budget_overrun", "budget.overrun"} and status == "pending":
+            real_execution_blockers["budget_overrun"] = real_execution_blockers.get("budget_overrun", 0) + 1
     return {
         "total": len(approvals),
         "by_status": by_status,

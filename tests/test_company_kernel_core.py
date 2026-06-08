@@ -2190,6 +2190,34 @@ class CompanyKernelCoreTest(unittest.TestCase):
             "approval-cockpit-awaiting",
         )
         self.assertEqual(0, code, approval)
+        code, budget_approval = run_cli(
+            "approval",
+            "request",
+            "--from",
+            "main",
+            "--action",
+            "budget_overrun",
+            "--reason",
+            "task budget exceeded hard limit",
+            "--target",
+            "codex-cockpit",
+            "--risk",
+            "P0",
+            "--task-id",
+            "task-cockpit-long",
+            "--approval-id",
+            "approval-cockpit-budget-overrun",
+        )
+        self.assertEqual(0, code, budget_approval)
+        conn = companyctl.connect()
+        try:
+            approval_row = conn.execute("SELECT reason FROM approvals WHERE id = ?", ("approval-cockpit-budget-overrun",)).fetchone()
+            detail = json.loads(approval_row["reason"])
+            detail["metadata"].update({"budget_amount": 1.2, "currency": "USD", "limit_status": "hard_exceeded", "hard_limit": 1.0})
+            conn.execute("UPDATE approvals SET reason = ? WHERE id = ?", (json.dumps(detail, ensure_ascii=False), "approval-cockpit-budget-overrun"))
+            conn.commit()
+        finally:
+            conn.close()
         conn = companyctl.connect()
         try:
             workspace = companyctl.ensure_task_workspace(conn, "task-cockpit-long")
@@ -2298,7 +2326,7 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertGreaterEqual(cockpit["counts"]["readiness_counts"]["online_only"], 1)
         self.assertEqual(2, cockpit["counts"]["done_tasks"])
         self.assertEqual(1, cockpit["counts"]["evidence_issues"])
-        self.assertEqual(1, cockpit["counts"]["awaiting_approval_tasks"])
+        self.assertEqual(2, cockpit["counts"]["awaiting_approval_tasks"])
         self.assertEqual("single_company_kernel_ledger", cockpit["ledger_consistency"]["source"])
         self.assertEqual(["api", "cli", "dashboard"], cockpit["ledger_consistency"]["surfaces"])
         self.assertEqual("API / CLI / Dashboard read the same Company Kernel ledger", cockpit["ledger_consistency"]["summary"])
@@ -2403,6 +2431,15 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertTrue(approval_action_meta["deny"]["requires_owner_approval"])
         self.assertTrue(all(action["task_id"] == "task-cockpit-awaiting-approval" for action in approval_attention["actions"]))
         self.assertTrue(all(action["approval_id"] == "approval-cockpit-awaiting" for action in approval_attention["actions"]))
+        budget_attention = next(item for item in cockpit["owner_attention"] if item["approval_id"] == "approval-cockpit-budget-overrun")
+        self.assertEqual("approval", budget_attention["kind"])
+        self.assertEqual("budget_overrun", budget_attention["approval_action"])
+        self.assertEqual("P0", budget_attention["risk"])
+        self.assertEqual("hard_exceeded", budget_attention["budget"]["limit_status"])
+        self.assertEqual(1.2, budget_attention["budget"]["amount"])
+        self.assertEqual("USD", budget_attention["budget"]["currency"])
+        self.assertIn("预算超限", budget_attention["message"])
+        self.assertTrue(all(action["requires_owner_approval"] for action in budget_attention["actions"] if action["id"] in {"approve", "deny"}))
         evidence_attention = next(item for item in cockpit["owner_attention"] if item["task_id"] == "task-cockpit-done-missing-evidence" and item["kind"] == "evidence_issue")
         self.assertEqual("evidence_issue", evidence_attention["kind"])
         self.assertEqual("blocked", evidence_attention["state"])
@@ -4068,6 +4105,23 @@ class CompanyKernelCoreTest(unittest.TestCase):
             "approval-control-rule-change",
         )
         self.assertEqual(code, 0, rule_change)
+        code, budget_overrun = run_cli(
+            "approval",
+            "request",
+            "--from",
+            "ops",
+            "--action",
+            "budget_overrun",
+            "--reason",
+            "task spend exceeded hard limit",
+            "--risk",
+            "P0",
+            "--task-id",
+            "task-approval-control",
+            "--approval-id",
+            "approval-control-budget-overrun",
+        )
+        self.assertEqual(code, 0, budget_overrun)
         code, mock = run_cli(
             "approval",
             "request",
@@ -4093,14 +4147,15 @@ class CompanyKernelCoreTest(unittest.TestCase):
         status, listed = api_gateway.route_get("/v1/approvals", {"status": ["all"], "limit": ["10"]})
         self.assertEqual(200, status, listed)
         summary = listed["approval_control_summary"]
-        self.assertEqual(3, summary["total"])
-        self.assertEqual(2, summary["by_status"]["pending"])
+        self.assertEqual(4, summary["total"])
+        self.assertEqual(3, summary["by_status"]["pending"])
         self.assertEqual(1, summary["by_status"]["resolved"])
-        self.assertEqual(["external_send", "rule_change"], summary["high_risk_actions"])
-        self.assertEqual(["external_send", "rule_change"], summary["pending_high_risk_actions"])
+        self.assertEqual(["budget_overrun", "external_send", "rule_change"], summary["high_risk_actions"])
+        self.assertEqual(["budget_overrun", "external_send", "rule_change"], summary["pending_high_risk_actions"])
         self.assertEqual(1, summary["dry_run_resolved"])
         self.assertEqual(0, summary["external_send_executed"])
         self.assertEqual(2, summary["real_execution_blockers"]["external_send"])
+        self.assertEqual(1, summary["real_execution_blockers"]["budget_overrun"])
         self.assertTrue(summary["real_external_send_requires_owner_approval"])
         self.assertIn("blocked until owner approval", summary["summary"])
 
