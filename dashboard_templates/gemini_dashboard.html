@@ -4507,11 +4507,12 @@
       const target = message.target_agent || '-';
       const avatarChar = String(source || '--').slice(0, 2).toUpperCase();
       const taskContext = extractTaskContext(message);
+      const classification = message.chat_classification || (message.low_signal ? 'handshake_or_idle' : (taskContext ? 'task_bound' : 'work_relevant'));
       return `
         <div class="chat-bubble-container">
           <div class="chat-bubble-avatar">${escapeHtml(avatarChar)}</div>
           <div class="chat-bubble-wrapper">
-            <div class="chat-bubble-sender">${escapeHtml(source)} → ${escapeHtml(target)} <span class="direct-message-pill">direct</span>${taskContext ? ` <span class="chat-task-context-pill">Task-bound ${escapeHtml(taskContext)}</span>` : ''}</div>
+            <div class="chat-bubble-sender">${escapeHtml(source)} → ${escapeHtml(target)} <span class="direct-message-pill">direct</span><span class="chat-task-context-pill">${escapeHtml(classification)}</span>${taskContext ? ` <span class="chat-task-context-pill">Task-bound ${escapeHtml(taskContext)}</span>` : ''}</div>
             <div class="chat-bubble-body">${escapeHtml(message.body || '')}</div>
             <div class="chat-bubble-time">${formatDate(message.created_at || '')}</div>
           </div>
