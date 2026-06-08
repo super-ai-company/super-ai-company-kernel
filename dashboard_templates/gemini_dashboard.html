@@ -2757,9 +2757,9 @@
         </div>
 
         <div class="section-card" style="margin-top: 20px;">
-          <h2><i class="fa-solid fa-satellite-dish"></i> OpenClaw Runtime Discovery</h2>
+          <h2><i class="fa-solid fa-satellite-dish"></i> OpenClaw Runtime Inventory</h2>
           <p style="font-size: 12px; color: var(--text-secondary); margin-bottom: 12px;">
-            Read-only view of local OpenClaw agent/session/spool directories. Missing entries are discovered on this Mac but not yet registered as Company Kernel employees.
+            Read-only inventory from /v1/openclaw/runtime-inventory: local OpenClaw agent/session/spool directories, registration status, and Telegram queue counts.
           </p>
           <div id="openclaw-runtime-inventory-container">
             <!-- Populated by JS -->
@@ -6058,6 +6058,13 @@
       </tr>
     `).join('') : `<tr><td colspan="6" style="color: var(--text-muted); text-align:center;">No OpenClaw runtime directories found.</td></tr>`;
     container.innerHTML = `
+      <div class="cockpit-row" style="margin-bottom: 12px;">
+        <div>
+          <strong>OpenClaw Runtime Inventory</strong>
+          <span>source=/v1/openclaw/runtime-inventory · read-only · no OpenClaw bus mutation</span>
+        </div>
+        <div class="long-task-state success">inventory</div>
+      </div>
       <div class="metrics-grid" style="grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); margin-bottom: 12px;">
         <div class="metric-card"><div class="metric-label">Agent Dirs</div><div class="metric-value">${escapeHtml(String(counts.agent_dirs || 0))}</div></div>
         <div class="metric-card"><div class="metric-label">Telegram Spools</div><div class="metric-value">${escapeHtml(String(counts.telegram_spools || 0))}</div></div>
