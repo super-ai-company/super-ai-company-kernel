@@ -1529,21 +1529,18 @@ def employee_view_models(summary: dict) -> list[dict]:
             heartbeat_status = employee.get("heartbeat_status", "missing")
             if employee_status != "active":
                 kernel_state = employee_status
-                schedulable = "no"
             elif heartbeat_status == "missing":
                 kernel_state = "missing_heartbeat"
-                schedulable = "no"
             elif age is not None and age > 15:
                 kernel_state = "stale_heartbeat"
-                schedulable = "no"
             else:
                 kernel_state = "online"
-                schedulable = "yes"
             readiness = companyctl.classify_agent_matrix_row(
                 conn,
                 {"id": employee["id"], "name": employee.get("name", employee["id"]), "runtime": employee.get("runtime", ""), "status": employee_status},
                 {"status": "online" if kernel_state == "online" else "missing"},
             )
+            schedulable = readiness.get("level") == "active_ready"
             employees.append(
                 {
                     **employee,
