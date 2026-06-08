@@ -4082,6 +4082,27 @@
     return companyApiRequest(path, payload, 'POST');
   }
 
+  window.submitTaskToEmployee = async function(id) {
+    const source = prompt(`Source employee for task -> ${id}`, HUMAN_OWNER_ID || 'main') || (HUMAN_OWNER_ID || 'main');
+    const title = prompt(`Task title for ${id}`, 'Dashboard assigned task');
+    if (!title) return;
+    const description = prompt('Task description', title) || title;
+    companyApiLog('SYSTEM', `Submitting task to '${id}' through Company Kernel ledger...`, 'normal');
+    try {
+      const result = await companyApiPost('/v1/tasks', {
+        from: source,
+        to: id,
+        title,
+        description,
+        priority: 'P3'
+      });
+      companyApiLog('SYSTEM', `Task submitted to '${id}': ${result.task_id || result.id || '(created)'}. Progress and evidence will appear in Tasks, Adapter Runs, and Trace.`, 'success');
+      refreshLiveDashboardFromApi();
+    } catch (err) {
+      companyApiLog('ERROR', `Task submit failed for '${id}': ${err.message}`, 'error');
+    }
+  };
+
   function buildApprovalReason(detail) {
     return JSON.stringify(Object.assign({
       request_reason: 'dashboard_owner_approval_required',
@@ -6768,6 +6789,18 @@
       const skills = emp.skills || '';
       const skillsPills = skills ? skills.split(',').map(s => `<span class="capability-tag" style="font-size: 9px; padding: 2px 5px; margin-top: 4px;">${escapeHtml(s.trim())}</span>`).join(' ') : '';
       const detailKey = storeDashboardDetail(`employee:${emp.id || '-'}`, emp);
+      const runtime = emp.runtime || '';
+      const canDirect = runtime !== 'skill' && runtime !== 'human';
+      const taskButton = emp.schedulable ? `
+            <button class="card-footer-action-btn" onclick="event.stopPropagation(); submitTaskToEmployee('${escapeHtml(emp.id)}')">
+              <i class="fa-solid fa-list-check"></i> Task
+            </button>
+      ` : '';
+      const directButton = canDirect ? `
+            <button class="card-footer-action-btn" onclick="event.stopPropagation(); routeDirectMessageToChat('${escapeHtml(emp.id)}')">
+              <i class="fa-solid fa-paper-plane"></i> Send Message
+            </button>
+      ` : `<span class="muted" style="font-size: 11px;">No chat; task/evidence only</span>`;
 
       return `
         <div class="employee-card" onclick="showStoredDetails('Employee details: ${escapeHtml(emp.id)}', '${escapeHtml(detailKey)}')">
@@ -6811,9 +6844,8 @@
             ${skillsPills}
           </div>
           <div class="employee-card-footer">
-            <button class="card-footer-action-btn" onclick="event.stopPropagation(); routeDirectMessageToChat('${escapeHtml(emp.id)}')">
-              <i class="fa-solid fa-paper-plane"></i> Send Message
-            </button>
+            ${taskButton}
+            ${directButton}
           </div>
         </div>
       `;

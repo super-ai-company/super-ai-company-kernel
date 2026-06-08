@@ -3068,6 +3068,7 @@ def classify_agent_matrix_row(conn: sqlite3.Connection, employee: dict, attendan
     runtime = str(employee.get("runtime") or "")
     attendance_status = str(attendance.get("status") or "missing")
     runtime_ok = employee_has_runtime_evidence(employee_id, conn)
+    direct_ok = employee_has_verified_direct_evidence(employee_id)
     latest_attempt = latest_attempt_for_employee(conn, employee_id)
     employee_status = str(employee.get("status") or "")
     if employee_status == "missing":
@@ -3076,6 +3077,12 @@ def classify_agent_matrix_row(conn: sqlite3.Connection, employee: dict, attendan
     elif runtime == "skill" and employee_status == "active" and runtime_ok:
         level = "active_ready"
         reason = "skill_runtime_evidence_no_direct_chat_required"
+    elif runtime != "openclaw" and employee_status == "active" and runtime_ok:
+        level = "active_ready"
+        reason = "adapter_runtime_evidence_no_openclaw_session_required"
+    elif runtime == "openclaw" and employee_status == "active" and (runtime_ok or direct_ok):
+        level = "active_ready"
+        reason = "openclaw_direct_or_runtime_evidence_verified"
     elif attendance_status != "online":
         level = "no_reply"
         reason = f"attendance_{attendance_status}"
@@ -3103,7 +3110,7 @@ def classify_agent_matrix_row(conn: sqlite3.Connection, employee: dict, attendan
         "reason": reason,
         "checks": {
             "attendance": attendance_status,
-            "direct": "verified" if employee_has_verified_direct_evidence(employee_id) else "not_verified",
+            "direct": "verified" if direct_ok else "not_verified",
             "runtime": "verified" if runtime_ok else "missing",
             "task": "supported" if employee_status == "active" else "not_active",
             "progress": "observable" if latest_attempt else "not_checked",
@@ -3119,19 +3126,32 @@ def cmd_agent_matrix(args: argparse.Namespace) -> int:
     conn = connect()
     requested = parse_csv(args.agents)
     if requested:
-        placeholders = ",".join("?" for _ in requested)
+        resolved_requested: list[tuple[str, str]] = []
+        for employee_id in requested:
+            resolved_requested.append((employee_id, resolve_employee_alias(employee_id)))
+        canonical_ids = list(dict.fromkeys(resolved for _raw, resolved in resolved_requested))
+        placeholders = ",".join("?" for _ in canonical_ids)
         known = {
             row["id"]: dict(row)
-            for row in conn.execute(f"SELECT * FROM employees WHERE id IN ({placeholders}) ORDER BY id", tuple(requested)).fetchall()
+            for row in conn.execute(f"SELECT * FROM employees WHERE id IN ({placeholders}) ORDER BY id", tuple(canonical_ids)).fetchall()
         }
-        employees = []
-        for employee_id in requested:
-            employees.append(known.get(employee_id, {"id": employee_id, "name": employee_id, "runtime": "unknown", "status": "missing"}))
+        employee_specs = []
+        for requested_id, canonical_id in resolved_requested:
+            employee = known.get(canonical_id, {"id": canonical_id, "name": requested_id, "runtime": "unknown", "status": "missing"})
+            employee_specs.append((requested_id, canonical_id, employee))
     else:
-        employees = rows(conn, "SELECT * FROM employees WHERE status IN ('active', 'candidate') ORDER BY id")
+        employee_specs = [(employee["id"], employee["id"], employee) for employee in rows(conn, "SELECT * FROM employees WHERE status IN ('active', 'candidate') ORDER BY id")]
     attendance_report = load_latest_attendance()
     attendance_by_agent = attendance_row_map(attendance_report)
-    matrix_rows = [classify_agent_matrix_row(conn, employee, attendance_by_agent.get(employee["id"], {})) for employee in employees]
+    matrix_rows = []
+    for requested_id, canonical_id, employee in employee_specs:
+        attendance = attendance_by_agent.get(canonical_id, attendance_by_agent.get(requested_id, {}))
+        row = classify_agent_matrix_row(conn, employee, attendance)
+        if requested_id != canonical_id:
+            row["requested_agent"] = requested_id
+            row["canonical_agent"] = canonical_id
+            row["alias_of"] = canonical_id
+        matrix_rows.append(row)
     counts = {}
     for row in matrix_rows:
         counts[row["level"]] = counts.get(row["level"], 0) + 1
@@ -3849,15 +3869,17 @@ def cmd_employee_update(args: argparse.Namespace) -> int:
         "status": args.status or current["status"],
         "updated_at": now(),
     }
-    if args.status == "active" and not employee_has_verified_direct_evidence(employee_id):
+    if args.status == "active" and not (
+        employee_has_verified_direct_evidence(employee_id) or employee_has_runtime_evidence(employee_id, conn)
+    ):
         conn.close()
         emit(
             {
                 "ok": False,
-                "error": "employee activation requires 2-4 verified direct communication rounds",
+                "error": "employee activation requires verified direct communication or structured runtime evidence",
                 "employee_id": employee_id,
                 "status": current["status"],
-                "required_command": f"bin/companyctl employee verify-direct --id {employee_id} --from main --rounds 3 --activate",
+                "required_command": f"bin/companyctl employee verify-direct --id {employee_id} --from main --rounds 3 --activate OR bin/companyctl runtime verify-adapters --agents {employee_id} --allow-candidate",
             }
         )
         return 2
@@ -5112,13 +5134,14 @@ def submit_task_internal(
     priority: str = "P2",
     task_id: str = "",
     metadata: dict | None = None,
+    allow_candidate: bool = False,
 ) -> dict:
     source = resolve_employee_alias(source)
     target = resolve_employee_alias(target)
     require_employee(conn, source)
     require_employee(conn, target)
     inactive = require_active_employee(conn, target, "task.submit")
-    if inactive:
+    if inactive and not allow_candidate:
         raise SystemExit(json.dumps(inactive, ensure_ascii=False))
     policy = require_communication_allowed(source, target, "task.submit")
     tid = task_id or f"task-{datetime.now().strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:6]}"
@@ -8606,30 +8629,49 @@ def cmd_runtime_verify_adapters(args: argparse.Namespace) -> int:
             continue
         existing = conn.execute("SELECT status, evidence_path FROM tasks WHERE id = ?", (task_id,)).fetchone()
         if not existing:
-            submit_code, submit_payload, submit_stderr = run_companyctl_json(
-                [
-                    "task",
-                    "submit",
-                    "--from",
-                    source,
-                    "--to",
-                    emp["id"],
-                    "--task-id",
-                    task_id,
-                    "--title",
-                    title,
-                    "--description",
-                    "Adapter dry-run check task. Adapter must claim, write evidence, complete, and heartbeat.",
-                    "--priority",
-                    "P3",
-                ]
-            )
-            if submit_code != 0:
-                result.update({"error": "task submit failed", "submit_stdout": submit_payload, "submit_stderr": submit_stderr})
-                results.append(result)
-                continue
-            conn.close()
-            conn = connect()
+            if args.allow_candidate:
+                try:
+                    submit_payload = submit_task_internal(
+                        conn,
+                        source=source,
+                        target=emp["id"],
+                        task_id=task_id,
+                        title=title,
+                        description="Adapter dry-run check task. Adapter must claim, write evidence, complete, and heartbeat.",
+                        priority="P3",
+                        metadata={"runtime_verify": True, "allow_candidate": True},
+                        allow_candidate=True,
+                    )
+                except SystemExit as exc:
+                    result.update({"error": "task submit failed", "submit_stdout": parse_json_output(str(exc)), "submit_stderr": ""})
+                    results.append(result)
+                    continue
+                result["candidate_verification"] = True
+            else:
+                submit_code, submit_payload, submit_stderr = run_companyctl_json(
+                    [
+                        "task",
+                        "submit",
+                        "--from",
+                        source,
+                        "--to",
+                        emp["id"],
+                        "--task-id",
+                        task_id,
+                        "--title",
+                        title,
+                        "--description",
+                        "Adapter dry-run check task. Adapter must claim, write evidence, complete, and heartbeat.",
+                        "--priority",
+                        "P3",
+                    ]
+                )
+                if submit_code != 0:
+                    result.update({"error": "task submit failed", "submit_stdout": submit_payload, "submit_stderr": submit_stderr})
+                    results.append(result)
+                    continue
+                conn.close()
+                conn = connect()
         cmd = [str(ROOT / "bin" / command), "--agent", emp["id"]]
         if runtime == "skill":
             package = skill_package_for_employee(conn, emp["id"])
@@ -9619,6 +9661,7 @@ def build_parser() -> argparse.ArgumentParser:
     runtime_verify_adapters.add_argument("--agents", default="", help="comma-separated employee ids; defaults to all adapter-backed employees")
     runtime_verify_adapters.add_argument("--source", default="", help="source employee for verification tasks; default auto-detects openclaw-main/main")
     runtime_verify_adapters.add_argument("--task-id-prefix", default="task-runtime-verify")
+    runtime_verify_adapters.add_argument("--allow-candidate", action="store_true", help="allow safe dry-run verification tasks for candidate employees without enabling normal scheduling")
     runtime_verify_adapters.add_argument("--execute", action="store_true", help="run real adapter execution; default is safe dry-run")
     runtime_verify_adapters.add_argument("--run-scheduler", action=argparse.BooleanOptionalAction, default=True, help="process generated events after adapter verification")
     runtime_verify_adapters.set_defaults(func=cmd_runtime_verify_adapters)

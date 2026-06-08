@@ -621,7 +621,7 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual(0, code, created)
         code, blocked = run_cli("employee", "update", "--id", "new-codex", "--status", "active")
         self.assertEqual(2, code, blocked)
-        self.assertEqual("employee activation requires 2-4 verified direct communication rounds", blocked["error"])
+        self.assertEqual("employee activation requires verified direct communication or structured runtime evidence", blocked["error"])
 
         code, verified = run_cli("employee", "verify-direct", "--id", "new-codex", "--from", "main", "--rounds", "2", "--activate")
         self.assertEqual(0, code, verified)
@@ -2095,6 +2095,27 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertIn("counts.readiness_counts", html)
         self.assertIn("active_ready", html)
         self.assertIn("online_only", html)
+        self.assertIn("submitTaskToEmployee", html)
+        self.assertIn("No chat; task/evidence only", html)
+
+    def test_dashboard_hides_direct_button_for_skill_worker(self) -> None:
+        code, skill = run_cli("employee", "create", "--id", "image-copy-skill", "--name", "Image Copy Skill", "--role", "skill-worker", "--runtime", "skill", "--workspace", str(self.root / "workspace" / "image-copy-skill"))
+        self.assertEqual(0, code, skill)
+        self.mark_active("image-copy-skill")
+        code, heartbeat = run_cli("heartbeat", "--agent", "image-copy-skill")
+        self.assertEqual(0, code, heartbeat)
+        verification_dir = self.root / "state" / "employee-verification" / "image-copy-skill"
+        verification_dir.mkdir(parents=True)
+        (verification_dir / "latest-runtime.json").write_text(json.dumps({"ok": True, "activation_allowed": True}, ensure_ascii=False), encoding="utf-8")
+        output = self.root / "state" / "dashboard-skill-worker.html"
+        with contextlib.redirect_stdout(io.StringIO()):
+            code = company_dashboard.main(["--output", str(output), "--variant", "basic"])
+        self.assertEqual(0, code)
+        html = output.read_text(encoding="utf-8")
+        row = html.split("<td>image-copy-skill</td>", 1)[1].split("</tr>", 1)[0]
+        self.assertNotIn("directMessageEmployee('image-copy-skill')", row)
+        self.assertIn("No chat; task/evidence only", row)
+        self.assertIn("submitTaskToEmployee('image-copy-skill')", row)
 
     def test_cockpit_api_sanitizes_evidence_and_exposes_long_task_state(self) -> None:
         code, created = run_cli("employee", "create", "--id", "main", "--name", "main", "--role", "operator", "--runtime", "openclaw", "--workspace", str(self.root / "workspace" / "main"))
@@ -7297,7 +7318,7 @@ class CompanyKernelCoreTest(unittest.TestCase):
             {"name": "Cursor API Employee", "role": "developer", "status": "active"},
         )
         self.assertEqual(HTTPStatus.BAD_REQUEST, status, patched)
-        self.assertEqual("employee activation requires 2-4 verified direct communication rounds", patched["error"])
+        self.assertEqual("employee activation requires verified direct communication or structured runtime evidence", patched["error"])
 
         status, patched_candidate = api_gateway.route_patch(
             "/v1/employees/cursor-dev",
@@ -7890,6 +7911,129 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertTrue(verified["results"][0]["evidence_exists"])
         self.assertTrue(verified["results"][0]["evidence_exists"])
         self.assertEqual("completed", verified["results"][0]["task_status"])
+
+    def test_runtime_verify_adapters_can_verify_candidate_without_enabling_task_submit(self) -> None:
+        code, runtime = run_cli("runtime", "register", "--runtime", "claude", "--command", "company-claude-adapter", "--notes", "Claude runtime")
+        self.assertEqual(0, code, runtime)
+        code, employee = run_cli(
+            "employee",
+            "create",
+            "--id",
+            "claude-code",
+            "--name",
+            "Claude Code",
+            "--role",
+            "developer",
+            "--runtime",
+            "claude",
+            "--workspace",
+            str(self.root / "workspace" / "claude-code"),
+        )
+        self.assertEqual(0, code, employee)
+        code, blocked = run_cli("task", "submit", "--from", "openclaw-main", "--to", "claude-code", "--task-id", "task-candidate-normal-submit", "--title", "normal submit remains blocked")
+        self.assertEqual(2, code, blocked)
+
+        def fake_run(cmd: list[str], cwd: str, text: bool, capture_output: bool) -> subprocess.CompletedProcess:
+            if cmd[1:3] == ["scheduler", "run"]:
+                return subprocess.CompletedProcess(cmd, 0, stdout=json.dumps({"ok": True, "events": []}, ensure_ascii=False), stderr="")
+            task_id = "task-runtime-candidate-claude-claude-code"
+            report = self.root / "employees" / "claude-code" / "reports" / task_id / "claude-adapter-report.md"
+            report.parent.mkdir(parents=True, exist_ok=True)
+            report.write_text("claude candidate adapter evidence\n", encoding="utf-8")
+            with companyctl.connect() as conn:
+                conn.execute(
+                    "UPDATE tasks SET status = 'completed', evidence_path = ?, summary = 'claude adapter evidence', updated_at = ? WHERE id = ?",
+                    (str(report), companyctl.now(), task_id),
+                )
+                conn.commit()
+                companyctl.heartbeat_internal(conn, "claude-code", {"source": "candidate-adapter-test"})
+            return subprocess.CompletedProcess(cmd, 0, stdout=json.dumps({"ok": True, "processed": 1, "task_id": task_id, "report": str(report)}, ensure_ascii=False), stderr="")
+
+        with mock.patch.object(companyctl.subprocess, "run", fake_run):
+            code, verified = run_cli("runtime", "verify-adapters", "--agents", "claude-code", "--task-id-prefix", "task-runtime-candidate-claude", "--allow-candidate")
+        self.assertEqual(0, code, verified)
+        self.assertTrue(verified["ok"], verified)
+        self.assertTrue(verified["results"][0]["candidate_verification"])
+        self.assertTrue(verified["results"][0]["evidence_exists"])
+        code, still_blocked = run_cli("task", "submit", "--from", "openclaw-main", "--to", "claude-code", "--task-id", "task-candidate-normal-submit-2", "--title", "normal submit still blocked")
+        self.assertEqual(2, code, still_blocked)
+        code, activated = run_cli("employee", "update", "--id", "claude-code", "--status", "active")
+        self.assertEqual(0, code, activated)
+        self.assertEqual("active", activated["employee"]["status"])
+        code, matrix = run_cli("agent-matrix", "--agents", "claude-code")
+        self.assertEqual(0, code, matrix)
+        self.assertEqual("active_ready", matrix["employees"][0]["level"])
+        self.assertEqual("adapter_runtime_evidence_no_openclaw_session_required", matrix["employees"][0]["reason"])
+
+    def test_agent_matrix_resolves_requested_alias_to_canonical_employee(self) -> None:
+        config_path = self.root / "config" / "company_communications.json"
+        config = json.loads(config_path.read_text(encoding="utf-8"))
+        config.setdefault("aliases", {})["car-rental"] = "nestcar"
+        config_path.write_text(json.dumps(config, ensure_ascii=False, indent=2), encoding="utf-8")
+        code, created = run_cli(
+            "employee",
+            "create",
+            "--id",
+            "nestcar",
+            "--name",
+            "NestCar",
+            "--role",
+            "business-agent",
+            "--runtime",
+            "openclaw",
+            "--workspace",
+            str(self.root / "workspace" / "nestcar"),
+        )
+        self.assertEqual(0, code, created)
+        code, verified = run_cli("employee", "verify-direct", "--id", "nestcar", "--from", "openclaw-main", "--rounds", "2", "--activate")
+        self.assertEqual(0, code, verified)
+
+        code, matrix = run_cli("agent-matrix", "--agents", "car-rental")
+        self.assertEqual(0, code, matrix)
+        row = matrix["employees"][0]
+        self.assertEqual("nestcar", row["agent"])
+        self.assertEqual("car-rental", row["requested_agent"])
+        self.assertEqual("nestcar", row["alias_of"])
+        self.assertEqual("active_ready", row["level"])
+
+    def test_dashboard_employee_view_skips_alias_duplicate_rows(self) -> None:
+        config_path = self.root / "config" / "company_communications.json"
+        config = json.loads(config_path.read_text(encoding="utf-8"))
+        config.setdefault("aliases", {})["car-rental"] = "nestcar"
+        config_path.write_text(json.dumps(config, ensure_ascii=False, indent=2), encoding="utf-8")
+        summary = {
+            "generated_at": companyctl.now(),
+            "employees": [
+                {
+                    "id": "car-rental",
+                    "name": "car-rental",
+                    "role": "runtime-agent",
+                    "runtime": "openclaw",
+                    "employee_status": "candidate",
+                    "workspace": str(self.root / "agents" / "car-rental"),
+                    "heartbeat_status": "missing",
+                    "last_seen_at": "",
+                    "heartbeat_metadata_json": "{}",
+                    "submitted_tasks": 0,
+                    "claimed_tasks": 0,
+                },
+                {
+                    "id": "nestcar",
+                    "name": "car-rental",
+                    "role": "business-agent",
+                    "runtime": "openclaw",
+                    "employee_status": "active",
+                    "workspace": str(self.root / "workspace" / "nestcar"),
+                    "heartbeat_status": "alive",
+                    "last_seen_at": companyctl.now(),
+                    "heartbeat_metadata_json": "{}",
+                    "submitted_tasks": 0,
+                    "claimed_tasks": 0,
+                },
+            ],
+        }
+        employees = company_dashboard.employee_view_models(summary)
+        self.assertEqual(["nestcar"], [employee["id"] for employee in employees])
 
     def test_hermes_adapter_runs_codex_pm_supervisor_with_dev_roots_before_heartbeat(self) -> None:
         codex_workspace = self.root / "workspace" / "codex-dev"

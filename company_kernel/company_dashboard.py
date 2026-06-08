@@ -1736,14 +1736,22 @@ def render_employee_table(items: list[dict]) -> str:
     body = []
     for item in items:
         employee_id = e(item.get("id", ""))
+        runtime = str(item.get("runtime", "") or "")
+        schedulable = bool(item.get("schedulable"))
+        can_direct = runtime not in {"skill", "human"} and str(item.get("employee_status", "") or item.get("status", "")) == "active"
         cells = "".join(f"<td>{e(item.get(field, ''))}</td>" for field in fields)
-        actions = (
-            "<td>"
-            f"<button type='button' onclick=\"directMessageEmployee('{employee_id}')\">Direct</button> "
-            f"<button type='button' onclick=\"editEmployee('{employee_id}')\">Edit</button> "
-            f"<button class='danger-button' type='button' onclick=\"offboardEmployee('{employee_id}', false)\">Archive</button>"
-            "</td>"
-        )
+        action_items = []
+        if runtime == "skill":
+            action_items.append("<span class='muted'>No chat; task/evidence only</span>")
+        if can_direct:
+            action_items.append(f"<button type='button' onclick=\"directMessageEmployee('{employee_id}')\">Direct</button>")
+        if schedulable:
+            action_items.append(f"<button type='button' onclick=\"submitTaskToEmployee('{employee_id}')\">Task</button>")
+        elif runtime != "skill":
+            action_items.append("<span class='muted'>Not schedulable</span>")
+        action_items.append(f"<button type='button' onclick=\"editEmployee('{employee_id}')\">Edit</button>")
+        action_items.append(f"<button class='danger-button' type='button' onclick=\"offboardEmployee('{employee_id}', false)\">Archive</button>")
+        actions = "<td>" + " ".join(action_items) + "</td>"
         body.append(f"<tr>{cells}{actions}</tr>")
     return f"<table><thead><tr>{head}</tr></thead><tbody>{''.join(body)}</tbody></table>"
 
@@ -1782,10 +1790,16 @@ def employee_view_models(summary: dict) -> list[dict]:
     employees = []
     communication_config = companyctl.load_communication_config()
     communication_profiles = communication_config.get("employees", {})
+    employee_ids = {str(employee.get("id", "")) for employee in summary["employees"]}
     conn = companyctl.connect_readonly()
     try:
         for employee in summary["employees"]:
             if employee.get("id") == "owner" or employee.get("role") == "human-owner" or employee.get("runtime") == "human":
+                continue
+            if str(employee.get("employee_status") or employee.get("status") or "") == "archived":
+                continue
+            canonical_id = companyctl.resolve_employee_alias(str(employee.get("id", "")))
+            if canonical_id != employee.get("id") and canonical_id in employee_ids:
                 continue
             capabilities = companyctl.load_json_or_default(companyctl.employee_paths(employee["id"])["capabilities"], {})
             permissions = companyctl.load_json_or_default(
@@ -2255,6 +2269,23 @@ def render(summary: dict) -> str:
         setEmployeeApiStatus(`Direct reply from ${{id}}: ${{result.reply || '(empty)'}}; evidence=${{result.file || 'n/a'}}`, false);
       }} catch (err) {{
         setEmployeeApiStatus(`Direct failed: ${{err.message}}`, true);
+      }}
+    }}
+    async function submitTaskToEmployee(id) {{
+      if (!id) return;
+      const source = prompt(`Source employee for task to ${{id}}`, 'main');
+      if (source === null) return;
+      const title = prompt(`Task title for ${{id}}`, `Dashboard task for ${{id}}`);
+      if (title === null || !title.trim()) return;
+      const description = prompt(`Task description for ${{id}}`, 'Created from Company Kernel dashboard. Track status, progress, attempts, and evidence in the task table.');
+      if (description === null) return;
+      setEmployeeApiStatus(`Submitting task to ${{id}}...`, false);
+      try {{
+        const result = await callCompanyApi('/v1/tasks', {{from: source || 'main', to: id, title, description, priority: 'P3'}}, 'POST');
+        setEmployeeApiStatus(`Task submitted: ${{result.task?.id || result.task_id || 'created'}}. Progress/evidence will appear in Tasks & Adapter Runs.`, false);
+        setTimeout(() => location.reload(), 700);
+      }} catch (err) {{
+        setEmployeeApiStatus(`Task submit failed: ${{err.message}}`, true);
       }}
     }}
     async function editEmployee(id) {{
