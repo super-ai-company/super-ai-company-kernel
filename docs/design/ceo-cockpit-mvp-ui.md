@@ -68,7 +68,7 @@ These are not frontend workarounds. They are backend/API requirements that must 
 | Completion invalid marker | `long_tasks[]`, task cards, and `GET /v1/tasks/{task_id}` should include `completion_invalid: true/false` and `completion_invalid_reason`. | Show invalid count if present, but do not guess which task is invalid from unrelated evidence counts. |
 | Tool-call detail payload size | `/v1/tool-calls?limit=200` must return only summarized and sanitized fields. `input_summary`, `output_summary`, and `error_message` must each be capped to 500 display characters. | Row click opens only the hydrated sanitized summary row; no invented detail endpoint and no raw stdout/stderr. |
 | Employee evidence filter | `/v1/evidence` should eventually support `employee_id`. MVP may only filter evidence by employee across already-hydrated rows and must label this as a local filter. | Do not claim full employee evidence history unless the backend supports `employee_id`. |
-| Direct message action | Direct message is not part of the 3-day UI MVP. If a backend endpoint already exists, show only a developer-mode one-way send action, not a chat UI. | Hide direct message button by default, always hide for skill-only workers, and never use DM success as readiness or evidence. |
+| Direct message action | Direct message is not part of the 3-day UI MVP. | Hide all direct message/chat controls. Never use DM success as readiness or evidence. |
 | Employee current task title | `GET /v1/employees` should include `current_task_title` or the cockpit aggregate should hydrate it from the active task card. | If absent, show task id plus `Title unavailable from API`; do not invent titles. |
 | Active-limited reason | `GET /v1/dashboard/cockpit` should include `active_limited_reasons` keyed by employee id. | If absent, show `Limited reason unavailable from API`. |
 | Stagnant threshold | `GET /v1/tasks/{task_id}` should include `stagnant_threshold_minutes` when task-specific thresholds exist. | If absent, show backend state label only; do not compute failure from browser time. |
@@ -76,9 +76,9 @@ These are not frontend workarounds. They are backend/API requirements that must 
 
 ## 3. Global UI Rules
 
-1. Poll `/v1/dashboard/cockpit` every 8 seconds. No WebSocket in the 3-day MVP; SSE can remain a future hook.
+1. Poll `/v1/dashboard/cockpit` every 8 seconds. No WebSocket and no SSE listener in the 3-day MVP, even if the backend exposes an SSE route.
 2. If API fails, keep last successful data visible but dimmed and show `Offline: API Connection Lost`.
-3. If `/v1/doctor` returns non-zero `exit_code`, show yellow diagnostics banner with issue count and a modal containing the JSON summary. Poll `/v1/doctor` slowly, at most once per 60 seconds, unless `/v1/dashboard/cockpit.doctor.ok === false`.
+3. If `/v1/doctor` returns non-zero `exit_code`, show a yellow diagnostics banner with `ok`, `issue_count`, and latest timestamp. Debug mode may show raw JSON in a plain `<pre>` block; do not build a JSON tree renderer. Poll `/v1/doctor` slowly, at most once per 60 seconds, unless `/v1/dashboard/cockpit.doctor.ok === false`.
 4. Do not render raw local absolute paths. Display safe relative paths and basenames only.
 5. Do not calculate prices, exchange rates, or token-to-USD conversion in frontend. Display backend ledger totals. If multiple currencies exist, display per-currency rows, not a fake combined total.
 6. Do not add `Kill Session`, `Archive Stale Sessions`, marketplace actions, skill pricing, or user/account management in this MVP.
@@ -86,6 +86,9 @@ These are not frontend workarounds. They are backend/API requirements that must 
 8. Candidate employees must not be visually promoted to active. Use explicit badges: `active_ready`, `active_limited`, `candidate_only`, `online_only`, `task_unsupported`, `no_reply`, `unsafe`.
 9. Stale/stagnant/running labels are backend-owned. The frontend may display relative time labels, but must not decide task failure from local browser time.
 10. For every action button, the default confirmation modal must use human-readable business copy. API path and actor `owner` appear only in developer/debug mode.
+11. Filters are single-field quick filters only. Do not implement compound filtering across Tool Calls, Budget, and Evidence in the 3-day MVP.
+12. `GET /v1/agent-matrix` output is summarized as the final readiness badge and a short reason. Do not render a detailed matrix checklist or scoring UI.
+13. Use plain HTML/CSS/vanilla JavaScript in the existing dashboard template. Do not introduce large UI libraries, chart libraries, graph libraries, D3, Mermaid, Gantt, or canvas packages.
 
 ## 4. Page Layout
 
@@ -169,7 +172,6 @@ Click actions:
 - Click card: open Employee Detail drawer or panel using `GET /v1/employees/{employee_id}`.
 - `View Task`: open current task drawer.
 - `Filter Logs`: apply employee filter to Tool Calls/Budget panels, and apply local evidence filtering only across hydrated evidence rows unless `/v1/evidence?employee_id=` exists.
-- `Send Direct Message`: hidden by default in MVP. If developer mode enables it, use one-way send only and hide/disable it if readiness is `task_unsupported` or runtime is skill-only.
 - `Verify Runtime Evidence`: call `GET /v1/agent-matrix?agents={employee_id}` and show attendance/direct/runtime/task/progress/evidence/stale results.
 
 API:
@@ -178,12 +180,11 @@ API:
 - `GET /v1/agent-matrix?agents={employee_id}`
 - Optional filters: `/v1/tool-calls?employee_id=...`, `/v1/budget-summary?employee_id=...`; evidence supports only `/v1/evidence?task_id=...` in current MVP unless backend adds `employee_id`.
 
-Direct Message downgrade:
+Direct Message exclusion:
 - No chat bubbles, no receipt timeline, and no DM inbox in the 3-day MVP.
-- If developer mode exposes direct send, fields are limited to target employee, optional task id, optional trace id, and message.
-- Confirmation text: `This sends a one-way direct message through Kernel ledger. It is not task completion evidence.`
-- API: `POST /v1/messages/direct` only if already available; otherwise disabled with `Direct message API unavailable`.
-- Success state: toast with message id only. Failure state: toast with blocker reason. Do not mark employee active from DM success alone.
+- Do not render `Send Direct Message` in normal or developer mode during this MVP.
+- Owner-to-worker guidance must use task-bound correction through `POST /v1/tasks/{task_id}/correct`, not private chat.
+- DM success, inbox files, greetings, and ACK messages never change readiness, task status, evidence status, or budget status.
 
 ## 7. Running Task Cards
 
@@ -407,14 +408,67 @@ Control API bodies:
 }
 ```
 
-## 12. Three-Day Build Plan
+## 12. False-State Guardrails
+
+These guardrails prevent a beautiful but misleading cockpit. If a trusted backend field is missing, the UI must show a gap or a bounded empty state instead of guessing.
+
+1. Employee evidence filtering:
+   - Risk: `/v1/evidence` may only return the latest limited rows and may not support `employee_id`.
+   - UI rule: employee evidence count is trusted only when returned by the backend or when filtered from a task-bound drawer payload. If using hydrated global rows, label it `local view only`.
+   - Copy: `Employee evidence history unavailable from API; showing currently loaded rows only.`
+2. Current task title:
+   - Risk: employee cards may have `task_id` but no title.
+   - UI rule: show the task id and `Title unavailable from API`; do not infer from old messages or inbox files.
+3. Stagnant/running state:
+   - Risk: browser time can drift and backend stagnant checks can lag.
+   - UI rule: backend state wins. Browser may show relative age but cannot decide `failed`, `stale`, or `stagnant`.
+4. Tool-call sanitization:
+   - Risk: raw stdout/stderr or tool payloads can contain secrets.
+   - UI rule: if a row lacks sanitized summaries or safe display fields, render `[Raw output redacted for safety]`.
+5. Mixed-currency budget:
+   - Risk: a single `total_amount` can look like comparable money when currencies differ.
+   - UI rule: show per-currency rows only. If missing, show `API gap: per-currency budget totals unavailable`.
+6. Completion evidence:
+   - Risk: `done` without final evidence looks complete.
+   - UI rule: render `Completion Invalid` unless backend says final evidence is valid for the same `task_id` and current/final attempt context.
+7. Skill worker chat:
+   - Risk: skill workers such as `ecommerce-copy-skill` can execute but cannot chat.
+   - UI rule: hide chat/direct UI, but keep progress, runtime, tool calls, budget, artifacts, and evidence visible.
+
+## 13. Worker Reporting Contract For UI Truth
+
+The cockpit is only as good as the ledger events workers submit. Codex, Agy, OpenClaw bridge workers, local scripts, and Docker skills must follow this minimum reporting contract before their work can appear as trustworthy UI state:
+
+1. Heartbeat:
+   - A running runtime session must update heartbeat at the backend-defined interval.
+   - Heartbeat proves liveness only; it never proves progress or completion.
+2. Incremental progress:
+   - Long tasks must emit task-bound progress with `task_id`, `attempt_id`, `employee_id`, `status`, `message`, and timestamp.
+   - UI expects fresh progress at least before the backend stagnant threshold.
+3. Tool-call records:
+   - Every meaningful command/API/browser/file/tool action must create a tool-call row with sanitized summaries, status, risk level, and task/attempt/session linkage.
+   - Failed or blocked calls must record a concrete error or policy reason.
+4. Budget records:
+   - Paid or metered work must write budget events with provider/model when available, token input/output when available, runtime seconds, amount, currency, and task/attempt/employee linkage.
+   - No frontend cost estimation is allowed as a substitute.
+5. Correction ack:
+   - When owner/Hermes sends `POST /v1/tasks/{task_id}/correct`, the worker must acknowledge through an event/progress update and then submit follow-up progress.
+   - If it cannot comply, it must block with a reason.
+6. Cancel ack:
+   - When a task/attempt is cancelled, the worker must stop producing final evidence for that attempt and record cancelled/blocked state.
+   - Old cancelled attempt outputs cannot be promoted as current completion evidence.
+7. Final evidence:
+   - Completion requires final evidence bound to the same `task_id` and relevant `attempt_id`.
+   - Evidence must use safe workspace/artifact/evidence/final paths and include checksum and summary.
+
+## 14. Three-Day Build Plan
 
 ### Day 1: Real Cockpit Data and Layout
 
 Deliver:
 - High-density dashboard layout with health bar, CEO summary, employee cards, running task cards.
 - Poll `/v1/dashboard/cockpit` every 8 seconds.
-- Show `/v1/doctor` banner/modal.
+- Show `/v1/doctor` status banner; debug mode may show raw JSON in a plain `<pre>`.
 - Show skill-only employees without chat buttons.
 - Show candidate employees as candidate, not active.
 - Show API gap banners for missing doctor-in-cockpit and missing completion-invalid task markers.
@@ -431,7 +485,7 @@ Deliver:
 - Runtime Sessions visible on employee/task cards and in drawer; no global Runtime table.
 - Tool Calls panel with max 200 rows and filters.
 - Correction/cancel/retry/reassign/reopen controls wired to existing APIs.
-- Direct Message is hidden by default; developer mode may expose one-way send only if the Kernel API exists. Skill workers never show chat/direct actions.
+- Direct Message/chat controls are completely hidden. Skill workers never show chat/direct actions.
 
 Verification:
 - `curl -s http://127.0.0.1:8765/v1/tool-calls?limit=200 | python3 -m json.tool`
@@ -455,7 +509,7 @@ Verification:
 - `python3 -m unittest discover -s tests -p 'test*.py'`
 - `bin/companyctl doctor --summary`
 
-## 13. MVP Acceptance Criteria
+## 15. MVP Acceptance Criteria
 
 The MVP is accepted only if all items below are true in the local environment:
 
@@ -472,12 +526,40 @@ The MVP is accepted only if all items below are true in the local environment:
 11. `bin/companyctl doctor --summary` is green or any remaining issue is classified with exact source and non-business impact.
 12. Browser verification against `http://127.0.0.1:8780/dashboard.html` confirms the latest local skill closed-loop task is visible with attempt/session/tool/budget/evidence.
 13. Runtime Session state is visible without adding a separate global Runtime Session panel.
-14. Direct message does not become a chat product; it is hidden by default or a developer-mode one-way action only.
+14. Direct message does not become a chat product; it is hidden completely in the 3-day MVP.
 15. Timeline is a vertical text event list, not a graph, tree, canvas, or Gantt view.
+16. No compound filtering, graph/canvas/Gantt library, SSE/WebSocket listener, frontend cost estimation, or large UI component library is added.
 
-## 14. Antigravity Review Decisions
+## 16. Antigravity Multi-Round Review Log
 
-Round 1 design review was used as critique input only. Product decisions after review:
+Antigravity was used as a design-review employee only. Its replies are critique input, not execution evidence. Code changes, tests, and file updates remain Codex-owned unless a future Agy task writes files and submits structured evidence.
+
+### Round 1: Coverage And False-State Risks
+
+Agy confirmed the UI contract does not drift from the 3-day MVP and that the required areas are covered: CEO home, employee cards, running task cards, Tool Calls, Budget, Evidence, and task detail drawer. It identified five high-risk false states that must be represented in the contract:
+
+1. Employee evidence filtering can show false empty states when `/v1/evidence` lacks `employee_id` and the loaded page is capped.
+2. Employee cards can hide current work when the backend lacks `current_task_title`.
+3. Stagnant state must stay backend-owned or browser time will mislabel long-running work.
+4. Missing sanitized tool-call fields can turn useful supervision into redacted blanks.
+5. Mixed-currency budget without per-currency rows can create misleading cost totals.
+
+### Round 2: Scope Locks
+
+Agy confirmed the proposed changes strengthen the MVP and do not conflict with the boss-facing goal. It recommended hard prohibitions to prevent scope drift:
+
+1. Completely hide DM/chat controls in the 3-day MVP; use task-bound correction instead.
+2. Simplify Doctor to status plus raw debug JSON, not a JSON tree renderer.
+3. Forbid compound filtering across Tool Calls/Budget/Evidence.
+4. Forbid detailed agent-matrix visualization; show readiness badge and short reason only.
+5. Forbid graph/tree/Gantt/canvas/timeline libraries.
+6. Forbid SSE/WebSocket listeners in the MVP; use 8-second REST polling only.
+7. Forbid frontend cost estimation; show ledger data or `Cost unavailable`.
+8. Forbid large UI component libraries; use existing template, vanilla CSS, and vanilla JavaScript.
+
+## 17. Final Design Decisions
+
+Multi-round review decisions:
 
 1. Task acceptance: MVP does not add a new task accept endpoint. Done plus valid final evidence is completion; failed owner review uses existing `POST /v1/tasks/{task_id}/reopen`.
 2. Currency: no frontend token-to-USD conversion. Mixed currencies are displayed as separate ledger rows.
@@ -490,4 +572,7 @@ Round 1 design review was used as critique input only. Product decisions after r
 9. Tool-call summaries: list/detail summaries are capped and sanitized; full raw logs are out of scope.
 10. Evidence preview: text-only via safe API. No PDF/image/Word/HTML renderer in this 3-day MVP.
 11. Timeline: plain vertical event list only. Graphical trace trees and WorkGraph canvas are explicitly out of scope.
-12. Direct message: hidden by default and downgraded to developer-mode one-way send if the backend already supports it.
+12. Direct message: completely hidden in the 3-day MVP. Owner guidance uses task-bound correction only.
+13. False-state guardrails: the dashboard must prefer `API gap`, `local view only`, or `unavailable` over inferred truths.
+14. Worker reporting contract: heartbeat, progress, tool-call, budget, correction ack, cancel ack, and final evidence are required for trustworthy UI state.
+15. Implementation stack: existing dashboard template plus vanilla JavaScript/CSS only; no large UI framework or graph/canvas dependency.
