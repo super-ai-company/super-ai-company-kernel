@@ -723,8 +723,22 @@ def build_cockpit_summary(summary: dict) -> dict:
     evidence_issues = summary.get("evidence_health", {}).get("issues", [])
     if not isinstance(evidence_issues, list):
         evidence_issues = []
+    completion_invalid_tasks = []
     for issue in evidence_issues[:10]:
         task_id = str(issue.get("task_id", ""))
+        raw_reason = str(issue.get("reason", "") or "")
+        normalized_reason = "missing_final_evidence" if raw_reason == "completed_without_evidence" else (raw_reason or "missing_final_evidence")
+        completion_invalid_tasks.append(
+            {
+                "task_id": task_id,
+                "target_agent": issue.get("agent", ""),
+                "completion_invalid": True,
+                "completion_invalid_reason": normalized_reason,
+                "final_evidence_count": 0,
+                "message": f"Done-like task is invalid until final evidence is submitted: {raw_reason}",
+                "actions": attention_actions("evidence_issue", task_id=task_id),
+            }
+        )
         owner_attention.append(
             {
                 "kind": "evidence_issue",
@@ -906,6 +920,7 @@ def build_cockpit_summary(summary: dict) -> dict:
             "recent_evidence": len(recent_evidence),
             "legacy_task_evidence": len(legacy_task_evidence),
             "evidence_issues": len(evidence_issues),
+            "completion_invalid_tasks": len(completion_invalid_tasks),
             "chat_task_bound": chat_counts["task_bound"],
             "chat_work_relevant": chat_counts["work_relevant"],
             "chat_handshake_or_idle": chat_counts["handshake_or_idle"],
@@ -923,6 +938,7 @@ def build_cockpit_summary(summary: dict) -> dict:
         "pending_approvals": pending_approvals[:10],
         "recent_evidence": recent_evidence[:10],
         "legacy_task_evidence": legacy_task_evidence[:10],
+        "completion_invalid_tasks": completion_invalid_tasks[:10],
     }
 
 

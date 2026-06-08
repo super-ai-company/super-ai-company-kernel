@@ -2297,6 +2297,12 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertIn("evidence/result.md", long_task["evidence"]["relative_path"])
         self.assertEqual(1, cockpit["counts"]["recent_evidence"])
         self.assertEqual(2, cockpit["counts"]["legacy_task_evidence"])
+        self.assertEqual(1, cockpit["counts"]["completion_invalid_tasks"])
+        invalid_task = next(item for item in cockpit["completion_invalid_tasks"] if item["task_id"] == "task-cockpit-done-missing-evidence")
+        self.assertTrue(invalid_task["completion_invalid"])
+        self.assertEqual("missing_final_evidence", invalid_task["completion_invalid_reason"])
+        self.assertEqual(0, invalid_task["final_evidence_count"])
+        self.assertEqual(["review_task", "view_trace"], [action["id"] for action in invalid_task["actions"]])
         recent_evidence = next(item for item in cockpit["recent_evidence"] if item["task_id"] == "task-cockpit-done")
         self.assertEqual(promoted["evidence"]["evidence_id"], recent_evidence["evidence_id"])
         self.assertTrue(recent_evidence["evidence"]["allowed"])
@@ -3846,6 +3852,7 @@ class CompanyKernelCoreTest(unittest.TestCase):
             "item.by_currency || item.total_amounts_by_currency || item.currency_totals",
             "No kill or archive session action in MVP",
             "POST /v1/tasks/{task_id}/reopen",
+            "completion_invalid_tasks",
         ]:
             self.assertIn(snippet, html)
 
@@ -5512,6 +5519,9 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual("missing_final_evidence", shown["completion_contract"]["reason"])
         self.assertEqual(0, shown["completion_contract"]["final_evidence_count"])
         self.assertIn("final evidence", shown["completion_contract"]["summary"])
+        self.assertTrue(shown["completion_invalid"])
+        self.assertEqual("missing_final_evidence", shown["completion_invalid_reason"])
+        self.assertEqual(0, shown["final_evidence_count"])
 
     def test_dashboard_task_detail_drawer_renders_control_plane_ledgers(self) -> None:
         template = Path(__file__).resolve().parents[1] / "dashboard_templates" / "gemini_dashboard.html"

@@ -3797,8 +3797,8 @@
       </div>
       <div class="cockpit-card">
         <h3>Done Tasks</h3>
-        <div class="cockpit-value" style="color:var(--color-green)">${escapeHtml(counts.done_tasks || 0)}</div>
-        <div class="cockpit-subtext">${escapeHtml(counts.recent_evidence || 0)} promoted evidence · ${escapeHtml(counts.legacy_task_evidence || 0)} legacy task evidence_path · ${escapeHtml(counts.evidence_issues || 0)} evidence issues</div>
+        <div class="cockpit-value" style="color:${Number(counts.completion_invalid_tasks || 0) ? 'var(--color-rose)' : 'var(--color-green)'}">${escapeHtml(counts.done_tasks || 0)}</div>
+        <div class="cockpit-subtext">${escapeHtml(counts.recent_evidence || 0)} promoted evidence · ${escapeHtml(counts.legacy_task_evidence || 0)} legacy task evidence_path · ${escapeHtml(counts.completion_invalid_tasks || 0)} completion_invalid_tasks · ${escapeHtml(counts.evidence_issues || 0)} evidence issues</div>
       </div>
       <div class="cockpit-card">
         <h3>Chat Signal</h3>
@@ -3853,7 +3853,17 @@
         </details>
       `;
     }
-    attention.innerHTML = attentionRows.length ? attentionRows.map(item => `
+    const completionInvalidRows = (cockpit && cockpit.completion_invalid_tasks) || [];
+    const renderedAttentionRows = [...completionInvalidRows.map(item => ({
+      kind: 'completion_invalid',
+      state: 'blocked',
+      title: item.task_id,
+      task_id: item.task_id,
+      target_agent: item.target_agent,
+      message: `completion_invalid=${item.completion_invalid} · reason=${item.completion_invalid_reason || '-'} · final_evidence=${item.final_evidence_count || 0}`,
+      actions: item.actions || []
+    })), ...attentionRows];
+    attention.innerHTML = renderedAttentionRows.length ? renderedAttentionRows.map(item => `
       <div class="cockpit-row" ${item.task_id ? `onclick="openTaskDetailDrawer('${escapeHtml(item.task_id || '')}')"` : ''}>
         <div>
           ${(() => { const correction = item.correction || {}; return correction.needs_ack ? `<span>${escapeHtml(`correction pending ack · by=${correction.last_by || '-'} · ${correction.last_message || ''}`)}</span>` : ''; })()}
