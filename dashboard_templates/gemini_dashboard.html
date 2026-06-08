@@ -3784,6 +3784,18 @@
     }).join('\n');
   }
 
+  function evidenceRecordsSummary(records) {
+    const rows = Array.isArray(records) ? records : [];
+    if (!rows.length) return '-';
+    return rows.map(item => {
+      const display = item.display || {};
+      const policy = display.policy || {};
+      const location = display.relative_path || display.basename || '-';
+      const allowed = display.allowed ? 'allowed' : (display.reason || 'blocked');
+      return `${item.evidence_id || '-'} · attempt=${item.attempt_id || '-'} · artifact=${item.artifact_id || '-'} · final=${item.is_final} · ${allowed} · ${location} · absolute_path_exposed=${String(!!display.absolute_path_exposed)} · policy=${policy.summary || 'workspace/evidence/reports/artifacts/final only'}`;
+    }).join('\n');
+  }
+
   function renderDetailValue(value) {
     if (value === null || value === undefined || value === '') return '<span style="color: var(--text-muted);">-</span>';
     if (Array.isArray(value)) return `<div class="detail-list">${value.map(item => `<span>${escapeHtml(typeof item === 'object' ? JSON.stringify(item) : item)}</span>`).join('')}</div>`;
@@ -3998,7 +4010,7 @@
         ['Heartbeat State', task.heartbeat_state || latestAttempt.heartbeat_state || '-'],
         ['Progress State', task.progress_state || latestAttempt.progress_state || '-'],
         ['Evidence', payload.evidence || {}],
-        ['Evidence Records', evidenceRecords.map(item => `${item.evidence_id || '-'} · attempt=${item.attempt_id || '-'} · artifact=${item.artifact_id || '-'} · final=${item.is_final}`).join('\n') || '-'],
+        ['Evidence Records', evidenceRecordsSummary(evidenceRecords)],
         ['Blocker', payload.blocker || '-'],
         ['Latest Attempt', latestAttemptSummary(latestAttempt)],
         ['Heartbeat / Progress', heartbeatProgressSummary(latestAttempt)],
