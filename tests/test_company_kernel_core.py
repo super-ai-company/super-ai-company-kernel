@@ -1907,6 +1907,11 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertIn("Progress State", html)
         self.assertIn("Progress Events", html)
         self.assertIn("owner_attention", html)
+        self.assertIn("Supervisor Activity", html)
+        self.assertIn("cockpit-supervisor-activity", html)
+        self.assertIn("renderSupervisorActivity", html)
+        self.assertIn("correction_pending_ack", html)
+        self.assertIn("Hermes supervised corrections and stagnant checks appear here", html)
         self.assertIn("Recent Evidence", html)
         self.assertIn("cockpit-recent-evidence", html)
         self.assertIn("audit-evidence-tbody", html)
@@ -2088,6 +2093,13 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual("hermes", attention["correction"]["last_by"])
         self.assertIn("请收口 evidence", attention["correction"]["last_message"])
         self.assertIn("Hermes 已发纠偏", attention["message"])
+        self.assertIn("supervisor_activity", cockpit)
+        supervisor_item = next(item for item in cockpit["supervisor_activity"] if item["task_id"] == "task-cockpit-long")
+        self.assertEqual("correction_pending_ack", supervisor_item["kind"])
+        self.assertEqual("Hermes", supervisor_item["supervisor"])
+        self.assertEqual("codex-cockpit", supervisor_item["target_agent"])
+        self.assertEqual(attempt_id, supervisor_item["attempt_id"])
+        self.assertIn("请收口 evidence", supervisor_item["message"])
         self.assertEqual(
             ["send_correction", "view_logs", "wait", "cancel_attempt"],
             [action["id"] for action in attention["actions"]],

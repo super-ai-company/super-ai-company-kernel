@@ -459,6 +459,56 @@ def build_cockpit_summary(summary: dict) -> dict:
                     "actions": attention_actions("blocked_task", task_id=task_id, attempt_id=attempt_id),
                 }
             )
+    supervisor_activity = []
+    for item in long_tasks:
+        correction = item.get("correction", {}) if isinstance(item.get("correction", {}), dict) else {}
+        if correction.get("needs_ack"):
+            last_by = str(correction.get("last_by") or "Hermes")
+            supervisor = "Hermes" if last_by.lower() == "hermes" else last_by
+            supervisor_activity.append(
+                {
+                    "kind": "correction_pending_ack",
+                    "supervisor": supervisor,
+                    "target_agent": item.get("target_agent", ""),
+                    "task_id": item.get("task_id", ""),
+                    "attempt_id": item.get("attempt_id", ""),
+                    "trace_id": item.get("trace_id", ""),
+                    "state": item.get("long_task_state", ""),
+                    "message": correction.get("last_message") or "纠偏已发出，等待员工确认。",
+                    "updated_at": correction.get("last_created_at") or item.get("last_progress_at") or item.get("started_at", ""),
+                }
+            )
+        elif item.get("long_task_state") == "progress_stagnant":
+            supervisor_activity.append(
+                {
+                    "kind": "stagnant_check",
+                    "supervisor": "Hermes",
+                    "target_agent": item.get("target_agent", ""),
+                    "task_id": item.get("task_id", ""),
+                    "attempt_id": item.get("attempt_id", ""),
+                    "trace_id": item.get("trace_id", ""),
+                    "state": item.get("long_task_state", ""),
+                    "message": "heartbeat fresh but progress stagnant; correction or probe recommended.",
+                    "updated_at": item.get("last_progress_at") or item.get("started_at", ""),
+                }
+            )
+    supervisor_loop = summary.get("supervisor_loop", {}) if isinstance(summary.get("supervisor_loop", {}), dict) else {}
+    if supervisor_loop:
+        loop_counts = supervisor_loop.get("counts", {}) if isinstance(supervisor_loop.get("counts", {}), dict) else {}
+        supervisor_activity.append(
+            {
+                "kind": "supervisor_loop",
+                "supervisor": str(supervisor_loop.get("actor") or "Hermes"),
+                "target_agent": "",
+                "task_id": "",
+                "attempt_id": "",
+                "trace_id": "",
+                "state": "observed",
+                "message": f"latest supervisor loop scanned={loop_counts.get('scanned', 0)} sent={loop_counts.get('sent', 0)} failed={loop_counts.get('failed', 0)}",
+                "updated_at": str(supervisor_loop.get("completed_at") or ""),
+            }
+        )
+    supervisor_activity.sort(key=lambda item: item.get("updated_at") or "", reverse=True)
     for task in summary.get("tasks", []):
         status = str(task.get("status", "")).lower()
         if status in {"blocked", "failed", "stale"}:
@@ -634,6 +684,7 @@ def build_cockpit_summary(summary: dict) -> dict:
         },
         "employees": employee_states,
         "long_tasks": long_tasks,
+        "supervisor_activity": supervisor_activity[:10],
         "owner_attention": owner_attention[:20],
         "pending_approvals": pending_approvals[:10],
         "recent_evidence": recent_evidence[:10],
