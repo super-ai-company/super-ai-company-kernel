@@ -3408,7 +3408,7 @@
         <div>
           <strong>${escapeHtml(item.title || item.task_id || '-')}</strong>
           <span>${escapeHtml(item.target_agent || '-')} · attempt=${escapeHtml(item.attempt_id || '-')} · progress_age=${escapeHtml(item.progress_age_seconds ?? '-')}s</span>
-          ${item.latest_progress ? `<span>Latest Progress · ${latestProgressSummary(item.latest_progress)}</span>` : ''}
+          ${hasLatestProgress(item) ? `<span>Latest Progress · ${latestProgressSummary(item.latest_progress)}</span>` : ''}
           ${item.progress_state === 'stagnant' ? `<span>${escapeHtml(stagnantGuidance)}</span>` : ''}
         </div>
         <div class="long-task-state ${escapeHtml(item.long_task_state || 'running')}">${escapeHtml(item.long_task_state || 'running')}</div>
@@ -3472,6 +3472,10 @@
   function latestProgressSummary(item) {
     if (!item || !item.event_id) return '-';
     return `state=${escapeHtml(item.progress_state || '-')} · progress=${escapeHtml(item.progress ?? '-')} · ${escapeHtml(item.message || '')}`;
+  }
+
+  function hasLatestProgress(item) {
+    return !!(item && item.latest_progress && item.latest_progress.event_id);
   }
 
   function ledgerConsistencySummary(contract) {
