@@ -3817,6 +3817,33 @@
     return companyApiRequest(path, payload, 'POST');
   }
 
+  function buildApprovalReason(detail) {
+    return JSON.stringify(Object.assign({
+      request_reason: 'dashboard_owner_approval_required',
+      dry_run: true,
+      external_send_executed: false,
+      safety: 'Dashboard records approval first; real execution must be owner-approved explicitly.'
+    }, detail || {}));
+  }
+
+  async function requestDashboardApproval(action, taskId, attemptId, by, reason, extra) {
+    const payload = {
+      from: by || 'hermes',
+      action,
+      target: taskId || '',
+      task_id: taskId || '',
+      risk: (extra && extra.risk) || 'P1',
+      reason: buildApprovalReason(Object.assign({
+        task_id: taskId || '',
+        attempt_id: attemptId || '',
+        requested_by: by || 'hermes',
+        action,
+        reason: reason || ''
+      }, extra || {}))
+    };
+    return companyApiPost('/v1/approvals', payload);
+  }
+
   function getDashboardSummary() {
     window.summaryData = window.summaryData || window.kernelSummary || {conversations: [], employees: []};
     window.summaryData.conversations = window.summaryData.conversations || [];
@@ -4535,15 +4562,21 @@
   }
   window.openTaskDetailDrawer = openTaskDetailDrawer;
 
-  window.correctTaskAttempt = async function(taskId, attemptId) {
+  window.correctTaskAttempt = async function(taskId, attemptId, ownerApproved) {
     const by = prompt(`Supervisor correcting ${taskId}`, 'hermes');
     if (by === null) return;
     const message = prompt('Correction message', '请回到原任务目标，更新 progress，并说明 blocker/evidence。');
     if (message === null) return;
-    companyApiLog('SYSTEM', `Sending correction for ${taskId}...`, 'normal');
     try {
-      await companyApiPost(`/v1/tasks/${encodeURIComponent(taskId)}/correct`, {attempt_id: attemptId || '', by: by || 'hermes', message});
-      companyApiLog('SYSTEM', `Correction sent for ${taskId}.`, 'success');
+      if (ownerApproved === true) {
+        companyApiLog('SYSTEM', `Owner-approved correction executing for ${taskId}...`, 'normal');
+        await companyApiPost(`/v1/tasks/${encodeURIComponent(taskId)}/correct`, {attempt_id: attemptId || '', by: by || 'hermes', message});
+        companyApiLog('SYSTEM', `Correction sent for ${taskId}.`, 'success');
+      } else {
+        companyApiLog('SYSTEM', `Requesting owner approval for correction ${taskId}; no correction is sent yet.`, 'normal');
+        const approval = await requestDashboardApproval('task.correct', taskId, attemptId, by || 'hermes', message, {risk: 'P1', correction_message: message});
+        companyApiLog('SYSTEM', `Correction approval requested: ${approval.approval?.id || approval.approval_id || taskId}.`, 'success');
+      }
       await refreshLiveDashboardFromApi();
     } catch (err) {
       companyApiLog('ERROR', `Correction failed: ${err.message}`, 'error');
@@ -4589,48 +4622,66 @@
     }
   };
 
-  window.cancelTaskAttempt = async function(taskId, attemptId) {
+  window.cancelTaskAttempt = async function(taskId, attemptId, ownerApproved) {
     const by = prompt(`Who cancels ${taskId}?`, 'hermes');
     if (by === null) return;
     const reason = prompt('Cancel reason', '用户停止或 supervisor 判定需要停止');
     if (reason === null) return;
-    if (!confirm(`Cancel attempt ${attemptId || '-'} for task ${taskId}?`)) return;
-    companyApiLog('SYSTEM', `Cancelling ${taskId}...`, 'normal');
     try {
-      await companyApiPost(`/v1/tasks/${encodeURIComponent(taskId)}/cancel`, {attempt_id: attemptId || '', by: by || 'hermes', reason});
-      companyApiLog('SYSTEM', `Cancelled ${taskId}.`, 'success');
+      if (ownerApproved === true) {
+        if (!confirm(`Cancel attempt ${attemptId || '-'} for task ${taskId}?`)) return;
+        companyApiLog('SYSTEM', `Owner-approved cancellation executing for ${taskId}...`, 'normal');
+        await companyApiPost(`/v1/tasks/${encodeURIComponent(taskId)}/cancel`, {attempt_id: attemptId || '', by: by || 'hermes', reason});
+        companyApiLog('SYSTEM', `Cancelled ${taskId}.`, 'success');
+      } else {
+        companyApiLog('SYSTEM', `Requesting owner approval for cancellation ${taskId}; no cancel is sent yet.`, 'normal');
+        const approval = await requestDashboardApproval('task.cancel', taskId, attemptId, by || 'hermes', reason, {risk: 'P0', cancel_reason: reason});
+        companyApiLog('SYSTEM', `Cancel approval requested: ${approval.approval?.id || approval.approval_id || taskId}.`, 'success');
+      }
       await refreshLiveDashboardFromApi();
     } catch (err) {
       companyApiLog('ERROR', `Cancel failed: ${err.message}`, 'error');
     }
   };
 
-  window.retryTask = async function(taskId) {
+  window.retryTask = async function(taskId, ownerApproved) {
     const by = prompt(`Who retries ${taskId}?`, 'hermes');
     if (by === null) return;
     const reason = prompt('Retry reason', '修复后重试');
     if (reason === null) return;
-    companyApiLog('SYSTEM', `Retrying ${taskId}...`, 'normal');
     try {
-      await companyApiPost(`/v1/tasks/${encodeURIComponent(taskId)}/retry`, {by: by || 'hermes', reason});
-      companyApiLog('SYSTEM', `Retry attempt started for ${taskId}.`, 'success');
+      if (ownerApproved === true) {
+        companyApiLog('SYSTEM', `Owner-approved retry executing for ${taskId}...`, 'normal');
+        await companyApiPost(`/v1/tasks/${encodeURIComponent(taskId)}/retry`, {by: by || 'hermes', reason});
+        companyApiLog('SYSTEM', `Retry attempt started for ${taskId}.`, 'success');
+      } else {
+        companyApiLog('SYSTEM', `Requesting owner approval for retry ${taskId}; no retry is started yet.`, 'normal');
+        const approval = await requestDashboardApproval('task.retry', taskId, '', by || 'hermes', reason, {risk: 'P1', retry_reason: reason});
+        companyApiLog('SYSTEM', `Retry approval requested: ${approval.approval?.id || approval.approval_id || taskId}.`, 'success');
+      }
       await refreshLiveDashboardFromApi();
     } catch (err) {
       companyApiLog('ERROR', `Retry failed: ${err.message}`, 'error');
     }
   };
 
-  window.reassignTask = async function(taskId, currentTarget) {
+  window.reassignTask = async function(taskId, currentTarget, ownerApproved) {
     const by = prompt(`Who reassigns ${taskId}?`, 'hermes');
     if (by === null) return;
     const to = prompt('New employee id', currentTarget || 'codex');
     if (to === null || !to.trim()) return;
     const reason = prompt('Reassign reason', '更适合该员工执行');
     if (reason === null) return;
-    companyApiLog('SYSTEM', `Reassigning ${taskId} to ${to}...`, 'normal');
     try {
-      await companyApiPost(`/v1/tasks/${encodeURIComponent(taskId)}/reassign`, {by: by || 'hermes', to, reason});
-      companyApiLog('SYSTEM', `Reassigned ${taskId}.`, 'success');
+      if (ownerApproved === true) {
+        companyApiLog('SYSTEM', `Owner-approved reassign executing for ${taskId} to ${to}...`, 'normal');
+        await companyApiPost(`/v1/tasks/${encodeURIComponent(taskId)}/reassign`, {by: by || 'hermes', to, reason});
+        companyApiLog('SYSTEM', `Reassigned ${taskId}.`, 'success');
+      } else {
+        companyApiLog('SYSTEM', `Requesting owner approval for reassign ${taskId}; no reassignment is sent yet.`, 'normal');
+        const approval = await requestDashboardApproval('task.reassign', taskId, '', by || 'hermes', reason, {risk: 'P1', reassign_to: to});
+        companyApiLog('SYSTEM', `Reassign approval requested: ${approval.approval?.id || approval.approval_id || taskId}.`, 'success');
+      }
       await refreshLiveDashboardFromApi();
     } catch (err) {
       companyApiLog('ERROR', `Reassign failed: ${err.message}`, 'error');
