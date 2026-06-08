@@ -3251,6 +3251,15 @@
     return data;
   }
 
+  async function companyApiGetOptional(path, fallback) {
+    try {
+      return await companyApiGet(path);
+    } catch (err) {
+      companyApiLog('ERROR', `Optional API ${path} failed: ${err.message}; continuing refresh.`, 'error');
+      return fallback || {};
+    }
+  }
+
   async function companyApiGetReachable(path) {
     const res = await fetch(getCompanyApiBase() + path, {method: 'GET'});
     const data = await res.json();
@@ -3304,14 +3313,14 @@
       const events = await companyApiGet('/v1/events?limit=20');
       const adapterRuns = await companyApiGet('/v1/adapter-runs?limit=20');
       const approvals = await companyApiGet('/v1/approvals?limit=20');
-      const evidence = await companyApiGet('/v1/evidence?limit=50');
-      const artifacts = await companyApiGet('/v1/artifacts?limit=50');
-      const handoffs = await companyApiGet('/v1/handoffs?limit=50');
-      const failures = await companyApiGet('/v1/failures?limit=50');
-      const workspacePrune = await companyApiGet('/v1/workspaces/prune?dry_run=true&older_than_days=30&limit=50');
-      const telemetry = await companyApiGet('/v1/telemetry/traces?limit=20');
+      const evidence = await companyApiGetOptional('/v1/evidence?limit=50', {evidence: []});
+      const artifacts = await companyApiGetOptional('/v1/artifacts?limit=50', {artifacts: []});
+      const handoffs = await companyApiGetOptional('/v1/handoffs?limit=50', {handoffs: []});
+      const failures = await companyApiGetOptional('/v1/failures?limit=50', {failures: []});
+      const workspacePrune = await companyApiGetOptional('/v1/workspaces/prune?dry_run=true&older_than_days=30&limit=50', {});
+      const telemetry = await companyApiGetOptional('/v1/telemetry/traces?limit=20', {traces: []});
       const employees = await companyApiGet('/v1/employees');
-      const openclawInventory = await companyApiGet('/v1/openclaw/runtime-inventory');
+      const openclawInventory = await companyApiGetOptional('/v1/openclaw/runtime-inventory', {});
       const taskRows = tasks.tasks || tasks.items || [];
       const stalledTasks = taskRows.filter(task => ['stale', 'blocked', 'failed'].includes(String(task.status || '').toLowerCase()) || task.blocker);
       mergeLiveSummaryPatch({

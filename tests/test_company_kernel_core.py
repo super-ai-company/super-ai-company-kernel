@@ -3390,6 +3390,19 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertIn("Approval Actions", html)
         self.assertNotIn("onclick='showApprovalDetails(${JSON.stringify(app)", html)
 
+    def test_real_dashboard_template_tolerates_optional_api_failures(self) -> None:
+        template = Path(__file__).resolve().parents[1] / "dashboard_templates" / "gemini_dashboard.html"
+        html = template.read_text(encoding="utf-8")
+        self.assertIn("async function companyApiGetOptional(path, fallback)", html)
+        self.assertIn("Optional API ${path} failed", html)
+        self.assertIn("const evidence = await companyApiGetOptional('/v1/evidence?limit=50', {evidence: []});", html)
+        self.assertIn("const artifacts = await companyApiGetOptional('/v1/artifacts?limit=50', {artifacts: []});", html)
+        self.assertIn("const handoffs = await companyApiGetOptional('/v1/handoffs?limit=50', {handoffs: []});", html)
+        self.assertIn("const failures = await companyApiGetOptional('/v1/failures?limit=50', {failures: []});", html)
+        self.assertIn("const workspacePrune = await companyApiGetOptional('/v1/workspaces/prune?dry_run=true&older_than_days=30&limit=50', {});", html)
+        self.assertIn("const telemetry = await companyApiGetOptional('/v1/telemetry/traces?limit=20', {traces: []});", html)
+        self.assertIn("const openclawInventory = await companyApiGetOptional('/v1/openclaw/runtime-inventory', {});", html)
+
     def test_dashboard_versioned_template_initializes_chat_state(self) -> None:
         template = Path(__file__).resolve().parents[1] / "dashboard_templates" / "gemini_dashboard.html"
         html = template.read_text(encoding="utf-8")
