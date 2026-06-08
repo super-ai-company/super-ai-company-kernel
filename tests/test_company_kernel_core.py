@@ -5454,6 +5454,65 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual(1.0, budget_summary["summary"]["budget_limits"]["hard_limit"])
         self.assertEqual(0.25, budget_summary["summary"]["budget_limits"]["remaining_to_hard"])
 
+    def test_budget_record_auto_requests_owner_approval_when_hard_limit_exceeded(self) -> None:
+        with sqlite3.connect(self.root / "company.sqlite") as conn:
+            conn.execute(
+                """
+                INSERT INTO budget_accounts(
+                  budget_account_id, scope_type, scope_id, currency, soft_limit, hard_limit, status, created_at, updated_at, metadata_json
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "budget-account-auto-approval",
+                    "task",
+                    "task-budget-auto-approval",
+                    "USD",
+                    0.5,
+                    1.0,
+                    "active",
+                    datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds"),
+                    datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds"),
+                    "{}",
+                ),
+            )
+            conn.commit()
+
+        code, submitted = run_cli("task", "submit", "--from", "openclaw-main", "--to", "codex", "--task-id", "task-budget-auto-approval", "--title", "Budget auto approval")
+        self.assertEqual(0, code, submitted)
+        code, budget = run_cli(
+            "budget",
+            "record",
+            "--budget-event-id",
+            "budget-event-auto-approval",
+            "--budget-account-id",
+            "budget-account-auto-approval",
+            "--task-id",
+            "task-budget-auto-approval",
+            "--employee",
+            "codex",
+            "--cost-type",
+            "model_api",
+            "--amount",
+            "1.25",
+            "--currency",
+            "USD",
+            "--summary",
+            "hard limit crossed",
+        )
+        self.assertEqual(0, code, budget)
+        self.assertEqual("hard_exceeded", budget["budget_limits"]["status"])
+        self.assertEqual("budget_overrun", budget["approval"]["action"])
+        self.assertEqual("pending", budget["approval"]["status"])
+        self.assertEqual("task-budget-auto-approval", budget["approval"]["detail"]["metadata"]["task_id"])
+        self.assertEqual(1.25, budget["approval"]["detail"]["metadata"]["budget_amount"])
+        self.assertEqual(1.0, budget["approval"]["detail"]["metadata"]["hard_limit"])
+
+        status, approvals = api_gateway.route_get("/v1/approvals", {"status": ["pending"], "action": ["budget_overrun"]})
+        self.assertEqual(HTTPStatus.OK, status, approvals)
+        self.assertEqual(["budget-overrun-task-budget-auto-approval"], [item["id"] for item in approvals["approvals"]])
+        self.assertEqual(1, approvals["approval_control_summary"]["real_execution_blockers"]["budget_overrun"])
+
     def test_budget_summary_reports_mixed_currency_ledger_rows(self) -> None:
         code, submitted = run_cli("task", "submit", "--from", "openclaw-main", "--to", "codex", "--task-id", "task-budget-mixed", "--title", "Mixed currency budget")
         self.assertEqual(0, code, submitted)
