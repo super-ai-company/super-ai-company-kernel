@@ -3977,6 +3977,7 @@
       const supervisorState = payload.supervisor_state || {};
       const correctionSummary = payload.correction_summary || {};
       const attemptHistory = payload.attempt_history || {};
+      const conversationSummary = payload.conversation_summary || {};
       const latestAttempt = latestAttemptDetail(attempts);
       renderDetails(`Task Detail: ${taskId}`, [
         ['Status', task.status || '-'],
@@ -3994,6 +3995,7 @@
         ['Runtime Policy', latestAttempt.runtime_policy || {}],
         ['Correction State', correctionSummary],
         ['Correction Events', correctionEventsSummary(correctionEvents)],
+        ['Conversation Summary', conversationSummary],
         ['Supervisor State', supervisorState],
         ['Progress Events', progressEventsSummary(progressEvents)],
         ['Sanitized Logs', sanitizedLogsSummary(sanitizedLogs)],

@@ -6051,6 +6051,35 @@ def task_conversation_ids(metadata: dict) -> list[str]:
     return [str(value) for value in values if str(value)]
 
 
+def task_conversation_summary(conn: sqlite3.Connection, metadata: dict) -> dict:
+    items = []
+    total_messages = 0
+    for conversation_id in task_conversation_ids(metadata):
+        conv = conn.execute("SELECT * FROM conversations WHERE id = ?", (conversation_id,)).fetchone()
+        if not conv:
+            continue
+        try:
+            participants = json.loads(conv["participants_json"] or "[]")
+        except json.JSONDecodeError:
+            participants = []
+        message_rows = rows(conn, "SELECT * FROM conversation_messages WHERE conversation_id = ? ORDER BY created_at ASC", (conversation_id,))
+        total_messages += len(message_rows)
+        latest = message_rows[-1] if message_rows else {}
+        items.append(
+            {
+                "conversation_id": conversation_id,
+                "title": conv["title"],
+                "status": conv["status"],
+                "participants": participants,
+                "message_count": len(message_rows),
+                "latest_message": latest.get("body", "") if latest else "",
+                "latest_source_agent": latest.get("source_agent", "") if latest else "",
+                "latest_at": latest.get("created_at", "") if latest else conv["updated_at"],
+            }
+        )
+    return {"counts": {"conversations": len(items), "messages": total_messages}, "items": items}
+
+
 def cmd_task_discuss(args: argparse.Namespace) -> int:
     conn = connect()
     task = conn.execute("SELECT * FROM tasks WHERE id = ?", (args.task_id,)).fetchone()
@@ -7048,6 +7077,7 @@ def cmd_task_show(args: argparse.Namespace) -> int:
             "hook_runs": hook_runs,
             "attempts": attempts,
             "attempt_history": attempt_history,
+            "conversation_summary": task_conversation_summary(conn, metadata),
             "progress_events": task_progress_events(events),
             "correction_events": task_correction_events(events),
             "sanitized_logs": sanitized_logs,

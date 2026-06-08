@@ -1928,6 +1928,8 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertIn("cancelTaskAttempt(taskId, attemptId)", html)
         self.assertIn("retryTask(taskId)", html)
         self.assertIn("reassignTask(taskId", html)
+        self.assertIn("Conversation Summary", html)
+        self.assertIn("conversation_summary", html)
         self.assertIn("counts.employee_status_counts", html)
         self.assertIn("counts.readiness_counts", html)
         self.assertIn("active_ready", html)
@@ -4198,6 +4200,10 @@ class CompanyKernelCoreTest(unittest.TestCase):
         code, shown = run_cli("task", "show", "--task-id", "task-discuss-001")
         self.assertEqual(code, 0, shown)
         self.assertEqual(["conv-task-discuss-001"], shown["metadata"]["conversation_ids"])
+        self.assertEqual(1, shown["conversation_summary"]["counts"]["conversations"])
+        self.assertEqual(1, shown["conversation_summary"]["counts"]["messages"])
+        self.assertEqual("conv-task-discuss-001", shown["conversation_summary"]["items"][0]["conversation_id"])
+        self.assertEqual("请 maker 和 codex 讨论执行方案", shown["conversation_summary"]["items"][0]["latest_message"])
         self.assertTrue(any(row["action"] == "task.discuss" for row in shown["audit_logs"]))
 
     def test_task_split_plan_collects_long_task_with_evidence(self) -> None:
@@ -5804,6 +5810,12 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual(200, status, task_conversations)
         self.assertEqual(["conv-api-task-gateway-block"], task_conversations["conversation_ids"])
         self.assertEqual(["discuss reassigned task"], [message["body"] for message in task_conversations["conversations"][0]["messages"]])
+        status, task_detail_with_conversation = api_gateway.route_get("/v1/tasks/task-api-gateway-block", {})
+        self.assertEqual(200, status, task_detail_with_conversation)
+        self.assertEqual(1, task_detail_with_conversation["conversation_summary"]["counts"]["conversations"])
+        self.assertEqual(1, task_detail_with_conversation["conversation_summary"]["counts"]["messages"])
+        self.assertEqual("conv-api-task-gateway-block", task_detail_with_conversation["conversation_summary"]["items"][0]["conversation_id"])
+        self.assertEqual("discuss reassigned task", task_detail_with_conversation["conversation_summary"]["items"][0]["latest_message"])
 
         status, sent = api_gateway.route_post("/v1/messages", {"from": "hermes", "to": "codex", "body": "REST ping", "message_id": "msg-api-gateway"})
         self.assertEqual(201, status, sent)
