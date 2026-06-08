@@ -5398,6 +5398,53 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual({"codex": {"THB": 40.0, "USD": 1.25}}, summary["by_employee_by_currency"])
         self.assertEqual({"task-budget-mixed": {"THB": 40.0, "USD": 1.25}}, summary["by_task_by_currency"])
 
+    def test_budget_summary_rolls_up_project_costs(self) -> None:
+        code, project = run_cli("project", "create", "--project-id", "project-budget-rollup", "--title", "Budget rollup", "--goal", "Track owner-visible project spend", "--owner", "openclaw-main")
+        self.assertEqual(0, code, project)
+        for task_id, amount, currency in [
+            ("task-project-budget-copy", "0.25", "USD"),
+            ("task-project-budget-image", "8", "THB"),
+        ]:
+            code, submitted = run_cli("task", "submit", "--from", "openclaw-main", "--to", "codex", "--task-id", task_id, "--title", f"Project budget {task_id}")
+            self.assertEqual(0, code, submitted)
+            code, linked = run_cli("project", "link-task", "--project-id", "project-budget-rollup", "--task-id", task_id)
+            self.assertEqual(0, code, linked)
+            code, budget = run_cli(
+                "budget",
+                "record",
+                "--budget-event-id",
+                f"budget-{task_id}",
+                "--task-id",
+                task_id,
+                "--employee",
+                "codex",
+                "--cost-type",
+                "model_api",
+                "--amount",
+                amount,
+                "--currency",
+                currency,
+                "--token-input",
+                "100",
+                "--token-output",
+                "25",
+                "--summary",
+                f"project cost {task_id}",
+            )
+            self.assertEqual(0, code, budget)
+
+        status, budget_summary = api_gateway.route_get("/v1/budget-summary", {})
+        self.assertEqual(HTTPStatus.OK, status, budget_summary)
+        summary = budget_summary["summary"]
+        self.assertEqual({"THB": 8.0, "USD": 0.25}, summary["by_project_by_currency"]["project-budget-rollup"])
+        self.assertEqual(2, summary["by_project_event_count"]["project-budget-rollup"])
+        self.assertEqual(200, summary["by_project_token_input"]["project-budget-rollup"])
+        self.assertEqual(50, summary["by_project_token_output"]["project-budget-rollup"])
+
+        code, cli_summary = run_cli("budget", "summary")
+        self.assertEqual(0, code, cli_summary)
+        self.assertEqual({"THB": 8.0, "USD": 0.25}, cli_summary["summary"]["by_project_by_currency"]["project-budget-rollup"])
+
     def test_task_detail_includes_runtime_tool_call_and_budget_ledgers(self) -> None:
         code, submitted = run_cli("task", "submit", "--from", "openclaw-main", "--to", "codex", "--task-id", "task-detail-control-plane", "--title", "Task detail control plane")
         self.assertEqual(0, code, submitted)

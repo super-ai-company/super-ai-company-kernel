@@ -1781,11 +1781,22 @@ def budget_summary(conn: sqlite3.Connection, *, task_id: str = "", employee_id: 
     events = list_budget_events(conn, task_id=task_id, employee_id=employee_id, trace_id=trace_id, attempt_id=attempt_id, limit=500)
     by_employee: dict[str, float] = {}
     by_task: dict[str, float] = {}
+    by_project: dict[str, float] = {}
     by_cost_type: dict[str, float] = {}
     by_currency: dict[str, float] = {}
     by_employee_by_currency: dict[str, dict[str, float]] = {}
     by_task_by_currency: dict[str, dict[str, float]] = {}
+    by_project_by_currency: dict[str, dict[str, float]] = {}
+    by_project_event_count: dict[str, int] = {}
+    by_project_token_input: dict[str, int] = {}
+    by_project_token_output: dict[str, int] = {}
     by_cost_type_by_currency: dict[str, dict[str, float]] = {}
+    task_project_ids: dict[str, list[str]] = {}
+    task_ids = sorted({str(item.get("task_id") or "") for item in events if str(item.get("task_id") or "")})
+    if task_ids:
+        placeholders = ",".join("?" for _ in task_ids)
+        for row in rows(conn, f"SELECT project_id, task_id FROM project_tasks WHERE task_id IN ({placeholders}) ORDER BY project_id ASC", tuple(task_ids)):
+            task_project_ids.setdefault(str(row["task_id"]), []).append(str(row["project_id"]))
     currencies = sorted({str(item.get("currency") or "USD") for item in events})
     for item in events:
         amount = float(item.get("amount") or 0)
@@ -1793,6 +1804,8 @@ def budget_summary(conn: sqlite3.Connection, *, task_id: str = "", employee_id: 
         employee_key = str(item.get("employee_id") or "")
         task_key = str(item.get("task_id") or "")
         cost_key = str(item.get("cost_type") or "unknown")
+        token_input = int(item.get("token_input") or 0)
+        token_output = int(item.get("token_output") or 0)
         by_currency[currency_key] = round(by_currency.get(currency_key, 0.0) + amount, 6)
         if employee_key:
             by_employee[employee_key] = round(by_employee.get(employee_key, 0.0) + amount, 6)
@@ -1802,6 +1815,13 @@ def budget_summary(conn: sqlite3.Connection, *, task_id: str = "", employee_id: 
             by_task[task_key] = round(by_task.get(task_key, 0.0) + amount, 6)
             task_currency = by_task_by_currency.setdefault(task_key, {})
             task_currency[currency_key] = round(task_currency.get(currency_key, 0.0) + amount, 6)
+            for project_id in task_project_ids.get(task_key, []):
+                by_project[project_id] = round(by_project.get(project_id, 0.0) + amount, 6)
+                project_currency = by_project_by_currency.setdefault(project_id, {})
+                project_currency[currency_key] = round(project_currency.get(currency_key, 0.0) + amount, 6)
+                by_project_event_count[project_id] = by_project_event_count.get(project_id, 0) + 1
+                by_project_token_input[project_id] = by_project_token_input.get(project_id, 0) + token_input
+                by_project_token_output[project_id] = by_project_token_output.get(project_id, 0) + token_output
         by_cost_type[cost_key] = round(by_cost_type.get(cost_key, 0.0) + amount, 6)
         cost_currency = by_cost_type_by_currency.setdefault(cost_key, {})
         cost_currency[currency_key] = round(cost_currency.get(currency_key, 0.0) + amount, 6)
@@ -1822,6 +1842,11 @@ def budget_summary(conn: sqlite3.Connection, *, task_id: str = "", employee_id: 
         "by_employee_by_currency": by_employee_by_currency,
         "by_task": by_task,
         "by_task_by_currency": by_task_by_currency,
+        "by_project": by_project,
+        "by_project_by_currency": by_project_by_currency,
+        "by_project_event_count": by_project_event_count,
+        "by_project_token_input": by_project_token_input,
+        "by_project_token_output": by_project_token_output,
         "by_cost_type": by_cost_type,
         "by_cost_type_by_currency": by_cost_type_by_currency,
         "limit_status": limits["status"],
