@@ -3810,7 +3810,7 @@
         ['Mode', content.mode || '-'],
         ['Bytes', content.bytes || 0],
         ['Truncated', String(!!content.truncated)],
-        ['Preview', content.text || '(binary, missing, or blocked)'],
+        ['Evidence Content Preview', content.text || '(binary, missing, or blocked)'],
       ], {
         ok: payload.ok,
         evidence,
@@ -3825,7 +3825,7 @@
         ['Status', 'blocked'],
         ['Reason', err.message],
         ['Absolute Path Exposed', 'false'],
-        ['Preview', '(blocked by evidence whitelist policy)'],
+        ['Evidence Content Preview', '(blocked by evidence whitelist policy)'],
       ], {ok: false, evidence_id: evidenceId, error: err.message});
     }
   }
@@ -4596,6 +4596,10 @@
         ['Long Task State', task.long_task_state || latestAttempt.long_task_state || task.status || '-'],
         ['Status Contract', longTaskStatusContractSummary(task, latestAttempt)],
         ['Task Decision', taskDecisionSummary(task, latestAttempt, payload)],
+        ['Latest Attempt Summary', latestAttemptSummary(latestAttempt)],
+        ['Attempt History Summary', attemptHistoryContractSummary(attemptHistory, attempts)],
+        ['Evidence Records Summary', evidenceRecordsSummary(evidenceRecords)],
+        ['Sanitized Logs Summary', sanitizedLogsSummary(sanitizedLogs)],
         ['Heartbeat State', task.heartbeat_state || latestAttempt.heartbeat_state || '-'],
         ['Progress State', task.progress_state || latestAttempt.progress_state || '-'],
         ['Evidence', payload.evidence || {}],
