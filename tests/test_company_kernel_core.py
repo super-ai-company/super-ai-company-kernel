@@ -3833,6 +3833,21 @@ class CompanyKernelCoreTest(unittest.TestCase):
         ]:
             self.assertIn(snippet, html)
 
+    def test_dashboard_cockpit_enforces_mvp_ui_data_contract(self) -> None:
+        template = Path(__file__).resolve().parents[1] / "dashboard_templates" / "gemini_dashboard.html"
+        html = template.read_text(encoding="utf-8")
+        for snippet in [
+            "Mixed currencies: totals are ledger sums, not converted values.",
+            "per-currency ledger rows",
+            "showHydratedToolCallDetails",
+            "No /v1/tool-calls/{tool_call_id} detail endpoint in MVP",
+            "employeeEvidenceClientSideFilter",
+            "Evidence employee filters use hydrated rows; /v1/evidence supports task_id only.",
+            "No kill or archive session action in MVP",
+            "POST /v1/tasks/{task_id}/reopen",
+        ]:
+            self.assertIn(snippet, html)
+
     def test_dashboard_renders_task_evidence_blocker_and_approval_counts(self) -> None:
         code, submitted = run_cli("task", "submit", "--from", "ops", "--to", "maker", "--task-id", "task-dashboard-blocked", "--title", "blocked task")
         self.assertEqual(code, 0, submitted)
@@ -5477,7 +5492,8 @@ class CompanyKernelCoreTest(unittest.TestCase):
             "['Completion Contract', completionContractSummary(completionContract)]",
             "function runtimeSessionsSummary",
             "function toolCallsSummary",
-            "sanitized=${String(item.sanitized !== false)}",
+            "const sanitized = item.sanitized === true;",
+            "[Raw output redacted for safety]",
             "raw_available=${String(!!item.raw_available)}",
             "function budgetSummaryDetail",
             "budgetLimitStatusSummary",
