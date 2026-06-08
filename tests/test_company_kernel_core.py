@@ -4819,7 +4819,7 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual(code, 0, pending)
         pending_event_types = [event["event_type"] for event in pending["events"]]
         self.assertIn("task.done", pending_event_types)
-        self.assertIn("approval.requested", pending_event_types)
+        self.assertNotIn("approval.requested", pending_event_types)
 
         code, approval = run_cli("approval", "approve", "--approval-id", "approval-publish-task-video-001", "--by", "ops", "--reason", "允许发布")
         self.assertEqual(code, 0, approval)
@@ -5511,6 +5511,7 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual(1.0, budget["approval"]["detail"]["metadata"]["hard_limit"])
         self.assertEqual("approval.requested", budget["approval_event"]["event_type"])
         self.assertEqual("task-budget-auto-approval", budget["approval_event"]["task_id"])
+        self.assertTrue(budget["approval_event"]["processed_at"])
 
         status, approvals = api_gateway.route_get("/v1/approvals", {"status": ["pending"], "action": ["budget_overrun"]})
         self.assertEqual(HTTPStatus.OK, status, approvals)

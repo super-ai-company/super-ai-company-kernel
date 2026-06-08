@@ -7844,6 +7844,10 @@ def create_approval_internal(
             "metadata": metadata or {},
         },
     )
+    approval_event_processed_at = now()
+    conn.execute("UPDATE company_events SET processed_at = ? WHERE id = ?", (approval_event_processed_at, approval_event["id"]))
+    conn.commit()
+    approval_event["processed_at"] = approval_event_processed_at
     audit(conn, source, "approval.request", aid, approval)
     notification = notification_send_result(
         kind="approval",
