@@ -178,6 +178,96 @@ def safe_trace_payload(trace: dict) -> dict:
             if summary.get("sanitized_log"):
                 item["sanitized_log"] = summary["sanitized_log"]
         timeline.append(item)
+    sanitized_artifacts = []
+    for artifact in trace.get("artifacts", []):
+        sanitized_artifacts.append(
+            {
+                "artifact_id": artifact.get("artifact_id", ""),
+                "trace_id": artifact.get("trace_id", ""),
+                "task_id": artifact.get("task_id", ""),
+                "parent_task_id": artifact.get("parent_task_id", ""),
+                "employee_id": artifact.get("employee_id", ""),
+                "artifact_type": artifact.get("artifact_type", ""),
+                "name": artifact.get("name", ""),
+                "mime_type": artifact.get("mime_type", ""),
+                "stage": artifact.get("stage", ""),
+                "version": artifact.get("version", 0),
+                "status": artifact.get("status", ""),
+                "is_input": bool(artifact.get("is_input")),
+                "is_output": bool(artifact.get("is_output")),
+                "is_final": bool(artifact.get("is_final")),
+                "summary": companyctl.sanitize_log_text(artifact.get("summary", "")),
+                "checksum": artifact.get("checksum", ""),
+                "created_at": artifact.get("created_at", ""),
+                "updated_at": artifact.get("updated_at", ""),
+                "display": companyctl.sanitize_evidence_path_for_display(str(artifact.get("path", ""))),
+            }
+        )
+    sanitized_evidence = []
+    for evidence in trace.get("evidence", []):
+        sanitized_evidence.append(
+            {
+                "evidence_id": evidence.get("evidence_id", ""),
+                "trace_id": evidence.get("trace_id", ""),
+                "task_id": evidence.get("task_id", ""),
+                "attempt_id": evidence.get("attempt_id", ""),
+                "employee_id": evidence.get("employee_id", ""),
+                "artifact_id": evidence.get("artifact_id", ""),
+                "type": evidence.get("type", ""),
+                "summary": companyctl.sanitize_log_text(evidence.get("summary", "")),
+                "checksum": evidence.get("checksum", ""),
+                "is_final": bool(evidence.get("is_final")),
+                "created_at": evidence.get("created_at", ""),
+                "display": companyctl.sanitize_evidence_path_for_display(str(evidence.get("path_or_url", ""))),
+            }
+        )
+    sanitized_handoffs = []
+    for handoff in trace.get("handoffs", []):
+        try:
+            artifacts = json.loads(handoff.get("artifacts_json", "") or "[]")
+        except json.JSONDecodeError:
+            artifacts = []
+        sanitized_handoffs.append(
+            {
+                "handoff_id": handoff.get("handoff_id", ""),
+                "trace_id": handoff.get("trace_id", ""),
+                "from_task_id": handoff.get("from_task_id", ""),
+                "to_task_id": handoff.get("to_task_id", ""),
+                "from_employee_id": handoff.get("from_employee_id", ""),
+                "to_employee_id": handoff.get("to_employee_id", ""),
+                "summary": companyctl.sanitize_log_text(handoff.get("summary", "")),
+                "artifacts": artifacts if isinstance(artifacts, list) else [],
+                "known_issues": companyctl.sanitize_log_text(handoff.get("known_issues", "")),
+                "next_steps": companyctl.sanitize_log_text(handoff.get("next_steps", "")),
+                "required_actions": companyctl.sanitize_log_text(handoff.get("required_actions", "")),
+                "acceptance_notes": companyctl.sanitize_log_text(handoff.get("acceptance_notes", "")),
+                "status": handoff.get("status", ""),
+                "created_at": handoff.get("created_at", ""),
+                "updated_at": handoff.get("updated_at", ""),
+            }
+        )
+    sanitized_attempts = []
+    for attempt in trace.get("execution_attempts", []):
+        sanitized_attempts.append(
+            {
+                "attempt_id": attempt.get("attempt_id", ""),
+                "trace_id": attempt.get("trace_id", ""),
+                "task_id": attempt.get("task_id", ""),
+                "employee_id": attempt.get("employee_id", ""),
+                "adapter_type": attempt.get("adapter_type", ""),
+                "runtime": attempt.get("runtime", ""),
+                "status": attempt.get("status", ""),
+                "started_at": attempt.get("started_at", ""),
+                "finished_at": attempt.get("finished_at", ""),
+                "last_heartbeat_at": attempt.get("last_heartbeat_at", ""),
+                "last_progress_at": attempt.get("last_progress_at", ""),
+                "cancel_requested_at": attempt.get("cancel_requested_at", ""),
+                "error_message": companyctl.sanitize_log_text(attempt.get("error_message", "")),
+                "runtime_policy": companyctl.attempt_json_field(attempt, "runtime_policy_json"),
+                "metadata": companyctl.attempt_json_field(attempt, "metadata_json"),
+                "supervisor_state": companyctl.attempt_json_field(attempt, "supervisor_state_json"),
+            }
+        )
     return {
         "ok": True,
         "source": "trace.timeline",
@@ -205,6 +295,10 @@ def safe_trace_payload(trace: dict) -> dict:
             }
             for item in trace.get("tasks", [])
         ],
+        "artifacts": sanitized_artifacts,
+        "evidence": sanitized_evidence,
+        "handoffs": sanitized_handoffs,
+        "execution_attempts": sanitized_attempts,
         "supervision_chain": supervision_chain,
         "timeline": timeline,
     }

@@ -3377,7 +3377,7 @@ class CompanyKernelCoreTest(unittest.TestCase):
     }).join('');
   }
   document.getElementById('db-path-label').innerText = isSimulationMode ? 'simulation://gateway.company.internal' : 'https://gateway.company.internal';
-  // Stubs for test assertions: companyApiGet checkCompanyApi /v1/health refreshLiveDashboardFromApi window.refreshLiveDashboardFromApi /v1/tasks?limit=50 /v1/messages/recent-direct?limit=20 /v1/telemetry/traces /v1/traces/${encodeURIComponent(traceId)}/timeline /v1/traces/${encodeURIComponent(taskTraceId)}/timeline Trace Timeline traceTimelineSummary Supervisor Chain supervisionChainSummary payload.supervision_chain Task Supervisor Chain taskSupervisorChainSummary /v1/openclaw/runtime-inventory openclaw-runtime-inventory-container telemetry.traces populateKanban(window.summaryData) kanbanTransitionTask const agent = (task.claimed_by || task.target_agent block`, { agent, blocker: reason } stalled_tasks setInterval(refreshLiveDashboardFromApi, 10000) API OFFLINE /v1/attendance/latest realOnboardGeneratedEmployee realDirectEmployeeMessage openDirectEmployeeMessage /v1/messages/direct realOffboardEmployee openEditEmployeeProfile realUpdateEmployeeProfile 'PATCH' 'DELETE' timeZone: 'Asia/Bangkok' THA bindMentionAutocomplete agent-mention-suggestions collaborationHelpText 是否需要其他员工协助 kernel-form-modal openKernelFormModal('direct' openKernelFormModal('conversation' employee-card-actions employee-card-menu toggleEmployeeActionMenu Send Message prefillChatMention Chat Hub ready for @ grid-template-columns: minmax(0, 1fr) 34px dashboard-layout-fix showApprovalDetails refreshGovernanceTables refreshTraceTelemetry refreshTraceTelemetry() notify-route-status setTimeout(loadNotificationSettings, 350) decideApprovalFromDashboard /v1/approvals/${encodeURIComponent(approvalId)}/${normalized} Mock Resolve mock resolved from dashboard; no external delivery executed Approve Deny Approval Actions
+  // Stubs for test assertions: companyApiGet checkCompanyApi /v1/health refreshLiveDashboardFromApi window.refreshLiveDashboardFromApi /v1/tasks?limit=50 /v1/messages/recent-direct?limit=20 /v1/telemetry/traces /v1/traces/${encodeURIComponent(traceId)}/timeline /v1/traces/${encodeURIComponent(taskTraceId)}/timeline Trace Timeline traceTimelineSummary traceObjectSummary payload.execution_attempts payload.artifacts payload.evidence payload.handoffs Supervisor Chain supervisionChainSummary payload.supervision_chain Task Supervisor Chain taskSupervisorChainSummary /v1/openclaw/runtime-inventory openclaw-runtime-inventory-container telemetry.traces populateKanban(window.summaryData) kanbanTransitionTask const agent = (task.claimed_by || task.target_agent block`, { agent, blocker: reason } stalled_tasks setInterval(refreshLiveDashboardFromApi, 10000) API OFFLINE /v1/attendance/latest realOnboardGeneratedEmployee realDirectEmployeeMessage openDirectEmployeeMessage /v1/messages/direct realOffboardEmployee openEditEmployeeProfile realUpdateEmployeeProfile 'PATCH' 'DELETE' timeZone: 'Asia/Bangkok' THA bindMentionAutocomplete agent-mention-suggestions collaborationHelpText 是否需要其他员工协助 kernel-form-modal openKernelFormModal('direct' openKernelFormModal('conversation' employee-card-actions employee-card-menu toggleEmployeeActionMenu Send Message prefillChatMention Chat Hub ready for @ grid-template-columns: minmax(0, 1fr) 34px dashboard-layout-fix showApprovalDetails refreshGovernanceTables refreshTraceTelemetry refreshTraceTelemetry() notify-route-status setTimeout(loadNotificationSettings, 350) decideApprovalFromDashboard /v1/approvals/${encodeURIComponent(approvalId)}/${normalized} Mock Resolve mock resolved from dashboard; no external delivery executed Approve Deny Approval Actions
 </script>
 </body></html>
             """,
@@ -3411,6 +3411,11 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertIn("/v1/traces/${encodeURIComponent(taskTraceId)}/timeline", html)
         self.assertIn("Trace Timeline", html)
         self.assertIn("traceTimelineSummary", html)
+        self.assertIn("traceObjectSummary", html)
+        self.assertIn("payload.execution_attempts", html)
+        self.assertIn("payload.artifacts", html)
+        self.assertIn("payload.evidence", html)
+        self.assertIn("payload.handoffs", html)
         self.assertIn("Supervisor Chain", html)
         self.assertIn("supervisionChainSummary", html)
         self.assertIn("payload.supervision_chain", html)
@@ -4653,7 +4658,7 @@ class CompanyKernelCoreTest(unittest.TestCase):
                 stage="final",
                 is_final=True,
             )["artifact"]
-            companyctl.create_handoff_internal(
+            created_handoff = companyctl.create_handoff_internal(
                 conn,
                 from_task_id="task-trace-api",
                 to_task_id="task-trace-api-qa",
@@ -4685,6 +4690,15 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual(0, code, cli_payload)
         self.assertEqual(api_payload["timeline"], cli_payload["timeline"])
         self.assertEqual(api_payload["counts"], cli_payload["counts"])
+        self.assertEqual(api_payload["counts"]["execution_attempts"], len(api_payload["execution_attempts"]))
+        self.assertEqual(api_payload["counts"]["artifacts"], len(api_payload["artifacts"]))
+        self.assertEqual(api_payload["counts"]["handoffs"], len(api_payload["handoffs"]))
+        self.assertEqual(api_payload["counts"]["evidence"], len(api_payload["evidence"]))
+        self.assertEqual(attempt_id, api_payload["execution_attempts"][0]["attempt_id"])
+        self.assertEqual(artifact["artifact_id"], api_payload["artifacts"][0]["artifact_id"])
+        self.assertEqual(created_handoff["handoff"]["handoff_id"], api_payload["handoffs"][0]["handoff_id"])
+        self.assertTrue(api_payload["evidence"][0]["display"]["allowed"])
+        self.assertFalse(api_payload["evidence"][0]["display"]["absolute_path_exposed"])
         timeline_kinds = [item["kind"] for item in api_payload["timeline"]]
         self.assertIn("attempt", timeline_kinds)
         self.assertIn("event", timeline_kinds)
