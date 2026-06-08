@@ -213,6 +213,41 @@
       font-size: 11px;
     }
 
+    .cockpit-action-list {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      margin-top: 8px;
+    }
+
+    .mini-btn {
+      display: inline-flex;
+      flex-direction: column;
+      align-items: flex-start;
+      gap: 2px;
+      border: 1px solid rgba(129, 140, 248, 0.25);
+      border-radius: 8px;
+      background: rgba(30, 41, 59, 0.72);
+      color: #e0e7ff;
+      padding: 5px 8px;
+      font-size: 11px;
+      font-weight: 800;
+      cursor: pointer;
+    }
+
+    .mini-btn[data-dangerous="true"] {
+      border-color: rgba(239, 68, 68, 0.35);
+      background: rgba(127, 29, 29, 0.28);
+      color: #fecaca;
+    }
+
+    .mini-btn small {
+      color: var(--text-muted);
+      font-size: 9px;
+      font-weight: 700;
+      letter-spacing: 0.02em;
+    }
+
     .long-task-state {
       border-radius: 999px;
       padding: 5px 9px;
@@ -3361,7 +3396,15 @@
           <strong>${escapeHtml(item.kind)} · ${escapeHtml(item.title || '-')}</strong>
           <span>${escapeHtml([item.target_agent ? `target=${item.target_agent}` : '', item.task_id ? `task=${item.task_id}` : '', item.approval_id ? `approval=${item.approval_id}` : '', item.approval_action ? `action=${item.approval_action}` : '', item.risk ? `risk=${item.risk}` : ''].filter(Boolean).join(' · '))}</span>
           <span>${escapeHtml(item.message || item.meta || '')}</span>
-          ${Array.isArray(item.actions) && item.actions.length ? `<span class="cockpit-action-list">${item.actions.map(action => `<button class="mini-btn" data-action-id="${escapeHtml(action.id || '')}" onclick="event.stopPropagation(); handleOwnerAttentionAction('${escapeHtml(item.task_id || '')}', '${escapeHtml(item.attempt_id || '')}', '${escapeHtml(item.approval_id || '')}', '${escapeHtml(action.id || '')}')">${escapeHtml(action.label || action.id || '')}</button>`).join('')}</span>` : ''}
+          ${Array.isArray(item.actions) && item.actions.length ? `<span class="cockpit-action-list">${item.actions.map(action => {
+            const safetyChips = [
+              action.method ? String(action.method).toUpperCase() : 'GET',
+              action.requires_owner_approval ? 'owner approval' : '',
+              action.dry_run_default === false ? 'live action' : 'dry-run default',
+              action.dangerous ? 'danger' : ''
+            ].filter(Boolean).join(' · ');
+            return `<button class="mini-btn" data-action-id="${escapeHtml(action.id || '')}" data-method="${escapeHtml(action.method || 'GET')}" data-requires-owner-approval="${action.requires_owner_approval ? 'true' : 'false'}" data-dry-run-default="${action.dry_run_default === false ? 'false' : 'true'}" data-dangerous="${action.dangerous ? 'true' : 'false'}" title="${escapeHtml(safetyChips)}" onclick="event.stopPropagation(); handleOwnerAttentionAction('${escapeHtml(item.task_id || '')}', '${escapeHtml(item.attempt_id || '')}', '${escapeHtml(item.approval_id || '')}', '${escapeHtml(action.id || '')}')">${escapeHtml(action.label || action.id || '')}<small>${escapeHtml(safetyChips)}</small></button>`;
+          }).join('')}</span>` : ''}
         </div>
         <div class="long-task-state ${escapeHtml(item.state)}">${escapeHtml(item.state)}</div>
       </div>
