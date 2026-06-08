@@ -5783,7 +5783,7 @@
         const detail = approvalSummary(app);
         const safetySummary = approvalTableSafetySummary(app);
         return `
-          <tr data-approval-index="${index}">
+          <tr data-record-row="true" data-approval-index="${index}">
             <td style="font-family: monospace; max-width: 260px;">${escapeHtml(app.id || '')}</td>
             <td>${escapeHtml(app.source_agent || '-')}</td>
             <td><span class="badge claimed">${escapeHtml(app.action || '-')}</span></td>
@@ -5807,7 +5807,7 @@
             </td>
           </tr>
         `;
-      }).join('') : '<tr><td colspan="7" style="color:var(--text-muted);text-align:center;padding:24px;">No approvals.</td></tr>';
+      }).join('') : '<tr data-empty-row="true"><td colspan="7" style="color:var(--text-muted);text-align:center;padding:24px;">No approvals.</td></tr>';
       approvalsTbody.querySelectorAll('tr[data-approval-index]').forEach(row => {
         row.addEventListener('click', () => showApprovalDetails(approvals[Number(row.dataset.approvalIndex)]));
       });
@@ -5830,7 +5830,7 @@
       const allowed = !!display.allowed;
       const state = allowed ? 'allowed' : (display.reason || 'blocked');
       return `
-        <tr>
+        <tr data-record-row="true">
           <td style="font-family: monospace; max-width: 260px;">${escapeHtml(item.evidence_id || '')}</td>
           <td style="font-family: monospace;">${escapeHtml(item.task_id || '-')}</td>
           <td>${escapeHtml(item.employee_id || '-')}</td>
@@ -5847,7 +5847,7 @@
           </td>
         </tr>
       `;
-    }).join('') : '<tr><td colspan="8" style="color:var(--text-muted);text-align:center;padding:24px;">No evidence records.</td></tr>';
+    }).join('') : '<tr data-empty-row="true"><td colspan="8" style="color:var(--text-muted);text-align:center;padding:24px;">No evidence records.</td></tr>';
   }
 
   function refreshAuditArtifactsTable(artifactRecords) {
@@ -5858,7 +5858,7 @@
       const display = item.display || {};
       const policySummary = display.policy && display.policy.summary ? display.policy.summary : 'workspace/evidence/reports/artifacts/final only';
       return `
-        <tr>
+        <tr data-record-row="true">
           <td style="font-family: monospace; max-width: 260px;">${escapeHtml(item.artifact_id || '')}</td>
           <td style="font-family: monospace;">${escapeHtml(item.task_id || '-')}</td>
           <td>${escapeHtml(item.employee_id || '-')}</td>
@@ -5872,7 +5872,7 @@
           </td>
         </tr>
       `;
-    }).join('') : '<tr><td colspan="7" style="color:var(--text-muted);text-align:center;padding:24px;">No artifacts.</td></tr>';
+    }).join('') : '<tr data-empty-row="true"><td colspan="7" style="color:var(--text-muted);text-align:center;padding:24px;">No artifacts.</td></tr>';
   }
 
   function refreshAuditHandoffsTable(handoffRecords) {
@@ -5882,7 +5882,7 @@
     tbody.innerHTML = rows.length ? rows.map(item => {
       const artifacts = Array.isArray(item.artifacts) ? item.artifacts : [];
       return `
-        <tr>
+        <tr data-record-row="true">
           <td style="font-family: monospace; max-width: 260px;">${escapeHtml(item.handoff_id || '')}</td>
           <td style="font-family: monospace;">${escapeHtml(item.from_task_id || '-')}</td>
           <td style="font-family: monospace;">${escapeHtml(item.to_task_id || '-')}</td>
@@ -5892,7 +5892,7 @@
           <td>${escapeHtml(artifacts.join(', ') || '-')}</td>
         </tr>
       `;
-    }).join('') : '<tr><td colspan="7" style="color:var(--text-muted);text-align:center;padding:24px;">No handoffs.</td></tr>';
+    }).join('') : '<tr data-empty-row="true"><td colspan="7" style="color:var(--text-muted);text-align:center;padding:24px;">No handoffs.</td></tr>';
   }
 
   function refreshAuditFailuresTable(failureRecords) {
@@ -5901,7 +5901,7 @@
     const rows = Array.isArray(failureRecords) ? failureRecords : [];
     tbody.innerHTML = rows.length ? rows.map(item => {
       return `
-        <tr>
+        <tr data-record-row="true">
           <td><span class="badge failed">${escapeHtml(item.kind || '-')}</span></td>
           <td style="font-family: monospace; max-width: 260px;">${escapeHtml(item.id || item.run_id || item.attempt_id || '')}</td>
           <td style="font-family: monospace;">${escapeHtml(item.task_id || '-')}</td>
@@ -5911,7 +5911,7 @@
           <td>${item.acknowledged ? 'acknowledged' : formatDate(item.created_at || '')}</td>
         </tr>
       `;
-    }).join('') : '<tr><td colspan="7" style="color:var(--text-muted);text-align:center;padding:24px;">No failure records.</td></tr>';
+    }).join('') : '<tr data-empty-row="true"><td colspan="7" style="color:var(--text-muted);text-align:center;padding:24px;">No failure records.</td></tr>';
   }
 
   function refreshWorkspacePrunePreview(preview) {
