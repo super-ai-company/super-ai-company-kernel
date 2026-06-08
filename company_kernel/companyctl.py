@@ -2938,7 +2938,7 @@ def employee_has_managed_runtime_evidence(conn: sqlite3.Connection, employee_id:
         """,
         (row["task_id"], employee_id),
     ).fetchone()
-    return True if evidence_row else bool(evidence_path)
+    return bool(evidence_row)
 
 
 def employee_has_runtime_evidence(employee_id: str, conn: sqlite3.Connection | None = None) -> bool:

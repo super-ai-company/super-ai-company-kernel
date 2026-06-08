@@ -5408,6 +5408,45 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual("runtime_evidence", row["checks"]["evidence"])
         self.assertEqual("success", row["latest_attempt"]["status"])
 
+    def test_agent_matrix_rejects_path_only_success_attempt_without_final_evidence(self) -> None:
+        for employee_id, role, runtime in [
+            ("main", "operator", "openclaw"),
+            ("codex", "developer", "codex"),
+        ]:
+            code, created = run_cli("employee", "create", "--id", employee_id, "--name", employee_id, "--role", role, "--runtime", runtime, "--workspace", str(self.root / "workspace" / employee_id))
+            self.assertEqual(0, code, created)
+            self.mark_active(employee_id)
+        attendance_dir = self.root / "state" / "attendance"
+        attendance_dir.mkdir(parents=True)
+        (attendance_dir / "latest.json").write_text(
+            json.dumps({"ok": True, "employees": [{"agent": "codex", "status": "online", "reply": "codex 在岗"}]}, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        code, submitted = run_cli("task", "submit", "--from", "main", "--to", "codex", "--task-id", "task-path-only-success", "--title", "Path only success")
+        self.assertEqual(0, code, submitted)
+        code, run = run_cli("task", "run", "--task-id", "task-path-only-success", "--agent", "codex", "--by", "main")
+        self.assertEqual(0, code, run)
+        evidence_path = self.root / "state" / "reports" / "path-only.md"
+        evidence_path.parent.mkdir(parents=True)
+        evidence_path.write_text("path-only evidence\n", encoding="utf-8")
+        with companyctl.connect() as conn:
+            conn.execute(
+                "UPDATE tasks SET status = 'completed', evidence_path = ?, summary = 'legacy path only', updated_at = ? WHERE id = ?",
+                (str(evidence_path), companyctl.now(), "task-path-only-success"),
+            )
+            conn.execute(
+                "UPDATE execution_attempts SET status = 'success', finished_at = ? WHERE attempt_id = ?",
+                (companyctl.now(), run["attempt"]["attempt_id"]),
+            )
+            conn.commit()
+
+        code, matrix = run_cli("agent-matrix", "--agents", "codex")
+        self.assertEqual(0, code, matrix)
+        row = matrix["employees"][0]
+        self.assertEqual("online_only", row["level"])
+        self.assertEqual("missing", row["checks"]["evidence"])
+        self.assertEqual("success", row["latest_attempt"]["status"])
+
     def test_v3_claim_returns_context_and_done_auto_promotes_workspace_evidence(self) -> None:
         for employee_id in ["manager", "writer"]:
             code, created = run_cli("employee", "create", "--id", employee_id, "--name", employee_id, "--role", "agent", "--runtime", "local", "--workspace", str(self.root / "workspace" / employee_id))
