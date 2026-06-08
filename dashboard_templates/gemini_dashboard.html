@@ -4463,7 +4463,8 @@
     const rows = Array.isArray(calls) ? calls : [];
     if (!rows.length) return 'No tool calls recorded for this task.';
     return rows.slice(0, 10).map(item => {
-      return sanitizeDisplayText(`${item.status || '-'} · ${item.tool_name || item.tool_call_id || '-'} · type=${item.tool_type || '-'} · employee=${item.employee_id || '-'} · attempt=${item.attempt_id || '-'} · ${item.output_summary || item.input_summary || item.error_message || ''}`);
+      const policy = item.redaction_policy || {};
+      return sanitizeDisplayText(`${item.status || '-'} · ${item.tool_name || item.tool_call_id || '-'} · type=${item.tool_type || '-'} · employee=${item.employee_id || '-'} · attempt=${item.attempt_id || '-'} · sanitized=${String(item.sanitized !== false)} · raw_available=${String(!!item.raw_available)} · policy=${policy.mode || 'sanitized_only'} · ${item.output_summary || item.input_summary || item.error_message || ''}`);
     }).join('\n');
   }
 
@@ -4522,7 +4523,8 @@
     const rows = Array.isArray(calls) ? calls : [];
     if (!rows.length) return 'No tool calls recorded for this employee.';
     return rows.slice(0, 8).map(item => {
-      return sanitizeDisplayText(`${item.status || '-'} · ${item.tool_name || item.tool_call_id || '-'} · task=${item.task_id || '-'} · attempt=${item.attempt_id || '-'} · session=${item.session_id || '-'} · ${item.output_summary || item.input_summary || item.error_message || ''}`);
+      const policy = item.redaction_policy || {};
+      return sanitizeDisplayText(`${item.status || '-'} · ${item.tool_name || item.tool_call_id || '-'} · task=${item.task_id || '-'} · attempt=${item.attempt_id || '-'} · session=${item.session_id || '-'} · sanitized=${String(item.sanitized !== false)} · raw_available=${String(!!item.raw_available)} · policy=${policy.mode || 'sanitized_only'} · ${item.output_summary || item.input_summary || item.error_message || ''}`);
     }).join('\n');
   }
 

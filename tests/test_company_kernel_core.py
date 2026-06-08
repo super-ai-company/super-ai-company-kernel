@@ -5065,6 +5065,11 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual(HTTPStatus.OK, status, tool_calls)
         self.assertTrue(tool_calls["ok"])
         self.assertEqual(["tool-call-control-plane-ledger"], [item["tool_call_id"] for item in tool_calls["tool_calls"]])
+        api_tool_call = tool_calls["tool_calls"][0]
+        self.assertTrue(api_tool_call["sanitized"])
+        self.assertFalse(api_tool_call["raw_available"])
+        self.assertEqual("sanitized_only", api_tool_call["redaction_policy"]["mode"])
+        self.assertIn("raw tool payload hidden", api_tool_call["redaction_policy"]["summary"])
         status, session_tool_calls = api_gateway.route_get("/v1/tool-calls", {"session_id": ["session-control-plane-ledger"]})
         self.assertEqual(HTTPStatus.OK, status, session_tool_calls)
         self.assertEqual(["tool-call-control-plane-ledger"], [item["tool_call_id"] for item in session_tool_calls["tool_calls"]])
@@ -5371,6 +5376,8 @@ class CompanyKernelCoreTest(unittest.TestCase):
             "['Completion Contract', completionContractSummary(completionContract)]",
             "function runtimeSessionsSummary",
             "function toolCallsSummary",
+            "sanitized=${String(item.sanitized !== false)}",
+            "raw_available=${String(!!item.raw_available)}",
             "function budgetSummaryDetail",
             "budgetLimitStatusSummary",
             "function budgetEventsSummary",
