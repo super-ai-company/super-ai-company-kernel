@@ -3796,6 +3796,7 @@
       const graph = await companyApiGet(`/v1/traces/${encodeURIComponent(traceId)}/file-flow`);
       const nodes = Array.isArray(graph.nodes) ? graph.nodes : [];
       const edges = Array.isArray(graph.edges) ? graph.edges : [];
+      const narrative = fileFlowNarrative(graph);
       container.innerHTML = `
         <div class="graph-title"><i class="fa-solid fa-circle-nodes"></i> Trace ${escapeHtml(traceId)}</div>
         <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:8px;margin:10px 0;">
@@ -3803,11 +3804,42 @@
           <div class="cockpit-card"><h3>Edges</h3><div class="cockpit-value">${escapeHtml(edges.length)}</div></div>
           <div class="cockpit-card"><h3>Evidence</h3><div class="cockpit-value">${escapeHtml((graph.counts || {}).evidence || 0)}</div></div>
         </div>
+        <div style="margin:12px 0;padding:12px;border:1px solid rgba(129,140,248,.18);border-radius:10px;background:rgba(15,23,42,.45);">
+          <div style="font-weight:800;margin-bottom:8px;color:#e0e7ff;">Handoff Artifact Flow</div>
+          <div style="color:var(--text-secondary);font-size:12px;margin-bottom:8px;">created artifact -> handoff -> promoted evidence</div>
+          <div class="cockpit-list">${narrative}</div>
+        </div>
         <pre style="white-space:pre-wrap;color:#c7d2fe;font-size:11px;line-height:1.55;background:rgba(2,6,23,.45);border:1px solid rgba(129,140,248,.18);border-radius:10px;padding:12px;">${escapeHtml(graph.mermaid || '')}</pre>
       `;
     } catch (err) {
       container.innerHTML = `<div style="color:var(--color-rose);padding:16px;">File flow failed: ${escapeHtml(err.message)}</div>`;
     }
+  }
+
+  function fileFlowNarrative(graph) {
+    const nodes = Array.isArray(graph.nodes) ? graph.nodes : [];
+    const edges = Array.isArray(graph.edges) ? graph.edges : [];
+    const byId = new Map(nodes.map(node => [node.id, node]));
+    if (!edges.length) {
+      return '<div class="cockpit-row"><div><strong>No file handoff edges</strong><span>Artifacts, handoffs, and evidence will appear after v3 tasks produce registered outputs.</span></div><div class="long-task-state running">empty</div></div>';
+    }
+    return edges.slice(0, 8).map(edge => {
+      const source = byId.get(edge.from) || {};
+      const target = byId.get(edge.to) || {};
+      const sourceLabel = source.label || edge.from || '-';
+      const targetLabel = target.label || edge.to || '-';
+      const label = edge.label || 'linked';
+      const state = label.includes('evidence') ? 'success' : (label.includes('handoff') ? 'running' : 'progress_stagnant');
+      return `
+        <div class="cockpit-row">
+          <div>
+            <strong>${escapeHtml(sourceLabel)} -> ${escapeHtml(targetLabel)}</strong>
+            <span>${escapeHtml(label)} · trace=${escapeHtml(graph.trace_id || '-')}</span>
+          </div>
+          <div class="long-task-state ${state}">${escapeHtml(label)}</div>
+        </div>
+      `;
+    }).join('');
   }
 
   async function openTaskDetailDrawer(taskId) {
