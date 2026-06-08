@@ -663,19 +663,37 @@ def build_cockpit_summary(summary: dict) -> dict:
         target_agent = str(detail.get("target") or item.get("target_agent", "") or "")
         risk = str(detail.get("risk") or item.get("risk", "") or "")
         request_reason = str(detail.get("request_reason") or item.get("reason", "") or "")
+        approval_action = str(item.get("action") or "")
+        budget_context = {}
+        if approval_action in {"budget_overrun", "budget.overrun"}:
+            budget_context = {
+                "amount": float(metadata.get("budget_amount") or metadata.get("amount") or 0),
+                "currency": str(metadata.get("currency") or "USD"),
+                "limit_status": str(metadata.get("limit_status") or "overrun"),
+                "hard_limit": float(metadata.get("hard_limit") or 0),
+                "soft_limit": float(metadata.get("soft_limit") or 0),
+            }
+        approval_message = f"需要 owner approval；真实外部发送保持 dry-run，直到人工批准。{request_reason}".strip()
+        if budget_context:
+            approval_message = (
+                f"预算超限，需要 owner approval；"
+                f"amount={budget_context['amount']} {budget_context['currency']} "
+                f"limit_status={budget_context['limit_status']}。{request_reason}"
+            ).strip()
         owner_attention.append(
             {
                 "kind": "approval",
                 "state": "blocked",
                 "approval_id": approval_id,
                 "task_id": task_id,
-                "approval_action": item.get("action", ""),
+                "approval_action": approval_action,
                 "risk": risk,
                 "title": item.get("action") or item.get("id", ""),
                 "target_agent": target_agent,
                 "attempt_id": "",
                 "trace_id": "",
-                "message": f"需要 owner approval；真实外部发送保持 dry-run，直到人工批准。{request_reason}".strip(),
+                "message": approval_message,
+                "budget": budget_context,
                 "updated_at": item.get("updated_at", ""),
                 "actions": attention_actions("approval", task_id=task_id, approval_id=approval_id),
             }
