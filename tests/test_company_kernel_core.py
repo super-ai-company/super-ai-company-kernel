@@ -1839,6 +1839,7 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertIn("counts.employees_total", html)
         self.assertIn("counts.employees_abnormal", html)
         self.assertIn("counts.done_tasks", html)
+        self.assertIn("counts.evidence_issues", html)
         self.assertIn("counts.awaiting_approval_tasks", html)
         self.assertIn("counts.employee_status_counts", html)
         self.assertIn("counts.readiness_counts", html)
@@ -1956,6 +1957,8 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual(0, code, blocked)
         code, submitted_done = run_cli("task", "submit", "--from", "main", "--to", "codex-cockpit", "--task-id", "task-cockpit-done", "--title", "Cockpit done task")
         self.assertEqual(0, code, submitted_done)
+        code, submitted_missing_evidence = run_cli("task", "submit", "--from", "main", "--to", "codex-cockpit", "--task-id", "task-cockpit-done-missing-evidence", "--title", "Cockpit missing evidence")
+        self.assertEqual(0, code, submitted_missing_evidence)
         code, submitted_approval = run_cli("task", "submit", "--from", "main", "--to", "codex-cockpit", "--task-id", "task-cockpit-awaiting-approval", "--title", "Cockpit approval task")
         self.assertEqual(0, code, submitted_approval)
         code, approval = run_cli(
@@ -1987,6 +1990,7 @@ class CompanyKernelCoreTest(unittest.TestCase):
             done_evidence = Path(done_workspace["path"]) / "evidence" / "done.md"
             done_evidence.write_text("done evidence\n", encoding="utf-8")
             conn.execute("UPDATE tasks SET evidence_path = ?, status = 'completed', claimed_by = 'codex-cockpit', summary = 'done', updated_at = ? WHERE id = ?", (str(done_evidence), companyctl.now(), "task-cockpit-done"))
+            conn.execute("UPDATE tasks SET status = 'completed', claimed_by = 'codex-cockpit', summary = 'missing evidence', updated_at = ? WHERE id = ?", (companyctl.now(), "task-cockpit-done-missing-evidence"))
             conn.commit()
         finally:
             conn.close()
@@ -2023,7 +2027,8 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertGreaterEqual(cockpit["counts"]["employee_status_counts"]["abnormal"], 1)
         self.assertEqual(1, cockpit["counts"]["readiness_counts"]["active_ready"])
         self.assertGreaterEqual(cockpit["counts"]["readiness_counts"]["online_only"], 1)
-        self.assertEqual(1, cockpit["counts"]["done_tasks"])
+        self.assertEqual(2, cockpit["counts"]["done_tasks"])
+        self.assertEqual(1, cockpit["counts"]["evidence_issues"])
         self.assertEqual(1, cockpit["counts"]["awaiting_approval_tasks"])
         cockpit_employees = {item["id"]: item for item in cockpit["employees"]}
         self.assertEqual("busy", cockpit_employees["codex-cockpit"]["status"])
@@ -2083,6 +2088,12 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertTrue(approval_action_meta["deny"]["requires_owner_approval"])
         self.assertTrue(all(action["task_id"] == "task-cockpit-awaiting-approval" for action in approval_attention["actions"]))
         self.assertTrue(all(action["approval_id"] == "approval-cockpit-awaiting" for action in approval_attention["actions"]))
+        evidence_attention = next(item for item in cockpit["owner_attention"] if item["task_id"] == "task-cockpit-done-missing-evidence" and item["kind"] == "evidence_issue")
+        self.assertEqual("evidence_issue", evidence_attention["kind"])
+        self.assertEqual("blocked", evidence_attention["state"])
+        self.assertEqual("completed_without_evidence", evidence_attention["reason"])
+        self.assertIn("done 但缺少 final evidence", evidence_attention["message"])
+        self.assertEqual(["review_task", "view_trace"], [action["id"] for action in evidence_attention["actions"]])
 
         status, shown = api_gateway.route_get("/v1/tasks/task-cockpit-long", {})
         self.assertEqual(200, status, shown)
