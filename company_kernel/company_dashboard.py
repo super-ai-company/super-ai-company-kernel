@@ -882,6 +882,21 @@ def build_cockpit_summary(summary: dict) -> dict:
             f"{excluded_human_owners} human owner records excluded from scheduling."
         ),
     }
+    budget_summary = summary.get("budget_summary", {}) if isinstance(summary.get("budget_summary"), dict) else {}
+    projects = []
+    for project in summary.get("projects", [])[:20]:
+        project_id = str(project.get("id") or "")
+        budget_by_currency = budget_summary.get("by_project_by_currency", {}).get(project_id, {}) if isinstance(budget_summary.get("by_project_by_currency", {}), dict) else {}
+        project_cost = {
+            "budget_by_currency": budget_by_currency,
+            "budget_total": round(sum(float(amount or 0) for amount in budget_by_currency.values()), 6),
+            "budget_currency": next(iter(budget_by_currency.keys()), "USD") if len(budget_by_currency) <= 1 else "mixed",
+            "budget_event_count": int((budget_summary.get("by_project_event_count", {}) or {}).get(project_id, 0)),
+            "token_input": int((budget_summary.get("by_project_token_input", {}) or {}).get(project_id, 0)),
+            "token_output": int((budget_summary.get("by_project_token_output", {}) or {}).get(project_id, 0)),
+            "runtime_seconds": int((budget_summary.get("by_project_runtime_seconds", {}) or {}).get(project_id, 0)),
+        }
+        projects.append({**project, **project_cost})
     return {
         "ok": True,
         "generated_at": generated_at,
@@ -939,6 +954,7 @@ def build_cockpit_summary(summary: dict) -> dict:
         "registry_reconciliation": registry_reconciliation,
         "doctor": doctor,
         "employees": employee_states,
+        "projects": projects,
         "active_limited_reasons": active_limited_reasons,
         "long_tasks": long_tasks,
         "runtime_sessions": summary.get("runtime_sessions", [])[:20],

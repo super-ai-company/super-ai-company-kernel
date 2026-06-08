@@ -1790,6 +1790,7 @@ def budget_summary(conn: sqlite3.Connection, *, task_id: str = "", employee_id: 
     by_project_event_count: dict[str, int] = {}
     by_project_token_input: dict[str, int] = {}
     by_project_token_output: dict[str, int] = {}
+    by_project_runtime_seconds: dict[str, int] = {}
     by_cost_type_by_currency: dict[str, dict[str, float]] = {}
     task_project_ids: dict[str, list[str]] = {}
     task_ids = sorted({str(item.get("task_id") or "") for item in events if str(item.get("task_id") or "")})
@@ -1806,6 +1807,7 @@ def budget_summary(conn: sqlite3.Connection, *, task_id: str = "", employee_id: 
         cost_key = str(item.get("cost_type") or "unknown")
         token_input = int(item.get("token_input") or 0)
         token_output = int(item.get("token_output") or 0)
+        runtime_seconds = int(item.get("runtime_seconds") or 0)
         by_currency[currency_key] = round(by_currency.get(currency_key, 0.0) + amount, 6)
         if employee_key:
             by_employee[employee_key] = round(by_employee.get(employee_key, 0.0) + amount, 6)
@@ -1822,6 +1824,7 @@ def budget_summary(conn: sqlite3.Connection, *, task_id: str = "", employee_id: 
                 by_project_event_count[project_id] = by_project_event_count.get(project_id, 0) + 1
                 by_project_token_input[project_id] = by_project_token_input.get(project_id, 0) + token_input
                 by_project_token_output[project_id] = by_project_token_output.get(project_id, 0) + token_output
+                by_project_runtime_seconds[project_id] = by_project_runtime_seconds.get(project_id, 0) + runtime_seconds
         by_cost_type[cost_key] = round(by_cost_type.get(cost_key, 0.0) + amount, 6)
         cost_currency = by_cost_type_by_currency.setdefault(cost_key, {})
         cost_currency[currency_key] = round(cost_currency.get(currency_key, 0.0) + amount, 6)
@@ -1847,6 +1850,7 @@ def budget_summary(conn: sqlite3.Connection, *, task_id: str = "", employee_id: 
         "by_project_event_count": by_project_event_count,
         "by_project_token_input": by_project_token_input,
         "by_project_token_output": by_project_token_output,
+        "by_project_runtime_seconds": by_project_runtime_seconds,
         "by_cost_type": by_cost_type,
         "by_cost_type_by_currency": by_cost_type_by_currency,
         "limit_status": limits["status"],

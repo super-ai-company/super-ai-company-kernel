@@ -2167,6 +2167,10 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual(0, code, submitted_missing_evidence)
         code, submitted_approval = run_cli("task", "submit", "--from", "main", "--to", "codex-cockpit", "--task-id", "task-cockpit-awaiting-approval", "--title", "Cockpit approval task")
         self.assertEqual(0, code, submitted_approval)
+        code, project = run_cli("project", "create", "--project-id", "project-cockpit-cost", "--title", "Cockpit Cost", "--goal", "Expose project spend in CEO cockpit", "--owner", "main")
+        self.assertEqual(0, code, project)
+        code, linked = run_cli("project", "link-task", "--project-id", "project-cockpit-cost", "--task-id", "task-cockpit-long")
+        self.assertEqual(0, code, linked)
         code, approval = run_cli(
             "approval",
             "request",
@@ -2227,6 +2231,33 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual(0, code, progress)
         code, corrected = run_cli("task", "correct", "--task-id", "task-cockpit-long", "--attempt-id", attempt_id, "--by", "hermes", "--message", "请收口 evidence，不要继续扩散")
         self.assertEqual(0, code, corrected)
+        code, budget = run_cli(
+            "budget",
+            "record",
+            "--budget-event-id",
+            "budget-cockpit-project-cost",
+            "--task-id",
+            "task-cockpit-long",
+            "--attempt-id",
+            attempt_id,
+            "--employee",
+            "codex-cockpit",
+            "--cost-type",
+            "model_api",
+            "--amount",
+            "1.2",
+            "--currency",
+            "USD",
+            "--token-input",
+            "3000",
+            "--token-output",
+            "700",
+            "--runtime-seconds",
+            "120",
+            "--summary",
+            "cockpit project cost",
+        )
+        self.assertEqual(0, code, budget)
         conn = companyctl.connect()
         try:
             current = datetime.now(timezone.utc).astimezone()
@@ -2307,6 +2338,12 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual(1, cockpit["counts"]["recent_evidence"])
         self.assertEqual(2, cockpit["counts"]["legacy_task_evidence"])
         self.assertEqual(1, cockpit["counts"]["completion_invalid_tasks"])
+        project_cost = next(item for item in cockpit["projects"] if item["id"] == "project-cockpit-cost")
+        self.assertEqual({"USD": 1.2}, project_cost["budget_by_currency"])
+        self.assertEqual(1, project_cost["budget_event_count"])
+        self.assertEqual(3000, project_cost["token_input"])
+        self.assertEqual(700, project_cost["token_output"])
+        self.assertEqual(120, project_cost["runtime_seconds"])
         invalid_task = next(item for item in cockpit["completion_invalid_tasks"] if item["task_id"] == "task-cockpit-done-missing-evidence")
         self.assertTrue(invalid_task["completion_invalid"])
         self.assertEqual("missing_final_evidence", invalid_task["completion_invalid_reason"])
