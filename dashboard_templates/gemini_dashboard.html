@@ -3381,6 +3381,12 @@
     }
   }
 
+  function currentSummaryFallback(key, emptyValue) {
+    const current = window.summaryData || {};
+    if (Object.prototype.hasOwnProperty.call(current, key)) return current[key];
+    return emptyValue;
+  }
+
   async function companyApiGetReachable(path) {
     const res = await fetch(getCompanyApiBase() + path, {method: 'GET'});
     const data = await res.json();
@@ -3421,6 +3427,28 @@
   function mergeLiveSummaryPatch(patch) {
     const current = window.summaryData || window.kernelSummary || {};
     window.summaryData = Object.assign({}, current, patch);
+    [
+      'projects',
+      'tasks',
+      'employees',
+      'conversations',
+      'direct_messages_recent',
+      'events',
+      'adapter_runs',
+      'approvals',
+      'rfcs',
+      'locks',
+      'task_delegations',
+      'evidence_records',
+      'artifact_records',
+      'handoff_records',
+      'failure_records',
+      'traces',
+    ].forEach((key) => {
+      if (!Array.isArray(window.summaryData[key])) window.summaryData[key] = [];
+    });
+    window.summaryData.counts = window.summaryData.counts || {};
+    window.summaryData.cockpit = window.summaryData.cockpit || {};
     summaryData = window.summaryData;
     return window.summaryData;
   }
@@ -3435,21 +3463,21 @@
     }
     liveRefreshInFlight = true;
     try {
-      const health = await companyApiGet('/v1/health');
-      const cockpit = await companyApiGet('/v1/dashboard/cockpit');
-      const tasks = await companyApiGet('/v1/tasks?limit=50');
-      const recentDirect = await companyApiGet('/v1/messages/recent-direct?limit=20');
-      const events = await companyApiGet('/v1/events?limit=20');
-      const adapterRuns = await companyApiGet('/v1/adapter-runs?limit=20');
-      const approvals = await companyApiGet('/v1/approvals?limit=20');
-      const evidence = await companyApiGetOptional('/v1/evidence?limit=50', {evidence: []});
-      const artifacts = await companyApiGetOptional('/v1/artifacts?limit=50', {artifacts: []});
-      const handoffs = await companyApiGetOptional('/v1/handoffs?limit=50', {handoffs: []});
-      const failures = await companyApiGetOptional('/v1/failures?limit=50', {failures: []});
-      const workspacePrune = await companyApiGetOptional('/v1/workspaces/prune?dry_run=true&older_than_days=30&limit=50', {});
-      const telemetry = await companyApiGetOptional('/v1/telemetry/traces?limit=20', {traces: []});
-      const employees = await companyApiGet('/v1/employees');
-      const openclawInventory = await companyApiGetOptional('/v1/openclaw/runtime-inventory', {});
+      const health = await companyApiGetOptional('/v1/health', currentSummaryFallback('runtime_health', {}));
+      const cockpit = await companyApiGetOptional('/v1/dashboard/cockpit', currentSummaryFallback('cockpit', {}));
+      const tasks = await companyApiGetOptional('/v1/tasks?limit=50', {tasks: currentSummaryFallback('tasks', [])});
+      const recentDirect = await companyApiGetOptional('/v1/messages/recent-direct?limit=20', {direct_messages_recent: currentSummaryFallback('direct_messages_recent', [])});
+      const events = await companyApiGetOptional('/v1/events?limit=20', {events: currentSummaryFallback('events', [])});
+      const adapterRuns = await companyApiGetOptional('/v1/adapter-runs?limit=20', {adapter_runs: currentSummaryFallback('adapter_runs', [])});
+      const approvals = await companyApiGetOptional('/v1/approvals?limit=20', {approvals: currentSummaryFallback('approvals', [])});
+      const evidence = await companyApiGetOptional('/v1/evidence?limit=50', {evidence: currentSummaryFallback('evidence_records', [])});
+      const artifacts = await companyApiGetOptional('/v1/artifacts?limit=50', {artifacts: currentSummaryFallback('artifact_records', [])});
+      const handoffs = await companyApiGetOptional('/v1/handoffs?limit=50', {handoffs: currentSummaryFallback('handoff_records', [])});
+      const failures = await companyApiGetOptional('/v1/failures?limit=50', {failures: currentSummaryFallback('failure_records', [])});
+      const workspacePrune = await companyApiGetOptional('/v1/workspaces/prune?dry_run=true&older_than_days=30&limit=50', currentSummaryFallback('workspace_prune_preview', {}));
+      const telemetry = await companyApiGetOptional('/v1/telemetry/traces?limit=20', {traces: currentSummaryFallback('traces', [])});
+      const employees = await companyApiGetOptional('/v1/employees', {employees: currentSummaryFallback('employees', [])});
+      const openclawInventory = await companyApiGetOptional('/v1/openclaw/runtime-inventory', currentSummaryFallback('openclaw_runtime_inventory', {}));
       const taskRows = tasks.tasks || tasks.items || [];
       const stalledTasks = taskRows.filter(task => ['stale', 'blocked', 'failed'].includes(String(task.status || '').toLowerCase()) || task.blocker);
       mergeLiveSummaryPatch({
@@ -4113,14 +4141,18 @@
     const traceId = attempt.trace_id || task.trace_id || '';
     const taskStatus = String(task.status || '').toLowerCase();
     const attemptStatus = String(attempt.status || '').toLowerCase();
+    const longTaskState = String(task.long_task_state || attempt.long_task_state || '').toLowerCase();
     const isDone = ['completed', 'done', 'success'].includes(taskStatus) || attemptStatus === 'success';
     const isCancelled = taskStatus === 'cancelled' || attemptStatus === 'cancelled';
     const isRunning = ['claimed', 'running', 'starting', 'correcting'].includes(taskStatus) || ['starting', 'running', 'correcting'].includes(attemptStatus);
-    const isRecoverable = ['blocked', 'failed', 'stale'].includes(taskStatus) || ['failed', 'stale', 'cancelled'].includes(attemptStatus);
+    const isObservable = isRunning || ['heartbeat_stale', 'progress_stagnant', 'stale', 'correcting'].includes(longTaskState);
+    const isRecoverable = ['blocked', 'failed', 'stale'].includes(taskStatus) || ['failed', 'stale', 'cancelled'].includes(attemptStatus) || ['heartbeat_stale', 'progress_stagnant', 'stale'].includes(longTaskState);
     const buttons = [
       `<button class="filter-tab" onclick="event.stopPropagation(); openTaskDetailDrawer('${escapeHtml(taskId)}')">Detail</button>`
     ];
-    if (isRunning && !isDone && !isCancelled) {
+    if (isObservable && !isDone && !isCancelled) {
+      buttons.push(`<button class="filter-tab" data-ledger-action="task.probe" data-requires-owner-approval="true" onclick="event.stopPropagation(); recordWaitDecision('${escapeHtml(taskId)}', '${escapeHtml(attemptId)}')">Send Probe <small>ledger only</small></button>`);
+      buttons.push(`<button class="filter-tab" onclick="event.stopPropagation(); viewTaskLogs('${escapeHtml(taskId)}')">View Logs</button>`);
       buttons.push(`<button class="filter-tab" data-ledger-action="task.correct" data-requires-owner-approval="true" onclick="event.stopPropagation(); correctTaskAttempt('${escapeHtml(taskId)}', '${escapeHtml(attemptId)}')">Correct <small>owner approval</small></button>`);
       buttons.push(`<button class="filter-tab" data-ledger-action="task.cancel" data-requires-owner-approval="true" data-dangerous="true" onclick="event.stopPropagation(); cancelTaskAttempt('${escapeHtml(taskId)}', '${escapeHtml(attemptId)}')">Cancel <small>danger</small></button>`);
     }
@@ -7298,7 +7330,7 @@
   }
 
   // Startup Init
-  window.addEventListener('DOMContentLoaded', () => {
+  window.addEventListener('DOMContentLoaded', async () => {
     const currentLang = localStorage.getItem('dashboard-language') || 'en';
     const langSelect = document.getElementById('lang-selector');
     if (langSelect) {
@@ -7323,8 +7355,11 @@
       toggle.checked = isAutoRefresh;
     }
     
-    // Always load the latest live data once on page load
-    refreshLiveDashboardFromApi();
+    // API-first startup: load ledger data before SSE can report "online".
+    const initialRefreshOk = await refreshLiveDashboardFromApi();
+    if (!initialRefreshOk) {
+      companyApiLog('ERROR', 'Initial REST refresh failed; dashboard is showing cached/bootstrap data only.', 'error');
+    }
     
     if (isAutoRefresh) {
       if (!startEventStream()) {
