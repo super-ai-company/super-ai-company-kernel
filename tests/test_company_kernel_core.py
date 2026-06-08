@@ -3403,6 +3403,17 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertIn("const telemetry = await companyApiGetOptional('/v1/telemetry/traces?limit=20', {traces: []});", html)
         self.assertIn("const openclawInventory = await companyApiGetOptional('/v1/openclaw/runtime-inventory', {});", html)
 
+    def test_real_dashboard_template_task_detail_modal_is_closeable(self) -> None:
+        template = Path(__file__).resolve().parents[1] / "dashboard_templates" / "gemini_dashboard.html"
+        html = template.read_text(encoding="utf-8")
+        self.assertIn('id="details-modal"', html)
+        self.assertIn("closeModal()", html)
+        self.assertIn("window.closeModal = function()", html)
+        self.assertIn("modal.style.display = 'none'", html)
+        self.assertIn("event.key === 'Escape'", html)
+        self.assertIn("modal-content detail-modal-content", html)
+        self.assertIn("id=\"modal-body\"", html)
+
     def test_dashboard_versioned_template_initializes_chat_state(self) -> None:
         template = Path(__file__).resolve().parents[1] / "dashboard_templates" / "gemini_dashboard.html"
         html = template.read_text(encoding="utf-8")

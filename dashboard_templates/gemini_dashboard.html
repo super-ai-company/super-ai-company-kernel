@@ -1323,6 +1323,12 @@
       animation: modalSlideUp 0.2s ease-out;
     }
 
+    .detail-modal-content {
+      max-width: min(960px, calc(100vw - 32px));
+      max-height: calc(100vh - 32px);
+      overflow: hidden;
+    }
+
     @keyframes modalSlideUp {
       from { opacity: 0; transform: scale(0.97) translateY(8px); }
       to { opacity: 1; transform: scale(1) translateY(0); }
@@ -1334,6 +1340,8 @@
       display: flex;
       align-items: center;
       justify-content: space-between;
+      gap: 16px;
+      flex: 0 0 auto;
     }
 
     .modal-header h3 {
@@ -1341,19 +1349,41 @@
       font-size: 16px;
       font-weight: 700;
       color: #fff;
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
     }
 
     .close-btn {
-      background: transparent;
-      border: none;
-      color: var(--text-muted);
-      font-size: 24px;
+      width: 36px;
+      height: 36px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      flex: 0 0 auto;
+      background: rgba(255, 255, 255, 0.04);
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      border-radius: 10px;
+      color: #cbd5e1;
+      font-size: 22px;
+      line-height: 1;
       cursor: pointer;
+      position: relative;
+      z-index: 2;
+    }
+
+    .close-btn:hover {
+      background: rgba(239, 68, 68, 0.14);
+      border-color: rgba(239, 68, 68, 0.35);
+      color: #fff;
     }
 
     .modal-body {
       padding: 24px;
       overflow-y: auto;
+      overflow-x: hidden;
+      min-height: 0;
       font-family: 'Fira Code', monospace;
       font-size: 12.5px;
       line-height: 1.5;
@@ -1363,7 +1393,7 @@
 
     .modal-body pre {
       white-space: pre-wrap;
-      word-break: break-all;
+      word-break: break-word;
     }
 
     .lock-item {
@@ -2995,12 +3025,12 @@
 
 <!-- Modal for details -->
 <div id="details-modal" class="modal" onclick="if(event.target===this) closeModal()">
-  <div class="modal-content">
+  <div class="modal-content detail-modal-content">
     <div class="modal-header">
       <h3 id="modal-title">Details Information</h3>
       <button class="close-btn" onclick="closeModal()">&times;</button>
     </div>
-    <div class="modal-body">
+    <div class="modal-body" id="modal-body">
       <pre><code id="modal-code"></code></pre>
     </div>
   </div>
@@ -4001,6 +4031,17 @@
     const modal = document.getElementById('details-modal');
     if (modal) modal.style.display = 'flex';
   }
+
+  window.closeModal = function() {
+    const modal = document.getElementById('details-modal');
+    if (modal) modal.style.display = 'none';
+  };
+
+  document.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape') {
+      closeModal();
+    }
+  });
 
   window.dashboardDetailStore = window.dashboardDetailStore || {};
   window.showDetails = function(title, raw) {
