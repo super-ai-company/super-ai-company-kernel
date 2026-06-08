@@ -3440,6 +3440,14 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertIn("event.key === 'Escape'", html)
         self.assertIn("modal-content detail-modal-content", html)
         self.assertIn("id=\"modal-body\"", html)
+        self.assertIn("function storeDashboardDetail(prefix, raw)", html)
+        self.assertIn("showStoredDetails('Employee details:", html)
+        self.assertIn("showStoredDetails('Adapter Run:", html)
+        self.assertIn('onclick="openTaskDetailDrawer(\'${escapeHtml(taskId)}\')"', html)
+        self.assertNotIn("onclick=\"showDetails('Task: ' + '${escapeHtml(task.id)}'", html)
+        self.assertNotIn("JSON.stringify(emp).replace", html)
+        self.assertNotIn("JSON.stringify(run).replace", html)
+        self.assertNotIn("JSON.stringify(item).replace", html)
 
     def test_real_dashboard_template_defines_visible_employee_actions(self) -> None:
         template = Path(__file__).resolve().parents[1] / "dashboard_templates" / "gemini_dashboard.html"

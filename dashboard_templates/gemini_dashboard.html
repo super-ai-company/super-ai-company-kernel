@@ -3713,6 +3713,7 @@
     const employees = Array.isArray(summary.employees) ? summary.employees : [];
     tbody.innerHTML = employees.length ? employees.map(emp => {
       const profile = emp.sandbox_profile || {};
+      const detailKey = storeDashboardDetail(`sandbox:${emp.id || '-'}`, profile);
       const permissions = profile.permissions || {};
       const approvals = Array.isArray(permissions.requires_approval_for) ? permissions.requires_approval_for : [];
       const isolation = profile.isolation || 'none';
@@ -3721,7 +3722,7 @@
       const source = profile.source || 'runtime_fallback';
       const badgeClass = source === 'configured' ? 'completed' : 'blocked';
       return `
-        <tr onclick="showDetails('Sandbox profile: ' + '${escapeHtml(emp.id || '-')}', ${JSON.stringify(profile).replace(/'/g, "\'")})">
+        <tr onclick="showStoredDetails('Sandbox profile: ${escapeHtml(emp.id || '-')}', '${escapeHtml(detailKey)}')">
           <td>
             <div style="font-weight: 700;">${escapeHtml(emp.name || emp.id || '-')}</div>
             <div style="font-family: monospace; color: var(--text-muted); font-size: 11px;">${escapeHtml(emp.id || '-')} · ${escapeHtml(emp.runtime || '-')}</div>
@@ -3742,8 +3743,10 @@
     if (!container) return;
     const registry = summary.skill_registry || {};
     const skills = Array.isArray(registry.skills) ? registry.skills : [];
-    container.innerHTML = skills.length ? skills.map(skill => `
-      <div class="employee-card" onclick="showDetails('Skill Package: ' + '${escapeHtml(skill.id || '-')}', ${JSON.stringify(skill).replace(/'/g, "\'")})">
+    container.innerHTML = skills.length ? skills.map(skill => {
+      const detailKey = storeDashboardDetail(`skill:${skill.id || '-'}`, skill);
+      return `
+      <div class="employee-card" onclick="showStoredDetails('Skill Package: ${escapeHtml(skill.id || '-')}', '${escapeHtml(detailKey)}')">
         <div class="employee-card-header">
           <div class="employee-identity">
             <div class="employee-avatar"><i class="fa-solid fa-toolbox"></i></div>
@@ -3767,7 +3770,8 @@
           <span class="capability-tag">evidence=${escapeHtml(String(!!skill.evidence_required))}</span>
         </div>
       </div>
-    `).join('') : '<div style="color: var(--text-secondary); font-size: 12px; padding: 10px 0;">No local Skill Packages found.</div>';
+    `;
+    }).join('') : '<div style="color: var(--text-secondary); font-size: 12px; padding: 10px 0;">No local Skill Packages found.</div>';
   }
 
   function attemptHistorySummary(attempts) {
@@ -4044,6 +4048,13 @@
   });
 
   window.dashboardDetailStore = window.dashboardDetailStore || {};
+  function storeDashboardDetail(prefix, raw) {
+    window.dashboardDetailStore = window.dashboardDetailStore || {};
+    const safePrefix = String(prefix || 'detail').replace(/[^a-zA-Z0-9_.:-]/g, '-');
+    const key = `${safePrefix}:${Math.random().toString(36).slice(2)}`;
+    window.dashboardDetailStore[key] = raw && typeof raw === 'object' ? raw : {};
+    return key;
+  }
   window.showDetails = function(title, raw) {
     const item = raw && typeof raw === 'object' ? raw : {};
     renderDetails(title || 'Details', Object.entries(item), item);
@@ -5685,8 +5696,10 @@
     const tbody = document.getElementById('followups-tbody');
     if (!tbody) return;
     const followups = summary.followups || [];
-    tbody.innerHTML = followups.map(item => `
-      <tr onclick="showDetails('Followup: ' + '${escapeHtml(item.id)}', ${JSON.stringify(item).replace(/'/g, "\'")})">
+    tbody.innerHTML = followups.map(item => {
+      const detailKey = storeDashboardDetail(`followup:${item.id || '-'}`, item);
+      return `
+      <tr onclick="showStoredDetails('Followup: ${escapeHtml(item.id)}', '${escapeHtml(detailKey)}')">
         <td style="font-family: monospace;">${escapeHtml(item.id)}</td>
         <td><span class="badge ${escapeHtml(item.status || 'submitted')}">${escapeHtml(item.status || '')}</span></td>
         <td>${escapeHtml(item.source_agent || '-')}</td>
@@ -5695,7 +5708,8 @@
         <td>${escapeHtml(item.answer || '-')}</td>
         <td>${formatDate(item.answered_at || '')}</td>
       </tr>
-    `).join('');
+    `;
+    }).join('');
   }
 
   // Tab switching
@@ -5840,12 +5854,15 @@
     // Active Resource Locks
     const locksList = document.getElementById('active-locks-list');
     if (summary.locks && summary.locks.length > 0) {
-      locksList.innerHTML = summary.locks.map(lock => `
-        <div class="lock-item" onclick="showDetails('Lock: ' + '${escapeHtml(lock.resource_key)}', ${JSON.stringify(lock).replace(/'/g, "\'")})">
+      locksList.innerHTML = summary.locks.map(lock => {
+        const detailKey = storeDashboardDetail(`lock:${lock.resource_key || '-'}`, lock);
+        return `
+        <div class="lock-item" onclick="showStoredDetails('Lock: ${escapeHtml(lock.resource_key)}', '${escapeHtml(detailKey)}')">
           <div class="lock-key"><i class="fa-solid fa-lock"></i> ${escapeHtml(lock.resource_key)}</div>
           <div class="lock-owner">${escapeHtml(lock.owner_agent)}</div>
         </div>
-      `).join('');
+      `;
+      }).join('');
     } else {
       locksList.innerHTML = `<div style="color: var(--text-muted); font-size: 13px; text-align: center; padding: 20px;">No locks found.</div>`;
     }
@@ -5855,11 +5872,11 @@
     // Tasks Table
     const tasksTbody = document.getElementById('tasks-tbody');
     tasksTbody.innerHTML = summary.tasks.map(task => {
-      const detailStr = JSON.stringify(task).replace(/'/g, "\'");
       const taskState = task.long_task_state || task.status;
       const taskStateMeta = task.long_task_state ? `task=${task.status || '-'} · heartbeat=${task.heartbeat_state || '-'} · progress=${task.progress_state || '-'}` : '';
+      const taskId = task.id || '';
       return `
-        <tr data-status="${escapeHtml(task.status)}" onclick="showDetails('Task: ' + '${escapeHtml(task.id)}', ${detailStr})">
+        <tr data-status="${escapeHtml(task.status)}" onclick="openTaskDetailDrawer('${escapeHtml(taskId)}')">
           <td style="font-family: monospace;">${escapeHtml(task.id)}</td>
           <td>${escapeHtml(task.source_agent)}</td>
           <td>${escapeHtml(task.target_agent)}</td>
@@ -5881,9 +5898,9 @@
     // Projects Table
     const projectsTbody = document.getElementById('projects-tbody');
     projectsTbody.innerHTML = summary.projects.map(p => {
-      const detailStr = JSON.stringify(p).replace(/'/g, "\'");
+      const detailKey = storeDashboardDetail(`project:${p.id || '-'}`, p);
       return `
-        <tr onclick="showDetails('Project: ' + '${escapeHtml(p.id)}', ${detailStr})">
+        <tr onclick="showStoredDetails('Project: ${escapeHtml(p.id)}', '${escapeHtml(detailKey)}')">
           <td style="font-family: monospace;">${escapeHtml(p.id)}</td>
           <td>${escapeHtml(p.title)}</td>
           <td>${escapeHtml(p.owner_agent)}</td>
@@ -5906,9 +5923,10 @@
       
       const skills = emp.skills || '';
       const skillsPills = skills ? skills.split(',').map(s => `<span class="capability-tag" style="font-size: 9px; padding: 2px 5px; margin-top: 4px;">${escapeHtml(s.trim())}</span>`).join(' ') : '';
+      const detailKey = storeDashboardDetail(`employee:${emp.id || '-'}`, emp);
 
       return `
-        <div class="employee-card" onclick="showDetails('Employee details: ' + '${escapeHtml(emp.id)}', ${JSON.stringify(emp).replace(/'/g, "\'")})">
+        <div class="employee-card" onclick="showStoredDetails('Employee details: ${escapeHtml(emp.id)}', '${escapeHtml(detailKey)}')">
           <div class="employee-card-header">
             <div class="employee-identity">
               <div class="employee-avatar"><i class="fa-solid fa-robot"></i></div>
@@ -5965,8 +5983,9 @@
         const skills = emp.skills || '';
         const skillsPills = skills ? skills.split(',').map(s => `<span class="capability-tag" style="font-size: 9px; padding: 2px 5px; margin-top: 4px;">${escapeHtml(s.trim())}</span>`).join(' ') : '';
         const sandboxBadge = sandboxProfileChip(emp);
+        const detailKey = storeDashboardDetail(`candidate:${emp.id || '-'}`, emp);
         return `
-          <div class="employee-card" onclick="showDetails('Candidate employee: ' + '${escapeHtml(emp.id)}', ${JSON.stringify(emp).replace(/'/g, "\'")})">
+          <div class="employee-card" onclick="showStoredDetails('Candidate employee: ${escapeHtml(emp.id)}', '${escapeHtml(detailKey)}')">
             <div class="employee-card-header">
               <div class="employee-identity">
                 <div class="employee-avatar"><i class="fa-solid fa-user-clock"></i></div>
@@ -6017,8 +6036,9 @@
     // RFCs Table
     const rfcsTbody = document.getElementById('rfcs-tbody');
     rfcsTbody.innerHTML = summary.rfcs.map(rfc => {
+      const detailKey = storeDashboardDetail(`rfc:${rfc.id || '-'}`, rfc);
       return `
-        <tr onclick="showDetails('RFC: ' + '${escapeHtml(rfc.id)}', ${JSON.stringify(rfc).replace(/'/g, "\'")})">
+        <tr onclick="showStoredDetails('RFC: ${escapeHtml(rfc.id)}', '${escapeHtml(detailKey)}')">
           <td style="font-family: monospace;">${escapeHtml(rfc.id)}</td>
           <td>${escapeHtml(rfc.author_agent)}</td>
           <td><span class="badge ${escapeHtml(rfc.status)}">${escapeHtml(rfc.status)}</span></td>
@@ -6056,8 +6076,9 @@
     const runsTbody = document.getElementById('adapter-runs-tbody');
     runsTbody.innerHTML = summary.adapter_runs.map(run => {
       const ok = run.ok === 1;
+      const detailKey = storeDashboardDetail(`adapter-run:${run.id || '-'}`, run);
       return `
-        <tr onclick="showDetails('Adapter Run: ' + '${escapeHtml(run.id)}', ${JSON.stringify(run).replace(/'/g, "\'")})">
+        <tr onclick="showStoredDetails('Adapter Run: ${escapeHtml(run.id)}', '${escapeHtml(detailKey)}')">
           <td style="font-family: monospace; font-size: 11px;">${escapeHtml(run.id)}</td>
           <td>${escapeHtml(run.agent_id)}</td>
           <td>${escapeHtml(run.task_id || '-')}</td>
@@ -6303,9 +6324,8 @@
       const col = t.status;
       if (lists[col]) {
         counts[col]++;
-        const detailStr = JSON.stringify(t).replace(/'/g, "\'");
         lists[col].innerHTML += `
-          <div class="kanban-card" draggable="true" ondragstart="onKanbanCardDragStart(event, '${t.id}')" onclick="showDetails('Task: ' + '${escapeHtml(t.id)}', ${detailStr})" style="cursor: grab;">
+          <div class="kanban-card" draggable="true" ondragstart="onKanbanCardDragStart(event, '${escapeHtml(t.id)}')" onclick="openTaskDetailDrawer('${escapeHtml(t.id)}')" style="cursor: grab;">
             <div class="kanban-card-title">${escapeHtml(t.title)}</div>
             <div style="font-size: 10px; color: var(--color-indigo); font-weight: 500;">
               ${escapeHtml(t.source_agent)} &rarr; ${escapeHtml(t.target_agent)}
