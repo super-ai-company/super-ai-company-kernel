@@ -1377,7 +1377,14 @@ class ApiHandler(BaseHTTPRequestHandler):
         if parsed.path == "/v1/events/stream":
             self.stream_events(query)
             return
-        status, payload = route_get(parsed.path, query)
+        try:
+            status, payload = route_get(parsed.path, query)
+        except Exception as exc:
+            status, payload = HTTPStatus.INTERNAL_SERVER_ERROR, {
+                "ok": False,
+                "error": companyctl.sanitize_log_text(exc),
+                "path": parsed.path,
+            }
         self.send_json(status, payload)
 
     def do_POST(self) -> None:

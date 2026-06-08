@@ -1936,6 +1936,15 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertIn("renderSupervisorActivity", html)
         self.assertIn("correction_pending_ack", html)
         self.assertIn("Hermes supervised corrections and stagnant checks appear here", html)
+        self.assertIn("verifyRuntimeEvidence", html)
+        self.assertIn("/v1/agent-matrix?agents=", html)
+        self.assertIn("installOwnerAttentionActionHandlers", html)
+        self.assertIn("owner-attention-action", html)
+        self.assertIn("data-employee-id", html)
+        self.assertIn("window.handleOwnerAttentionAction", html)
+        self.assertIn("window.verifyRuntimeEvidence(employeeId)", html)
+        self.assertIn("liveRefreshInFlight", html)
+        self.assertIn("liveRefreshQueued", html)
         self.assertIn("Recent Evidence", html)
         self.assertIn("promoted evidence", html)
         self.assertIn("legacy task evidence_path", html)
@@ -6014,6 +6023,24 @@ class CompanyKernelCoreTest(unittest.TestCase):
         handler.send_cors_headers()
         self.assertIn(("Access-Control-Allow-Origin", "*"), sent_headers)
         self.assertIn(("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE, OPTIONS"), sent_headers)
+
+        handler = object.__new__(api_gateway.ApiHandler)
+        handler.path = "/v1/tasks?limit=50"
+        handler.wfile = io.BytesIO()
+        handler.headers = {}
+        sent = []
+        handler.send_response = lambda code: sent.append(("status", code))
+        handler.send_header = lambda name, value: sent.append((name, value))
+        handler.end_headers = lambda: sent.append(("end", ""))
+        handler.server = SimpleNamespace(quiet=True)
+        with mock.patch.object(api_gateway, "route_get", side_effect=sqlite3.OperationalError("disk I/O error /Users/owner/.env")):
+            handler.do_GET()
+        output = handler.wfile.getvalue().decode("utf-8")
+        self.assertIn(("status", HTTPStatus.INTERNAL_SERVER_ERROR), sent)
+        self.assertIn('"ok": false', output)
+        self.assertIn('"path": "/v1/tasks"', output)
+        self.assertNotIn("/Users/owner", output)
+        self.assertNotIn(".env", output)
 
         for agent in ["video-ops", "video-creator", "video-publisher", "codex", "openclaw-main", "hermes", "nestcar"]:
             status, heartbeat = api_gateway.route_post("/v1/heartbeats", {"agent": agent})
