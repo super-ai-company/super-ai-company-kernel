@@ -3012,6 +3012,26 @@ def employee_has_managed_runtime_evidence(conn: sqlite3.Connection, employee_id:
     return bool(evidence_row)
 
 
+def employee_has_adapter_task_evidence(conn: sqlite3.Connection, employee_id: str) -> bool:
+    row = conn.execute(
+        """
+        SELECT id, title, evidence_path
+        FROM tasks
+        WHERE target_agent = ?
+          AND status = 'completed'
+          AND evidence_path != ''
+          AND title LIKE 'Runtime adapter dry-run check:%'
+        ORDER BY updated_at DESC
+        LIMIT 1
+        """,
+        (employee_id,),
+    ).fetchone()
+    if not row:
+        return False
+    evidence_path = str(row["evidence_path"] or "")
+    return bool(evidence_path and Path(evidence_path).exists())
+
+
 def employee_has_runtime_evidence(employee_id: str, conn: sqlite3.Connection | None = None) -> bool:
     latest = verified_direct_evidence_dir(employee_id) / "latest-runtime.json"
     payload = load_json_or_default(latest, {})
@@ -3025,7 +3045,7 @@ def employee_has_runtime_evidence(employee_id: str, conn: sqlite3.Connection | N
         else:
             return True
     if conn is not None:
-        return employee_has_managed_runtime_evidence(conn, employee_id)
+        return employee_has_managed_runtime_evidence(conn, employee_id) or employee_has_adapter_task_evidence(conn, employee_id)
     return False
 
 
@@ -3045,6 +3065,7 @@ def latest_attempt_for_employee(conn: sqlite3.Connection, employee_id: str) -> d
 
 def classify_agent_matrix_row(conn: sqlite3.Connection, employee: dict, attendance: dict) -> dict:
     employee_id = employee["id"]
+    runtime = str(employee.get("runtime") or "")
     attendance_status = str(attendance.get("status") or "missing")
     runtime_ok = employee_has_runtime_evidence(employee_id, conn)
     latest_attempt = latest_attempt_for_employee(conn, employee_id)
@@ -3052,6 +3073,9 @@ def classify_agent_matrix_row(conn: sqlite3.Connection, employee: dict, attendan
     if employee_status == "missing":
         level = "no_reply"
         reason = "employee_not_registered"
+    elif runtime == "skill" and employee_status == "active" and runtime_ok:
+        level = "active_ready"
+        reason = "skill_runtime_evidence_no_direct_chat_required"
     elif attendance_status != "online":
         level = "no_reply"
         reason = f"attendance_{attendance_status}"
@@ -5006,7 +5030,12 @@ def detect_route_approval_action(title: str, description: str, explicit_action: 
     actions = load_policy_config().get("route_approval", {}).get("actions", DEFAULT_ROUTE_APPROVAL_ACTIONS)
     for action, keywords in actions.items():
         for keyword in keywords:
-            if keyword.lower() in text:
+            normalized = keyword.lower().strip()
+            if not normalized:
+                continue
+            if normalized.isascii() and re.search(rf"(?<![a-z0-9]){re.escape(normalized)}(?![a-z0-9])", text):
+                return action
+            if not normalized.isascii() and normalized in text:
                 return action
     return ""
 
@@ -8229,6 +8258,57 @@ def parse_json_output(raw: str) -> dict:
         return {"raw": raw}
 
 
+def load_json_file(path: Path) -> dict:
+    try:
+        parsed = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def skill_package_for_employee(conn: sqlite3.Connection, employee_id: str) -> str:
+    employee = conn.execute("SELECT workspace FROM employees WHERE id = ?", (employee_id,)).fetchone()
+    candidates: list[str] = []
+    if employee:
+        workspace = Path(str(employee["workspace"] or "")).expanduser()
+        for path in [workspace / "profile.json", workspace / "capabilities.json", EMPLOYEES_DIR / employee_id / "profile.json", EMPLOYEES_DIR / employee_id / "capabilities.json"]:
+            data = load_json_file(path)
+            for key in ("skill_package", "skill_package_path", "package", "package_path"):
+                value = str(data.get(key) or "").strip()
+                if value:
+                    candidates.append(value)
+            for section_key in ("skill", "package", "runtime"):
+                section = data.get(section_key)
+                if isinstance(section, dict):
+                    for key in ("manifest", "manifest_path", "skill_json", "path"):
+                        value = str(section.get(key) or "").strip()
+                        if value:
+                            candidates.append(value)
+    for raw in candidates:
+        path = Path(raw).expanduser()
+        if not path.is_absolute():
+            path = (ROOT / path).resolve()
+        if path.is_dir():
+            path = path / "skill.json"
+        if path.exists():
+            return str(path)
+
+    manifests = sorted(SKILL_PACKAGES_DIR.glob("*/skill.json"))
+    matches = []
+    token = employee_id.removesuffix("-skill")
+    for manifest_path in manifests:
+        manifest = load_json_file(manifest_path)
+        manifest_employee = str(manifest.get("employee_id") or "").strip()
+        manifest_id = str(manifest.get("id") or manifest_path.parent.name).strip()
+        if manifest_employee == employee_id or manifest_id in {employee_id, token, manifest_path.parent.name} or token == manifest_path.parent.name:
+            matches.append(manifest_path)
+    if len(matches) == 1:
+        return str(matches[0])
+    if not matches and len(manifests) == 1:
+        return str(manifests[0])
+    return ""
+
+
 def run_companyctl_json(args: list[str]) -> tuple[int, dict, str]:
     cp = subprocess.run([str(ROOT / "bin" / "companyctl"), *args], cwd=str(ROOT), text=True, capture_output=True)
     return cp.returncode, parse_json_output(cp.stdout), cp.stderr
@@ -8482,8 +8562,30 @@ def cmd_runtime_retry_adapter_run(args: argparse.Namespace) -> int:
     return 0
 
 
+def resolve_runtime_verify_source(conn: sqlite3.Connection, requested: str = "") -> str:
+    requested = (requested or "").strip()
+    if requested:
+        row = conn.execute("SELECT id FROM employees WHERE id = ?", (requested,)).fetchone()
+        if row:
+            return requested
+        raise ValueError(f"unknown source employee: {requested}")
+    for candidate in ("openclaw-main", "main", "owner-shift"):
+        row = conn.execute("SELECT id FROM employees WHERE id = ?", (candidate,)).fetchone()
+        if row:
+            return candidate
+    row = conn.execute("SELECT id FROM employees WHERE status = 'active' ORDER BY id LIMIT 1").fetchone()
+    if row:
+        return row["id"]
+    raise ValueError("no source employee available for runtime verification")
+
+
 def cmd_runtime_verify_adapters(args: argparse.Namespace) -> int:
     conn = connect()
+    try:
+        source = resolve_runtime_verify_source(conn, args.source)
+    except ValueError as exc:
+        emit({"ok": False, "error": str(exc)})
+        return 1
     agents = adapter_verify_agents(conn, parse_csv(args.agents))
     results = []
     for emp in agents:
@@ -8509,7 +8611,7 @@ def cmd_runtime_verify_adapters(args: argparse.Namespace) -> int:
                     "task",
                     "submit",
                     "--from",
-                    args.source,
+                    source,
                     "--to",
                     emp["id"],
                     "--task-id",
@@ -8529,6 +8631,14 @@ def cmd_runtime_verify_adapters(args: argparse.Namespace) -> int:
             conn.close()
             conn = connect()
         cmd = [str(ROOT / "bin" / command), "--agent", emp["id"]]
+        if runtime == "skill":
+            package = skill_package_for_employee(conn, emp["id"])
+            if not package:
+                result["error"] = "skill package not found for employee"
+                results.append(result)
+                continue
+            result["package"] = package
+            cmd.extend(["--package", package])
         if args.execute:
             cmd.append("--execute")
         cp = subprocess.run(cmd, cwd=str(ROOT), text=True, capture_output=True)
@@ -8567,12 +8677,12 @@ def cmd_runtime_verify_adapters(args: argparse.Namespace) -> int:
         ok = False
     audit_error = ""
     try:
-        audit(conn, "companyctl", "runtime.verify_adapters", "", {"execute": args.execute, "agents": [r["agent"] for r in results], "ok": ok, "scheduler": scheduler_result})
+        audit(conn, "companyctl", "runtime.verify_adapters", "", {"execute": args.execute, "source": source, "agents": [r["agent"] for r in results], "ok": ok, "scheduler": scheduler_result})
     except sqlite3.OperationalError as exc:
         audit_error = str(exc)
         if "readonly" not in audit_error.lower():
             raise
-    emit({"ok": ok, "execute": args.execute, "count": len(results), "results": results, "scheduler": scheduler_result, "audit_error": audit_error})
+    emit({"ok": ok, "execute": args.execute, "source": source, "count": len(results), "results": results, "scheduler": scheduler_result, "audit_error": audit_error})
     return 0 if ok else 1
 
 
@@ -9507,7 +9617,7 @@ def build_parser() -> argparse.ArgumentParser:
     runtime_test.set_defaults(func=cmd_runtime_test)
     runtime_verify_adapters = runtime_sub.add_parser("verify-adapters")
     runtime_verify_adapters.add_argument("--agents", default="", help="comma-separated employee ids; defaults to all adapter-backed employees")
-    runtime_verify_adapters.add_argument("--source", default="openclaw-main")
+    runtime_verify_adapters.add_argument("--source", default="", help="source employee for verification tasks; default auto-detects openclaw-main/main")
     runtime_verify_adapters.add_argument("--task-id-prefix", default="task-runtime-verify")
     runtime_verify_adapters.add_argument("--execute", action="store_true", help="run real adapter execution; default is safe dry-run")
     runtime_verify_adapters.add_argument("--run-scheduler", action=argparse.BooleanOptionalAction, default=True, help="process generated events after adapter verification")

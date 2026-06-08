@@ -6100,6 +6100,86 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual("missing", row["checks"]["evidence"])
         self.assertEqual("success", row["latest_attempt"]["status"])
 
+    def test_agent_matrix_accepts_runtime_verify_adapter_task_evidence(self) -> None:
+        for employee_id, role, runtime in [
+            ("main", "operator", "openclaw"),
+            ("nestcar", "business-agent", "openclaw"),
+        ]:
+            code, created = run_cli("employee", "create", "--id", employee_id, "--name", employee_id, "--role", role, "--runtime", runtime, "--workspace", str(self.root / "workspace" / employee_id))
+            self.assertEqual(0, code, created)
+            self.mark_active(employee_id)
+        attendance_dir = self.root / "state" / "attendance"
+        attendance_dir.mkdir(parents=True)
+        (attendance_dir / "latest.json").write_text(
+            json.dumps({"ok": True, "employees": [{"agent": "nestcar", "status": "online", "reply": "nestcar 在岗"}]}, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        task_id = "task-openclaw-verify-local-nestcar"
+        code, submitted = run_cli(
+            "task",
+            "submit",
+            "--from",
+            "main",
+            "--to",
+            "nestcar",
+            "--task-id",
+            task_id,
+            "--title",
+            "Runtime adapter dry-run check: nestcar",
+            "--description",
+            "Adapter dry-run check task only.",
+        )
+        self.assertEqual(0, code, submitted)
+        evidence_path = self.root / "employees" / "nestcar" / "reports" / task_id / "openclaw-adapter-report.md"
+        evidence_path.parent.mkdir(parents=True)
+        evidence_path.write_text("adapter evidence\n", encoding="utf-8")
+        code, done = run_cli("task", "done", "--agent", "nestcar", "--task-id", task_id, "--summary", "adapter evidence", "--evidence", str(evidence_path))
+        self.assertEqual(0, code, done)
+
+        code, matrix = run_cli("agent-matrix", "--agents", "nestcar")
+        self.assertEqual(0, code, matrix)
+        row = matrix["employees"][0]
+        self.assertEqual("active_ready", row["level"])
+        self.assertEqual("runtime_evidence", row["checks"]["evidence"])
+
+    def test_agent_matrix_marks_skill_ready_from_runtime_evidence_without_direct_chat(self) -> None:
+        code, runtime = run_cli("runtime", "register", "--runtime", "skill", "--command", "company-skill-package-worker", "--notes", "Skill Package runtime")
+        self.assertEqual(0, code, runtime)
+        code, employee = run_cli("employee", "create", "--id", "image-copy-skill", "--name", "Image Copy Skill", "--role", "skill-worker", "--runtime", "skill", "--workspace", str(self.root / "workspace" / "image-copy-skill"))
+        self.assertEqual(0, code, employee)
+        self.mark_active("image-copy-skill")
+        attendance_dir = self.root / "state" / "attendance"
+        attendance_dir.mkdir(parents=True)
+        (attendance_dir / "latest.json").write_text(
+            json.dumps({"ok": False, "employees": [{"agent": "image-copy-skill", "status": "no_reply", "reason": "unsupported_runtime:skill"}]}, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        task_id = "task-runtime-skill-evidence"
+        code, submitted = run_cli("task", "submit", "--from", "openclaw-main", "--to", "image-copy-skill", "--task-id", task_id, "--title", "Runtime adapter dry-run check: image-copy-skill")
+        self.assertEqual(0, code, submitted)
+        code, run = run_cli("task", "run", "--task-id", task_id, "--agent", "image-copy-skill", "--by", "hermes", "--adapter-type", "skill")
+        self.assertEqual(0, code, run)
+        workspace = Path(submitted["task"]["workspace"]["path"])
+        final_path = workspace / "final" / "result.md"
+        final_path.parent.mkdir(parents=True, exist_ok=True)
+        final_path.write_text("skill output\n", encoding="utf-8")
+        code, artifact = run_cli("task", "artifact", "register", "--task-id", task_id, "--employee", "image-copy-skill", "--path", str(final_path), "--type", "md", "--stage", "final", "--final", "--summary", "skill output")
+        self.assertEqual(0, code, artifact)
+        code, approved = run_cli("task", "artifact", "approve", "--artifact-id", artifact["artifact"]["artifact_id"], "--by", "image-copy-skill", "--reason", "test")
+        self.assertEqual(0, code, approved)
+        code, evidence = run_cli("task", "evidence", "promote", "--artifact-id", artifact["artifact"]["artifact_id"], "--by", "image-copy-skill", "--summary", "skill evidence")
+        self.assertEqual(0, code, evidence)
+        code, done = run_cli("task", "done", "--agent", "image-copy-skill", "--task-id", task_id, "--summary", "skill done", "--evidence", evidence["evidence"]["path_or_url"])
+        self.assertEqual(0, code, done)
+        code, finish = run_cli("task", "attempt", "finish", "--attempt-id", run["attempt"]["attempt_id"], "--status", "success")
+        self.assertEqual(0, code, finish)
+
+        code, matrix = run_cli("agent-matrix", "--agents", "image-copy-skill")
+        self.assertEqual(0, code, matrix)
+        row = matrix["employees"][0]
+        self.assertEqual("active_ready", row["level"])
+        self.assertEqual("skill_runtime_evidence_no_direct_chat_required", row["reason"])
+
     def test_v3_claim_returns_context_and_done_auto_promotes_workspace_evidence(self) -> None:
         for employee_id in ["manager", "writer"]:
             code, created = run_cli("employee", "create", "--id", employee_id, "--name", employee_id, "--role", "agent", "--runtime", "local", "--workspace", str(self.root / "workspace" / employee_id))
@@ -7511,6 +7591,25 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual(code, 0, submitted)
         self.assertEqual(approval_id, submitted["task"]["metadata"]["approval"]["id"])
 
+    def test_route_approval_keyword_does_not_match_employee_id_substrings(self) -> None:
+        code, created = run_cli("employee", "create", "--id", "main", "--name", "main", "--role", "operator", "--runtime", "openclaw", "--workspace", str(self.root / "workspace" / "main"))
+        self.assertEqual(0, code, created)
+        code, submitted = run_cli(
+            "task",
+            "submit",
+            "--from",
+            "main",
+            "--to",
+            "video-publisher",
+            "--task-id",
+            "task-video-publisher-name-check",
+            "--title",
+            "Runtime adapter dry-run check: video-publisher",
+            "--description",
+            "Adapter dry-run check task only; no external publish action.",
+        )
+        self.assertEqual(0, code, submitted)
+
     def test_policy_auto_approval_allows_low_risk_openclaw_external_send(self) -> None:
         policy_path = self.root / "config" / "policy.json"
         policy_path.write_text(
@@ -7640,12 +7739,13 @@ class CompanyKernelCoreTest(unittest.TestCase):
         def fake_run(cmd: list[str], cwd: str, text: bool, capture_output: bool) -> subprocess.CompletedProcess:
             if cmd[1:3] == ["task", "submit"]:
                 task_id = cmd[cmd.index("--task-id") + 1]
+                source = cmd[cmd.index("--from") + 1]
                 target = cmd[cmd.index("--to") + 1]
                 title = cmd[cmd.index("--title") + 1]
                 with companyctl.connect() as conn:
                     companyctl.submit_task_internal(
                         conn,
-                        source="openclaw-main",
+                        source=source,
                         target=target,
                         task_id=task_id,
                         title=title,
@@ -7678,6 +7778,116 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual(code, 0, verified)
         self.assertTrue(verified["ok"])
         self.assertEqual(1, verified["count"])
+
+    def test_runtime_verify_adapters_auto_detects_main_source_when_openclaw_main_missing(self) -> None:
+        with companyctl.connect() as conn:
+            conn.execute("DELETE FROM employees WHERE id = 'openclaw-main'")
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO employees (
+                  id, name, role, runtime, workspace, status, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "main",
+                    "main",
+                    "supervisor",
+                    "openclaw",
+                    str(self.root / "workspace" / "main"),
+                    "active",
+                    companyctl.now(),
+                    companyctl.now(),
+                ),
+            )
+            conn.commit()
+        submitted_sources: list[str] = []
+
+        def fake_run(cmd: list[str], cwd: str, text: bool, capture_output: bool) -> subprocess.CompletedProcess:
+            if cmd[1:3] == ["task", "submit"]:
+                task_id = cmd[cmd.index("--task-id") + 1]
+                source = cmd[cmd.index("--from") + 1]
+                target = cmd[cmd.index("--to") + 1]
+                submitted_sources.append(source)
+                with companyctl.connect() as conn:
+                    companyctl.submit_task_internal(
+                        conn,
+                        source=source,
+                        target=target,
+                        task_id=task_id,
+                        title="adapter verification",
+                        description="adapter verification",
+                        priority="P3",
+                        metadata={"runtime_verify": True},
+                    )
+                return subprocess.CompletedProcess(cmd, 0, stdout=json.dumps({"ok": True}, ensure_ascii=False), stderr="")
+            if cmd[1:3] == ["scheduler", "run"]:
+                return subprocess.CompletedProcess(cmd, 0, stdout=json.dumps({"ok": True, "events": []}, ensure_ascii=False), stderr="")
+            task_id = "task-runtime-main-source-hermes"
+            report = self.root / "employees" / "hermes" / "reports" / task_id / "hermes-adapter-report.md"
+            report.parent.mkdir(parents=True, exist_ok=True)
+            report.write_text("adapter ok\n", encoding="utf-8")
+            with companyctl.connect() as conn:
+                conn.execute(
+                    "UPDATE tasks SET status = 'completed', evidence_path = ?, summary = 'adapter ok', updated_at = ? WHERE id = ?",
+                    (str(report), companyctl.now(), task_id),
+                )
+                conn.commit()
+                companyctl.heartbeat_internal(conn, "hermes", {"source": "test-adapter"})
+            return subprocess.CompletedProcess(cmd, 0, stdout=json.dumps({"ok": True, "task_id": task_id}, ensure_ascii=False), stderr="")
+
+        with mock.patch.object(companyctl.subprocess, "run", fake_run):
+            code, verified = run_cli("runtime", "verify-adapters", "--agents", "hermes", "--task-id-prefix", "task-runtime-main-source")
+        self.assertEqual(code, 0, verified)
+        self.assertEqual("main", verified["source"])
+        self.assertEqual(["main"], submitted_sources)
+
+    def test_runtime_verify_adapters_passes_skill_package_manifest(self) -> None:
+        code, runtime = run_cli("runtime", "register", "--runtime", "skill", "--command", "company-skill-package-worker", "--notes", "Skill Package runtime")
+        self.assertEqual(0, code, runtime)
+        code, employee = run_cli(
+            "employee",
+            "create",
+            "--id",
+            "image-copy-skill",
+            "--name",
+            "Image Copy Skill",
+            "--role",
+            "skill-worker",
+            "--runtime",
+            "skill",
+            "--workspace",
+            str(self.root / "employees" / "image-copy-skill"),
+        )
+        self.assertEqual(0, code, employee)
+        self.mark_active("image-copy-skill")
+        package_dir = self.root / "skill-packages" / "image-copy"
+        package_dir.mkdir(parents=True)
+        manifest_path = package_dir / "skill.json"
+        manifest_path.write_text(
+            json.dumps(
+                {
+                    "id": "image-copy",
+                    "name": "Image copy package",
+                    "version": "0.1.0",
+                    "employee_id": "image-copy-skill",
+                    "input_schema": {"type": "object"},
+                    "output_schema": {"type": "object"},
+                    "runtime": {"type": "local-script", "command": "python3 -c \"import os; from pathlib import Path; root=Path(os.environ['TASK_WORKSPACE']); (root/'final').mkdir(exist_ok=True); (root/'final/result.md').write_text('runtime verify skill output', encoding='utf-8')\""},
+                    "permissions": {"workspace": "task"},
+                    "pricing": {"unit": "task", "amount": 10, "currency": "USD"},
+                    "acceptance": {"final_artifact": "final/result.md"},
+                },
+                ensure_ascii=False,
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+
+        code, verified = run_cli("runtime", "verify-adapters", "--agents", "image-copy-skill", "--task-id-prefix", "task-runtime-skill")
+        self.assertEqual(0, code, verified)
+        self.assertTrue(verified["ok"], verified)
+        self.assertEqual(str(manifest_path), verified["results"][0]["package"])
+        self.assertTrue(verified["results"][0]["evidence_exists"])
         self.assertTrue(verified["results"][0]["evidence_exists"])
         self.assertEqual("completed", verified["results"][0]["task_status"])
 
