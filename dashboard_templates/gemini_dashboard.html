@@ -4219,6 +4219,12 @@
     }).join('\n');
   }
 
+  function traceObjectSummary(rows, formatter) {
+    const items = Array.isArray(rows) ? rows : [];
+    if (!items.length) return '-';
+    return items.map(formatter).join('\n');
+  }
+
   function supervisionChainSummary(chain) {
     const rows = Array.isArray(chain) ? chain : [];
     if (!rows.length) return 'No supervisor correction chain for this trace yet.';
@@ -4263,6 +4269,10 @@
         ['Trace ID', payload.trace_id || traceId],
         ['Counts', payload.counts || {}],
         ['Tasks', (payload.tasks || []).map(task => `${task.id || '-'} · ${task.status || '-'} · ${task.target_agent || '-'}`).join('\n') || '-'],
+        ['Attempts', traceObjectSummary(payload.execution_attempts || [], item => `${item.attempt_id || '-'} · ${item.status || '-'} · ${item.employee_id || '-'} · ${item.adapter_type || '-'} · started=${item.started_at || '-'}`)],
+        ['Artifacts', traceObjectSummary(payload.artifacts || [], item => `${item.artifact_id || '-'} · ${item.task_id || '-'} · ${item.employee_id || '-'} · ${item.stage || '-'} · ${item.status || '-'} · ${(item.display || {}).relative_path || (item.display || {}).basename || '-'}`)],
+        ['Evidence', traceObjectSummary(payload.evidence || [], item => `${item.evidence_id || '-'} · ${item.task_id || '-'} · attempt=${item.attempt_id || '-'} · final=${String(!!item.is_final)} · ${(item.display || {}).relative_path || (item.display || {}).basename || '-'}`)],
+        ['Handoffs', traceObjectSummary(payload.handoffs || [], item => `${item.handoff_id || '-'} · ${item.from_task_id || '-'} -> ${item.to_task_id || '-'} · ${item.status || '-'} · artifacts=${(item.artifacts || []).join(',') || '-'}`)],
         ['Supervisor Chain', supervisionChainSummary(payload.supervision_chain || [])],
         ['Timeline', traceTimelineSummary(payload.timeline || [])],
         ['Raw', payload],
