@@ -1783,6 +1783,8 @@ def budget_summary(conn: sqlite3.Connection, *, task_id: str = "", employee_id: 
     by_task: dict[str, float] = {}
     by_project: dict[str, float] = {}
     by_cost_type: dict[str, float] = {}
+    by_model: dict[str, float] = {}
+    by_provider: dict[str, float] = {}
     by_currency: dict[str, float] = {}
     by_employee_by_currency: dict[str, dict[str, float]] = {}
     by_task_by_currency: dict[str, dict[str, float]] = {}
@@ -1805,6 +1807,8 @@ def budget_summary(conn: sqlite3.Connection, *, task_id: str = "", employee_id: 
         employee_key = str(item.get("employee_id") or "")
         task_key = str(item.get("task_id") or "")
         cost_key = str(item.get("cost_type") or "unknown")
+        model_key = str(item.get("model_name") or "")
+        provider_key = str(item.get("provider") or "")
         token_input = int(item.get("token_input") or 0)
         token_output = int(item.get("token_output") or 0)
         runtime_seconds = int(item.get("runtime_seconds") or 0)
@@ -1828,6 +1832,10 @@ def budget_summary(conn: sqlite3.Connection, *, task_id: str = "", employee_id: 
         by_cost_type[cost_key] = round(by_cost_type.get(cost_key, 0.0) + amount, 6)
         cost_currency = by_cost_type_by_currency.setdefault(cost_key, {})
         cost_currency[currency_key] = round(cost_currency.get(currency_key, 0.0) + amount, 6)
+        if model_key:
+            by_model[model_key] = round(by_model.get(model_key, 0.0) + amount, 6)
+        if provider_key:
+            by_provider[provider_key] = round(by_provider.get(provider_key, 0.0) + amount, 6)
     total_amount = round(sum(float(item.get("amount") or 0) for item in events), 6)
     currency = currencies[0] if len(currencies) == 1 else ("mixed" if currencies else "USD")
     limits = budget_limit_summary(conn, task_id=task_id, employee_id=employee_id, trace_id=trace_id, attempt_id=attempt_id, total_amount=total_amount, currency=currency)
@@ -1853,6 +1861,8 @@ def budget_summary(conn: sqlite3.Connection, *, task_id: str = "", employee_id: 
         "by_project_runtime_seconds": by_project_runtime_seconds,
         "by_cost_type": by_cost_type,
         "by_cost_type_by_currency": by_cost_type_by_currency,
+        "by_model": by_model,
+        "by_provider": by_provider,
         "limit_status": limits["status"],
         "budget_limits": limits,
     }

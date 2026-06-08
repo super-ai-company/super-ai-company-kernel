@@ -3924,6 +3924,11 @@ class CompanyKernelCoreTest(unittest.TestCase):
             "counts.active_runtime_sessions",
             "counts.running_tool_calls",
             "counts.estimated_cost",
+            "budgetBreakdownRows",
+            "budget.by_task",
+            "budget.by_cost_type",
+            "budget.by_model",
+            "budget.by_provider",
         ]:
             self.assertIn(snippet, html)
 
@@ -5393,6 +5398,11 @@ class CompanyKernelCoreTest(unittest.TestCase):
         status, budget_summary = api_gateway.route_get("/v1/budget-summary", {"task_id": ["task-budget-ledger"]})
         self.assertEqual(HTTPStatus.OK, status, budget_summary)
         self.assertEqual(0.42, budget_summary["summary"]["total_amount"])
+        self.assertEqual({"codex": 0.42}, budget_summary["summary"]["by_employee"])
+        self.assertEqual({"task-budget-ledger": 0.42}, budget_summary["summary"]["by_task"])
+        self.assertEqual({"model_api": 0.42}, budget_summary["summary"]["by_cost_type"])
+        self.assertEqual({"gpt-5": 0.42}, budget_summary["summary"]["by_model"])
+        self.assertEqual({"openai": 0.42}, budget_summary["summary"]["by_provider"])
 
         status, trace = api_gateway.route_get(f"/v1/traces/{trace_id}/timeline", {})
         self.assertEqual(HTTPStatus.OK, status, trace)
@@ -5405,6 +5415,8 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual(0.42, cockpit["budget_summary"]["total_amount"])
         self.assertEqual(1200, cockpit["budget_summary"]["token_input"])
         self.assertEqual(340, cockpit["budget_summary"]["token_output"])
+        self.assertEqual({"gpt-5": 0.42}, cockpit["budget_summary"]["by_model"])
+        self.assertEqual({"openai": 0.42}, cockpit["budget_summary"]["by_provider"])
 
     def test_budget_summary_reports_soft_and_hard_limit_status(self) -> None:
         with sqlite3.connect(self.root / "company.sqlite") as conn:
