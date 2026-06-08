@@ -2683,7 +2683,7 @@ def inject_advanced_dashboard(template: str, summary: dict, *, db_path: Path, ap
             "counts": summary.get("counts", {}),
             "api_base": api_base,
         }
-        html_text = html_text.replace("</script>", f"  <!-- kernel-summary-debug {json.dumps(debug_meta, ensure_ascii=False)} -->\n</script>", 1)
+        html_text = append_before_body(html_text, f"\n<!-- kernel-summary-debug {json.dumps(debug_meta, ensure_ascii=False)} -->\n")
 
     return append_before_body(html_text, resync)
 
