@@ -2285,7 +2285,20 @@ def run(args: argparse.Namespace) -> int:
         prepared_summary = summary
         output.write_text(render(summary), encoding="utf-8")
         variant = "basic"
-    print(json.dumps({"ok": True, "output": str(output), "variant": variant, "template": str(template_path or ""), "counts": prepared_summary["counts"]}, ensure_ascii=False, indent=2))
+    print(
+        json.dumps(
+            {
+                "ok": True,
+                "output": str(output),
+                "variant": variant,
+                "template": str(template_path or ""),
+                "counts": prepared_summary["counts"],
+                "ledger_consistency": prepared_summary.get("cockpit", {}).get("ledger_consistency", {}),
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+    )
     return 0
 
 

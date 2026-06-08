@@ -2527,6 +2527,17 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertIn("Company Kernel Dashboard", html)
         self.assertNotIn("window.companyApiBase", html)
 
+    def test_dashboard_cli_output_exposes_ledger_consistency(self) -> None:
+        output = self.root / "state" / "dashboard-cli-ledger.html"
+        with contextlib.redirect_stdout(io.StringIO()) as stdout:
+            code = company_dashboard.main(["--output", str(output), "--variant", "advanced"])
+        self.assertEqual(0, code)
+        payload = json.loads(stdout.getvalue())
+        self.assertEqual("advanced", payload["variant"])
+        self.assertEqual("single_company_kernel_ledger", payload["ledger_consistency"]["source"])
+        self.assertEqual(["api", "cli", "dashboard"], payload["ledger_consistency"]["surfaces"])
+        self.assertEqual("API / CLI / Dashboard read the same Company Kernel ledger", payload["ledger_consistency"]["summary"])
+
     def test_dashboard_summary_includes_direct_messages_recent(self) -> None:
         code, created = run_cli("employee", "create", "--id", "main", "--name", "main", "--role", "operator", "--runtime", "openclaw", "--workspace", str(self.root / "workspace" / "main"))
         self.assertEqual(code, 0, created)
