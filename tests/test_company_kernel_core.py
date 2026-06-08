@@ -1,19 +1,22 @@
 from __future__ import annotations
 
+import base64
 import contextlib
 import io
 import json
 import os
 import plistlib
+import re
 import runpy
 import sqlite3
 import subprocess
 import sys
 import tempfile
 import unittest
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from http import HTTPStatus
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
 from company_kernel import antigravity_adapter
@@ -252,6 +255,7 @@ class CompanyKernelCoreTest(unittest.TestCase):
             mock.patch.object(companyctl, "STATE_DIR", root / "state"),
             mock.patch.object(companyctl, "RFC_DIR", root / "rfcs"),
             mock.patch.object(companyctl, "CONFIG_DIR", root / "config"),
+            mock.patch.object(companyctl, "SKILL_PACKAGES_DIR", root / "skill-packages"),
             mock.patch.object(companyctl, "WORKFLOW_DIR", root / "config" / "workflows"),
             mock.patch.object(companyctl, "LAUNCHD_TEMPLATE", root / "config" / "launchd" / "ai.openclaw.company-kernel.daemon.plist"),
             mock.patch.object(companyctl, "HOOKS_PATH", root / "config" / "hooks.json"),
@@ -322,6 +326,25 @@ class CompanyKernelCoreTest(unittest.TestCase):
             )
             self.assertEqual(code, 0, obj)
         self.mark_active("video-ops", "video-creator", "video-publisher", "codex", "openclaw-main", "hermes", "nestcar")
+
+    def write_skill_manifest(self, skill_id: str = "ecommerce-copy-demo") -> Path:
+        package_dir = self.root / "skill-packages" / skill_id
+        package_dir.mkdir(parents=True, exist_ok=True)
+        manifest = {
+            "id": skill_id,
+            "name": "Ecommerce Copy Demo",
+            "version": "0.1.0",
+            "description": "Generate ecommerce listing copy inside the authorized task workspace.",
+            "input_schema": {"type": "object", "properties": {"product_name": {"type": "string"}}},
+            "output_schema": {"type": "object", "properties": {"summary_path": {"type": "string"}}, "required": ["summary_path"]},
+            "runtime": {"type": "local-script", "command": "python3 run.py"},
+            "permissions": {"workspace": "task", "network": False, "secrets": []},
+            "pricing": {"unit": "task", "amount": 10, "currency": "USD"},
+            "acceptance": {"final_artifact": "final/listing-summary.md", "evidence_required": True},
+        }
+        manifest_path = package_dir / "skill.json"
+        manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+        return manifest_path
 
     def mark_active(self, *employee_ids: str) -> None:
         conn = companyctl.connect()
@@ -414,6 +437,8 @@ class CompanyKernelCoreTest(unittest.TestCase):
             self.assertIn("next_retry_at", adapter_columns)
             event_columns = {row["name"] for row in conn.execute("PRAGMA table_info(company_events)").fetchall()}
             self.assertIn("trace_id", event_columns)
+            evidence_columns = {row["name"] for row in conn.execute("PRAGMA table_info(evidence)").fetchall()}
+            self.assertIn("attempt_id", evidence_columns)
             backfilled = conn.execute("SELECT task_id FROM adapter_runs WHERE id = 'adapter-run-backfill-task'").fetchone()
             self.assertEqual("task-backfilled-adapter-run", backfilled["task_id"])
             migrations = conn.execute("SELECT id FROM schema_migrations ORDER BY id").fetchall()
@@ -438,6 +463,7 @@ class CompanyKernelCoreTest(unittest.TestCase):
                     "20260607_execution_attempts_session_key",
                     "20260607_execution_attempts_supervisor_state_json",
                     "20260607_v3_file_flow_tables",
+                    "20260608_evidence_attempt_id",
                 ],
                 [row["id"] for row in migrations],
             )
@@ -595,7 +621,7 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual(0, code, created)
         code, blocked = run_cli("employee", "update", "--id", "new-codex", "--status", "active")
         self.assertEqual(2, code, blocked)
-        self.assertEqual("employee activation requires 2-4 verified direct communication rounds", blocked["error"])
+        self.assertEqual("employee activation requires verified direct communication or structured runtime evidence", blocked["error"])
 
         code, verified = run_cli("employee", "verify-direct", "--id", "new-codex", "--from", "main", "--rounds", "2", "--activate")
         self.assertEqual(0, code, verified)
@@ -1783,6 +1809,23 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual("advanced", payload["variant"])
         html = output.read_text(encoding="utf-8")
         self.assertIn("window.companyApiBase", html)
+        bootstrap_match = re.search(r'atob\((".*?")\)', html)
+        self.assertIsNotNone(bootstrap_match)
+        bootstrap_b64 = json.loads(bootstrap_match.group(1))
+        bootstrap_payload = json.loads(base64.b64decode(bootstrap_b64).decode("utf-8"))
+        self.assertEqual("api-first-lightweight", bootstrap_payload["bootstrap_mode"])
+        self.assertEqual([], bootstrap_payload["employees"])
+        self.assertEqual([], bootstrap_payload["tasks"])
+        self.assertIn("kernel-summary-debug", html)
+        debug_match = re.search(r"kernel-summary-debug (.*?) -->", html)
+        self.assertIsNotNone(debug_match)
+        debug_payload = json.loads(debug_match.group(1))
+        self.assertEqual({"generated_at", "counts", "api_base"}, set(debug_payload))
+        self.assertNotIn("direct_messages_recent", debug_match.group(1))
+        self.assertNotIn("\"employees\": [", debug_match.group(1))
+        self.assertNotIn("\"tasks\": [", debug_match.group(1))
+        self.assertNotIn("本次还车里程是 10234 km", html)
+        self.assertNotIn("conv-dashboard-001", html)
         self.assertIn("/v1/telemetry/traces", html)
         self.assertIn("/v1/messages/recent-direct", html)
         self.assertIn("Live SQLite + OpenClaw Runtime", html)
@@ -1792,9 +1835,24 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertIn("window.showDetails", html)
         self.assertIn("showStoredDetails", html)
         self.assertIn("dashboardDetailStore", html)
+        self.assertIn("summarizeRawPayload", html)
+        self.assertIn("expandRawDetail", html)
+        self.assertIn("Full raw payload is stored off-DOM", html)
+        self.assertIn("data-testid=\"raw-json-expand\"", html)
+        self.assertNotIn("<summary>Raw JSON</summary>", html)
         self.assertNotIn("JSON.stringify(event).replace", html)
         self.assertIn("Read-only live event stream", html)
         self.assertIn("refreshKernelEventConsole", html)
+        self.assertIn("Evidence Records", html)
+        self.assertIn("evidenceRecordsSummary", html)
+        self.assertIn("Evidence Content Preview", html)
+        self.assertIn("Latest Attempt Summary", html)
+        self.assertIn("Attempt History Summary", html)
+        self.assertIn("Evidence Records Summary", html)
+        self.assertIn("Sanitized Logs Summary", html)
+        self.assertIn("display.relative_path", html)
+        self.assertIn("display.absolute_path_exposed", html)
+        self.assertIn("absolute_path_exposed=${String(!!display.absolute_path_exposed)}", html)
         self.assertIn("Excludes human owner", html)
         self.assertIn("Includes human owner records", html)
         self.assertNotIn("terminalLogs", html)
@@ -1803,6 +1861,905 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertNotIn("toggleSimulationMode", html)
         self.assertNotIn("Scenario Seeder", html)
         self.assertNotIn("Simulation: Normal", html)
+        self.assertIn("/v1/dashboard/cockpit", html)
+        self.assertIn("/v1/events/stream", html)
+        self.assertIn("sse-status-chip", html)
+        self.assertIn("setSseStatus", html)
+        self.assertIn("live-data-chip", html)
+        self.assertIn("setLiveDataStatus('ok', `Live data: tasks=${taskRows.length} employees=${(employees.employees || []).length} events=${(events.events || []).length}`)", html)
+        self.assertIn("Live data: API refresh failed", html)
+        self.assertIn("SSE / REST fallback", html)
+        self.assertIn("savedAutoRefresh !== 'false'", html)
+        self.assertIn("window.addEventListener('DOMContentLoaded', async () =>", html)
+        self.assertIn("const initialRefreshOk = await refreshLiveDashboardFromApi();", html)
+        self.assertIn("Initial REST refresh failed; dashboard is showing cached/bootstrap data only.", html)
+        self.assertIn("Progress Stagnant", html)
+        self.assertIn("stagnantTaskGuidance", html)
+        self.assertIn('data-testid="stagnant-guidance-static"', html)
+        self.assertIn("员工仍在线，但 15 分钟没有新进度。可继续等待、发送探针、查看日志或请求 Hermes 纠偏。", html)
+        self.assertIn("Sanitized Logs only show cleaned attempt summaries, not raw stdout/stderr.", html)
+        self.assertIn("Send Probe", html)
+        self.assertIn("AI Employee Cockpit", html)
+        self.assertIn('rel="icon" href="data:image/svg+xml', html)
+        self.assertIn("counts.employees_online", html)
+        self.assertIn("counts.employees_total", html)
+        self.assertIn("registry_reconciliation", html)
+        self.assertIn("registeredTotal", html)
+        self.assertIn("schedulableTotal", html)
+        self.assertIn("human owner excluded", html)
+        self.assertIn("counts.employees_abnormal", html)
+        self.assertIn("counts.running_tasks", html)
+        self.assertIn("counts.done_tasks", html)
+        self.assertIn("counts.evidence_issues", html)
+        self.assertIn("counts.blocked_tasks", html)
+        self.assertIn("counts.chat_task_bound", html)
+        self.assertIn("counts.chat_work_relevant", html)
+        self.assertIn("counts.chat_handshake_or_idle", html)
+        self.assertIn("counts.awaiting_approval_tasks", html)
+        self.assertIn("data-message-id", html)
+        self.assertIn("data-task-context", html)
+        self.assertIn("data-chat-classification", html)
+        self.assertIn('role="dialog"', html)
+        self.assertIn('aria-label="Close task detail modal"', html)
+        self.assertIn('data-testid="details-modal-close"', html)
+        self.assertIn('data-testid="recruiter-drawer-close"', html)
+        self.assertIn('class="details-render-target"', html)
+        self.assertIn("body.modal-open", html)
+        self.assertIn("document.body.classList.add('modal-open')", html)
+        self.assertIn("document.body.classList.remove('modal-open')", html)
+        self.assertIn("position: sticky;", html)
+        self.assertIn("z-index: 10000;", html)
+        self.assertIn("z-index: 30;", html)
+        self.assertIn("pointer-events: auto;", html)
+        self.assertIn('event.target.closest(\'[data-testid="details-modal-close"]\')', html)
+        self.assertIn("if (![x1, y1, x2, y2].every(Number.isFinite)) return;", html)
+        self.assertIn("if (!Number.isFinite(len) || len < 1) return;", html)
+        self.assertIn("if (![cx, cy].every(Number.isFinite)) return;", html)
+        self.assertIn("background: #f8fafc;", html)
+        self.assertIn("max-height: calc(100vh - 128px);", html)
+        self.assertIn("overscroll-behavior: contain;", html)
+        self.assertIn("overflow-wrap: anywhere;", html)
+        self.assertIn("word-break: break-word;", html)
+        self.assertIn('class="detail-text"', html)
+        self.assertNotIn('<pre><code id="modal-code"></code></pre>', html)
+        self.assertIn("ledgerConsistencySummary", html)
+        self.assertIn("Ledger Consistency", html)
+        self.assertIn("API / CLI / Dashboard read the same Company Kernel ledger", html)
+        self.assertIn("counts.employee_status_counts", html)
+        self.assertIn("counts.readiness_counts", html)
+        self.assertIn("employeeStatusCounts.busy", html)
+        self.assertIn("employeeStatusCounts['active-limited']", html)
+        self.assertIn("employeeStatusCounts.candidate", html)
+        self.assertIn("readinessCounts.active_ready", html)
+        self.assertIn("readinessCounts.online_only", html)
+        self.assertEqual(5, html.count('class="nav-btn'))
+        self.assertIn("Cockpit Console", html)
+        self.assertIn("AI Fleet & Skills", html)
+        self.assertNotIn('id="tab-projects"', html)
+        self.assertNotIn('id="tab-events"', html)
+        self.assertNotIn('id="tab-telemetry"', html)
+        self.assertNotIn('id="panel-projects" class="tab-pane"', html)
+        self.assertNotIn('id="panel-events" class="tab-pane"', html)
+        self.assertNotIn('id="panel-telemetry" class="tab-pane"', html)
+        self.assertIn(".embedded-panel {\n      display: none;", html)
+        self.assertIn("Marketplace Preview Disabled", html)
+        self.assertIn("local-only", html)
+        self.assertIn("No payment, no public rental, no remote node onboarding", html)
+        self.assertNotIn("Enable Public Rental", html)
+        self.assertIn("Sandbox Profile Matrix", html)
+        self.assertIn("sandbox-profile-matrix-tbody", html)
+        self.assertIn("renderSandboxProfileMatrix", html)
+        self.assertIn("workspace_scope", html)
+        self.assertIn("requires_approval_for", html)
+        self.assertIn("Audit, Approvals & Evidence", html)
+        self.assertIn("audit-hub-links", html)
+        self.assertIn("Audit Hub", html)
+        self.assertIn("Event Ledger", html)
+        self.assertIn("Trace Timeline", html)
+        self.assertIn("Task Supervisor Chain", html)
+        self.assertIn("taskSupervisorChainSummary", html)
+        self.assertIn("Correction State", html)
+        self.assertIn("Correction Events", html)
+        self.assertIn('id="attempt-history-container"', html)
+        self.assertIn("function renderAttemptHistorySummary()", html)
+        self.assertIn("function attemptHistoryRows(summary)", html)
+        self.assertIn("Retry and reassign create new attempt_id records", html)
+        self.assertIn("renderAttemptHistorySummary();", html)
+        self.assertIn("data-attempt-id", html)
+        self.assertIn("viewEvidenceContent", html)
+        self.assertIn("/v1/evidence/", html)
+        self.assertIn("View Safe Evidence", html)
+        self.assertIn("Safe Evidence: ${evidenceId}", html)
+        self.assertIn("Absolute Path Exposed", html)
+        self.assertIn("(blocked by evidence whitelist policy)", html)
+        self.assertIn("correctionEventsSummary", html)
+        self.assertIn("Supervisor State", html)
+        self.assertIn("Latest Attempt", html)
+        self.assertIn("Attempt History", html)
+        self.assertIn("Attempt Lineage", html)
+        self.assertIn("Attempt Recovery Chain", html)
+        self.assertIn("payload.attempt_history", html)
+        self.assertIn("attemptHistory.recovery_summary", html)
+        self.assertIn("attemptHistory.chain", html)
+        self.assertIn("Heartbeat / Progress", html)
+        self.assertIn("Runtime Policy", html)
+        self.assertIn("Long Task State", html)
+        self.assertIn("task.long_task_state || latestAttempt.long_task_state || task.status", html)
+        self.assertIn("longTaskStatusContractSummary", html)
+        self.assertIn("timeout is sync wait only", html)
+        self.assertIn("Task Decision", html)
+        self.assertIn("taskDecisionSummary", html)
+        self.assertIn("Recommended action:", html)
+        self.assertIn("Done is valid only with task_id/attempt_id bound final evidence.", html)
+        self.assertIn("log_policy", html)
+        self.assertIn("raw_available", html)
+        self.assertIn("raw stdout/stderr hidden", html)
+        self.assertIn("Heartbeat State", html)
+        self.assertIn("Progress State", html)
+        self.assertIn("Progress Events", html)
+        self.assertIn("Latest Progress", html)
+        self.assertIn("latestProgressSummary", html)
+        self.assertIn("hasLatestProgress(item)", html)
+        self.assertIn("item.latest_progress", html)
+        self.assertNotIn("item.latest_progress ? `<span>Latest Progress", html)
+        self.assertIn("heartbeat=${escapeHtml(item.heartbeat_state || '-')}", html)
+        self.assertIn("progress_state=${escapeHtml(item.progress_state || '-')}", html)
+        self.assertIn("progress=${escapeHtml(item.progress ?? '-')}", html)
+        self.assertIn("owner_attention", html)
+        self.assertIn("Supervisor Activity", html)
+        self.assertIn("cockpit-supervisor-activity", html)
+        self.assertIn("renderSupervisorActivity", html)
+        self.assertIn("correction_pending_ack", html)
+        self.assertIn("Hermes supervised corrections and stagnant checks appear here", html)
+        self.assertIn("verifyRuntimeEvidence", html)
+        self.assertIn("/v1/agent-matrix?agents=", html)
+        self.assertIn("direct=${checks.direct || '-'}", html)
+        self.assertIn("progress=${checks.progress || '-'}", html)
+        self.assertIn("stale=${checks.stale || '-'}", html)
+        self.assertIn("normalizedAgent", html)
+        self.assertIn("candidate.replace(/_/g, '-') === normalizedAgent", html)
+        self.assertIn("returned=${returned}", html)
+        self.assertIn("installOwnerAttentionActionHandlers", html)
+        self.assertIn("owner-attention-action", html)
+        self.assertIn("data-employee-id", html)
+        self.assertIn("window.handleOwnerAttentionAction", html)
+        self.assertIn("window.verifyRuntimeEvidence(employeeId)", html)
+        self.assertIn("liveRefreshInFlight", html)
+        self.assertIn("liveRefreshQueued", html)
+        self.assertIn("Recent Evidence", html)
+        self.assertIn("promoted evidence", html)
+        self.assertIn("legacy task evidence_path", html)
+        self.assertIn("cockpit-recent-evidence", html)
+        self.assertIn("audit-evidence-tbody", html)
+        self.assertIn("/v1/evidence?limit=50", html)
+        self.assertIn("refreshAuditEvidenceTable", html)
+        self.assertIn("audit-artifacts-tbody", html)
+        self.assertIn("/v1/artifacts?limit=50", html)
+        self.assertIn("refreshAuditArtifactsTable", html)
+        self.assertIn("audit-handoffs-tbody", html)
+        self.assertIn("/v1/handoffs?limit=50", html)
+        self.assertIn("refreshAuditHandoffsTable", html)
+        self.assertIn("audit-failures-tbody", html)
+        self.assertIn("/v1/failures?limit=50", html)
+        self.assertIn("refreshAuditFailuresTable", html)
+        self.assertIn('data-record-row="true"', html)
+        self.assertIn('data-empty-row="true"', html)
+        self.assertIn('<tr data-empty-row="true"><td colspan="7" style="color:var(--text-muted);text-align:center;padding:24px;">No handoffs.</td></tr>', html)
+        self.assertIn("Workspace Retention Dry-run", html)
+        self.assertIn("/v1/workspaces/prune?dry_run=true", html)
+        self.assertIn("refreshWorkspacePrunePreview", html)
+        self.assertIn("dry-run only; no files are deleted", html)
+        self.assertIn("summary.bytes_reclaimable", html)
+        self.assertIn("policy.older_than_days", html)
+        self.assertIn("item.workspace", html)
+        self.assertIn("absolute_path_exposed", html)
+        self.assertIn("display.policy.summary", html)
+        self.assertIn("workspace/evidence/reports/artifacts/final only", html)
+        self.assertIn("long_task_state || task.status", html)
+        self.assertIn("employee_readiness", html)
+        self.assertIn("Verify runtime evidence", html)
+        self.assertIn("Runtime Check Result", html)
+        self.assertIn('data-testid="runtime-check-result"', html)
+        self.assertIn("renderRuntimeCheckResult", html)
+        self.assertIn("attendance=${checks.attendance || '-'}", html)
+        self.assertIn("Keep candidate", html)
+        self.assertIn("结构化 execution evidence", html)
+        self.assertIn("handleOwnerAttentionAction", html)
+        self.assertIn("viewTaskLogs(taskId)", html)
+        self.assertIn("recordWaitDecision(taskId, attemptId)", html)
+        self.assertIn("Waiting is recorded locally only; no external send is triggered.", html)
+        self.assertIn("function isTerminalTaskState(task, attempt)", html)
+        self.assertIn("function taskStateMetaSummary(task)", html)
+        self.assertIn("final=${finalState} · evidence=${hasEvidence ? 'present' : 'missing'}", html)
+        self.assertIn("return `task=${taskStatus} · heartbeat=${heartbeat} · progress=${progress}`;", html)
+        self.assertIn("data-action-id", html)
+        self.assertIn("item.correction", html)
+        self.assertIn("needs_ack", html)
+        self.assertIn("last_message", html)
+        self.assertIn("approval_action", html)
+        self.assertIn("risk=${item.risk}", html)
+        self.assertIn("correctTaskAttempt(taskId, attemptId)", html)
+        self.assertIn("cancelTaskAttempt(taskId, attemptId)", html)
+        self.assertIn('data-ledger-action="task.correct"', html)
+        self.assertIn('data-ledger-action="task.cancel"', html)
+        self.assertIn('data-ledger-action="task.probe"', html)
+        self.assertIn('data-requires-owner-approval="true"', html)
+        self.assertIn('data-dangerous="true"', html)
+        self.assertIn("retryTask(taskId)", html)
+        self.assertIn("reassignTask(taskId", html)
+        self.assertIn("Conversation Summary", html)
+        self.assertIn("conversation_summary", html)
+        self.assertIn("Approval Safety", html)
+        self.assertIn("approvalSafetySummary", html)
+        self.assertIn("counts.employee_status_counts", html)
+        self.assertIn("counts.readiness_counts", html)
+        self.assertIn("active_ready", html)
+        self.assertIn("online_only", html)
+        self.assertIn("submitTaskToEmployee", html)
+        self.assertIn("No chat; task/evidence only", html)
+
+    def test_dashboard_hides_direct_button_for_skill_worker(self) -> None:
+        code, skill = run_cli("employee", "create", "--id", "image-copy-skill", "--name", "Image Copy Skill", "--role", "skill-worker", "--runtime", "skill", "--workspace", str(self.root / "workspace" / "image-copy-skill"))
+        self.assertEqual(0, code, skill)
+        self.mark_active("image-copy-skill")
+        code, heartbeat = run_cli("heartbeat", "--agent", "image-copy-skill")
+        self.assertEqual(0, code, heartbeat)
+        verification_dir = self.root / "state" / "employee-verification" / "image-copy-skill"
+        verification_dir.mkdir(parents=True)
+        (verification_dir / "latest-runtime.json").write_text(json.dumps({"ok": True, "activation_allowed": True}, ensure_ascii=False), encoding="utf-8")
+        output = self.root / "state" / "dashboard-skill-worker.html"
+        with contextlib.redirect_stdout(io.StringIO()):
+            code = company_dashboard.main(["--output", str(output), "--variant", "basic"])
+        self.assertEqual(0, code)
+        html = output.read_text(encoding="utf-8")
+        row = html.split("<td>image-copy-skill</td>", 1)[1].split("</tr>", 1)[0]
+        self.assertNotIn("directMessageEmployee('image-copy-skill')", row)
+        self.assertIn("No chat; task/evidence only", row)
+        self.assertIn("submitTaskToEmployee('image-copy-skill')", row)
+
+    def test_cockpit_api_sanitizes_evidence_and_exposes_long_task_state(self) -> None:
+        code, created = run_cli("employee", "create", "--id", "main", "--name", "main", "--role", "operator", "--runtime", "openclaw", "--workspace", str(self.root / "workspace" / "main"))
+        self.assertEqual(0, code, created)
+        code, created = run_cli("employee", "create", "--id", "codex-cockpit", "--name", "codex-cockpit", "--role", "engineer", "--runtime", "codex", "--workspace", str(self.root / "workspace" / "codex-cockpit"))
+        self.assertEqual(0, code, created)
+        code, created = run_cli("employee", "create", "--id", "agy-cockpit", "--name", "agy-cockpit", "--role", "designer", "--runtime", "antigravity", "--workspace", str(self.root / "workspace" / "agy-cockpit"))
+        self.assertEqual(0, code, created)
+        conn = companyctl.connect()
+        try:
+            conn.execute("UPDATE employees SET status = 'active', updated_at = ? WHERE id = ?", (companyctl.now(), "main"))
+            conn.execute("UPDATE employees SET status = 'active', updated_at = ? WHERE id = ?", (companyctl.now(), "codex-cockpit"))
+            conn.commit()
+        finally:
+            conn.close()
+        for employee_id in ["main", "codex-cockpit"]:
+            code, heartbeat = run_cli("heartbeat", "--agent", employee_id)
+            self.assertEqual(0, code, heartbeat)
+        verification_dir = self.root / "state" / "employee-verification" / "codex-cockpit"
+        verification_dir.mkdir(parents=True)
+        (verification_dir / "latest-runtime.json").write_text(json.dumps({"ok": True, "activation_allowed": True}, ensure_ascii=False), encoding="utf-8")
+        code, submitted = run_cli("task", "submit", "--from", "main", "--to", "codex-cockpit", "--task-id", "task-cockpit-long", "--title", "Cockpit long task")
+        self.assertEqual(0, code, submitted)
+        code, submitted_blocked = run_cli("task", "submit", "--from", "main", "--to", "codex-cockpit", "--task-id", "task-cockpit-blocked", "--title", "Cockpit blocked task")
+        self.assertEqual(0, code, submitted_blocked)
+        code, blocked = run_cli("task", "block", "--agent", "codex-cockpit", "--task-id", "task-cockpit-blocked", "--blocker", "needs owner input")
+        self.assertEqual(0, code, blocked)
+        code, submitted_done = run_cli("task", "submit", "--from", "main", "--to", "codex-cockpit", "--task-id", "task-cockpit-done", "--title", "Cockpit done task")
+        self.assertEqual(0, code, submitted_done)
+        code, submitted_missing_evidence = run_cli("task", "submit", "--from", "main", "--to", "codex-cockpit", "--task-id", "task-cockpit-done-missing-evidence", "--title", "Cockpit missing evidence")
+        self.assertEqual(0, code, submitted_missing_evidence)
+        code, submitted_approval = run_cli("task", "submit", "--from", "main", "--to", "codex-cockpit", "--task-id", "task-cockpit-awaiting-approval", "--title", "Cockpit approval task")
+        self.assertEqual(0, code, submitted_approval)
+        code, approval = run_cli(
+            "approval",
+            "request",
+            "--from",
+            "main",
+            "--action",
+            "external_send",
+            "--reason",
+            "approval bound to cockpit task",
+            "--target",
+            "codex-cockpit",
+            "--risk",
+            "P1",
+            "--task-id",
+            "task-cockpit-awaiting-approval",
+            "--approval-id",
+            "approval-cockpit-awaiting",
+        )
+        self.assertEqual(0, code, approval)
+        conn = companyctl.connect()
+        try:
+            workspace = companyctl.ensure_task_workspace(conn, "task-cockpit-long")
+            evidence_path = Path(workspace["path"]) / "evidence" / "result.md"
+            evidence_path.write_text("safe evidence\n", encoding="utf-8")
+            conn.execute("UPDATE tasks SET evidence_path = ?, status = 'claimed', claimed_by = 'codex-cockpit', updated_at = ? WHERE id = ?", (str(evidence_path), companyctl.now(), "task-cockpit-long"))
+            done_workspace = companyctl.ensure_task_workspace(conn, "task-cockpit-done")
+            done_evidence = Path(done_workspace["path"]) / "evidence" / "done.md"
+            done_evidence.write_text("done evidence\n", encoding="utf-8")
+            final_artifact_path = Path(done_workspace["path"]) / "final" / "done-final.md"
+            final_artifact_path.write_text("promoted final evidence\n", encoding="utf-8")
+            final_artifact = companyctl.register_artifact_internal(
+                conn,
+                task_id="task-cockpit-done",
+                employee_id="codex-cockpit",
+                path=str(final_artifact_path),
+                artifact_type="md",
+                name="done-final.md",
+                stage="final",
+                summary="promoted cockpit final evidence",
+                is_final=True,
+            )
+            promoted = companyctl.promote_artifact_to_evidence_internal(
+                conn,
+                artifact_id=final_artifact["artifact"]["artifact_id"],
+                by="codex-cockpit",
+                summary="promoted cockpit final evidence",
+            )
+            conn.execute("UPDATE tasks SET evidence_path = ?, status = 'completed', claimed_by = 'codex-cockpit', summary = 'done', updated_at = ? WHERE id = ?", (str(done_evidence), companyctl.now(), "task-cockpit-done"))
+            conn.execute("UPDATE tasks SET status = 'completed', claimed_by = 'codex-cockpit', summary = 'missing evidence', updated_at = ? WHERE id = ?", (companyctl.now(), "task-cockpit-done-missing-evidence"))
+            conn.commit()
+        finally:
+            conn.close()
+
+        code, run = run_cli("task", "run", "--task-id", "task-cockpit-long", "--agent", "codex-cockpit", "--by", "main", "--stale-after-seconds", "900")
+        self.assertEqual(0, code, run)
+        attempt_id = run["attempt"]["attempt_id"]
+        code, progress = run_cli("task", "progress", "--task-id", "task-cockpit-long", "--agent", "codex-cockpit", "--attempt-id", attempt_id, "--state", "in_progress", "--message", "正在整理最终 evidence 包", "--progress", "42")
+        self.assertEqual(0, code, progress)
+        code, corrected = run_cli("task", "correct", "--task-id", "task-cockpit-long", "--attempt-id", attempt_id, "--by", "hermes", "--message", "请收口 evidence，不要继续扩散")
+        self.assertEqual(0, code, corrected)
+        conn = companyctl.connect()
+        try:
+            current = datetime.now(timezone.utc).astimezone()
+            old = (current - timedelta(minutes=20)).isoformat(timespec="seconds")
+            fresh = current.isoformat(timespec="seconds")
+            conn.execute("UPDATE execution_attempts SET last_progress_at = ?, last_heartbeat_at = ? WHERE attempt_id = ?", (old, fresh, attempt_id))
+            conn.execute("UPDATE tasks SET evidence_path = ? WHERE id = ?", (str(self.root / ".ssh" / "id_rsa"), "task-secret-evidence"))
+            conn.commit()
+        finally:
+            conn.close()
+
+        status, cockpit = api_gateway.route_get("/v1/dashboard/cockpit", {})
+        self.assertEqual(200, status, cockpit)
+        self.assertTrue(cockpit["ok"])
+        conn = companyctl.connect()
+        try:
+            employee_total = conn.execute("SELECT COUNT(*) AS count FROM employees").fetchone()["count"]
+        finally:
+            conn.close()
+        self.assertEqual(employee_total, cockpit["counts"]["employees_total"])
+        self.assertEqual(2, cockpit["counts"]["employees_online"])
+        self.assertGreaterEqual(cockpit["counts"]["employees_abnormal"], 1)
+        self.assertEqual(employee_total, cockpit["employee_counts"]["total"])
+        self.assertEqual(2, cockpit["employee_counts"]["online"])
+        self.assertGreaterEqual(cockpit["employee_counts"]["abnormal"], 1)
+        self.assertEqual(cockpit["counts"]["employee_status_counts"], cockpit["employee_counts"]["status_counts"])
+        self.assertEqual(cockpit["counts"]["readiness_counts"], cockpit["employee_counts"]["readiness_counts"])
+        self.assertEqual(1, cockpit["counts"]["employee_status_counts"]["busy"])
+        self.assertGreaterEqual(cockpit["counts"]["employee_status_counts"]["active"], 1)
+        self.assertGreaterEqual(cockpit["counts"]["employee_status_counts"]["abnormal"], 1)
+        self.assertEqual(1, cockpit["counts"]["readiness_counts"]["active_ready"])
+        self.assertGreaterEqual(cockpit["counts"]["readiness_counts"]["online_only"], 1)
+        self.assertEqual(2, cockpit["counts"]["done_tasks"])
+        self.assertEqual(1, cockpit["counts"]["evidence_issues"])
+        self.assertEqual(1, cockpit["counts"]["awaiting_approval_tasks"])
+        self.assertEqual("single_company_kernel_ledger", cockpit["ledger_consistency"]["source"])
+        self.assertEqual(["api", "cli", "dashboard"], cockpit["ledger_consistency"]["surfaces"])
+        self.assertEqual("API / CLI / Dashboard read the same Company Kernel ledger", cockpit["ledger_consistency"]["summary"])
+        cockpit_employees = {item["id"]: item for item in cockpit["employees"]}
+        self.assertEqual("busy", cockpit_employees["codex-cockpit"]["status"])
+        self.assertEqual("active_ready", cockpit_employees["codex-cockpit"]["readiness_level"])
+        self.assertIn("runtime_evidence", cockpit_employees["codex-cockpit"]["readiness_reason"])
+        self.assertEqual("candidate", cockpit_employees["agy-cockpit"]["status"])
+        agy_attention = next(item for item in cockpit["owner_attention"] if item["kind"] == "employee_readiness" and item["employee_id"] == "agy-cockpit")
+        self.assertEqual("candidate_only", agy_attention["state"])
+        self.assertEqual("agy-cockpit", agy_attention["title"])
+        self.assertEqual("agy-cockpit", agy_attention["display_name"])
+        self.assertEqual("agy-cockpit", agy_attention["target_agent"])
+        self.assertEqual("antigravity", agy_attention["runtime"])
+        self.assertIn("结构化 execution evidence", agy_attention["message"])
+        self.assertEqual(["verify_runtime", "view_employee", "keep_candidate"], [action["id"] for action in agy_attention["actions"]])
+        self.assertEqual("GET", agy_attention["actions"][0]["method"])
+        self.assertFalse(agy_attention["actions"][0]["requires_owner_approval"])
+        self.assertFalse(agy_attention["actions"][0]["dangerous"])
+        long_task = next(item for item in cockpit["long_tasks"] if item["task_id"] == "task-cockpit-long")
+        self.assertEqual("correcting", long_task["long_task_state"])
+        self.assertEqual("fresh", long_task["heartbeat_state"])
+        self.assertEqual("stagnant", long_task["progress_state"])
+        self.assertEqual("in_progress", long_task["latest_progress"]["progress_state"])
+        self.assertEqual(42, long_task["latest_progress"]["progress"])
+        self.assertIn("正在整理最终 evidence 包", long_task["latest_progress"]["message"])
+        self.assertEqual(attempt_id, long_task["latest_progress"]["attempt_id"])
+        self.assertTrue(long_task["correction"]["needs_ack"])
+        self.assertEqual("hermes", long_task["correction"]["last_by"])
+        self.assertIn("请收口 evidence", long_task["correction"]["last_message"])
+        self.assertTrue(long_task["evidence"]["allowed"])
+        self.assertFalse(long_task["evidence"]["absolute_path_exposed"])
+        self.assertIn("evidence/result.md", long_task["evidence"]["relative_path"])
+        self.assertEqual(1, cockpit["counts"]["recent_evidence"])
+        self.assertEqual(2, cockpit["counts"]["legacy_task_evidence"])
+        recent_evidence = next(item for item in cockpit["recent_evidence"] if item["task_id"] == "task-cockpit-done")
+        self.assertEqual(promoted["evidence"]["evidence_id"], recent_evidence["evidence_id"])
+        self.assertTrue(recent_evidence["evidence"]["allowed"])
+        self.assertFalse(recent_evidence["evidence"]["absolute_path_exposed"])
+        self.assertIn("artifacts/done-final.md", recent_evidence["evidence"]["relative_path"])
+        legacy_evidence = next(item for item in cockpit["legacy_task_evidence"] if item["task_id"] == "task-cockpit-long")
+        self.assertTrue(legacy_evidence["evidence"]["allowed"])
+        self.assertIn("evidence/result.md", legacy_evidence["evidence"]["relative_path"])
+        attention = next(item for item in cockpit["owner_attention"] if item["task_id"] == "task-cockpit-long" and item["kind"] == "stagnant_task")
+        self.assertEqual("stagnant_task", attention["kind"])
+        self.assertEqual("correcting", attention["state"])
+        self.assertEqual("codex-cockpit", attention["target_agent"])
+        self.assertEqual(attempt_id, attention["attempt_id"])
+        self.assertTrue(attention["correction"]["needs_ack"])
+        self.assertEqual("hermes", attention["correction"]["last_by"])
+        self.assertIn("请收口 evidence", attention["correction"]["last_message"])
+        self.assertIn("Hermes 已发纠偏", attention["message"])
+        self.assertIn("supervisor_activity", cockpit)
+        supervisor_item = next(item for item in cockpit["supervisor_activity"] if item["task_id"] == "task-cockpit-long")
+        self.assertEqual("correction_pending_ack", supervisor_item["kind"])
+        self.assertEqual("Hermes", supervisor_item["supervisor"])
+        self.assertEqual("codex-cockpit", supervisor_item["target_agent"])
+        self.assertEqual(attempt_id, supervisor_item["attempt_id"])
+        self.assertIn("请收口 evidence", supervisor_item["message"])
+        self.assertEqual(
+            ["send_correction", "view_logs", "wait", "cancel_attempt"],
+            [action["id"] for action in attention["actions"]],
+        )
+        action_meta = {action["id"]: action for action in attention["actions"]}
+        self.assertEqual("POST", action_meta["send_correction"]["method"])
+        self.assertTrue(action_meta["send_correction"]["requires_owner_approval"])
+        self.assertEqual("GET", action_meta["view_logs"]["method"])
+        self.assertEqual("none", action_meta["wait"]["method"])
+        self.assertTrue(action_meta["cancel_attempt"]["dangerous"])
+        self.assertTrue(all(action["task_id"] == "task-cockpit-long" for action in attention["actions"]))
+        self.assertTrue(all(action["attempt_id"] == attempt_id for action in attention["actions"]))
+        blocked_attention = next(item for item in cockpit["owner_attention"] if item["task_id"] == "task-cockpit-blocked" and item["kind"] == "blocked_task")
+        self.assertEqual(["send_correction", "view_logs", "retry", "reassign"], [action["id"] for action in blocked_attention["actions"]])
+        self.assertTrue(all(action["task_id"] == "task-cockpit-blocked" for action in blocked_attention["actions"]))
+        approval_attention = next(item for item in cockpit["owner_attention"] if item["approval_id"] == "approval-cockpit-awaiting")
+        self.assertEqual("approval", approval_attention["kind"])
+        self.assertEqual("task-cockpit-awaiting-approval", approval_attention["task_id"])
+        self.assertEqual("codex-cockpit", approval_attention["target_agent"])
+        self.assertEqual("external_send", approval_attention["approval_action"])
+        self.assertEqual("P1", approval_attention["risk"])
+        self.assertIn("approval bound to cockpit task", approval_attention["message"])
+        self.assertEqual(["approve", "deny", "mock_resolve"], [action["id"] for action in approval_attention["actions"]])
+        approval_action_meta = {action["id"]: action for action in approval_attention["actions"]}
+        self.assertTrue(approval_action_meta["approve"]["requires_owner_approval"])
+        self.assertFalse(approval_action_meta["approve"]["dry_run_default"])
+        self.assertTrue(approval_action_meta["mock_resolve"]["dry_run_default"])
+        self.assertTrue(approval_action_meta["deny"]["requires_owner_approval"])
+        self.assertTrue(all(action["task_id"] == "task-cockpit-awaiting-approval" for action in approval_attention["actions"]))
+        self.assertTrue(all(action["approval_id"] == "approval-cockpit-awaiting" for action in approval_attention["actions"]))
+        evidence_attention = next(item for item in cockpit["owner_attention"] if item["task_id"] == "task-cockpit-done-missing-evidence" and item["kind"] == "evidence_issue")
+        self.assertEqual("evidence_issue", evidence_attention["kind"])
+        self.assertEqual("blocked", evidence_attention["state"])
+        self.assertEqual("completed_without_evidence", evidence_attention["reason"])
+        self.assertIn("done 但缺少 final evidence", evidence_attention["message"])
+        self.assertEqual(["review_task", "view_trace"], [action["id"] for action in evidence_attention["actions"]])
+
+        status, shown = api_gateway.route_get("/v1/tasks/task-cockpit-long", {})
+        self.assertEqual(200, status, shown)
+        self.assertTrue(shown["evidence"]["allowed"])
+        self.assertFalse(shown["evidence"]["absolute_path_exposed"])
+        self.assertNotIn(str(self.root), json.dumps(shown["evidence"], ensure_ascii=False))
+
+    def test_cockpit_ignores_orphan_active_attempts_on_finished_tasks(self) -> None:
+        code, created = run_cli("employee", "create", "--id", "main", "--name", "main", "--role", "operator", "--runtime", "openclaw", "--workspace", str(self.root / "workspace" / "main"))
+        self.assertEqual(0, code, created)
+        code, created = run_cli("employee", "create", "--id", "skill-worker", "--name", "Skill Worker", "--role", "skill-worker", "--runtime", "skill", "--workspace", str(self.root / "workspace" / "skill-worker"))
+        self.assertEqual(0, code, created)
+        conn = companyctl.connect()
+        try:
+            conn.execute("UPDATE employees SET status = 'active', updated_at = ? WHERE id = ?", (companyctl.now(), "skill-worker"))
+            conn.commit()
+        finally:
+            conn.close()
+        code, heartbeat = run_cli("heartbeat", "--agent", "skill-worker")
+        self.assertEqual(0, code, heartbeat)
+        task_id = "task-finished-orphan-attempt"
+        code, submitted = run_cli("task", "submit", "--from", "main", "--to", "skill-worker", "--task-id", task_id, "--title", "Finished task with old attempt")
+        self.assertEqual(0, code, submitted)
+        code, run = run_cli("task", "run", "--task-id", task_id, "--agent", "skill-worker", "--by", "main", "--adapter-type", "retry")
+        self.assertEqual(0, code, run)
+        conn = companyctl.connect()
+        try:
+            workspace = companyctl.ensure_task_workspace(conn, task_id)
+            final_path = Path(workspace["path"]) / "final" / "result.md"
+            final_path.write_text("finished task evidence\n", encoding="utf-8")
+            artifact = companyctl.register_artifact_internal(
+                conn,
+                task_id=task_id,
+                employee_id="skill-worker",
+                artifact_type="text",
+                path=str(final_path),
+                name="result.md",
+                stage="final",
+                summary="finished task evidence",
+                is_final=True,
+            )
+            companyctl.promote_artifact_to_evidence_internal(
+                conn,
+                artifact_id=artifact["artifact"]["artifact_id"],
+                by="skill-worker",
+                summary="finished task evidence",
+            )
+            conn.execute("UPDATE tasks SET status = 'completed', claimed_by = 'skill-worker', summary = 'done', updated_at = ? WHERE id = ?", (companyctl.now(), task_id))
+            conn.commit()
+        finally:
+            conn.close()
+
+        status, cockpit = api_gateway.route_get("/v1/dashboard/cockpit", {})
+        self.assertEqual(200, status, cockpit)
+        self.assertEqual(0, cockpit["counts"]["active_attempts"])
+        employee = next(item for item in cockpit["employees"] if item["id"] == "skill-worker")
+        self.assertEqual("active", employee["status"])
+        self.assertEqual({}, employee["current_attempt"])
+
+    def test_api_gateway_lists_sanitized_evidence_records(self) -> None:
+        code, created = run_cli("employee", "create", "--id", "main", "--name", "main", "--role", "operator", "--runtime", "openclaw", "--workspace", str(self.root / "workspace" / "main"))
+        self.assertEqual(0, code, created)
+        code, created = run_cli("employee", "create", "--id", "writer", "--name", "writer", "--role", "writer", "--runtime", "local", "--workspace", str(self.root / "workspace" / "writer"))
+        self.assertEqual(0, code, created)
+        self.mark_active("writer")
+        code, submitted = run_cli("task", "submit", "--from", "main", "--to", "writer", "--task-id", "task-api-evidence-list", "--title", "Evidence list")
+        self.assertEqual(0, code, submitted)
+        conn = companyctl.connect()
+        try:
+            workspace = companyctl.ensure_task_workspace(conn, "task-api-evidence-list")
+            final_path = Path(workspace["path"]) / "final" / "delivery.md"
+            final_path.write_text("final delivery\n", encoding="utf-8")
+            artifact = companyctl.register_artifact_internal(
+                conn,
+                task_id="task-api-evidence-list",
+                employee_id="writer",
+                artifact_type="text",
+                path=str(final_path),
+                summary="final delivery",
+                stage="final",
+                is_final=True,
+            )["artifact"]
+            promoted = companyctl.promote_artifact_to_evidence_internal(conn, artifact_id=artifact["artifact_id"], by="writer", summary="safe final evidence")
+            conn.commit()
+        finally:
+            conn.close()
+
+        status, evidence = api_gateway.route_get("/v1/evidence", {"limit": ["10"]})
+        self.assertEqual(200, status, evidence)
+        self.assertTrue(evidence["ok"])
+        self.assertIn("/v1/evidence", evidence["source"])
+        item = next(row for row in evidence["evidence"] if row["evidence_id"] == promoted["evidence"]["evidence_id"])
+        self.assertEqual("task-api-evidence-list", item["task_id"])
+        self.assertTrue(item["is_final"])
+        self.assertTrue(item["display"]["allowed"])
+        self.assertFalse(item["display"]["absolute_path_exposed"])
+        self.assertEqual(["artifacts", "evidence", "final", "reports"], item["display"]["policy"]["allowed_segments"])
+        self.assertEqual("sensitive_path_tokens_redacted", item["display"]["policy"]["forbidden_policy"])
+        self.assertIn("workspace/evidence/reports/artifacts/final only", item["display"]["policy"]["summary"])
+        payload_json = json.dumps(item, ensure_ascii=False)
+        self.assertIn("artifacts/delivery.md", payload_json)
+        self.assertIn("v1-delivery.md", payload_json)
+        self.assertNotIn(str(self.root), payload_json)
+        self.assertNotIn("path_or_url", payload_json)
+
+    def test_api_gateway_lists_sanitized_artifacts_and_handoffs(self) -> None:
+        for employee_id, role in [("main", "operator"), ("writer", "writer"), ("qa", "qa")]:
+            code, created = run_cli("employee", "create", "--id", employee_id, "--name", employee_id, "--role", role, "--runtime", "local", "--workspace", str(self.root / "workspace" / employee_id))
+            self.assertEqual(0, code, created)
+            if employee_id != "main":
+                self.mark_active(employee_id)
+        code, submitted = run_cli("task", "submit", "--from", "main", "--to", "writer", "--task-id", "task-api-artifact-source", "--title", "Artifact source")
+        self.assertEqual(0, code, submitted)
+        code, qa_task = run_cli("task", "submit", "--from", "main", "--to", "qa", "--task-id", "task-api-artifact-qa", "--title", "Artifact QA")
+        self.assertEqual(0, code, qa_task)
+        conn = companyctl.connect()
+        try:
+            workspace = companyctl.ensure_task_workspace(conn, "task-api-artifact-source")
+            report_path = Path(workspace["path"]) / "work" / "brief.md"
+            report_path.write_text("brief artifact\n", encoding="utf-8")
+            artifact = companyctl.register_artifact_internal(
+                conn,
+                task_id="task-api-artifact-source",
+                employee_id="writer",
+                path=str(report_path),
+                artifact_type="markdown",
+                summary="brief artifact",
+                stage="intermediate",
+            )["artifact"]
+            handoff = companyctl.create_handoff_internal(
+                conn,
+                from_task_id="task-api-artifact-source",
+                to_task_id="task-api-artifact-qa",
+                from_employee_id="writer",
+                to_employee_id="qa",
+                summary="handoff to qa",
+                artifacts=[artifact["artifact_id"]],
+                known_issues="none",
+                next_steps="review artifact",
+                required_actions="accept or reject",
+                acceptance_notes="qa notes",
+            )["handoff"]
+            conn.commit()
+        finally:
+            conn.close()
+
+        status, artifacts = api_gateway.route_get("/v1/artifacts", {"limit": ["10"]})
+        self.assertEqual(200, status, artifacts)
+        artifact_item = next(item for item in artifacts["artifacts"] if item["artifact_id"] == artifact["artifact_id"])
+        self.assertEqual("task-api-artifact-source", artifact_item["task_id"])
+        self.assertTrue(artifact_item["display"]["allowed"])
+        self.assertFalse(artifact_item["display"]["absolute_path_exposed"])
+        artifact_json = json.dumps(artifact_item, ensure_ascii=False)
+        self.assertIn("artifacts/brief.md", artifact_json)
+        self.assertNotIn(str(self.root), artifact_json)
+        self.assertNotIn("path", artifact_item)
+
+        status, handoffs = api_gateway.route_get("/v1/handoffs", {"limit": ["10"]})
+        self.assertEqual(200, status, handoffs)
+        handoff_item = next(item for item in handoffs["handoffs"] if item["handoff_id"] == handoff["handoff_id"])
+        self.assertEqual("task-api-artifact-source", handoff_item["from_task_id"])
+        self.assertEqual("task-api-artifact-qa", handoff_item["to_task_id"])
+        self.assertEqual([artifact["artifact_id"]], handoff_item["artifacts"])
+        self.assertNotIn("artifacts_json", handoff_item)
+
+    def test_api_gateway_lists_sanitized_failure_records(self) -> None:
+        for employee_id, role in [("main", "operator"), ("codex", "developer")]:
+            code, created = run_cli("employee", "create", "--id", employee_id, "--name", employee_id, "--role", role, "--runtime", "local", "--workspace", str(self.root / "workspace" / employee_id))
+            self.assertEqual(0, code, created)
+            if employee_id != "main":
+                self.mark_active(employee_id)
+        code, submitted = run_cli("task", "submit", "--from", "main", "--to", "codex", "--task-id", "task-api-failure-ledger", "--title", "Failure ledger")
+        self.assertEqual(0, code, submitted)
+        code, run = run_cli("task", "run", "--task-id", "task-api-failure-ledger", "--agent", "codex", "--by", "hermes")
+        self.assertEqual(0, code, run)
+        secret = "sk-testSECRET1234567890"
+        code, finished = run_cli("task", "attempt", "finish", "--attempt-id", run["attempt"]["attempt_id"], "--status", "failed", "--error", f"failed with token={secret} at {self.root / '.env'}")
+        self.assertEqual(0, code, finished)
+        code, blocked = run_cli("task", "block", "--agent", "codex", "--task-id", "task-api-failure-ledger", "--blocker", f"blocked with api_key={secret} /Users/owner/.ssh/id_rsa")
+        self.assertEqual(0, code, blocked)
+        conn = companyctl.connect()
+        try:
+            conn.execute(
+                """
+                INSERT INTO adapter_runs(id, trace_id, agent_id, task_id, command, ok, processed, attempt, result_json, created_at)
+                VALUES ('adapter-run-failure-ledger', ?, 'codex', 'task-api-failure-ledger', 'company-codex-adapter', 0, 0, 1, ?, ?)
+                """,
+                (
+                    submitted["task"]["metadata"]["trace_id"],
+                    json.dumps({"stderr": f"api_key={secret} reading /Users/owner/.ssh/id_rsa", "stdout": "safe failure context"}, ensure_ascii=False),
+                    companyctl.now(),
+                ),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        status, failures = api_gateway.route_get("/v1/failures", {"limit": ["20"]})
+        self.assertEqual(200, status, failures)
+        self.assertTrue(failures["ok"])
+        kinds = [item["kind"] for item in failures["failures"]]
+        self.assertIn("task", kinds)
+        self.assertIn("attempt", kinds)
+        self.assertIn("adapter_run", kinds)
+        failures_json = json.dumps(failures, ensure_ascii=False)
+        self.assertIn("task-api-failure-ledger", failures_json)
+        self.assertIn("safe failure context", failures_json)
+        self.assertNotIn(secret, failures_json)
+        self.assertNotIn("id_rsa", failures_json)
+        self.assertNotIn(".env", failures_json)
+
+    def test_cli_audit_ledgers_match_api_sanitized_records(self) -> None:
+        for employee_id, role in [("main", "operator"), ("writer", "writer"), ("qa", "qa"), ("codex", "developer")]:
+            code, created = run_cli("employee", "create", "--id", employee_id, "--name", employee_id, "--role", role, "--runtime", "local", "--workspace", str(self.root / "workspace" / employee_id))
+            self.assertEqual(0, code, created)
+            if employee_id != "main":
+                self.mark_active(employee_id)
+        code, source_task = run_cli("task", "submit", "--from", "main", "--to", "writer", "--task-id", "task-cli-audit-source", "--title", "CLI audit source")
+        self.assertEqual(0, code, source_task)
+        code, qa_task = run_cli("task", "submit", "--from", "main", "--to", "qa", "--task-id", "task-cli-audit-qa", "--title", "CLI audit qa")
+        self.assertEqual(0, code, qa_task)
+        code, failure_task = run_cli("task", "submit", "--from", "main", "--to", "codex", "--task-id", "task-cli-audit-failure", "--title", "CLI audit failure")
+        self.assertEqual(0, code, failure_task)
+        code, run = run_cli("task", "run", "--task-id", "task-cli-audit-failure", "--agent", "codex", "--by", "hermes")
+        self.assertEqual(0, code, run)
+        secret = "sk-cliAuditSECRET1234567890"
+        code, finished = run_cli("task", "attempt", "finish", "--attempt-id", run["attempt"]["attempt_id"], "--status", "failed", "--error", f"failed with token={secret} at {self.root / '.env'}")
+        self.assertEqual(0, code, finished)
+        code, blocked = run_cli("task", "block", "--agent", "codex", "--task-id", "task-cli-audit-failure", "--blocker", f"blocked with api_key={secret} /Users/owner/.ssh/id_rsa")
+        self.assertEqual(0, code, blocked)
+
+        conn = companyctl.connect()
+        try:
+            workspace = companyctl.ensure_task_workspace(conn, "task-cli-audit-source")
+            final_path = Path(workspace["path"]) / "final" / "delivery.md"
+            final_path.write_text("delivery\n", encoding="utf-8")
+            artifact = companyctl.register_artifact_internal(
+                conn,
+                task_id="task-cli-audit-source",
+                employee_id="writer",
+                path=str(final_path),
+                artifact_type="markdown",
+                summary="delivery artifact",
+                stage="final",
+                is_final=True,
+            )["artifact"]
+            handoff = companyctl.create_handoff_internal(
+                conn,
+                from_task_id="task-cli-audit-source",
+                to_task_id="task-cli-audit-qa",
+                from_employee_id="writer",
+                to_employee_id="qa",
+                summary="handoff for cli audit",
+                artifacts=[artifact["artifact_id"]],
+                next_steps="review",
+            )["handoff"]
+            evidence = companyctl.promote_artifact_to_evidence_internal(conn, artifact_id=artifact["artifact_id"], by="writer", summary="delivery evidence")["evidence"]
+            conn.execute(
+                """
+                INSERT INTO adapter_runs(id, trace_id, agent_id, task_id, command, ok, processed, attempt, result_json, created_at)
+                VALUES ('adapter-run-cli-audit-failure', ?, 'codex', 'task-cli-audit-failure', 'company-codex-adapter', 0, 0, 1, ?, ?)
+                """,
+                (
+                    failure_task["task"]["metadata"]["trace_id"],
+                    json.dumps({"stderr": f"api_key={secret} reading /Users/owner/.ssh/id_rsa", "stdout": "safe cli failure context"}, ensure_ascii=False),
+                    companyctl.now(),
+                ),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        for command, payload_key, api_path in [
+            ("evidence", "evidence", "/v1/evidence"),
+            ("artifacts", "artifacts", "/v1/artifacts"),
+            ("handoffs", "handoffs", "/v1/handoffs"),
+            ("failures", "failures", "/v1/failures"),
+        ]:
+            code, cli_payload = run_cli("audit", command, "--limit", "20")
+            self.assertEqual(0, code, cli_payload)
+            status, api_payload = api_gateway.route_get(api_path, {"limit": ["20"]})
+            self.assertEqual(200, status, api_payload)
+            self.assertEqual(api_payload[payload_key], cli_payload[payload_key])
+
+        code, cli_evidence = run_cli("audit", "evidence", "--task-id", "task-cli-audit-source", "--limit", "20")
+        self.assertEqual(0, code, cli_evidence)
+        self.assertEqual([evidence["evidence_id"]], [item["evidence_id"] for item in cli_evidence["evidence"]])
+        code, cli_artifacts = run_cli("audit", "artifacts", "--task-id", "task-cli-audit-source", "--limit", "20")
+        self.assertEqual(0, code, cli_artifacts)
+        self.assertEqual([artifact["artifact_id"]], [item["artifact_id"] for item in cli_artifacts["artifacts"]])
+        code, cli_handoffs = run_cli("audit", "handoffs", "--task-id", "task-cli-audit-source", "--limit", "20")
+        self.assertEqual(0, code, cli_handoffs)
+        self.assertEqual([handoff["handoff_id"]], [item["handoff_id"] for item in cli_handoffs["handoffs"]])
+        code, cli_failures = run_cli("audit", "failures", "--task-id", "task-cli-audit-failure", "--limit", "20")
+        self.assertEqual(0, code, cli_failures)
+        payload_json = json.dumps({**cli_evidence, **cli_artifacts, **cli_handoffs, **cli_failures}, ensure_ascii=False)
+        self.assertIn("task-cli-audit-source", payload_json)
+        self.assertIn("safe cli failure context", payload_json)
+        self.assertNotIn(str(self.root), payload_json)
+        self.assertNotIn(secret, payload_json)
+        self.assertNotIn("id_rsa", payload_json)
+        self.assertNotIn(".env", payload_json)
+        self.assertNotIn("path_or_url", payload_json)
+        self.assertNotIn("artifacts_json", payload_json)
+
+    def test_api_gateway_streams_company_events_as_sse(self) -> None:
+        conn = companyctl.connect()
+        try:
+            companyctl.record_event(
+                conn,
+                "task.progress",
+                "codex",
+                task_id="task-sse",
+                payload={
+                    "message": "stream me api_key=sk-test-secret",
+                    "path": str(self.root / ".ssh" / "id_rsa"),
+                    "files": [str(self.root / ".env")],
+                },
+                trace_id="trace-sse",
+            )
+        finally:
+            conn.close()
+
+        handler = object.__new__(api_gateway.ApiHandler)
+        handler.headers = {}
+        handler.wfile = io.BytesIO()
+        sent = []
+
+        def fake_send_response(code):
+            sent.append(("status", code))
+
+        def fake_send_header(name, value):
+            sent.append((name, value))
+
+        handler.send_response = fake_send_response
+        handler.send_header = fake_send_header
+        handler.end_headers = lambda: sent.append(("end", ""))
+        handler.server = SimpleNamespace(quiet=True)
+
+        with mock.patch.object(api_gateway.time, "sleep", return_value=None):
+            handler.stream_events({"max_cycles": ["1"], "poll_seconds": ["1"], "limit": ["5"]})
+
+        output = handler.wfile.getvalue().decode("utf-8")
+        self.assertIn(("status", HTTPStatus.OK), sent)
+        self.assertIn(("Content-Type", "text/event-stream; charset=utf-8"), sent)
+        self.assertIn("event: stream_status", output)
+        self.assertIn("event: company_event", output)
+        self.assertIn("task.progress", output)
+        self.assertIn("single_company_kernel_ledger", output)
+        self.assertIn("sync_wait_window", output)
+        self.assertIn("task_failure_decided_by_attempt_evidence", output)
+        self.assertNotIn("/Users/owner", output)
+        self.assertNotIn("id_rsa", output)
+        self.assertNotIn(".env", output)
+        self.assertNotIn("sk-test-secret", output)
+
+    def test_api_gateway_sse_resumes_after_last_event_id_without_replaying_old_events(self) -> None:
+        conn = companyctl.connect()
+        try:
+            first = companyctl.record_event(conn, "task.progress", "codex", task_id="task-sse-resume", payload={"message": "old event"}, trace_id="trace-sse-resume")
+            second = companyctl.record_event(conn, "task.progress", "codex", task_id="task-sse-resume", payload={"message": "new event"}, trace_id="trace-sse-resume")
+        finally:
+            conn.close()
+
+        handler = object.__new__(api_gateway.ApiHandler)
+        handler.headers = {"Last-Event-ID": first["id"]}
+        handler.wfile = io.BytesIO()
+        sent = []
+        handler.send_response = lambda code: sent.append(("status", code))
+        handler.send_header = lambda name, value: sent.append((name, value))
+        handler.end_headers = lambda: sent.append(("end", ""))
+        handler.server = SimpleNamespace(quiet=True)
+
+        with mock.patch.object(api_gateway.time, "sleep", return_value=None):
+            handler.stream_events({"max_cycles": ["1"], "poll_seconds": ["0"], "limit": ["5"]})
+
+        output = handler.wfile.getvalue().decode("utf-8")
+        self.assertIn("event: stream_status", output)
+        self.assertIn("timeout_is_sync_wait_only", output)
+        self.assertIn(f"id: {second['id']}", output)
+        self.assertIn("new event", output)
+        self.assertNotIn(f"id: {first['id']}", output)
+        self.assertNotIn("old event", output)
+
+    def test_evidence_sanitizer_blocks_absolute_secret_paths(self) -> None:
+        secret = self.root / ".ssh" / "id_rsa"
+        secret.parent.mkdir(parents=True, exist_ok=True)
+        secret.write_text("secret\n", encoding="utf-8")
+
+        result = companyctl.sanitize_evidence_path_for_display(str(secret))
+
+        self.assertFalse(result["allowed"])
+        self.assertTrue(result["exists"])
+        self.assertEqual("", result["relative_path"])
+        self.assertEqual("forbidden secret/config path", result["reason"])
+        self.assertFalse(result["absolute_path_exposed"])
+
+    def test_log_sanitizer_redacts_secrets_and_sensitive_paths(self) -> None:
+        secret = "sk-testSECRET1234567890"
+        raw = (
+            f"api_key={secret} stdout /Users/owner/.ssh/id_rsa "
+            f"{self.root / '.env'} normal progress token=plain-secret-value"
+        )
+
+        redacted = companyctl.sanitize_log_text(raw)
+
+        self.assertIn("api_key=[REDACTED]", redacted)
+        self.assertIn("token=[REDACTED]", redacted)
+        self.assertIn("normal progress", redacted)
+        self.assertNotIn(secret, redacted)
+        self.assertNotIn("plain-secret-value", redacted)
+        self.assertNotIn("id_rsa", redacted)
+        self.assertNotIn(".env", redacted)
+        self.assertIn("[REDACTED_PATH]", redacted)
+
+    def test_log_sanitizer_does_not_redact_task_ids_containing_sk(self) -> None:
+        task_id = "task-20260607-043615-365dea"
+
+        redacted = companyctl.sanitize_log_text(f"completed task_id={task_id}")
+
+        self.assertIn(task_id, redacted)
 
     def test_advanced_dashboard_counts_visible_ai_employees_not_human_owner(self) -> None:
         summary = {
@@ -1842,6 +2799,14 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual(1, prepared["counts"]["employees"])
         self.assertEqual(1, prepared["counts"]["active_employees"])
         self.assertEqual(["codex"], [employee["id"] for employee in prepared["employees"]])
+        cockpit = company_dashboard.build_cockpit_summary(prepared)
+        self.assertEqual(2, cockpit["registry_reconciliation"]["registered_total"])
+        self.assertEqual(1, cockpit["registry_reconciliation"]["schedulable_total"])
+        self.assertEqual(1, cockpit["registry_reconciliation"]["excluded_human_owners"])
+        self.assertEqual(["owner"], cockpit["registry_reconciliation"]["excluded_employee_ids"])
+        self.assertEqual(1, cockpit["counts"]["employees_total"])
+        self.assertEqual(2, cockpit["counts"]["registered_employees_total"])
+        self.assertEqual(1, cockpit["counts"]["excluded_human_owners"])
 
     def test_dashboard_auto_variant_falls_back_to_basic_when_template_missing(self) -> None:
         output = self.root / "state" / "dashboard-auto-fallback.html"
@@ -1854,6 +2819,17 @@ class CompanyKernelCoreTest(unittest.TestCase):
         html = output.read_text(encoding="utf-8")
         self.assertIn("Company Kernel Dashboard", html)
         self.assertNotIn("window.companyApiBase", html)
+
+    def test_dashboard_cli_output_exposes_ledger_consistency(self) -> None:
+        output = self.root / "state" / "dashboard-cli-ledger.html"
+        with contextlib.redirect_stdout(io.StringIO()) as stdout:
+            code = company_dashboard.main(["--output", str(output), "--variant", "advanced"])
+        self.assertEqual(0, code)
+        payload = json.loads(stdout.getvalue())
+        self.assertEqual("advanced", payload["variant"])
+        self.assertEqual("single_company_kernel_ledger", payload["ledger_consistency"]["source"])
+        self.assertEqual(["api", "cli", "dashboard"], payload["ledger_consistency"]["surfaces"])
+        self.assertEqual("API / CLI / Dashboard read the same Company Kernel ledger", payload["ledger_consistency"]["summary"])
 
     def test_dashboard_summary_includes_direct_messages_recent(self) -> None:
         code, created = run_cli("employee", "create", "--id", "main", "--name", "main", "--role", "operator", "--runtime", "openclaw", "--workspace", str(self.root / "workspace" / "main"))
@@ -1876,17 +2852,17 @@ class CompanyKernelCoreTest(unittest.TestCase):
 
         self.assertIn("direct_messages_recent", summary)
         self.assertEqual(1, len(summary["direct_messages_recent"]))
-        self.assertEqual(
-            {
-                "id": "msg-dashboard-direct-001",
-                "source_agent": "main",
-                "target_agent": "worker-x",
-                "body": "dashboard direct ping",
-                "evidence_path": "",
-                "created_at": "2026-06-04T22:45:00+07:00",
-            },
-            summary["direct_messages_recent"][0],
-        )
+        recent = summary["direct_messages_recent"][0]
+        self.assertEqual("msg-dashboard-direct-001", recent["id"])
+        self.assertEqual("main", recent["source_agent"])
+        self.assertEqual("worker-x", recent["target_agent"])
+        self.assertEqual("dashboard direct ping", recent["body"])
+        self.assertEqual("", recent["evidence_path"])
+        self.assertEqual("2026-06-04T22:45:00+07:00", recent["created_at"])
+        self.assertEqual("", recent["task_context"])
+        self.assertFalse(recent["task_bound"])
+        self.assertFalse(recent["low_signal"])
+        self.assertEqual("work_relevant", recent["chat_classification"])
         status, api_payload = api_gateway.route_get("/v1/messages/recent-direct", {"limit": ["5"]})
         self.assertEqual(200, int(status))
         self.assertEqual(summary["direct_messages_recent"], api_payload["direct_messages_recent"])
@@ -2411,8 +3387,44 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertIn("direct_messages_recent", html)
         self.assertIn("Recent Direct Messages", html)
         self.assertIn("messages table", html)
-        self.assertIn("dashboard direct UI ping", html)
+        conn = companyctl.connect()
+        try:
+            summary = company_dashboard.load_summary(conn)
+        finally:
+            conn.close()
+        self.assertIn("dashboard direct UI ping", [item["body"] for item in summary["direct_messages_recent"]])
+        self.assertNotIn("dashboard direct UI ping", html)
         self.assertIn("renderDirectMessagesRecent", html)
+        self.assertIn("show-chat-handshakes-toggle", html)
+        self.assertIn("isLowSignalChatMessage", html)
+        self.assertIn("Hidden greeting/handshake/idle", html)
+        self.assertIn("Task-bound", html)
+
+    def test_advanced_dashboard_chat_hub_defaults_to_task_bound_noise_filtering(self) -> None:
+        output = self.root / "state" / "dashboard-chat-filter.html"
+        template = Path(__file__).resolve().parents[1] / "dashboard_templates" / "gemini_dashboard.html"
+        with contextlib.redirect_stdout(io.StringIO()):
+            code = company_dashboard.main(["--variant", "advanced", "--template", str(template), "--output", str(output)])
+        self.assertEqual(0, code)
+        html = output.read_text(encoding="utf-8")
+        self.assertIn("dashboard-show-chat-handshakes", html)
+        self.assertIn("function extractTaskContext", html)
+        self.assertIn("function visibleChatMessages", html)
+        self.assertIn("function hiddenChatNotice", html)
+        self.assertIn("function sortChatThreadsForTaskContext", html)
+        self.assertIn("item.task_context", html)
+        self.assertIn("message.low_signal", html)
+        self.assertIn("message.chat_classification", html)
+        self.assertIn("task-bound first", html)
+        self.assertIn("const firstTaskBoundThread", html)
+        self.assertIn("Task-bound messages stay visible; handshakes hidden by default", html)
+        self.assertIn("Only greeting/handshake/idle messages are hidden", html)
+        self.assertIn("const match = text.match(/\\b(task[-_:][a-zA-Z0-9._-]+|TASK[-_:][a-zA-Z0-9._-]+)\\b/)", html)
+        self.assertIn("if (isTaskBoundChatItem(message)) return false", html)
+        self.assertIn("messageTask ? ` <span class=\"chat-task-context-pill\">Task-bound ${escapeHtml(messageTask)}</span>`", html)
+        self.assertIn("visible=${filtered.visible.length}/${messages.length}", html)
+        self.assertIn("hidden_idle=${filtered.hiddenCount}", html)
+        self.assertIn("task_bound=${taskContext || '-'}", html)
 
     def test_dashboard_distinguishes_active_online_from_candidate_heartbeat(self) -> None:
         code, hermes = run_cli("employee", "create", "--id", "hermes", "--name", "Hermes", "--role", "supervisor", "--runtime", "hermes", "--workspace", str(self.root / "hermes"))
@@ -2434,8 +3446,8 @@ class CompanyKernelCoreTest(unittest.TestCase):
             code = company_dashboard.main(["--output", str(output), "--variant", "basic"])
         self.assertEqual(0, code)
         html = output.read_text(encoding="utf-8")
-        self.assertIn("<td>hermes</td><td>active</td><td>online</td><td></td><td>yes</td>", html)
-        self.assertIn("<td>cursor</td><td>candidate</td><td>candidate</td><td></td><td>no</td>", html)
+        self.assertIn("<td>hermes</td><td>active</td><td>online</td><td></td><td>False</td>", html)
+        self.assertIn("<td>cursor</td><td>candidate</td><td>candidate</td><td></td><td>False</td>", html)
         self.assertIn("active_employees", html)
         self.assertIn("candidate_employees", html)
         self.assertIn("employee-manager", html)
@@ -2526,7 +3538,7 @@ class CompanyKernelCoreTest(unittest.TestCase):
     }).join('');
   }
   document.getElementById('db-path-label').innerText = isSimulationMode ? 'simulation://gateway.company.internal' : 'https://gateway.company.internal';
-  // Stubs for test assertions: companyApiGet checkCompanyApi /v1/health refreshLiveDashboardFromApi window.refreshLiveDashboardFromApi /v1/tasks?limit=50 /v1/messages/recent-direct?limit=20 /v1/telemetry/traces /v1/openclaw/runtime-inventory openclaw-runtime-inventory-container telemetry.traces populateKanban(window.summaryData) kanbanTransitionTask const agent = (task.claimed_by || task.target_agent block`, { agent, blocker: reason } stalled_tasks setInterval(refreshLiveDashboardFromApi, 10000) API OFFLINE /v1/attendance/latest realOnboardGeneratedEmployee realDirectEmployeeMessage openDirectEmployeeMessage /v1/messages/direct realOffboardEmployee openEditEmployeeProfile realUpdateEmployeeProfile 'PATCH' 'DELETE' timeZone: 'Asia/Bangkok' THA bindMentionAutocomplete agent-mention-suggestions collaborationHelpText 是否需要其他员工协助 kernel-form-modal openKernelFormModal('direct' openKernelFormModal('conversation' employee-card-actions employee-card-menu toggleEmployeeActionMenu Send Message prefillChatMention Chat Hub ready for @ grid-template-columns: minmax(0, 1fr) 34px dashboard-layout-fix showApprovalDetails refreshGovernanceTables refreshTraceTelemetry refreshTraceTelemetry() notify-route-status setTimeout(loadNotificationSettings, 350) decideApprovalFromDashboard /v1/approvals/${encodeURIComponent(approvalId)}/approve /v1/approvals/${encodeURIComponent(approvalId)}/deny Approve Deny Approval Actions
+  // Stubs for test assertions: companyApiGet checkCompanyApi /v1/health refreshLiveDashboardFromApi window.refreshLiveDashboardFromApi /v1/tasks?limit=50 /v1/messages/recent-direct?limit=20 /v1/telemetry/traces /v1/traces/${encodeURIComponent(traceId)}/timeline /v1/traces/${encodeURIComponent(taskTraceId)}/timeline Trace Timeline traceTimelineSummary traceObjectSummary payload.execution_attempts payload.artifacts payload.evidence payload.handoffs Supervisor Chain supervisionChainSummary payload.supervision_chain Task Supervisor Chain taskSupervisorChainSummary /v1/openclaw/runtime-inventory openclaw-runtime-inventory-container OpenClaw Runtime Inventory source=/v1/openclaw/runtime-inventory · read-only · no OpenClaw bus mutation registration status, and Telegram queue counts telemetry.traces populateKanban(window.summaryData) kanbanTransitionTask const agent = (task.claimed_by || task.target_agent block`, { agent, blocker: reason } stalled_tasks setInterval(refreshLiveDashboardFromApi, 10000) API OFFLINE /v1/attendance/latest realOnboardGeneratedEmployee realDirectEmployeeMessage openDirectEmployeeMessage /v1/messages/direct realOffboardEmployee openEditEmployeeProfile realUpdateEmployeeProfile 'PATCH' 'DELETE' timeZone: 'Asia/Bangkok' THA bindMentionAutocomplete agent-mention-suggestions collaborationHelpText 是否需要其他员工协助 kernel-form-modal openKernelFormModal('direct' openKernelFormModal('conversation' employee-card-actions employee-card-menu toggleEmployeeActionMenu Send Message prefillChatMention Chat Hub ready for @ grid-template-columns: minmax(0, 1fr) 34px dashboard-layout-fix showApprovalDetails refreshGovernanceTables refreshTraceTelemetry refreshTraceTelemetry() notify-route-status setTimeout(loadNotificationSettings, 350) decideApprovalFromDashboard /v1/approvals/${encodeURIComponent(approvalId)}/${normalized} Mock Resolve mock resolved from dashboard; no external delivery executed Approve Deny Approval Actions
 </script>
 </body></html>
             """,
@@ -2542,11 +3554,19 @@ class CompanyKernelCoreTest(unittest.TestCase):
             code = company_dashboard.main(["--variant", "advanced", "--template", str(template), "--output", str(output), "--api-base", "http://127.0.0.1:8765"])
         self.assertEqual(0, code)
         html = output.read_text(encoding="utf-8")
-        self.assertIn(str(self.root / "company.sqlite"), html)
+        self.assertIn("company.sqlite", html)
+        self.assertNotIn(str(self.root / "company.sqlite"), html)
+        self.assertNotIn(str(self.root), html)
         stale_external_db = "/tmp/external-dashboard/company.sqlite"
         self.assertNotIn(stale_external_db, html)
         self.assertIn('"employees": 7', html)
-        self.assertIn('"id": "hermes"', html)
+        conn = companyctl.connect()
+        try:
+            summary = company_dashboard.load_summary(conn)
+        finally:
+            conn.close()
+        self.assertIn("hermes", [employee["id"] for employee in summary["employees"]])
+        self.assertNotIn('"id": "hermes"', html)
         self.assertIn("window.companyApiBase", html)
         self.assertIn("companyApiGet", html)
         self.assertIn("checkCompanyApi", html)
@@ -2556,6 +3576,19 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertIn("/v1/tasks?limit=50", html)
         self.assertIn("/v1/messages/recent-direct?limit=20", html)
         self.assertIn("/v1/telemetry/traces", html)
+        self.assertIn("/v1/traces/${encodeURIComponent(traceId)}/timeline", html)
+        self.assertIn("/v1/traces/${encodeURIComponent(taskTraceId)}/timeline", html)
+        self.assertIn("Trace Timeline", html)
+        self.assertIn("traceTimelineSummary", html)
+        self.assertIn("traceObjectSummary", html)
+        self.assertIn("payload.execution_attempts", html)
+        self.assertIn("payload.artifacts", html)
+        self.assertIn("payload.evidence", html)
+        self.assertIn("payload.handoffs", html)
+        self.assertIn("Supervisor Chain", html)
+        self.assertIn("supervisionChainSummary", html)
+        self.assertIn("payload.supervision_chain", html)
+        self.assertNotIn("is visible in the Traces panel/API", html)
         self.assertIn("/v1/openclaw/runtime-inventory", html)
         self.assertIn("openclaw-runtime-inventory-container", html)
         self.assertIn("telemetry.traces", html)
@@ -2566,6 +3599,9 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertIn("populateKanban(window.summaryData)", html)
         self.assertIn("refreshTraceTelemetry()", html)
         self.assertIn("kanbanTransitionTask", html)
+        self.assertIn("OpenClaw Runtime Inventory", html)
+        self.assertIn("source=/v1/openclaw/runtime-inventory · read-only · no OpenClaw bus mutation", html)
+        self.assertIn("registration status, and Telegram queue counts", html)
         self.assertIn("const agent = (task.claimed_by || task.target_agent", html)
         self.assertIn("block`, { agent, blocker: reason }", html)
         self.assertIn("API OFFLINE", html)
@@ -2605,12 +3641,101 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertIn("notify-route-status", html)
         self.assertIn("setTimeout(loadNotificationSettings, 350)", html)
         self.assertIn("decideApprovalFromDashboard", html)
-        self.assertIn("/v1/approvals/${encodeURIComponent(approvalId)}/approve", html)
-        self.assertIn("/v1/approvals/${encodeURIComponent(approvalId)}/deny", html)
+        self.assertIn("/v1/approvals/${encodeURIComponent(approvalId)}/${normalized}", html)
+        self.assertIn("Mock Resolve", html)
+        self.assertIn("mock resolved from dashboard; no external delivery executed", html)
         self.assertIn("Approve", html)
         self.assertIn("Deny", html)
         self.assertIn("Approval Actions", html)
         self.assertNotIn("onclick='showApprovalDetails(${JSON.stringify(app)", html)
+
+    def test_real_dashboard_template_tolerates_optional_api_failures(self) -> None:
+        template = Path(__file__).resolve().parents[1] / "dashboard_templates" / "gemini_dashboard.html"
+        html = template.read_text(encoding="utf-8")
+        self.assertIn("async function companyApiGetOptional(path, fallback)", html)
+        self.assertIn("function currentSummaryFallback(key, emptyValue)", html)
+        self.assertIn("'rfcs'", html)
+        self.assertIn("'task_delegations'", html)
+        self.assertIn("if (!Array.isArray(window.summaryData[key])) window.summaryData[key] = [];", html)
+        self.assertIn("window.summaryData.counts = window.summaryData.counts || {};", html)
+        self.assertIn("const tasks = await companyApiGetOptional('/v1/tasks?limit=50', {tasks: currentSummaryFallback('tasks', [])});", html)
+        self.assertIn("const recentDirect = await companyApiGetOptional('/v1/messages/recent-direct?limit=20', {direct_messages_recent: currentSummaryFallback('direct_messages_recent', [])});", html)
+        self.assertIn("const adapterRuns = await companyApiGetOptional('/v1/adapter-runs?limit=20', {adapter_runs: currentSummaryFallback('adapter_runs', [])});", html)
+        self.assertIn("const employees = await companyApiGetOptional('/v1/employees', {employees: currentSummaryFallback('employees', [])});", html)
+        self.assertIn("const evidence = await companyApiGetOptional('/v1/evidence?limit=50', {evidence: currentSummaryFallback('evidence_records', [])});", html)
+        self.assertIn("const artifacts = await companyApiGetOptional('/v1/artifacts?limit=50', {artifacts: currentSummaryFallback('artifact_records', [])});", html)
+        self.assertIn("const handoffs = await companyApiGetOptional('/v1/handoffs?limit=50', {handoffs: currentSummaryFallback('handoff_records', [])});", html)
+        self.assertIn("const failures = await companyApiGetOptional('/v1/failures?limit=50', {failures: currentSummaryFallback('failure_records', [])});", html)
+        self.assertIn("const workspacePrune = await companyApiGetOptional('/v1/workspaces/prune?dry_run=true&older_than_days=30&limit=50', currentSummaryFallback('workspace_prune_preview', {}));", html)
+        self.assertIn("const telemetry = await companyApiGetOptional('/v1/telemetry/traces?limit=20', {traces: currentSummaryFallback('traces', [])});", html)
+        self.assertIn("const openclawInventory = await companyApiGetOptional('/v1/openclaw/runtime-inventory', currentSummaryFallback('openclaw_runtime_inventory', {}));", html)
+        self.assertIn("window.dashboardOptionalApiWarnings = window.dashboardOptionalApiWarnings || [];", html)
+        self.assertIn("Live refresh partial:", html)
+        self.assertNotIn("Optional API ${path} failed: ${err.message}; continuing refresh.", html)
+
+    def test_real_dashboard_template_task_detail_modal_is_closeable(self) -> None:
+        template = Path(__file__).resolve().parents[1] / "dashboard_templates" / "gemini_dashboard.html"
+        html = template.read_text(encoding="utf-8")
+        self.assertIn('id="details-modal"', html)
+        self.assertIn("closeModal()", html)
+        self.assertIn("window.closeModal = function()", html)
+        self.assertIn("modal.style.display = 'none'", html)
+        self.assertIn("document.body.classList.add('modal-open')", html)
+        self.assertIn("document.body.classList.remove('modal-open')", html)
+        self.assertIn("body.modal-open", html)
+        self.assertIn("event.key === 'Escape'", html)
+        self.assertIn("modal-content detail-modal-content", html)
+        self.assertIn("id=\"modal-body\"", html)
+        self.assertIn("position: sticky;", html)
+        self.assertIn("z-index: 10000;", html)
+        self.assertIn("background: #f8fafc;", html)
+        self.assertIn("max-height: calc(100vh - 128px);", html)
+        self.assertIn("overscroll-behavior: contain;", html)
+        self.assertIn("overflow-wrap: anywhere;", html)
+        self.assertIn("word-break: break-word;", html)
+        self.assertIn('class="detail-text"', html)
+
+    def test_real_dashboard_template_redacts_local_paths_in_visible_text(self) -> None:
+        template = Path(__file__).resolve().parents[1] / "dashboard_templates" / "gemini_dashboard.html"
+        html = template.read_text(encoding="utf-8")
+        self.assertIn("function displayPath(value)", html)
+        self.assertIn("const homePrefix = '/Users/' + 'shift';", html)
+        self.assertIn(".replaceAll(homePrefix + '/', '~/')", html)
+        self.assertIn("function sanitizeDisplayText(value)", html)
+        self.assertIn("escapeHtml(displayPath(summary.runtime_health.daemon.state_file))", html)
+        self.assertIn("escapeHtml(displayPath(summary.runtime_health.launchd.installed_path))", html)
+        self.assertIn("path: displayPath(item.path || '')", html)
+        self.assertIn("displayPath(item.workspace || '-')", html)
+        self.assertIn("escapeHtml(sanitizeDisplayText(message.body || ''))", html)
+        self.assertIn("escapeHtml(sanitizeDisplayText(item.body || '(empty)'))", html)
+        self.assertIn("openFireEmployeeModal('${escapeHtml(emp.id)}')", html)
+        self.assertNotIn("openFireEmployeeModal('${escapeHtml(emp.id)}', '${escapeHtml(emp.runtime)}', '${escapeHtml(emp.workspace)}')", html)
+        self.assertIn("function storeDashboardDetail(prefix, raw)", html)
+        self.assertIn("showStoredDetails('Employee details:", html)
+        self.assertIn("showStoredDetails('Adapter Run:", html)
+        self.assertIn('onclick="openTaskDetailDrawer(\'${escapeHtml(taskId)}\')"', html)
+        self.assertNotIn("onclick=\"showDetails('Task: ' + '${escapeHtml(task.id)}'", html)
+        self.assertNotIn("JSON.stringify(emp).replace", html)
+        self.assertNotIn("JSON.stringify(run).replace", html)
+        self.assertNotIn("JSON.stringify(item).replace", html)
+
+    def test_real_dashboard_template_defines_visible_employee_actions(self) -> None:
+        template = Path(__file__).resolve().parents[1] / "dashboard_templates" / "gemini_dashboard.html"
+        html = template.read_text(encoding="utf-8")
+        for snippet in [
+            "window.openRecruiterDrawer = function()",
+            "window.closeRecruiterDrawer = function()",
+            "window.generateAgentSpecs = function()",
+            "window.confirmAgentOnboarding = async function()",
+            "window.openFireEmployeeModal = function(employeeId, runtime, workspace)",
+            "window.closeFireEmployeeModal = function()",
+            "window.executeEmployeeOffboard = async function()",
+            "/v1/employees/onboard",
+            "/v1/employees/${encodeURIComponent(id)}/offboard",
+            "dry_run: false",
+            "hard_delete: !!hardDelete",
+        ]:
+            self.assertIn(snippet, html)
 
     def test_dashboard_versioned_template_initializes_chat_state(self) -> None:
         template = Path(__file__).resolve().parents[1] / "dashboard_templates" / "gemini_dashboard.html"
@@ -2625,10 +3750,31 @@ class CompanyKernelCoreTest(unittest.TestCase):
         html = template.read_text(encoding="utf-8")
         self.assertIn("Approval Actions", html)
         self.assertIn("decideApprovalFromDashboard", html)
-        self.assertIn("/v1/approvals/${encodeURIComponent(approvalId)}/approve", html)
-        self.assertIn("/v1/approvals/${encodeURIComponent(approvalId)}/deny", html)
+        self.assertIn("/v1/approvals/${encodeURIComponent(approvalId)}/${normalized}", html)
+        self.assertIn("Mock Resolve", html)
+        self.assertIn("mock: normalized === 'resolve'", html)
         self.assertIn("event.stopPropagation()", html)
         self.assertNotIn("Promise.all([\n        companyApiGet('/v1/health')", html)
+
+    def test_dashboard_approvals_table_exposes_safety_summary(self) -> None:
+        template = Path(__file__).resolve().parents[1] / "dashboard_templates" / "gemini_dashboard.html"
+        html = template.read_text(encoding="utf-8")
+        self.assertIn("approvalTableSafetySummary(app)", html)
+        self.assertIn("mode=${escapeHtml(safety.resolution_mode || '-')}", html)
+        self.assertIn("dry_run=${String(!!safety.dry_run)}", html)
+        self.assertIn("external_send_executed=${String(!!safety.external_send_executed)}", html)
+        self.assertIn("owner approval required before real external delivery", html)
+
+    def test_dashboard_owner_attention_actions_render_safety_metadata(self) -> None:
+        template = Path(__file__).resolve().parents[1] / "dashboard_templates" / "gemini_dashboard.html"
+        html = template.read_text(encoding="utf-8")
+        self.assertIn("data-method=\"${escapeHtml(action.method || 'GET')}\"", html)
+        self.assertIn("data-requires-owner-approval=\"${action.requires_owner_approval ? 'true' : 'false'}\"", html)
+        self.assertIn("data-dry-run-default=\"${action.dry_run_default === false ? 'false' : 'true'}\"", html)
+        self.assertIn("data-dangerous=\"${action.dangerous ? 'true' : 'false'}\"", html)
+        self.assertIn("action.requires_owner_approval ? 'owner approval' : ''", html)
+        self.assertIn("action.dry_run_default === false ? 'live action' : 'dry-run default'", html)
+        self.assertIn("action.dangerous ? 'danger' : ''", html)
 
     def test_dashboard_renders_task_evidence_blocker_and_approval_counts(self) -> None:
         code, submitted = run_cli("task", "submit", "--from", "ops", "--to", "maker", "--task-id", "task-dashboard-blocked", "--title", "blocked task")
@@ -2713,6 +3859,51 @@ class CompanyKernelCoreTest(unittest.TestCase):
         html = output.read_text(encoding="utf-8")
         self.assertIn("task-approval-metadata", html)
         self.assertIn("<td>1</td><td>approval task</td>", html)
+
+    def test_approval_mock_resolve_is_dry_run_and_records_event(self) -> None:
+        code, submitted = run_cli("task", "submit", "--from", "ops", "--to", "maker", "--task-id", "task-approval-mock-resolve", "--title", "approval mock resolve task")
+        self.assertEqual(code, 0, submitted)
+        code, approval = run_cli(
+            "approval",
+            "request",
+            "--from",
+            "ops",
+            "--action",
+            "external_send",
+            "--reason",
+            "manual approval dry run",
+            "--target",
+            "maker",
+            "--task-id",
+            "task-approval-mock-resolve",
+            "--approval-id",
+            "approval-mock-resolve",
+        )
+        self.assertEqual(code, 0, approval)
+
+        code, rejected = run_cli("approval", "resolve", "--approval-id", "approval-mock-resolve", "--by", "ops", "--reason", "missing mock flag")
+        self.assertEqual(2, code)
+        self.assertIn("requires --mock", rejected["error"])
+        code, resolved = run_cli("approval", "resolve", "--approval-id", "approval-mock-resolve", "--by", "ops", "--reason", "mock only", "--mock")
+        self.assertEqual(0, code, resolved)
+        self.assertEqual("resolved", resolved["approval"]["status"])
+        self.assertTrue(resolved["approval"]["detail"]["mock_resolve"])
+        self.assertTrue(resolved["approval"]["detail"]["dry_run"])
+        self.assertFalse(resolved["approval"]["detail"]["external_send_executed"])
+        self.assertEqual("mock", resolved["approval"]["safety"]["resolution_mode"])
+        self.assertTrue(resolved["approval"]["safety"]["dry_run"])
+        self.assertFalse(resolved["approval"]["safety"]["external_send_executed"])
+        self.assertIn("never triggers", resolved["approval"]["safety"]["summary"])
+        self.assertEqual("approval.resolved", resolved["event"]["event_type"])
+        self.assertEqual("task-approval-mock-resolve", resolved["event"]["task_id"])
+
+        code, listed = run_cli("approval", "list", "--status", "resolved")
+        self.assertEqual(0, code, listed)
+        self.assertEqual(["approval-mock-resolve"], [item["id"] for item in listed["approvals"]])
+        self.assertEqual("mock", listed["approvals"][0]["safety"]["resolution_mode"])
+        code, task = run_cli("task", "show", "--task-id", "task-approval-mock-resolve")
+        self.assertEqual(0, code, task)
+        self.assertEqual("mock", task["approvals"][0]["safety"]["resolution_mode"])
 
     def test_dashboard_renders_project_goal_acceptance_review_and_retro(self) -> None:
         code, project = run_cli(
@@ -3464,6 +4655,10 @@ class CompanyKernelCoreTest(unittest.TestCase):
         code, shown = run_cli("task", "show", "--task-id", "task-discuss-001")
         self.assertEqual(code, 0, shown)
         self.assertEqual(["conv-task-discuss-001"], shown["metadata"]["conversation_ids"])
+        self.assertEqual(1, shown["conversation_summary"]["counts"]["conversations"])
+        self.assertEqual(1, shown["conversation_summary"]["counts"]["messages"])
+        self.assertEqual("conv-task-discuss-001", shown["conversation_summary"]["items"][0]["conversation_id"])
+        self.assertEqual("请 maker 和 codex 讨论执行方案", shown["conversation_summary"]["items"][0]["latest_message"])
         self.assertTrue(any(row["action"] == "task.discuss" for row in shown["audit_logs"]))
 
     def test_task_split_plan_collects_long_task_with_evidence(self) -> None:
@@ -3638,6 +4833,108 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual(trace_id, payload["trace_id"])
         self.assertGreaterEqual(len(payload["timeline"]), 3)
 
+    def test_api_and_cli_expose_sanitized_trace_timeline(self) -> None:
+        for employee_id, role in [("main", "operator"), ("hermes", "supervisor"), ("codex", "developer"), ("qa", "qa")]:
+            code, created = run_cli("employee", "create", "--id", employee_id, "--name", employee_id, "--role", role, "--runtime", "local", "--workspace", str(self.root / "workspace" / employee_id))
+            self.assertEqual(0, code, created)
+            if employee_id not in {"main", "hermes"}:
+                self.mark_active(employee_id)
+        code, submitted = run_cli("task", "submit", "--from", "main", "--to", "codex", "--task-id", "task-trace-api", "--title", "Trace API")
+        self.assertEqual(0, code, submitted)
+        trace_id = submitted["task"]["metadata"]["trace_id"]
+        code, qa_task = run_cli("task", "submit", "--from", "main", "--to", "qa", "--task-id", "task-trace-api-qa", "--title", "Trace API QA")
+        self.assertEqual(0, code, qa_task)
+        code, running = run_cli("task", "run", "--task-id", "task-trace-api", "--agent", "codex", "--by", "hermes")
+        self.assertEqual(0, code, running)
+        attempt_id = running["attempt"]["attempt_id"]
+        code, corrected = run_cli("task", "correct", "--task-id", "task-trace-api", "--attempt-id", attempt_id, "--by", "hermes", "--message", "请聚焦 evidence")
+        self.assertEqual(0, code, corrected)
+        code, acked = run_cli("task", "correct", "--task-id", "task-trace-api", "--attempt-id", attempt_id, "--by", "codex", "--message", "收到纠偏", "--ack")
+        self.assertEqual(0, code, acked)
+
+        conn = companyctl.connect()
+        secret = "sk-traceTimelineSECRET1234567890"
+        try:
+            workspace = companyctl.ensure_task_workspace(conn, "task-trace-api")
+            final_path = Path(workspace["path"]) / "final" / "trace-delivery.md"
+            final_path.write_text("trace delivery\n", encoding="utf-8")
+            artifact = companyctl.register_artifact_internal(
+                conn,
+                task_id="task-trace-api",
+                employee_id="codex",
+                path=str(final_path),
+                artifact_type="markdown",
+                summary="trace delivery",
+                stage="final",
+                is_final=True,
+            )["artifact"]
+            created_handoff = companyctl.create_handoff_internal(
+                conn,
+                from_task_id="task-trace-api",
+                to_task_id="task-trace-api-qa",
+                from_employee_id="codex",
+                to_employee_id="qa",
+                summary="handoff trace artifact",
+                artifacts=[artifact["artifact_id"]],
+            )
+            companyctl.promote_artifact_to_evidence_internal(conn, artifact_id=artifact["artifact_id"], by="codex", summary="")
+            conn.execute(
+                """
+                INSERT INTO adapter_runs(id, trace_id, agent_id, task_id, command, ok, processed, attempt, next_retry_at, result_json, created_at)
+                VALUES ('adapter-run-trace-api', ?, 'codex', 'task-trace-api', 'company-codex-adapter', 0, 1, 1, '', ?, ?)
+                """,
+                (
+                    trace_id,
+                    json.dumps({"stderr": f"api_key={secret} reading /Users/owner/.ssh/id_rsa", "stdout": "safe trace output"}, ensure_ascii=False),
+                    companyctl.now(),
+                ),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        status, api_payload = api_gateway.route_get(f"/v1/traces/{trace_id}/timeline", {})
+        self.assertEqual(HTTPStatus.OK, status, api_payload)
+        self.assertTrue(api_payload["ok"])
+        code, cli_payload = run_cli("trace", "timeline", "--trace-id", trace_id)
+        self.assertEqual(0, code, cli_payload)
+        self.assertEqual(api_payload["timeline"], cli_payload["timeline"])
+        self.assertEqual(api_payload["counts"], cli_payload["counts"])
+        self.assertEqual(api_payload["counts"]["execution_attempts"], len(api_payload["execution_attempts"]))
+        self.assertEqual(api_payload["counts"]["artifacts"], len(api_payload["artifacts"]))
+        self.assertEqual(api_payload["counts"]["handoffs"], len(api_payload["handoffs"]))
+        self.assertEqual(api_payload["counts"]["evidence"], len(api_payload["evidence"]))
+        self.assertEqual(attempt_id, api_payload["execution_attempts"][0]["attempt_id"])
+        self.assertEqual(artifact["artifact_id"], api_payload["artifacts"][0]["artifact_id"])
+        self.assertEqual(created_handoff["handoff"]["handoff_id"], api_payload["handoffs"][0]["handoff_id"])
+        self.assertTrue(api_payload["evidence"][0]["display"]["allowed"])
+        self.assertFalse(api_payload["evidence"][0]["display"]["absolute_path_exposed"])
+        timeline_kinds = [item["kind"] for item in api_payload["timeline"]]
+        self.assertIn("attempt", timeline_kinds)
+        self.assertIn("event", timeline_kinds)
+        self.assertIn("artifact", timeline_kinds)
+        self.assertIn("handoff", timeline_kinds)
+        self.assertIn("evidence", timeline_kinds)
+        correction_items = [item for item in api_payload["timeline"] if item.get("label") in {"supervisor.correction_requested", "supervisor.correction_acknowledged"}]
+        self.assertEqual(2, len(correction_items))
+        self.assertEqual(["correction_requested", "correction_acknowledged"], [item["action"] for item in correction_items])
+        self.assertEqual(["hermes", "codex"], [item["actor"] for item in correction_items])
+        self.assertEqual(["codex", "hermes"], [item["target"] for item in correction_items])
+        self.assertTrue(all(item["attempt_id"] == attempt_id for item in correction_items))
+        self.assertEqual(2, len(api_payload["supervision_chain"]))
+        self.assertEqual(
+            ["hermes -> codex · correction_requested · task-trace-api", "codex -> hermes · correction_acknowledged · task-trace-api"],
+            [item["summary"] for item in api_payload["supervision_chain"]],
+        )
+        payload_json = json.dumps(api_payload, ensure_ascii=False)
+        self.assertIn("safe trace output", payload_json)
+        self.assertIn("trace-delivery.md", payload_json)
+        self.assertNotIn(str(self.root), payload_json)
+        self.assertNotIn(secret, payload_json)
+        self.assertNotIn("id_rsa", payload_json)
+        self.assertNotIn("path_or_url", payload_json)
+        self.assertNotIn("result_json", payload_json)
+
     def test_v3_workspace_artifact_handoff_attempt_and_trace_flow(self) -> None:
         for employee_id, role in [("manager", "supervisor"), ("writer", "copywriter"), ("qa", "qa")]:
             code, created = run_cli("employee", "create", "--id", employee_id, "--name", employee_id, "--role", role, "--runtime", "local", "--workspace", str(self.root / "workspace" / employee_id))
@@ -3708,6 +5005,48 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual(1, len(trace["evidence"]))
         self.assertEqual(1, len(trace["execution_attempts"]))
 
+    def test_workspace_prune_dry_run_lists_only_old_terminal_task_workspaces(self) -> None:
+        for employee_id, role in [("main", "operator"), ("writer", "writer")]:
+            code, created = run_cli("employee", "create", "--id", employee_id, "--name", employee_id, "--role", role, "--runtime", "local", "--workspace", str(self.root / "workspace" / employee_id))
+            self.assertEqual(0, code, created)
+            if employee_id != "main":
+                self.mark_active(employee_id)
+        code, old_task = run_cli("task", "submit", "--from", "main", "--to", "writer", "--task-id", "task-prune-old-done", "--title", "Old done")
+        self.assertEqual(0, code, old_task)
+        code, running_task = run_cli("task", "submit", "--from", "main", "--to", "writer", "--task-id", "task-prune-running", "--title", "Running")
+        self.assertEqual(0, code, running_task)
+        conn = companyctl.connect()
+        try:
+            old_workspace = companyctl.ensure_task_workspace(conn, "task-prune-old-done")
+            running_workspace = companyctl.ensure_task_workspace(conn, "task-prune-running")
+            old_file = Path(old_workspace["path"]) / "work" / "old.txt"
+            running_file = Path(running_workspace["path"]) / "work" / "running.txt"
+            old_file.write_text("old\n", encoding="utf-8")
+            running_file.write_text("running\n", encoding="utf-8")
+            old_ts = "2026-01-01T00:00:00+07:00"
+            conn.execute("UPDATE tasks SET status = 'done', updated_at = ? WHERE id = ?", (old_ts, "task-prune-old-done"))
+            conn.execute("UPDATE task_workspaces SET updated_at = ? WHERE task_id = ?", (old_ts, "task-prune-old-done"))
+            conn.commit()
+        finally:
+            conn.close()
+
+        code, preview = run_cli("workspace", "prune", "--dry-run", "--older-than-days", "30")
+        self.assertEqual(0, code, preview)
+        self.assertTrue(preview["dry_run"])
+        self.assertEqual(["task-prune-old-done"], [item["task_id"] for item in preview["candidates"]])
+        self.assertGreater(preview["summary"]["bytes_reclaimable"], 0)
+        self.assertTrue(old_file.exists())
+        self.assertTrue(running_file.exists())
+        status, api_preview = api_gateway.route_get("/v1/workspaces/prune", {"dry_run": ["true"], "older_than_days": ["30"]})
+        self.assertEqual(HTTPStatus.OK, status, api_preview)
+        self.assertEqual(preview["candidates"], api_preview["candidates"])
+        status, rejected = api_gateway.route_get("/v1/workspaces/prune", {"older_than_days": ["30"]})
+        self.assertEqual(HTTPStatus.BAD_REQUEST, status, rejected)
+        self.assertFalse(rejected["ok"])
+        payload_json = json.dumps(api_preview, ensure_ascii=False)
+        self.assertNotIn("task-prune-running", payload_json)
+        self.assertNotIn(str(self.root / "workspace" / "writer"), payload_json)
+
     def test_dashboard_trace_counts_include_v3_file_flow(self) -> None:
         for employee_id in ["manager", "writer", "qa"]:
             code, created = run_cli("employee", "create", "--id", employee_id, "--name", employee_id, "--role", "agent", "--runtime", "local", "--workspace", str(self.root / "workspace" / employee_id))
@@ -3742,6 +5081,72 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual(1, trace["counts"]["handoffs"])
         self.assertEqual(1, trace["counts"]["evidence"])
         self.assertEqual(1, trace["counts"]["execution_attempts"])
+        evidence_span = next(span for span in trace["spans"] if span["name"].startswith("evidence."))
+        self.assertIn("attempt_id", evidence_span)
+
+        status, graph = api_gateway.route_get(f"/v1/traces/{submitted['task']['metadata']['trace_id']}/file-flow", {})
+        self.assertEqual(HTTPStatus.OK, status, graph)
+        self.assertEqual(submitted["task"]["metadata"]["trace_id"], graph["trace_id"])
+        self.assertEqual("trace_file_flow", graph["kind"])
+        self.assertIn("task:task-v3-dashboard", [node["id"] for node in graph["nodes"]])
+        self.assertIn(f"artifact:{artifact['artifact']['artifact_id']}", [node["id"] for node in graph["nodes"]])
+        self.assertIn(f"handoff:{handoff['handoff']['handoff_id']}", [node["id"] for node in graph["nodes"]])
+        self.assertIn(f"evidence:{evidence['evidence']['evidence_id']}", [node["id"] for node in graph["nodes"]])
+        edge_labels = [edge["label"] for edge in graph["edges"]]
+        self.assertIn("created artifact", edge_labels)
+        self.assertIn("handoff", edge_labels)
+        self.assertIn("promoted evidence", edge_labels)
+        self.assertIn("graph LR", graph["mermaid"])
+
+        output = self.root / "state" / "file-flow-dashboard.html"
+        with contextlib.redirect_stdout(io.StringIO()):
+            code = company_dashboard.main(["--output", str(output), "--variant", "advanced"])
+        self.assertEqual(0, code)
+        html = output.read_text(encoding="utf-8")
+        self.assertIn("File Flow Graph", html)
+        self.assertIn("trace-file-flow-container", html)
+        self.assertIn("/v1/traces/${encodeURIComponent(traceId)}/file-flow", html)
+        self.assertIn("Handoff Artifact Flow", html)
+        self.assertIn("fileFlowNarrative", html)
+        self.assertIn("created artifact -> handoff -> promoted evidence", html)
+        self.assertNotIn(submitted["task"]["metadata"]["trace_id"], html)
+
+    def test_dashboard_trace_spans_highlight_supervisor_corrections(self) -> None:
+        for employee_id, role in [("main", "operator"), ("hermes", "supervisor"), ("codex", "developer")]:
+            code, created = run_cli("employee", "create", "--id", employee_id, "--name", employee_id, "--role", role, "--runtime", "local", "--workspace", str(self.root / "workspace" / employee_id))
+            self.assertEqual(code, 0, created)
+        self.mark_active("codex")
+        code, submitted = run_cli("task", "submit", "--from", "main", "--to", "codex", "--task-id", "task-trace-correction", "--title", "Trace correction")
+        self.assertEqual(0, code, submitted)
+        code, running = run_cli("task", "run", "--task-id", "task-trace-correction", "--agent", "codex", "--by", "hermes")
+        self.assertEqual(0, code, running)
+        attempt_id = running["attempt"]["attempt_id"]
+        code, corrected = run_cli("task", "correct", "--task-id", "task-trace-correction", "--attempt-id", attempt_id, "--by", "hermes", "--message", "请只交付 evidence，不要继续闲聊")
+        self.assertEqual(0, code, corrected)
+        code, acked = run_cli("task", "correct", "--task-id", "task-trace-correction", "--attempt-id", attempt_id, "--by", "codex", "--message", "收到纠偏", "--ack")
+        self.assertEqual(0, code, acked)
+
+        conn = companyctl.connect()
+        try:
+            summary = company_dashboard.load_summary(conn)
+        finally:
+            conn.close()
+        trace = next(item for item in summary["traces"] if item["trace_id"] == submitted["task"]["metadata"]["trace_id"])
+        correction_spans = [span for span in trace["spans"] if span["name"].startswith("supervisor.correction.")]
+        self.assertEqual(["supervisor.correction.requested", "supervisor.correction.acknowledged"], [span["name"] for span in correction_spans])
+        self.assertEqual(["hermes", "codex"], [span["service"] for span in correction_spans])
+        self.assertTrue(all(span["attempt_id"] == attempt_id for span in correction_spans))
+        self.assertTrue(all("correction_direction" in span for span in correction_spans))
+        self.assertEqual(["supervisor_to_worker", "worker_to_supervisor"], [span["correction_direction"] for span in correction_spans])
+        output = self.root / "state" / "trace-correction-dashboard.html"
+        with contextlib.redirect_stdout(io.StringIO()):
+            code = company_dashboard.main(["--output", str(output), "--variant", "advanced"])
+        self.assertEqual(0, code)
+        html = output.read_text(encoding="utf-8")
+        self.assertIn("traceCorrectionSummary", html)
+        self.assertIn("Supervisor Corrections", html)
+        self.assertIn("span.correction_direction", html)
+        self.assertNotIn("请只交付 evidence，不要继续闲聊", html)
 
     def test_v3_handoff_reject_scan_and_recovery_attempts(self) -> None:
         for employee_id, role in [("manager", "supervisor"), ("writer", "copywriter"), ("qa", "qa"), ("backup", "copywriter")]:
@@ -3801,11 +5206,14 @@ class CompanyKernelCoreTest(unittest.TestCase):
             conn.row_factory = sqlite3.Row
             event_types = [row["event_type"] for row in conn.execute("SELECT event_type FROM company_events WHERE trace_id = ? ORDER BY created_at", (trace_id,))]
             attempts = [dict(row) for row in conn.execute("SELECT * FROM execution_attempts WHERE trace_id = ? ORDER BY started_at", (trace_id,))]
+            done_payload = conn.execute("SELECT payload_json FROM company_events WHERE trace_id = ? AND event_type = 'task.done' ORDER BY created_at DESC LIMIT 1", (trace_id,)).fetchone()["payload_json"]
         self.assertIn("artifact.updated", event_types)
         self.assertIn("handoff.rejected", event_types)
         self.assertIn("task.retrying", event_types)
         self.assertTrue(any(item["adapter_type"] == "retry" and item["status"] == "starting" for item in attempts))
-        self.assertTrue(any(item["employee_id"] == "backup" and item["status"] == "running" for item in attempts))
+        backup_attempt = next(item for item in attempts if item["employee_id"] == "backup" and item["adapter_type"] == "reassign")
+        self.assertEqual("success", backup_attempt["status"])
+        self.assertEqual(backup_attempt["attempt_id"], json.loads(done_payload)["attempt_id"])
 
     def test_managed_attempt_policy_correction_stale_and_cancel(self) -> None:
         for employee_id, role in [("main", "operator"), ("hermes", "supervisor"), ("codex", "developer")]:
@@ -3863,10 +5271,55 @@ class CompanyKernelCoreTest(unittest.TestCase):
         code, cancelled = run_cli("task", "cancel", "--task-id", "task-long-managed", "--attempt-id", attempt_id, "--by", "hermes", "--reason", "用户停止")
         self.assertEqual(0, code, cancelled)
         self.assertEqual("cancelled", cancelled["attempt"]["status"])
+        code, late_success = run_cli("task", "attempt", "finish", "--attempt-id", attempt_id, "--status", "success")
+        self.assertEqual(2, code, late_success)
+        self.assertIn("terminal", late_success["error"])
         code, shown = run_cli("task", "show", "--task-id", "task-long-managed")
         self.assertEqual(0, code, shown)
         self.assertEqual("cancelled", shown["task"]["status"])
         self.assertEqual(attempt_id, shown["attempts"][0]["attempt_id"])
+        self.assertEqual("cancelled", shown["attempts"][0]["status"])
+        self.assertEqual(1, shown["supervisor_state"]["corrections_requested"])
+        self.assertEqual(1, shown["supervisor_state"]["corrections_acknowledged"])
+        self.assertEqual("cancelled", shown["correction_summary"]["latest_attempt_status"])
+        self.assertEqual(attempt_id, shown["correction_summary"]["latest_attempt_id"])
+        self.assertEqual(
+            ["supervisor.correction_requested", "supervisor.correction_acknowledged"],
+            [item["event_type"] for item in shown["correction_events"]],
+        )
+        self.assertEqual(["hermes", "codex"], [item["source_agent"] for item in shown["correction_events"]])
+        self.assertTrue(all(item["attempt_id"] == attempt_id for item in shown["correction_events"]))
+        self.assertEqual(["请回到 README 总结任务", "已收到纠偏"], [item["message"] for item in shown["correction_events"]])
+
+        status, api_shown = api_gateway.route_get("/v1/tasks/task-long-managed", {})
+        self.assertEqual(200, status, api_shown)
+        self.assertEqual(shown["supervisor_state"], api_shown["supervisor_state"])
+        self.assertEqual(shown["correction_summary"], api_shown["correction_summary"])
+        self.assertEqual(shown["correction_events"], api_shown["correction_events"])
+
+    def test_managed_attempt_done_requires_promoted_final_evidence(self) -> None:
+        for employee_id, role in [("main", "operator"), ("codex", "developer")]:
+            code, created = run_cli("employee", "create", "--id", employee_id, "--name", employee_id, "--role", role, "--runtime", "local", "--workspace", str(self.root / "workspace" / employee_id))
+            self.assertEqual(0, code, created)
+            self.mark_active(employee_id)
+        code, submitted = run_cli("task", "submit", "--from", "main", "--to", "codex", "--task-id", "task-managed-evidence", "--title", "Managed evidence gate")
+        self.assertEqual(0, code, submitted)
+        code, run = run_cli("task", "run", "--task-id", "task-managed-evidence", "--agent", "codex", "--by", "main")
+        self.assertEqual(0, code, run)
+        with companyctl.connect() as conn:
+            workspace = companyctl.ensure_task_workspace(conn, "task-managed-evidence")
+            draft = Path(workspace["path"]) / "work" / "draft.md"
+            draft.write_text("draft only\n", encoding="utf-8")
+
+        code, rejected = run_cli("task", "done", "--agent", "codex", "--task-id", "task-managed-evidence", "--summary", "draft done", "--evidence", str(draft))
+        self.assertEqual(2, code, rejected)
+        self.assertIn("promoted final evidence", rejected["error"])
+        with companyctl.connect() as conn:
+            task = conn.execute("SELECT status, evidence_path FROM tasks WHERE id = 'task-managed-evidence'").fetchone()
+            attempt = conn.execute("SELECT status FROM execution_attempts WHERE attempt_id = ?", (run["attempt"]["attempt_id"],)).fetchone()
+        self.assertEqual("claimed", task["status"])
+        self.assertEqual("", task["evidence_path"])
+        self.assertEqual("starting", attempt["status"])
 
     def test_managed_attempt_progress_refresh_prevents_stale_until_progress_stops(self) -> None:
         for employee_id, role in [("main", "operator"), ("hermes", "supervisor"), ("codex", "developer")]:
@@ -3921,6 +5374,15 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual(attempt_id, payload["attempt_id"])
         self.assertEqual("in_progress", payload["progress_state"])
         self.assertEqual(25, payload["progress"])
+        code, shown = run_cli("task", "show", "--task-id", "task-progress-managed")
+        self.assertEqual(0, code, shown)
+        self.assertEqual(attempt_id, shown["progress_events"][0]["attempt_id"])
+        self.assertEqual("in_progress", shown["progress_events"][0]["progress_state"])
+        self.assertEqual(25, shown["progress_events"][0]["progress"])
+        self.assertEqual("已完成第一段读取", shown["progress_events"][0]["message"])
+        status, api_shown = api_gateway.route_get("/v1/tasks/task-progress-managed", {})
+        self.assertEqual(200, status, api_shown)
+        self.assertEqual(shown["progress_events"], api_shown["progress_events"])
 
     def test_retry_after_stale_starts_new_managed_attempt_with_same_trace(self) -> None:
         for employee_id, role in [("main", "operator"), ("hermes", "supervisor"), ("codex", "developer")]:
@@ -3971,10 +5433,31 @@ class CompanyKernelCoreTest(unittest.TestCase):
         attempts = shown["attempts"]
         self.assertTrue(any(item["attempt_id"] == original_attempt_id and item["status"] == "stale" for item in attempts))
         self.assertTrue(any(item["attempt_id"] == retry_attempt["attempt_id"] and item["status"] == "starting" for item in attempts))
+        self.assertEqual(2, shown["attempt_history"]["total"])
+        self.assertEqual(retry_attempt["attempt_id"], shown["attempt_history"]["latest_attempt_id"])
+        self.assertEqual(trace_id, shown["attempt_history"]["trace_id"])
+        self.assertEqual([original_attempt_id, retry_attempt["attempt_id"]], [item["attempt_id"] for item in shown["attempt_history"]["chain"]])
+        self.assertEqual("", shown["attempt_history"]["chain"][0]["previous_attempt_id"])
+        self.assertEqual(original_attempt_id, shown["attempt_history"]["chain"][1]["previous_attempt_id"])
+        self.assertEqual("resume after stale", shown["attempt_history"]["chain"][1]["reason"])
+        self.assertIn("old attempts retained", shown["attempt_history"]["recovery_summary"])
+        status, api_shown = api_gateway.route_get("/v1/tasks/task-retry-managed", {})
+        self.assertEqual(200, status, api_shown)
+        self.assertEqual(shown["attempt_history"], api_shown["attempt_history"])
         event = next(item for item in shown["events"] if item["event_type"] == "task.retrying")
         payload = event["payload_json"] if isinstance(event["payload_json"], dict) else json.loads(event["payload_json"])
         self.assertEqual(retry_attempt["attempt_id"], payload["attempt_id"])
         self.assertEqual(original_attempt_id, payload["previous_attempt_id"])
+        conn = companyctl.connect()
+        try:
+            summary = company_dashboard.load_summary(conn)
+        finally:
+            conn.close()
+        trace = next(item for item in summary["traces"] if item["trace_id"] == trace_id)
+        retry_span = next(span for span in trace["spans"] if span.get("attempt_id") == retry_attempt["attempt_id"])
+        self.assertEqual(original_attempt_id, retry_span["previous_attempt_id"])
+        self.assertEqual([original_attempt_id, retry_attempt["attempt_id"]], retry_span["attempt_chain"])
+        self.assertEqual("retry", retry_span["adapter_type"])
 
     def test_supervisor_scan_warns_on_missing_heartbeat_without_marking_progress_stale(self) -> None:
         for employee_id, role in [("main", "operator"), ("hermes", "supervisor"), ("codex", "developer")]:
@@ -4182,6 +5665,73 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual(0, done_events)
         self.assertEqual(0, evidence_rows)
 
+    def test_task_done_closes_current_managed_attempt_as_success(self) -> None:
+        for employee_id, role in [("main", "operator"), ("codex", "developer")]:
+            code, created = run_cli("employee", "create", "--id", employee_id, "--name", employee_id, "--role", role, "--runtime", "local", "--workspace", str(self.root / "workspace" / employee_id))
+            self.assertEqual(code, 0, created)
+        self.mark_active("codex")
+        code, submitted = run_cli("task", "submit", "--from", "main", "--to", "codex", "--task-id", "task-done-closes-attempt", "--title", "Done closes attempt")
+        self.assertEqual(0, code, submitted)
+        workspace = Path(submitted["task"]["workspace"]["path"])
+        evidence = workspace / "evidence" / "result.md"
+        evidence.write_text("done closes attempt evidence\n", encoding="utf-8")
+        code, run = run_cli("task", "run", "--task-id", "task-done-closes-attempt", "--agent", "codex", "--by", "main")
+        self.assertEqual(0, code, run)
+        attempt_id = run["attempt"]["attempt_id"]
+
+        code, done = run_cli("task", "done", "--agent", "codex", "--task-id", "task-done-closes-attempt", "--summary", "完成并关闭 attempt", "--evidence", str(evidence))
+        self.assertEqual(0, code, done)
+        code, shown = run_cli("task", "show", "--task-id", "task-done-closes-attempt")
+        self.assertEqual(0, code, shown)
+        self.assertEqual("completed", shown["task"]["status"])
+        attempt = next(item for item in shown["attempts"] if item["attempt_id"] == attempt_id)
+        self.assertEqual("success", attempt["status"])
+        self.assertTrue(attempt["finished_at"])
+        self.assertEqual("", attempt["error_message"])
+        done_event = next(item for item in shown["events"] if item["event_type"] == "task.done")
+        self.assertEqual(run["attempt"]["trace_id"], done_event["trace_id"])
+        self.assertEqual(attempt_id, json.loads(done_event["payload_json"])["attempt_id"])
+        evidence_record = next(item for item in shown["evidence_records"] if item["task_id"] == "task-done-closes-attempt")
+        self.assertEqual(attempt_id, evidence_record["attempt_id"])
+        self.assertEqual("codex", evidence_record["employee_id"])
+        self.assertEqual(1, evidence_record["is_final"])
+        self.assertIn("display", evidence_record)
+        self.assertTrue(evidence_record["display"]["allowed"])
+        self.assertFalse(evidence_record["display"]["absolute_path_exposed"])
+        self.assertNotIn(str(self.root), json.dumps(evidence_record, ensure_ascii=False))
+        self.assertNotIn("path_or_url", evidence_record)
+        with sqlite3.connect(self.root / "company.sqlite") as conn:
+            conn.row_factory = sqlite3.Row
+            evidence_row = conn.execute("SELECT * FROM evidence WHERE task_id = ? AND is_final = 1", ("task-done-closes-attempt",)).fetchone()
+        self.assertIsNotNone(evidence_row)
+        self.assertEqual(attempt_id, evidence_row["attempt_id"])
+
+    def test_task_done_accepts_promoted_evidence_when_cli_uses_original_relative_path(self) -> None:
+        for employee_id, role in [("main", "operator"), ("codex", "developer")]:
+            code, created = run_cli("employee", "create", "--id", employee_id, "--name", employee_id, "--role", role, "--runtime", "local", "--workspace", str(self.root / "workspace" / employee_id))
+            self.assertEqual(code, 0, created)
+        self.mark_active("codex")
+        task_id = "task-done-relative-promoted-evidence"
+        code, submitted = run_cli("task", "submit", "--from", "main", "--to", "codex", "--task-id", task_id, "--title", "relative promoted evidence")
+        self.assertEqual(0, code, submitted)
+        workspace = Path(submitted["task"]["workspace"]["path"])
+        evidence_file = workspace / "evidence" / "relative.md"
+        evidence_file.parent.mkdir(parents=True, exist_ok=True)
+        evidence_file.write_text("relative promoted evidence\n", encoding="utf-8")
+        relative_evidence = os.path.relpath(evidence_file, Path.cwd())
+        code, claimed = run_cli("task", "claim", "--task-id", task_id, "--agent", "codex")
+        self.assertEqual(0, code, claimed)
+        code, attempt = run_cli("task", "attempt", "start", "--task-id", task_id, "--employee", "codex", "--adapter-type", "codex")
+        self.assertEqual(0, code, attempt)
+        code, artifact = run_cli("task", "artifact", "register", "--task-id", task_id, "--employee", "codex", "--path", str(evidence_file), "--type", "md", "--name", "relative.md", "--stage", "final", "--summary", "relative final", "--final")
+        self.assertEqual(0, code, artifact)
+        code, promoted = run_cli("task", "evidence", "promote", "--artifact-id", artifact["artifact"]["artifact_id"], "--employee", "codex", "--summary", "relative promoted")
+        self.assertEqual(0, code, promoted)
+
+        code, done = run_cli("task", "done", "--agent", "codex", "--task-id", task_id, "--summary", "done with relative path", "--evidence", relative_evidence)
+        self.assertEqual(0, code, done)
+        self.assertEqual(attempt["attempt"]["attempt_id"], done["attempt_id"])
+
     def test_managed_attempt_api_control_endpoints(self) -> None:
         for employee_id, role in [("main", "operator"), ("hermes", "supervisor"), ("codex", "developer")]:
             code, created = run_cli("employee", "create", "--id", employee_id, "--name", employee_id, "--role", role, "--runtime", "local", "--workspace", str(self.root / "workspace" / employee_id))
@@ -4195,6 +5745,33 @@ class CompanyKernelCoreTest(unittest.TestCase):
         )
         self.assertEqual(200, status, run)
         attempt_id = run["attempt"]["attempt_id"]
+        conn = companyctl.connect()
+        try:
+            current = datetime.now(timezone.utc).astimezone()
+            old = (current - timedelta(minutes=20)).isoformat(timespec="seconds")
+            fresh = current.isoformat(timespec="seconds")
+            conn.execute("UPDATE execution_attempts SET last_progress_at = ?, last_heartbeat_at = ? WHERE attempt_id = ?", (old, fresh, attempt_id))
+            conn.commit()
+        finally:
+            conn.close()
+        code, listed_cli = run_cli("task", "list")
+        self.assertEqual(0, code, listed_cli)
+        listed_cli_task = next(item for item in listed_cli["tasks"] if item["id"] == "task-long-api")
+        self.assertEqual(attempt_id, listed_cli_task["current_attempt"]["attempt_id"])
+        self.assertEqual("starting", listed_cli_task["current_attempt"]["status"])
+        self.assertEqual("task-long-api", listed_cli_task["current_attempt"]["task_id"])
+        self.assertEqual("progress_stagnant", listed_cli_task["long_task_state"])
+        self.assertEqual("fresh", listed_cli_task["heartbeat_state"])
+        self.assertEqual("stagnant", listed_cli_task["progress_state"])
+        status, listed_api = api_gateway.route_get("/v1/tasks", {})
+        self.assertEqual(200, status, listed_api)
+        listed_api_task = next(item for item in listed_api["tasks"] if item["id"] == "task-long-api")
+        self.assertEqual(attempt_id, listed_api_task["current_attempt"]["attempt_id"])
+        self.assertEqual("starting", listed_api_task["current_attempt"]["status"])
+        self.assertEqual("task-long-api", listed_api_task["current_attempt"]["task_id"])
+        self.assertEqual("progress_stagnant", listed_api_task["long_task_state"])
+        self.assertEqual("fresh", listed_api_task["heartbeat_state"])
+        self.assertEqual("stagnant", listed_api_task["progress_state"])
         status, progressed = api_gateway.route_post("/v1/tasks/task-long-api/progress", {"agent": "codex", "attempt_id": attempt_id, "state": "acknowledged", "message": "已收到", "progress": 5, "payload": {"source": "api-test"}})
         self.assertEqual(200, status, progressed)
         self.assertEqual("running", progressed["attempt"]["status"])
@@ -4234,6 +5811,107 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual("starting", codex["current_attempt"]["status"])
         self.assertEqual(run["attempt"]["attempt_id"], codex["current_attempt"]["attempt_id"])
 
+    def test_dashboard_employee_view_models_include_readiness_badges(self) -> None:
+        for employee_id, role, runtime in [
+            ("main", "operator", "openclaw"),
+            ("codex", "developer", "codex"),
+            ("antigravity", "developer", "antigravity"),
+        ]:
+            code, created = run_cli("employee", "create", "--id", employee_id, "--name", employee_id, "--role", role, "--runtime", runtime, "--workspace", str(self.root / "workspace" / employee_id))
+            self.assertEqual(0, code, created)
+            self.mark_active(employee_id)
+            code, heartbeat = run_cli("heartbeat", "--agent", employee_id)
+            self.assertEqual(0, code, heartbeat)
+        verification_dir = self.root / "state" / "employee-verification" / "codex"
+        verification_dir.mkdir(parents=True)
+        (verification_dir / "latest-runtime.json").write_text(json.dumps({"ok": True, "activation_allowed": True}, ensure_ascii=False), encoding="utf-8")
+        attendance_dir = self.root / "state" / "attendance"
+        attendance_dir.mkdir(parents=True)
+        (attendance_dir / "latest.json").write_text(
+            json.dumps(
+                {
+                    "ok": True,
+                    "employees": [
+                        {"agent": "main", "status": "online"},
+                        {"agent": "codex", "status": "online"},
+                        {"agent": "antigravity", "status": "online"},
+                    ],
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        conn = companyctl.connect()
+        try:
+            summary = company_dashboard.load_summary(conn)
+            models = company_dashboard.employee_view_models(summary)
+        finally:
+            conn.close()
+        by_id = {item["id"]: item for item in models}
+        self.assertEqual("active_ready", by_id["codex"]["readiness_level"])
+        self.assertEqual("online_only", by_id["main"]["readiness_level"])
+        self.assertEqual("online_only", by_id["antigravity"]["readiness_level"])
+        self.assertTrue(by_id["codex"]["schedulable"])
+        self.assertFalse(by_id["main"]["schedulable"])
+        self.assertFalse(by_id["antigravity"]["schedulable"])
+        self.assertIn("runtime_evidence", by_id["codex"]["readiness_reason"])
+        self.assertEqual("default", by_id["codex"]["sandbox_profile"]["profile"])
+        self.assertEqual("none", by_id["codex"]["sandbox_profile"]["isolation"])
+        self.assertEqual("none", by_id["codex"]["sandbox_profile"]["network"])
+        self.assertEqual("workspace_only", by_id["codex"]["sandbox_profile"]["workspace_scope"])
+        self.assertTrue(by_id["codex"]["sandbox_profile"]["permissions"]["can_claim_tasks"])
+        self.assertIn("external_send", by_id["codex"]["sandbox_profile"]["permissions"]["requires_approval_for"])
+        self.assertEqual("runtime_fallback", by_id["antigravity"]["sandbox_profile"]["source"])
+        code, shown = run_cli("employee", "show", "--id", "codex")
+        self.assertEqual(0, code, shown)
+        self.assertEqual(by_id["codex"]["sandbox_profile"], shown["sandbox_profile"])
+        status, employees_payload = api_gateway.route_get("/v1/employees", {})
+        self.assertEqual(HTTPStatus.OK, status, employees_payload)
+        api_codex = next(item for item in employees_payload["employees"] if item["id"] == "codex")
+        self.assertEqual(by_id["codex"]["sandbox_profile"], api_codex["sandbox_profile"])
+        output = self.root / "state" / "sandbox-dashboard.html"
+        with contextlib.redirect_stdout(io.StringIO()):
+            code = company_dashboard.main(["--output", str(output), "--variant", "advanced"])
+        self.assertEqual(0, code)
+        html = output.read_text(encoding="utf-8")
+        self.assertIn("sandbox-profile-chip", html)
+        self.assertIn("Schedulable", html)
+        self.assertIn("readiness_reason", html)
+        self.assertIn("active_ready", html)
+        self.assertIn("online_only", html)
+        self.assertIn("readinessBadgeLabel", html)
+        self.assertIn("Ready to schedule", html)
+        self.assertIn("Limited / review", html)
+        self.assertIn("Not schedulable", html)
+        self.assertIn("reason=${escapeHtml(shortText(reason, 90))}", html)
+
+    def test_skill_registry_lists_packages_in_cli_api_and_dashboard(self) -> None:
+        manifest_path = self.write_skill_manifest()
+        code, listed = run_cli("skill", "list")
+        self.assertEqual(0, code, listed)
+        self.assertEqual([str(manifest_path)], [item["manifest_path"] for item in listed["skills"]])
+        skill = listed["skills"][0]
+        self.assertEqual("ecommerce-copy-demo", skill["id"])
+        self.assertEqual("Ecommerce Copy Demo", skill["name"])
+        self.assertEqual("local-script", skill["runtime_type"])
+        self.assertEqual("task", skill["workspace_permission"])
+        self.assertEqual("final/listing-summary.md", skill["final_artifact"])
+        self.assertEqual("task", skill["pricing_unit"])
+        self.assertTrue(skill["evidence_required"])
+
+        status, api_payload = api_gateway.route_get("/v1/skills", {})
+        self.assertEqual(HTTPStatus.OK, status, api_payload)
+        self.assertEqual(listed["skills"], api_payload["skills"])
+
+        output = self.root / "state" / "skill-registry-dashboard.html"
+        with contextlib.redirect_stdout(io.StringIO()):
+            code = company_dashboard.main(["--output", str(output), "--variant", "advanced"])
+        self.assertEqual(0, code)
+        html = output.read_text(encoding="utf-8")
+        self.assertIn("Skill Registry", html)
+        self.assertIn("skill-registry-container", html)
+        self.assertNotIn("ecommerce-copy-demo", html)
+
     def test_dashboard_renders_managed_task_control_buttons(self) -> None:
         for employee_id, role in [("main", "operator"), ("hermes", "supervisor"), ("codex", "developer")]:
             code, created = run_cli("employee", "create", "--id", employee_id, "--name", employee_id, "--role", role, "--runtime", "local", "--workspace", str(self.root / "workspace" / employee_id))
@@ -4245,21 +5923,68 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual(0, code, run)
         output = self.root / "state" / "dashboard-controls.html"
         with contextlib.redirect_stdout(io.StringIO()):
-            code = company_dashboard.main(["--output", str(output), "--variant", "basic"])
+            code = company_dashboard.main(["--output", str(output), "--variant", "advanced"])
         self.assertEqual(0, code)
         html = output.read_text(encoding="utf-8")
-        self.assertIn("<th>attempt</th>", html)
-        self.assertIn("task-dashboard-controls", html)
-        self.assertIn(run["attempt"]["attempt_id"], html)
-        self.assertIn("correctTaskAttempt('task-dashboard-controls'", html)
-        self.assertIn("cancelTaskAttempt('task-dashboard-controls'", html)
-        self.assertIn("retryTask('task-dashboard-controls'", html)
-        self.assertIn("reassignTask('task-dashboard-controls'", html)
+        self.assertIn('<body class="dashboard-layout-fix">', html)
+        self.assertIn("Tasks & Workflows", html)
+        self.assertIn("openTaskDetailDrawer", html)
+        status, tasks_payload = api_gateway.route_get("/v1/tasks", {"limit": ["50"]})
+        self.assertEqual(HTTPStatus.OK, status, tasks_payload)
+        self.assertIn("task-dashboard-controls", [task["id"] for task in tasks_payload["tasks"]])
+        self.assertNotIn("task-dashboard-controls", html)
+        self.assertNotIn(run["attempt"]["attempt_id"], html)
+        self.assertIn("correctTaskAttempt", html)
+        self.assertIn("cancelTaskAttempt", html)
+        self.assertIn("recordWaitDecision", html)
+        self.assertIn("View Logs", html)
+        self.assertIn("Send Probe <small>ledger only</small>", html)
+        self.assertIn("retryTask", html)
+        self.assertIn("reassignTask", html)
+        self.assertIn("function buildApprovalReason(detail)", html)
+        self.assertIn("async function requestDashboardApproval(action, taskId, attemptId, by, reason, extra)", html)
+        self.assertIn("companyApiPost('/v1/approvals', payload)", html)
+        self.assertIn("Dashboard records approval first; real execution must be owner-approved explicitly.", html)
+        self.assertIn("ownerApproved === true", html)
+        self.assertIn("executeApprovedDashboardAction", html)
+        self.assertIn("action === 'task.correct'", html)
+        self.assertIn("approval.detail", html)
+        self.assertIn("Object.assign({}, legacyDetail, apiDetail)", html)
+        self.assertIn("metadata.task_id || requestDetail.task_id", html)
+        self.assertIn("parseApprovalRequestReason", html)
+        self.assertIn("requestDetail.correction_message", html)
+        self.assertIn("Owner-approved correction recorded", html)
+        self.assertIn("Owner-approved cancellation recorded", html)
+        self.assertIn("Owner-approved retry recorded", html)
+        self.assertIn("Owner-approved reassign recorded", html)
+        self.assertIn("action === 'task.cancel'", html)
+        self.assertIn("action === 'task.retry'", html)
+        self.assertIn("action === 'task.reassign'", html)
+        self.assertIn("Requesting owner approval for correction", html)
+        self.assertIn("Requesting owner approval for cancellation", html)
+        self.assertIn("Requesting owner approval for retry", html)
+        self.assertIn("Requesting owner approval for reassign", html)
+        self.assertIn("const isDone = isTerminalTaskState(task, attempt)", html)
+        self.assertIn("const isObservable = isRunning || ['heartbeat_stale', 'progress_stagnant', 'stale', 'correcting'].includes(longTaskState);", html)
+        self.assertIn("if (isObservable && !isDone && !isCancelled)", html)
+        self.assertIn("if (isRecoverable && !isDone)", html)
+        self.assertIn("handleOwnerAttentionAction('${escapeHtml(taskId)}', '${escapeHtml(attemptId)}', '', 'review_evidence')", html)
         self.assertIn("viewTaskTrace('", html)
         self.assertIn("/v1/tasks/${encodeURIComponent(taskId)}/correct", html)
         self.assertIn("/v1/tasks/${encodeURIComponent(taskId)}/cancel", html)
         self.assertIn("/v1/tasks/${encodeURIComponent(taskId)}/retry", html)
         self.assertIn("/v1/tasks/${encodeURIComponent(taskId)}/reassign", html)
+        self.assertIn("Attempt History", html)
+        self.assertIn("Attempt Lineage", html)
+        self.assertIn("Attempt Recovery Chain", html)
+        self.assertIn("old attempts are retained", html)
+        self.assertIn("retry/reassign creates a new attempt", html)
+        self.assertIn("previous_attempt_id", html)
+        self.assertIn("Sanitized Logs", html)
+        self.assertIn("sanitizedLogsSummary", html)
+        self.assertIn("Log Policy", html)
+        self.assertIn("adapterRunLogPolicySummary", html)
+        self.assertIn("readiness-badge", html)
 
     def test_agent_matrix_reports_employee_readiness_levels(self) -> None:
         for employee_id, role, runtime, status in [
@@ -4357,6 +6082,125 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual("runtime_evidence", row["checks"]["evidence"])
         self.assertEqual("success", row["latest_attempt"]["status"])
 
+    def test_agent_matrix_rejects_path_only_success_attempt_without_final_evidence(self) -> None:
+        for employee_id, role, runtime in [
+            ("main", "operator", "openclaw"),
+            ("codex", "developer", "codex"),
+        ]:
+            code, created = run_cli("employee", "create", "--id", employee_id, "--name", employee_id, "--role", role, "--runtime", runtime, "--workspace", str(self.root / "workspace" / employee_id))
+            self.assertEqual(0, code, created)
+            self.mark_active(employee_id)
+        attendance_dir = self.root / "state" / "attendance"
+        attendance_dir.mkdir(parents=True)
+        (attendance_dir / "latest.json").write_text(
+            json.dumps({"ok": True, "employees": [{"agent": "codex", "status": "online", "reply": "codex 在岗"}]}, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        code, submitted = run_cli("task", "submit", "--from", "main", "--to", "codex", "--task-id", "task-path-only-success", "--title", "Path only success")
+        self.assertEqual(0, code, submitted)
+        code, run = run_cli("task", "run", "--task-id", "task-path-only-success", "--agent", "codex", "--by", "main")
+        self.assertEqual(0, code, run)
+        evidence_path = self.root / "state" / "reports" / "path-only.md"
+        evidence_path.parent.mkdir(parents=True)
+        evidence_path.write_text("path-only evidence\n", encoding="utf-8")
+        with companyctl.connect() as conn:
+            conn.execute(
+                "UPDATE tasks SET status = 'completed', evidence_path = ?, summary = 'legacy path only', updated_at = ? WHERE id = ?",
+                (str(evidence_path), companyctl.now(), "task-path-only-success"),
+            )
+            conn.execute(
+                "UPDATE execution_attempts SET status = 'success', finished_at = ? WHERE attempt_id = ?",
+                (companyctl.now(), run["attempt"]["attempt_id"]),
+            )
+            conn.commit()
+
+        code, matrix = run_cli("agent-matrix", "--agents", "codex")
+        self.assertEqual(0, code, matrix)
+        row = matrix["employees"][0]
+        self.assertEqual("online_only", row["level"])
+        self.assertEqual("missing", row["checks"]["evidence"])
+        self.assertEqual("success", row["latest_attempt"]["status"])
+
+    def test_agent_matrix_accepts_runtime_verify_adapter_task_evidence(self) -> None:
+        for employee_id, role, runtime in [
+            ("main", "operator", "openclaw"),
+            ("nestcar", "business-agent", "openclaw"),
+        ]:
+            code, created = run_cli("employee", "create", "--id", employee_id, "--name", employee_id, "--role", role, "--runtime", runtime, "--workspace", str(self.root / "workspace" / employee_id))
+            self.assertEqual(0, code, created)
+            self.mark_active(employee_id)
+        attendance_dir = self.root / "state" / "attendance"
+        attendance_dir.mkdir(parents=True)
+        (attendance_dir / "latest.json").write_text(
+            json.dumps({"ok": True, "employees": [{"agent": "nestcar", "status": "online", "reply": "nestcar 在岗"}]}, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        task_id = "task-openclaw-verify-local-nestcar"
+        code, submitted = run_cli(
+            "task",
+            "submit",
+            "--from",
+            "main",
+            "--to",
+            "nestcar",
+            "--task-id",
+            task_id,
+            "--title",
+            "Runtime adapter dry-run check: nestcar",
+            "--description",
+            "Adapter dry-run check task only.",
+        )
+        self.assertEqual(0, code, submitted)
+        evidence_path = self.root / "employees" / "nestcar" / "reports" / task_id / "openclaw-adapter-report.md"
+        evidence_path.parent.mkdir(parents=True)
+        evidence_path.write_text("adapter evidence\n", encoding="utf-8")
+        code, done = run_cli("task", "done", "--agent", "nestcar", "--task-id", task_id, "--summary", "adapter evidence", "--evidence", str(evidence_path))
+        self.assertEqual(0, code, done)
+
+        code, matrix = run_cli("agent-matrix", "--agents", "nestcar")
+        self.assertEqual(0, code, matrix)
+        row = matrix["employees"][0]
+        self.assertEqual("active_ready", row["level"])
+        self.assertEqual("runtime_evidence", row["checks"]["evidence"])
+
+    def test_agent_matrix_marks_skill_ready_from_runtime_evidence_without_direct_chat(self) -> None:
+        code, runtime = run_cli("runtime", "register", "--runtime", "skill", "--command", "company-skill-package-worker", "--notes", "Skill Package runtime")
+        self.assertEqual(0, code, runtime)
+        code, employee = run_cli("employee", "create", "--id", "image-copy-skill", "--name", "Image Copy Skill", "--role", "skill-worker", "--runtime", "skill", "--workspace", str(self.root / "workspace" / "image-copy-skill"))
+        self.assertEqual(0, code, employee)
+        self.mark_active("image-copy-skill")
+        attendance_dir = self.root / "state" / "attendance"
+        attendance_dir.mkdir(parents=True)
+        (attendance_dir / "latest.json").write_text(
+            json.dumps({"ok": False, "employees": [{"agent": "image-copy-skill", "status": "no_reply", "reason": "unsupported_runtime:skill"}]}, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        task_id = "task-runtime-skill-evidence"
+        code, submitted = run_cli("task", "submit", "--from", "openclaw-main", "--to", "image-copy-skill", "--task-id", task_id, "--title", "Runtime adapter dry-run check: image-copy-skill")
+        self.assertEqual(0, code, submitted)
+        code, run = run_cli("task", "run", "--task-id", task_id, "--agent", "image-copy-skill", "--by", "hermes", "--adapter-type", "skill")
+        self.assertEqual(0, code, run)
+        workspace = Path(submitted["task"]["workspace"]["path"])
+        final_path = workspace / "final" / "result.md"
+        final_path.parent.mkdir(parents=True, exist_ok=True)
+        final_path.write_text("skill output\n", encoding="utf-8")
+        code, artifact = run_cli("task", "artifact", "register", "--task-id", task_id, "--employee", "image-copy-skill", "--path", str(final_path), "--type", "md", "--stage", "final", "--final", "--summary", "skill output")
+        self.assertEqual(0, code, artifact)
+        code, approved = run_cli("task", "artifact", "approve", "--artifact-id", artifact["artifact"]["artifact_id"], "--by", "image-copy-skill", "--reason", "test")
+        self.assertEqual(0, code, approved)
+        code, evidence = run_cli("task", "evidence", "promote", "--artifact-id", artifact["artifact"]["artifact_id"], "--by", "image-copy-skill", "--summary", "skill evidence")
+        self.assertEqual(0, code, evidence)
+        code, done = run_cli("task", "done", "--agent", "image-copy-skill", "--task-id", task_id, "--summary", "skill done", "--evidence", evidence["evidence"]["path_or_url"])
+        self.assertEqual(0, code, done)
+        code, finish = run_cli("task", "attempt", "finish", "--attempt-id", run["attempt"]["attempt_id"], "--status", "success")
+        self.assertEqual(0, code, finish)
+
+        code, matrix = run_cli("agent-matrix", "--agents", "image-copy-skill")
+        self.assertEqual(0, code, matrix)
+        row = matrix["employees"][0]
+        self.assertEqual("active_ready", row["level"])
+        self.assertEqual("skill_runtime_evidence_no_direct_chat_required", row["reason"])
+
     def test_v3_claim_returns_context_and_done_auto_promotes_workspace_evidence(self) -> None:
         for employee_id in ["manager", "writer"]:
             code, created = run_cli("employee", "create", "--id", employee_id, "--name", employee_id, "--role", "agent", "--runtime", "local", "--workspace", str(self.root / "workspace" / employee_id))
@@ -4436,6 +6280,9 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual(200, status, descriptor)
         self.assertIn("conversations", descriptor["capabilities"])
         self.assertIn("approvals", descriptor["capabilities"])
+        self.assertIn("skills", descriptor["capabilities"])
+        self.assertIn("sse_events", descriptor["capabilities"])
+        self.assertIn("trace_file_flow", descriptor["capabilities"])
         self.assertTrue(descriptor["protocols"]["rest"])
         self.assertTrue(descriptor["protocols"]["json_rpc"])
         self.assertEqual("optional-grpcio", descriptor["protocols"]["grpc"])
@@ -4448,6 +6295,12 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertIn("/v1/tasks", openapi["paths"])
         self.assertIn("/v1/conversations/{conversation_id}/reply", openapi["paths"])
         self.assertIn("/v1/approvals/{approval_id}/approve", openapi["paths"])
+        self.assertIn("/v1/approvals/{approval_id}/resolve", openapi["paths"])
+        self.assertIn("/v1/evidence", openapi["paths"])
+        self.assertIn("/v1/evidence/{evidence_id}/content", openapi["paths"])
+        self.assertIn("/v1/artifacts", openapi["paths"])
+        self.assertIn("/v1/handoffs", openapi["paths"])
+        self.assertIn("/v1/failures", openapi["paths"])
         doctor_query_names = {
             parameter["name"]
             for parameter in openapi["paths"]["/v1/doctor"]["get"]["parameters"]
@@ -4461,6 +6314,24 @@ class CompanyKernelCoreTest(unittest.TestCase):
         handler.send_cors_headers()
         self.assertIn(("Access-Control-Allow-Origin", "*"), sent_headers)
         self.assertIn(("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE, OPTIONS"), sent_headers)
+
+        handler = object.__new__(api_gateway.ApiHandler)
+        handler.path = "/v1/tasks?limit=50"
+        handler.wfile = io.BytesIO()
+        handler.headers = {}
+        sent = []
+        handler.send_response = lambda code: sent.append(("status", code))
+        handler.send_header = lambda name, value: sent.append((name, value))
+        handler.end_headers = lambda: sent.append(("end", ""))
+        handler.server = SimpleNamespace(quiet=True)
+        with mock.patch.object(api_gateway, "route_get", side_effect=sqlite3.OperationalError("disk I/O error /Users/owner/.env")):
+            handler.do_GET()
+        output = handler.wfile.getvalue().decode("utf-8")
+        self.assertIn(("status", HTTPStatus.INTERNAL_SERVER_ERROR), sent)
+        self.assertIn('"ok": false', output)
+        self.assertIn('"path": "/v1/tasks"', output)
+        self.assertNotIn("/Users/owner", output)
+        self.assertNotIn(".env", output)
 
         for agent in ["video-ops", "video-creator", "video-publisher", "codex", "openclaw-main", "hermes", "nestcar"]:
             status, heartbeat = api_gateway.route_post("/v1/heartbeats", {"agent": agent})
@@ -4571,6 +6442,12 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual(200, status, task_conversations)
         self.assertEqual(["conv-api-task-gateway-block"], task_conversations["conversation_ids"])
         self.assertEqual(["discuss reassigned task"], [message["body"] for message in task_conversations["conversations"][0]["messages"]])
+        status, task_detail_with_conversation = api_gateway.route_get("/v1/tasks/task-api-gateway-block", {})
+        self.assertEqual(200, status, task_detail_with_conversation)
+        self.assertEqual(1, task_detail_with_conversation["conversation_summary"]["counts"]["conversations"])
+        self.assertEqual(1, task_detail_with_conversation["conversation_summary"]["counts"]["messages"])
+        self.assertEqual("conv-api-task-gateway-block", task_detail_with_conversation["conversation_summary"]["items"][0]["conversation_id"])
+        self.assertEqual("discuss reassigned task", task_detail_with_conversation["conversation_summary"]["items"][0]["latest_message"])
 
         status, sent = api_gateway.route_post("/v1/messages", {"from": "hermes", "to": "codex", "body": "REST ping", "message_id": "msg-api-gateway"})
         self.assertEqual(201, status, sent)
@@ -4638,6 +6515,45 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual("nestcar", followup_answered["delivery"]["target"])
         self.assertTrue(followup_calls)
 
+    def test_api_gateway_evidence_content_uses_whitelist_and_hides_absolute_paths(self) -> None:
+        safe_path = self.root / "evidence" / "safe-report.md"
+        safe_path.parent.mkdir(parents=True, exist_ok=True)
+        safe_path.write_text("safe evidence body\n", encoding="utf-8")
+        secret_path = self.root / ".env"
+        secret_path.write_text("API_KEY=secret\n", encoding="utf-8")
+        with sqlite3.connect(self.root / "company.sqlite") as conn:
+            conn.execute(
+                """
+                INSERT INTO evidence(evidence_id, trace_id, task_id, attempt_id, employee_id, artifact_id, type, path_or_url, summary, checksum, is_final, metadata_json, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                ("evidence-safe-content", "trace-safe-content", "task-safe-content", "attempt-safe-content", "codex", "", "text", str(safe_path), "safe summary", "", 1, "{}", companyctl.now()),
+            )
+            conn.execute(
+                """
+                INSERT INTO evidence(evidence_id, trace_id, task_id, attempt_id, employee_id, artifact_id, type, path_or_url, summary, checksum, is_final, metadata_json, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                ("evidence-secret-content", "trace-secret-content", "task-secret-content", "attempt-secret-content", "codex", "", "text", str(secret_path), "secret summary", "", 1, "{}", companyctl.now()),
+            )
+            conn.commit()
+
+        status, safe = api_gateway.route_get("/v1/evidence/evidence-safe-content/content", {})
+        self.assertEqual(200, status, safe)
+        self.assertTrue(safe["display"]["allowed"])
+        self.assertFalse(safe["display"]["absolute_path_exposed"])
+        self.assertEqual("safe evidence body\n", safe["content"]["text"])
+        self.assertIn("safe-report.md", safe["display"]["relative_path"])
+        self.assertNotIn(str(self.root), json.dumps(safe, ensure_ascii=False))
+
+        status, blocked = api_gateway.route_get("/v1/evidence/evidence-secret-content/content", {})
+        self.assertEqual(403, status, blocked)
+        self.assertFalse(blocked["display"]["allowed"])
+        self.assertFalse(blocked["display"]["absolute_path_exposed"])
+        self.assertEqual("", blocked["content"]["text"])
+        self.assertNotIn("API_KEY", json.dumps(blocked, ensure_ascii=False))
+        self.assertNotIn(str(secret_path), json.dumps(blocked, ensure_ascii=False))
+
     def test_api_gateway_exposes_conversations_approvals_and_adapter_run_recovery(self) -> None:
         status, started = api_gateway.route_post(
             "/v1/conversations",
@@ -4684,18 +6600,59 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual(200, status, shown_approval)
         self.assertEqual("approved", shown_approval["approval"]["status"])
 
+        status, mock_approval = api_gateway.route_post(
+            "/v1/approvals",
+            {
+                "from": "hermes",
+                "action": "external_send",
+                "reason": "mock customer send",
+                "target": "nestcar",
+                "risk": "P1",
+                "approval_id": "approval-api-gateway-mock",
+                "task_id": "task-api-gateway-mock",
+            },
+        )
+        self.assertEqual(201, status, mock_approval)
+        status, resolved = api_gateway.route_post(
+            "/v1/approvals/approval-api-gateway-mock/resolve",
+            {"by": "openclaw-main", "reason": "mock resolved through API", "mock": True},
+        )
+        self.assertEqual(200, status, resolved)
+        self.assertEqual("resolved", resolved["approval"]["status"])
+        self.assertTrue(resolved["approval"]["detail"]["mock_resolve"])
+        self.assertTrue(resolved["approval"]["detail"]["dry_run"])
+        self.assertFalse(resolved["approval"]["detail"]["external_send_executed"])
+        self.assertEqual("approval.resolved", resolved["event"]["event_type"])
+        status, resolved_list = api_gateway.route_get("/v1/approvals", {"status": ["resolved"], "agent": ["hermes"]})
+        self.assertEqual(200, status, resolved_list)
+        self.assertIn("approval-api-gateway-mock", [item["id"] for item in resolved_list["approvals"]])
+
         code, submitted = run_cli("task", "submit", "--from", "openclaw-main", "--to", "codex", "--task-id", "task-api-adapter-retry", "--title", "adapter retry")
         self.assertEqual(code, 0, submitted)
         code, blocked = run_cli("task", "block", "--agent", "codex", "--task-id", "task-api-adapter-retry", "--blocker", "adapter failed")
         self.assertEqual(code, 0, blocked)
+        secret = "sk-testSECRET1234567890"
+        adapter_result = {
+            "ok": False,
+            "agent": "codex",
+            "command": "company-codex-adapter",
+            "stdout": f"api_key={secret} reading /Users/owner/.ssh/id_rsa",
+            "stderr": f"token={secret} blocked on {self.root / '.env'}",
+            "runs": [
+                {
+                    "result": {"stdout": f"authorization={secret}", "stderr": "/Users/owner/project/profile.json"},
+                    "parsed_stdout": {"task_id": "task-api-adapter-retry", "summary": "safe progress context"},
+                }
+            ],
+        }
         conn = companyctl.connect()
         try:
             conn.execute(
                 """
                 INSERT INTO adapter_runs(id, trace_id, agent_id, task_id, command, ok, processed, attempt, next_retry_at, result_json, created_at)
-                VALUES ('adapter-run-api-retry', ?, 'codex', 'task-api-adapter-retry', 'company-codex-adapter', 0, 1, 1, '2000-01-01T00:00:00+00:00', '{}', ?)
+                VALUES ('adapter-run-api-retry', ?, 'codex', 'task-api-adapter-retry', 'company-codex-adapter', 0, 1, 1, '2000-01-01T00:00:00+00:00', ?, ?)
                 """,
-                (submitted["task"]["metadata"]["trace_id"], companyctl.now()),
+                (submitted["task"]["metadata"]["trace_id"], json.dumps(adapter_result), companyctl.now()),
             )
             conn.commit()
         finally:
@@ -4704,6 +6661,37 @@ class CompanyKernelCoreTest(unittest.TestCase):
         status, run = api_gateway.route_get("/v1/adapter-runs/adapter-run-api-retry", {"summary": ["true"]})
         self.assertEqual(200, status, run)
         self.assertEqual("adapter-run-api-retry", run["adapter_run"]["id"])
+        result_summary_json = json.dumps(run["result_summary"], ensure_ascii=False)
+        self.assertIn("sanitized_log", run["result_summary"])
+        self.assertIn("safe progress context", result_summary_json)
+        self.assertNotIn(secret, result_summary_json)
+        self.assertNotIn("id_rsa", result_summary_json)
+        self.assertNotIn(".env", result_summary_json)
+        self.assertNotIn("profile.json", result_summary_json)
+        status, listed_runs = api_gateway.route_get("/v1/adapter-runs", {"limit": ["5"]})
+        self.assertEqual(200, status, listed_runs)
+        listed_run = next(item for item in listed_runs["adapter_runs"] if item["id"] == "adapter-run-api-retry")
+        listed_run_json = json.dumps(listed_run, ensure_ascii=False)
+        self.assertIn("sanitized_log", listed_run)
+        self.assertNotIn("result_json", listed_run)
+        self.assertNotIn(secret, listed_run_json)
+        self.assertNotIn("id_rsa", listed_run_json)
+        status, task_detail = api_gateway.route_get("/v1/tasks/task-api-adapter-retry", {})
+        self.assertEqual(200, status, task_detail)
+        detail_json = json.dumps(task_detail, ensure_ascii=False)
+        self.assertIn("sanitized_logs", task_detail)
+        self.assertIn("adapter-run-api-retry", [item["run_id"] for item in task_detail["sanitized_logs"]])
+        log_item = next(item for item in task_detail["sanitized_logs"] if item["run_id"] == "adapter-run-api-retry")
+        self.assertFalse(log_item["raw_available"])
+        self.assertEqual("sanitized_only", log_item["log_policy"]["mode"])
+        self.assertIn("stdout", log_item["log_policy"]["source_fields"])
+        self.assertIn("stderr", log_item["log_policy"]["source_fields"])
+        self.assertIn("raw stdout/stderr hidden", log_item["log_policy"]["summary"])
+        self.assertIn("safe progress context", detail_json)
+        self.assertNotIn(secret, detail_json)
+        self.assertNotIn("id_rsa", detail_json)
+        self.assertNotIn(".env", detail_json)
+        self.assertNotIn("profile.json", detail_json)
         status, retry = api_gateway.route_post("/v1/adapter-runs/adapter-run-api-retry/retry", {"by": "openclaw-main", "reason": "retry through API"})
         self.assertEqual(200, status, retry)
         self.assertEqual("task-api-adapter-retry", retry["task_id"])
@@ -4721,15 +6709,48 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertIn("event_type", events["events"][0])
         self.assertIn("source_agent", events["events"][0])
         self.assertIn("processed_at", events["events"][0])
+        conn = companyctl.connect()
+        try:
+            companyctl.record_event(
+                conn,
+                "artifact.created",
+                "codex",
+                task_id="task-api-event-sanitize",
+                payload={
+                    "path": str(self.root / ".ssh" / "id_rsa"),
+                    "message": "api_key=sk-test-secret and /Users/owner/project/.env",
+                },
+                trace_id="trace-api-event-sanitize",
+            )
+        finally:
+            conn.close()
+        status, sanitized_events = api_gateway.route_get("/v1/events", {"limit": ["1"]})
+        self.assertEqual(200, status, sanitized_events)
+        event_json = json.dumps(sanitized_events, ensure_ascii=False)
+        self.assertNotIn("/Users/owner", event_json)
+        self.assertNotIn("id_rsa", event_json)
+        self.assertNotIn(".env", event_json)
+        self.assertNotIn("sk-test-secret", event_json)
+        self.assertIn("payload", sanitized_events["events"][0])
 
     def test_api_gateway_exposes_communication_observability_summary(self) -> None:
-        code, sent_a = run_cli("message", "send", "--from", "openclaw-main", "--to", "codex", "--body", "请确认 adapter-run summary")
+        code, handshake = run_cli("message", "send", "--from", "openclaw-main", "--to", "codex", "--body", "handshake")
+        self.assertEqual(code, 0, handshake)
+        code, sent_a = run_cli("message", "send", "--from", "openclaw-main", "--to", "codex", "--body", "请确认 task-api-observability progress evidence")
         self.assertEqual(code, 0, sent_a)
         code, sent_b = run_cli("message", "send", "--from", "codex", "--to", "openclaw-main", "--body", "已同步 external mirror")
         self.assertEqual(code, 0, sent_b)
-        status, direct = api_gateway.route_get("/v1/messages/recent-direct", {"limit": ["1"]})
+        status, direct = api_gateway.route_get("/v1/messages/recent-direct", {"limit": ["3"]})
         self.assertEqual(200, status, direct)
-        self.assertEqual(1, len(direct["direct_messages_recent"]))
+        self.assertEqual(3, len(direct["direct_messages_recent"]))
+        task_message = next(item for item in direct["direct_messages_recent"] if "task-api-observability" in item["body"])
+        self.assertEqual("task-api-observability", task_message["task_context"])
+        self.assertTrue(task_message["task_bound"])
+        self.assertFalse(task_message["low_signal"])
+        handshake_message = next(item for item in direct["direct_messages_recent"] if item["body"] == "handshake")
+        self.assertFalse(handshake_message["task_bound"])
+        self.assertTrue(handshake_message["low_signal"])
+        self.assertEqual("handshake_or_idle", handshake_message["chat_classification"])
 
         imported_at = companyctl.now()
         status, imported = api_gateway.route_post(
@@ -4798,8 +6819,16 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertTrue(payload["ok"])
         direct_bodies = [item["body"] for item in payload["direct_messages"]["items"]]
         self.assertIn("已同步 external mirror", direct_bodies)
-        self.assertIn("请确认 adapter-run summary", direct_bodies)
-        self.assertEqual(2, payload["direct_messages"]["counts"]["total"])
+        self.assertIn("请确认 task-api-observability progress evidence", direct_bodies)
+        self.assertGreaterEqual(payload["direct_messages"]["counts"]["total"], 2)
+        self.assertEqual(1, payload["direct_messages"]["counts"]["task_bound"])
+        self.assertEqual(1, payload["direct_messages"]["counts"]["handshake_or_idle"])
+        self.assertGreaterEqual(payload["direct_messages"]["counts"]["work_relevant"], 1)
+        status, cockpit = api_gateway.route_get("/v1/dashboard/cockpit", {})
+        self.assertEqual(200, status, cockpit)
+        self.assertEqual(payload["direct_messages"]["counts"]["task_bound"], cockpit["counts"]["chat_task_bound"])
+        self.assertEqual(payload["direct_messages"]["counts"]["handshake_or_idle"], cockpit["counts"]["chat_handshake_or_idle"])
+        self.assertGreaterEqual(cockpit["counts"]["chat_work_relevant"], 1)
         self.assertEqual(1, payload["external_mirror"]["counts"]["threads"])
         self.assertEqual("telegram", payload["external_mirror"]["threads"][0]["platform"])
         self.assertEqual("codex", payload["external_mirror"]["threads"][0]["bridge_agent"])
@@ -5051,9 +7080,18 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertIn("External Mirror Sync", html)
         self.assertIn("Adapter Run Summary", html)
         self.assertIn("Internal Receipt Watchdog", html)
-        self.assertIn("Dashboard should show this direct message", html)
-        self.assertIn("tg-dashboard-observability", html)
-        self.assertIn("reports/dashboard-progress.json", html)
+        conn = companyctl.connect()
+        try:
+            summary = company_dashboard.load_summary(conn)
+            observability = company_dashboard.communication_observability_summary(summary)
+        finally:
+            conn.close()
+        self.assertIn("Dashboard should show this direct message", [item["body"] for item in observability["direct_messages"]["items"]])
+        self.assertIn("tg-dashboard-observability", [item["id"] for item in observability["external_mirror"]["threads"]])
+        self.assertIn("reports/dashboard-progress.json", json.dumps(observability, ensure_ascii=False))
+        self.assertNotIn("Dashboard should show this direct message", html)
+        self.assertNotIn("tg-dashboard-observability", html)
+        self.assertNotIn("reports/dashboard-progress.json", html)
 
     def test_advanced_dashboard_renders_supervisor_loop_panel(self) -> None:
         code, created = run_cli("employee", "create", "--id", "codex-dashboard-supervisor", "--name", "codex-dashboard-supervisor", "--role", "engineer", "--runtime", "codex", "--workspace", str(self.root / "workspace" / "codex-dashboard-supervisor"))
@@ -5280,7 +7318,7 @@ class CompanyKernelCoreTest(unittest.TestCase):
             {"name": "Cursor API Employee", "role": "developer", "status": "active"},
         )
         self.assertEqual(HTTPStatus.BAD_REQUEST, status, patched)
-        self.assertEqual("employee activation requires 2-4 verified direct communication rounds", patched["error"])
+        self.assertEqual("employee activation requires verified direct communication or structured runtime evidence", patched["error"])
 
         status, patched_candidate = api_gateway.route_patch(
             "/v1/employees/cursor-dev",
@@ -5574,6 +7612,25 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual(code, 0, submitted)
         self.assertEqual(approval_id, submitted["task"]["metadata"]["approval"]["id"])
 
+    def test_route_approval_keyword_does_not_match_employee_id_substrings(self) -> None:
+        code, created = run_cli("employee", "create", "--id", "main", "--name", "main", "--role", "operator", "--runtime", "openclaw", "--workspace", str(self.root / "workspace" / "main"))
+        self.assertEqual(0, code, created)
+        code, submitted = run_cli(
+            "task",
+            "submit",
+            "--from",
+            "main",
+            "--to",
+            "video-publisher",
+            "--task-id",
+            "task-video-publisher-name-check",
+            "--title",
+            "Runtime adapter dry-run check: video-publisher",
+            "--description",
+            "Adapter dry-run check task only; no external publish action.",
+        )
+        self.assertEqual(0, code, submitted)
+
     def test_policy_auto_approval_allows_low_risk_openclaw_external_send(self) -> None:
         policy_path = self.root / "config" / "policy.json"
         policy_path.write_text(
@@ -5703,12 +7760,13 @@ class CompanyKernelCoreTest(unittest.TestCase):
         def fake_run(cmd: list[str], cwd: str, text: bool, capture_output: bool) -> subprocess.CompletedProcess:
             if cmd[1:3] == ["task", "submit"]:
                 task_id = cmd[cmd.index("--task-id") + 1]
+                source = cmd[cmd.index("--from") + 1]
                 target = cmd[cmd.index("--to") + 1]
                 title = cmd[cmd.index("--title") + 1]
                 with companyctl.connect() as conn:
                     companyctl.submit_task_internal(
                         conn,
-                        source="openclaw-main",
+                        source=source,
                         target=target,
                         task_id=task_id,
                         title=title,
@@ -5741,8 +7799,241 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual(code, 0, verified)
         self.assertTrue(verified["ok"])
         self.assertEqual(1, verified["count"])
+
+    def test_runtime_verify_adapters_auto_detects_main_source_when_openclaw_main_missing(self) -> None:
+        with companyctl.connect() as conn:
+            conn.execute("DELETE FROM employees WHERE id = 'openclaw-main'")
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO employees (
+                  id, name, role, runtime, workspace, status, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "main",
+                    "main",
+                    "supervisor",
+                    "openclaw",
+                    str(self.root / "workspace" / "main"),
+                    "active",
+                    companyctl.now(),
+                    companyctl.now(),
+                ),
+            )
+            conn.commit()
+        submitted_sources: list[str] = []
+
+        def fake_run(cmd: list[str], cwd: str, text: bool, capture_output: bool) -> subprocess.CompletedProcess:
+            if cmd[1:3] == ["task", "submit"]:
+                task_id = cmd[cmd.index("--task-id") + 1]
+                source = cmd[cmd.index("--from") + 1]
+                target = cmd[cmd.index("--to") + 1]
+                submitted_sources.append(source)
+                with companyctl.connect() as conn:
+                    companyctl.submit_task_internal(
+                        conn,
+                        source=source,
+                        target=target,
+                        task_id=task_id,
+                        title="adapter verification",
+                        description="adapter verification",
+                        priority="P3",
+                        metadata={"runtime_verify": True},
+                    )
+                return subprocess.CompletedProcess(cmd, 0, stdout=json.dumps({"ok": True}, ensure_ascii=False), stderr="")
+            if cmd[1:3] == ["scheduler", "run"]:
+                return subprocess.CompletedProcess(cmd, 0, stdout=json.dumps({"ok": True, "events": []}, ensure_ascii=False), stderr="")
+            task_id = "task-runtime-main-source-hermes"
+            report = self.root / "employees" / "hermes" / "reports" / task_id / "hermes-adapter-report.md"
+            report.parent.mkdir(parents=True, exist_ok=True)
+            report.write_text("adapter ok\n", encoding="utf-8")
+            with companyctl.connect() as conn:
+                conn.execute(
+                    "UPDATE tasks SET status = 'completed', evidence_path = ?, summary = 'adapter ok', updated_at = ? WHERE id = ?",
+                    (str(report), companyctl.now(), task_id),
+                )
+                conn.commit()
+                companyctl.heartbeat_internal(conn, "hermes", {"source": "test-adapter"})
+            return subprocess.CompletedProcess(cmd, 0, stdout=json.dumps({"ok": True, "task_id": task_id}, ensure_ascii=False), stderr="")
+
+        with mock.patch.object(companyctl.subprocess, "run", fake_run):
+            code, verified = run_cli("runtime", "verify-adapters", "--agents", "hermes", "--task-id-prefix", "task-runtime-main-source")
+        self.assertEqual(code, 0, verified)
+        self.assertEqual("main", verified["source"])
+        self.assertEqual(["main"], submitted_sources)
+
+    def test_runtime_verify_adapters_passes_skill_package_manifest(self) -> None:
+        code, runtime = run_cli("runtime", "register", "--runtime", "skill", "--command", "company-skill-package-worker", "--notes", "Skill Package runtime")
+        self.assertEqual(0, code, runtime)
+        code, employee = run_cli(
+            "employee",
+            "create",
+            "--id",
+            "image-copy-skill",
+            "--name",
+            "Image Copy Skill",
+            "--role",
+            "skill-worker",
+            "--runtime",
+            "skill",
+            "--workspace",
+            str(self.root / "employees" / "image-copy-skill"),
+        )
+        self.assertEqual(0, code, employee)
+        self.mark_active("image-copy-skill")
+        package_dir = self.root / "skill-packages" / "image-copy"
+        package_dir.mkdir(parents=True)
+        manifest_path = package_dir / "skill.json"
+        manifest_path.write_text(
+            json.dumps(
+                {
+                    "id": "image-copy",
+                    "name": "Image copy package",
+                    "version": "0.1.0",
+                    "employee_id": "image-copy-skill",
+                    "input_schema": {"type": "object"},
+                    "output_schema": {"type": "object"},
+                    "runtime": {"type": "local-script", "command": "python3 -c \"import os; from pathlib import Path; root=Path(os.environ['TASK_WORKSPACE']); (root/'final').mkdir(exist_ok=True); (root/'final/result.md').write_text('runtime verify skill output', encoding='utf-8')\""},
+                    "permissions": {"workspace": "task"},
+                    "pricing": {"unit": "task", "amount": 10, "currency": "USD"},
+                    "acceptance": {"final_artifact": "final/result.md"},
+                },
+                ensure_ascii=False,
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+
+        code, verified = run_cli("runtime", "verify-adapters", "--agents", "image-copy-skill", "--task-id-prefix", "task-runtime-skill")
+        self.assertEqual(0, code, verified)
+        self.assertTrue(verified["ok"], verified)
+        self.assertEqual(str(manifest_path), verified["results"][0]["package"])
+        self.assertTrue(verified["results"][0]["evidence_exists"])
         self.assertTrue(verified["results"][0]["evidence_exists"])
         self.assertEqual("completed", verified["results"][0]["task_status"])
+
+    def test_runtime_verify_adapters_can_verify_candidate_without_enabling_task_submit(self) -> None:
+        code, runtime = run_cli("runtime", "register", "--runtime", "claude", "--command", "company-claude-adapter", "--notes", "Claude runtime")
+        self.assertEqual(0, code, runtime)
+        code, employee = run_cli(
+            "employee",
+            "create",
+            "--id",
+            "claude-code",
+            "--name",
+            "Claude Code",
+            "--role",
+            "developer",
+            "--runtime",
+            "claude",
+            "--workspace",
+            str(self.root / "workspace" / "claude-code"),
+        )
+        self.assertEqual(0, code, employee)
+        code, blocked = run_cli("task", "submit", "--from", "openclaw-main", "--to", "claude-code", "--task-id", "task-candidate-normal-submit", "--title", "normal submit remains blocked")
+        self.assertEqual(2, code, blocked)
+
+        def fake_run(cmd: list[str], cwd: str, text: bool, capture_output: bool) -> subprocess.CompletedProcess:
+            if cmd[1:3] == ["scheduler", "run"]:
+                return subprocess.CompletedProcess(cmd, 0, stdout=json.dumps({"ok": True, "events": []}, ensure_ascii=False), stderr="")
+            task_id = "task-runtime-candidate-claude-claude-code"
+            report = self.root / "employees" / "claude-code" / "reports" / task_id / "claude-adapter-report.md"
+            report.parent.mkdir(parents=True, exist_ok=True)
+            report.write_text("claude candidate adapter evidence\n", encoding="utf-8")
+            with companyctl.connect() as conn:
+                conn.execute(
+                    "UPDATE tasks SET status = 'completed', evidence_path = ?, summary = 'claude adapter evidence', updated_at = ? WHERE id = ?",
+                    (str(report), companyctl.now(), task_id),
+                )
+                conn.commit()
+                companyctl.heartbeat_internal(conn, "claude-code", {"source": "candidate-adapter-test"})
+            return subprocess.CompletedProcess(cmd, 0, stdout=json.dumps({"ok": True, "processed": 1, "task_id": task_id, "report": str(report)}, ensure_ascii=False), stderr="")
+
+        with mock.patch.object(companyctl.subprocess, "run", fake_run):
+            code, verified = run_cli("runtime", "verify-adapters", "--agents", "claude-code", "--task-id-prefix", "task-runtime-candidate-claude", "--allow-candidate")
+        self.assertEqual(0, code, verified)
+        self.assertTrue(verified["ok"], verified)
+        self.assertTrue(verified["results"][0]["candidate_verification"])
+        self.assertTrue(verified["results"][0]["evidence_exists"])
+        code, still_blocked = run_cli("task", "submit", "--from", "openclaw-main", "--to", "claude-code", "--task-id", "task-candidate-normal-submit-2", "--title", "normal submit still blocked")
+        self.assertEqual(2, code, still_blocked)
+        code, activated = run_cli("employee", "update", "--id", "claude-code", "--status", "active")
+        self.assertEqual(0, code, activated)
+        self.assertEqual("active", activated["employee"]["status"])
+        code, matrix = run_cli("agent-matrix", "--agents", "claude-code")
+        self.assertEqual(0, code, matrix)
+        self.assertEqual("active_ready", matrix["employees"][0]["level"])
+        self.assertEqual("adapter_runtime_evidence_no_openclaw_session_required", matrix["employees"][0]["reason"])
+
+    def test_agent_matrix_resolves_requested_alias_to_canonical_employee(self) -> None:
+        config_path = self.root / "config" / "company_communications.json"
+        config = json.loads(config_path.read_text(encoding="utf-8"))
+        config.setdefault("aliases", {})["car-rental"] = "nestcar"
+        config_path.write_text(json.dumps(config, ensure_ascii=False, indent=2), encoding="utf-8")
+        code, created = run_cli(
+            "employee",
+            "create",
+            "--id",
+            "nestcar",
+            "--name",
+            "NestCar",
+            "--role",
+            "business-agent",
+            "--runtime",
+            "openclaw",
+            "--workspace",
+            str(self.root / "workspace" / "nestcar"),
+        )
+        self.assertEqual(0, code, created)
+        code, verified = run_cli("employee", "verify-direct", "--id", "nestcar", "--from", "openclaw-main", "--rounds", "2", "--activate")
+        self.assertEqual(0, code, verified)
+
+        code, matrix = run_cli("agent-matrix", "--agents", "car-rental")
+        self.assertEqual(0, code, matrix)
+        row = matrix["employees"][0]
+        self.assertEqual("nestcar", row["agent"])
+        self.assertEqual("car-rental", row["requested_agent"])
+        self.assertEqual("nestcar", row["alias_of"])
+        self.assertEqual("active_ready", row["level"])
+
+    def test_dashboard_employee_view_skips_alias_duplicate_rows(self) -> None:
+        config_path = self.root / "config" / "company_communications.json"
+        config = json.loads(config_path.read_text(encoding="utf-8"))
+        config.setdefault("aliases", {})["car-rental"] = "nestcar"
+        config_path.write_text(json.dumps(config, ensure_ascii=False, indent=2), encoding="utf-8")
+        summary = {
+            "generated_at": companyctl.now(),
+            "employees": [
+                {
+                    "id": "car-rental",
+                    "name": "car-rental",
+                    "role": "runtime-agent",
+                    "runtime": "openclaw",
+                    "employee_status": "candidate",
+                    "workspace": str(self.root / "agents" / "car-rental"),
+                    "heartbeat_status": "missing",
+                    "last_seen_at": "",
+                    "heartbeat_metadata_json": "{}",
+                    "submitted_tasks": 0,
+                    "claimed_tasks": 0,
+                },
+                {
+                    "id": "nestcar",
+                    "name": "car-rental",
+                    "role": "business-agent",
+                    "runtime": "openclaw",
+                    "employee_status": "active",
+                    "workspace": str(self.root / "workspace" / "nestcar"),
+                    "heartbeat_status": "alive",
+                    "last_seen_at": companyctl.now(),
+                    "heartbeat_metadata_json": "{}",
+                    "submitted_tasks": 0,
+                    "claimed_tasks": 0,
+                },
+            ],
+        }
+        employees = company_dashboard.employee_view_models(summary)
+        self.assertEqual(["nestcar"], [employee["id"] for employee in employees])
 
     def test_hermes_adapter_runs_codex_pm_supervisor_with_dev_roots_before_heartbeat(self) -> None:
         codex_workspace = self.root / "workspace" / "codex-dev"
@@ -6957,7 +9248,14 @@ class CompanyKernelCoreTest(unittest.TestCase):
             "agent": "codex",
             "command": "company-codex-adapter",
             "processed": 1,
-            "runs": [{"parsed_stdout": {"task_id": "task-adapter-run-dashboard"}}],
+            "stdout": "api_key=sk-dashboardSECRET1234567890 reading /Users/owner/.ssh/id_rsa",
+            "stderr": f"token=sk-dashboardSECRET1234567890 blocked on {self.root / '.env'}",
+            "runs": [
+                {
+                    "result": {"stdout": "authorization=sk-dashboardSECRET1234567890", "stderr": "/Users/owner/project/profile.json"},
+                    "parsed_stdout": {"task_id": "task-adapter-run-dashboard", "summary": "safe dashboard progress"},
+                }
+            ],
             "at": "2026-06-03T04:30:00+07:00",
             "state_file": str(self.root / "state" / "daemon" / "workers" / "codex.json"),
         }
@@ -6987,11 +9285,19 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual(code, 0, shown)
         self.assertEqual("task-adapter-run-dashboard", shown["adapter_run"]["task_id"])
         self.assertEqual("task-adapter-run-dashboard", shown["result"]["runs"][0]["parsed_stdout"]["task_id"])
+        self.assertIn("sk-dashboardSECRET1234567890", json.dumps(shown, ensure_ascii=False))
         code, shown_summary = run_cli("runtime", "adapter-run", "show", "--run-id", run_id, "--summary")
         self.assertEqual(code, 0, shown_summary)
         self.assertNotIn("result_json", shown_summary["adapter_run"])
         self.assertNotIn("result", shown_summary)
         self.assertEqual("task-adapter-run-dashboard", shown_summary["result_summary"]["runs"][0]["task_id"])
+        summary_json = json.dumps(shown_summary, ensure_ascii=False)
+        self.assertIn("sanitized_log", shown_summary["result_summary"])
+        self.assertIn("safe dashboard progress", summary_json)
+        self.assertNotIn("sk-dashboardSECRET1234567890", summary_json)
+        self.assertNotIn("id_rsa", summary_json)
+        self.assertNotIn(".env", summary_json)
+        self.assertNotIn("profile.json", summary_json)
         code, failed = run_cli("runtime", "adapter-runs", "--status", "failed", "--unacknowledged-only")
         self.assertEqual(code, 0, failed)
         self.assertEqual([], failed["adapter_runs"])
@@ -7004,7 +9310,12 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertIn("Adapter Runs", html)
         self.assertIn("task-adapter-run-dashboard", html)
         self.assertIn("company-codex-adapter", html)
-        self.assertIn(str(self.root / "state" / "daemon" / "workers" / "codex.json"), html)
+        self.assertIn("safe dashboard progress", html)
+        self.assertIn("sanitized_log", html)
+        self.assertNotIn("sk-dashboardSECRET1234567890", html)
+        self.assertNotIn("id_rsa", html)
+        self.assertNotIn(".env", html)
+        self.assertNotIn("profile.json", html)
 
     def test_daemon_worker_processes_task_end_to_end(self) -> None:
         code, submitted = run_cli(
