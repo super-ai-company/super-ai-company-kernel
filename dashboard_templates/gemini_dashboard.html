@@ -4040,6 +4040,17 @@
     }).join('\n');
   }
 
+  function taskSupervisorChainSummary(tracePayload, taskId) {
+    const chain = tracePayload && Array.isArray(tracePayload.supervision_chain) ? tracePayload.supervision_chain : [];
+    const rows = chain.filter(item => !taskId || item.task_id === taskId);
+    if (!rows.length) return 'No supervisor correction chain for this task yet.';
+    return rows.map(item => {
+      const attempt = item.attempt_id ? ` · attempt=${item.attempt_id}` : '';
+      const message = item.message ? ` · ${shortText(item.message, 160)}` : '';
+      return `${item.at || '-'} · ${item.summary || `${item.actor || '-'} -> ${item.target || '-'} · ${item.action || '-'}`}${attempt}${message}`;
+    }).join('\n');
+  }
+
   function traceCorrectionSummary(spans) {
     const correctionSpans = (Array.isArray(spans) ? spans : []).filter(span => String(span.name || '').startsWith('supervisor.correction.'));
     if (!correctionSpans.length) return '';
@@ -4151,11 +4162,22 @@
       const attemptHistory = payload.attempt_history || {};
       const conversationSummary = payload.conversation_summary || {};
       const latestAttempt = latestAttemptDetail(attempts);
+      const taskTraceId = (attempts[0] && attempts[0].trace_id) || task.trace_id || '';
+      let taskTracePayload = {};
+      if (taskTraceId) {
+        try {
+          taskTracePayload = await companyApiGet(`/v1/traces/${encodeURIComponent(taskTraceId)}/timeline`);
+        } catch (traceErr) {
+          taskTracePayload = { ok: false, error: traceErr.message, supervision_chain: [] };
+          companyApiLog('ERROR', `Task trace timeline ${taskTraceId} failed: ${traceErr.message}`, 'error');
+        }
+      }
       renderDetails(`Task Detail: ${taskId}`, [
         ['Status', task.status || '-'],
         ['Target', task.target_agent || '-'],
         ['Claimed By', task.claimed_by || '-'],
-        ['Trace', (attempts[0] && attempts[0].trace_id) || task.trace_id || '-'],
+        ['Trace', taskTraceId || '-'],
+        ['Task Supervisor Chain', taskSupervisorChainSummary(taskTracePayload, taskId)],
         ['Long Task State', task.long_task_state || latestAttempt.long_task_state || task.status || '-'],
         ['Status Contract', longTaskStatusContractSummary(task, latestAttempt)],
         ['Task Decision', taskDecisionSummary(task, latestAttempt, payload)],
