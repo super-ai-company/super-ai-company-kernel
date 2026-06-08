@@ -1930,6 +1930,8 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertIn("reassignTask(taskId", html)
         self.assertIn("Conversation Summary", html)
         self.assertIn("conversation_summary", html)
+        self.assertIn("Approval Safety", html)
+        self.assertIn("approvalSafetySummary", html)
         self.assertIn("counts.employee_status_counts", html)
         self.assertIn("counts.readiness_counts", html)
         self.assertIn("active_ready", html)
@@ -3443,12 +3445,20 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertTrue(resolved["approval"]["detail"]["mock_resolve"])
         self.assertTrue(resolved["approval"]["detail"]["dry_run"])
         self.assertFalse(resolved["approval"]["detail"]["external_send_executed"])
+        self.assertEqual("mock", resolved["approval"]["safety"]["resolution_mode"])
+        self.assertTrue(resolved["approval"]["safety"]["dry_run"])
+        self.assertFalse(resolved["approval"]["safety"]["external_send_executed"])
+        self.assertIn("never triggers", resolved["approval"]["safety"]["summary"])
         self.assertEqual("approval.resolved", resolved["event"]["event_type"])
         self.assertEqual("task-approval-mock-resolve", resolved["event"]["task_id"])
 
         code, listed = run_cli("approval", "list", "--status", "resolved")
         self.assertEqual(0, code, listed)
         self.assertEqual(["approval-mock-resolve"], [item["id"] for item in listed["approvals"]])
+        self.assertEqual("mock", listed["approvals"][0]["safety"]["resolution_mode"])
+        code, task = run_cli("task", "show", "--task-id", "task-approval-mock-resolve")
+        self.assertEqual(0, code, task)
+        self.assertEqual("mock", task["approvals"][0]["safety"]["resolution_mode"])
 
     def test_dashboard_renders_project_goal_acceptance_review_and_retro(self) -> None:
         code, project = run_cli(

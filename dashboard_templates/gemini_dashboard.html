@@ -3775,6 +3775,15 @@
     };
   }
 
+  function approvalSafetySummary(approvals) {
+    const rows = Array.isArray(approvals) ? approvals : [];
+    if (!rows.length) return '-';
+    return rows.map(item => {
+      const safety = item.safety || {};
+      return `${item.status || '-'}:${item.id || item.approval_id || ''} · action=${item.action || '-'} · mode=${safety.resolution_mode || '-'} · dry_run=${String(!!safety.dry_run)} · external_send_executed=${String(!!safety.external_send_executed)} · ${safety.summary || 'owner approval required before real external delivery'}`;
+    }).join('\n');
+  }
+
   function renderDetailValue(value) {
     if (value === null || value === undefined || value === '') return '<span style="color: var(--text-muted);">-</span>';
     if (Array.isArray(value)) return `<div class="detail-list">${value.map(item => `<span>${escapeHtml(typeof item === 'object' ? JSON.stringify(item) : item)}</span>`).join('')}</div>`;
@@ -3829,6 +3838,7 @@
       ['Task ID', summary.task_id || '-'],
       ['Reason', summary.request_reason || '-'],
       ['Evidence', summary.evidence || '-'],
+      ['Approval Safety', approvalSafetySummary([approval])],
       ['Updated', formatDate(approval.updated_at || '')],
       ['Decision By', detail.decided_by || detail.decision_by || '-'],
       ['Decision Reason', detail.decision_reason || '-']
@@ -4004,6 +4014,7 @@
         ['Attempt Recovery Chain', attemptRecoveryChainSummary(attempts)],
         ['Recent Events', events.slice(-8).map(item => `${item.created_at} ${item.event_type} ${item.id}`).join('\n') || '-'],
         ['Approvals', approvals.map(item => `${item.status}:${item.id || item.approval_id || ''}`).join('\n') || '-'],
+        ['Approval Safety', approvalSafetySummary(approvals)],
         ['Raw', payload],
       ], payload);
     } catch (err) {

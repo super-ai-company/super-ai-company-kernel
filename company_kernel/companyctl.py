@@ -6606,6 +6606,14 @@ def approval_detail(raw: str) -> dict:
 def normalize_approval(row: sqlite3.Row | dict) -> dict:
     obj = dict(row)
     obj["detail"] = approval_detail(obj.pop("reason", ""))
+    detail = obj["detail"] if isinstance(obj.get("detail"), dict) else {}
+    obj["safety"] = {
+        "dry_run": bool(detail.get("dry_run", False)),
+        "external_send_executed": bool(detail.get("external_send_executed", False)),
+        "resolution_mode": str(detail.get("resolution_mode") or ("mock" if detail.get("mock_resolve") else "")),
+        "requires_owner_approval": True,
+        "summary": str(detail.get("safety_note") or ("no external delivery executed" if detail.get("mock_resolve") else "owner approval required before real external delivery")),
+    }
     return obj
 
 
