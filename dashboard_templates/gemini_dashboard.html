@@ -5545,6 +5545,7 @@
                 <span class="badge ${hbStatus}">${hbStatus}</span>
               </div>
               <div style="margin-bottom: 4px;"><strong>Readiness:</strong> ${readinessBadge(emp)}</div>
+              <div style="margin-bottom: 4px;"><strong>Schedulable:</strong> ${emp.schedulable ? 'yes' : 'no'} · <span title="${escapeHtml(emp.readiness_reason || '')}">readiness_reason=${escapeHtml(emp.readiness_reason || '-')}</span></div>
               <div><strong>Last Active:</strong> ${formatDate(emp.last_seen_at) || 'Never'}</div>
             </div>
           <div style="display: flex; flex-wrap: wrap; gap: 4px; margin-top: 10px; border-top: 1px solid rgba(255,255,255,0.05); padding-top: 8px;">
@@ -5594,6 +5595,7 @@
                 <span class="badge blocked">Candidate</span>
               </div>
               <div style="margin-bottom: 4px;"><strong>Readiness:</strong> ${readinessBadge(emp)}</div>
+              <div style="margin-bottom: 4px;"><strong>Schedulable:</strong> ${emp.schedulable ? 'yes' : 'no'} · <span title="${escapeHtml(emp.readiness_reason || '')}">readiness_reason=${escapeHtml(emp.readiness_reason || '-')}</span></div>
               <div><strong>Last Active:</strong> ${formatDate(emp.last_seen_at) || 'Never'}</div>
             </div>
             <div style="display: flex; flex-wrap: wrap; gap: 4px; margin-top: 10px; border-top: 1px solid rgba(255,255,255,0.05); padding-top: 8px;">
