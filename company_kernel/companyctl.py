@@ -7989,6 +7989,7 @@ def cmd_task_show(args: argparse.Namespace) -> int:
     tool_calls = list_tool_calls(conn, task_id=task_id, limit=100)
     budget_events = list_budget_events(conn, task_id=task_id, limit=100)
     task_budget_summary = budget_summary(conn, task_id=task_id)
+    projects = task_project_costs(conn, task_id)
     sanitized_logs = []
     log_policy = sanitized_log_policy()
     for run in rows(
@@ -8048,6 +8049,7 @@ def cmd_task_show(args: argparse.Namespace) -> int:
             "tool_calls": tool_calls,
             "budget_events": budget_events,
             "budget_summary": task_budget_summary,
+            "projects": projects,
             "conversation_summary": task_conversation_summary(conn, metadata),
             "progress_events": task_progress_events(events),
             "correction_events": task_correction_events(events),
@@ -8718,6 +8720,43 @@ def project_tasks(conn: sqlite3.Connection, project_id: str) -> list[dict]:
         """,
         (project_id,),
     )
+
+
+def task_project_costs(conn: sqlite3.Connection, task_id: str) -> list[dict]:
+    projects = rows(
+        conn,
+        """
+        SELECT p.*
+        FROM project_tasks pt
+        JOIN projects p ON p.id = pt.project_id
+        WHERE pt.task_id = ?
+        ORDER BY p.updated_at DESC
+        """,
+        (task_id,),
+    )
+    summary = budget_summary(conn)
+    by_currency = summary.get("by_project_by_currency", {}) if isinstance(summary.get("by_project_by_currency"), dict) else {}
+    by_events = summary.get("by_project_event_count", {}) if isinstance(summary.get("by_project_event_count"), dict) else {}
+    by_input = summary.get("by_project_token_input", {}) if isinstance(summary.get("by_project_token_input"), dict) else {}
+    by_output = summary.get("by_project_token_output", {}) if isinstance(summary.get("by_project_token_output"), dict) else {}
+    by_runtime = summary.get("by_project_runtime_seconds", {}) if isinstance(summary.get("by_project_runtime_seconds"), dict) else {}
+    enriched = []
+    for project in projects:
+        project_id = str(project.get("id") or "")
+        project_currency = by_currency.get(project_id, {}) if isinstance(by_currency.get(project_id, {}), dict) else {}
+        enriched.append(
+            {
+                **project,
+                "budget_by_currency": project_currency,
+                "budget_total": round(sum(float(amount or 0) for amount in project_currency.values()), 6),
+                "budget_currency": next(iter(project_currency.keys()), "USD") if len(project_currency) <= 1 else "mixed",
+                "budget_event_count": int(by_events.get(project_id, 0) or 0),
+                "token_input": int(by_input.get(project_id, 0) or 0),
+                "token_output": int(by_output.get(project_id, 0) or 0),
+                "runtime_seconds": int(by_runtime.get(project_id, 0) or 0),
+            }
+        )
+    return enriched
 
 
 def project_plan_items(conn: sqlite3.Connection, project_id: str) -> list[dict]:

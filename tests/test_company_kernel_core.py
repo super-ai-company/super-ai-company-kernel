@@ -5483,8 +5483,12 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual({"THB": 8.0, "USD": 0.25}, cli_summary["summary"]["by_project_by_currency"]["project-budget-rollup"])
 
     def test_task_detail_includes_runtime_tool_call_and_budget_ledgers(self) -> None:
+        code, project = run_cli("project", "create", "--project-id", "project-task-detail-cost", "--title", "Task Detail Cost", "--goal", "Show task project spend", "--owner", "openclaw-main")
+        self.assertEqual(0, code, project)
         code, submitted = run_cli("task", "submit", "--from", "openclaw-main", "--to", "codex", "--task-id", "task-detail-control-plane", "--title", "Task detail control plane")
         self.assertEqual(0, code, submitted)
+        code, linked = run_cli("project", "link-task", "--project-id", "project-task-detail-cost", "--task-id", "task-detail-control-plane")
+        self.assertEqual(0, code, linked)
         code, running = run_cli("task", "run", "--task-id", "task-detail-control-plane", "--agent", "codex", "--by", "hermes", "--adapter-type", "codex")
         self.assertEqual(0, code, running)
         attempt_id = running["attempt"]["attempt_id"]
@@ -5574,12 +5578,17 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual(["budget-task-detail-control-plane"], [item["budget_event_id"] for item in shown["budget_events"]])
         self.assertEqual(0.25, shown["budget_summary"]["total_amount"])
         self.assertEqual(500, shown["budget_summary"]["token_input"])
+        self.assertEqual(["project-task-detail-cost"], [item["id"] for item in shown["projects"]])
+        self.assertEqual({"USD": 0.25}, shown["projects"][0]["budget_by_currency"])
+        self.assertEqual(1, shown["projects"][0]["budget_event_count"])
         self.assertEqual(trace_id, shown["runtime_sessions"][0]["trace_id"])
 
         status, api_payload = api_gateway.route_get("/v1/tasks/task-detail-control-plane", {})
         self.assertEqual(HTTPStatus.OK, status, api_payload)
         self.assertEqual(["tool-task-detail-control-plane"], [item["tool_call_id"] for item in api_payload["tool_calls"]])
         self.assertEqual(0.25, api_payload["budget_summary"]["total_amount"])
+        self.assertEqual(["project-task-detail-cost"], [item["id"] for item in api_payload["projects"]])
+        self.assertEqual({"USD": 0.25}, api_payload["projects"][0]["budget_by_currency"])
 
     def test_task_detail_marks_completed_task_without_final_evidence_invalid(self) -> None:
         with sqlite3.connect(self.root / "company.sqlite") as conn:
