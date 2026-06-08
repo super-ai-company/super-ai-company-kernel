@@ -3484,6 +3484,10 @@
     const counts = (cockpit && cockpit.counts) || {};
     const employeeStatusCounts = counts.employee_status_counts || {};
     const readinessCounts = counts.readiness_counts || {};
+    const registryReconciliation = (cockpit && cockpit.registry_reconciliation) || {};
+    const registeredTotal = registryReconciliation.registered_total ?? counts.registered_employees_total ?? counts.employees_total ?? counts.employees ?? 0;
+    const schedulableTotal = registryReconciliation.schedulable_total ?? counts.employees_total ?? counts.employees ?? 0;
+    const excludedHumanOwners = registryReconciliation.excluded_human_owners ?? counts.excluded_human_owners ?? 0;
     const ledgerConsistency = ledgerConsistencySummary(cockpit && cockpit.ledger_consistency);
     cards.innerHTML = `
       <div class="cockpit-card">
@@ -3494,7 +3498,7 @@
       <div class="cockpit-card">
         <h3>Employees Online</h3>
         <div class="cockpit-value">${escapeHtml(counts.employees_online ?? 0)}</div>
-        <div class="cockpit-subtext">${escapeHtml(counts.employees_total ?? counts.employees ?? 0)} total · ${escapeHtml(counts.employees_abnormal ?? 0)} abnormal · busy ${escapeHtml(employeeStatusCounts.busy || 0)} · active-limited ${escapeHtml(employeeStatusCounts['active-limited'] || 0)} · candidate ${escapeHtml(employeeStatusCounts.candidate || 0)} · active_ready ${escapeHtml(readinessCounts.active_ready || 0)} · online_only ${escapeHtml(readinessCounts.online_only || 0)}</div>
+        <div class="cockpit-subtext">${escapeHtml(schedulableTotal)} schedulable · ${escapeHtml(registeredTotal)} registered · ${escapeHtml(excludedHumanOwners)} human owner excluded · ${escapeHtml(counts.employees_abnormal ?? 0)} abnormal · busy ${escapeHtml(employeeStatusCounts.busy || 0)} · active-limited ${escapeHtml(employeeStatusCounts['active-limited'] || 0)} · candidate ${escapeHtml(employeeStatusCounts.candidate || 0)} · active_ready ${escapeHtml(readinessCounts.active_ready || 0)} · online_only ${escapeHtml(readinessCounts.online_only || 0)}</div>
       </div>
       <div class="cockpit-card">
         <h3>Active Attempts</h3>

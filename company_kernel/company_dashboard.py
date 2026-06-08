@@ -725,6 +725,25 @@ def build_cockpit_summary(summary: dict) -> dict:
         "status_counts": employee_status_counts,
         "readiness_counts": readiness_counts,
     }
+    raw_counts = summary.get("counts") or {}
+    registered_total = int(raw_counts.get("registered_employees") or raw_counts.get("employees") or employees_total)
+    excluded_human_owner_ids = [
+        str(item.get("id") or "")
+        for item in summary.get("all_employees", [])
+        if item.get("id") and (item.get("id") == "owner-shift" or item.get("role") == "human-owner" or item.get("runtime") == "human")
+    ]
+    excluded_human_owners = max(registered_total - employees_total, len(excluded_human_owner_ids))
+    registry_reconciliation = {
+        "registered_total": registered_total,
+        "schedulable_total": employees_total,
+        "excluded_human_owners": excluded_human_owners,
+        "excluded_employee_ids": excluded_human_owner_ids,
+        "summary": (
+            f"{employees_total} schedulable AI employees shown; "
+            f"{registered_total} Kernel registered records; "
+            f"{excluded_human_owners} human owner records excluded from scheduling."
+        ),
+    }
     return {
         "ok": True,
         "generated_at": generated_at,
@@ -742,6 +761,8 @@ def build_cockpit_summary(summary: dict) -> dict:
         "counts": {
             "employees": employees_total,
             "employees_total": employees_total,
+            "registered_employees_total": registered_total,
+            "excluded_human_owners": excluded_human_owners,
             "employees_online": employees_online,
             "employees_abnormal": employees_abnormal,
             "employee_status_counts": employee_status_counts,
@@ -766,6 +787,7 @@ def build_cockpit_summary(summary: dict) -> dict:
             "chat_handshake_or_idle": chat_counts["handshake_or_idle"],
         },
         "employee_counts": employee_counts,
+        "registry_reconciliation": registry_reconciliation,
         "employees": employee_states,
         "long_tasks": long_tasks,
         "supervisor_activity": supervisor_activity[:10],
@@ -2374,16 +2396,18 @@ def advanced_summary(summary: dict) -> dict:
     prepared = public_summary(summary)
     employees = employee_view_models(summary)
     counts = dict(summary.get("counts", {}))
+    counts["registered_employees"] = int(counts.get("employees") or len(summary.get("employees", [])))
     counts["employees"] = len(employees)
     counts["active_employees"] = sum(1 for employee in employees if employee.get("employee_status") == "active")
     counts["candidate_employees"] = sum(1 for employee in employees if employee.get("employee_status") == "candidate")
     counts["archived_employees"] = sum(1 for employee in employees if employee.get("employee_status") == "archived")
     prepared["counts"] = counts
     prepared["employees"] = employees
+    prepared["all_employees"] = summary.get("employees", [])
     prepared["skill_registry"] = companyctl.skill_registry()
     prepared["communication_observability"] = communication_observability_summary(summary)
     prepared["openclaw_runtime_inventory"] = summary.get("runtime_health", {}).get("openclaw_inventory", {})
-    prepared["cockpit"] = build_cockpit_summary({**summary, "employees": employees})
+    prepared["cockpit"] = build_cockpit_summary({**summary, "employees": employees, "all_employees": summary.get("employees", []), "counts": counts})
     return prepared
 
 
