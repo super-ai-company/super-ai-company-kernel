@@ -567,6 +567,10 @@
       min-height: 1px;
     }
 
+    .embedded-panel {
+      display: none;
+    }
+
     @keyframes fadeIn {
       from { opacity: 0; transform: translateY(12px); }
       to { opacity: 1; transform: translateY(0); }
@@ -2486,7 +2490,7 @@
       </div>
 
       <!-- Projects Tab -->
-      <div id="panel-projects" class="tab-pane">
+      <div id="panel-projects" class="embedded-panel">
         <div class="section-card">
           <h2 data-i18n="projects_graphs_title"><i class="fa-solid fa-diagram-project"></i> Project Execution Graphs</h2>
           <div class="graph-panel">
@@ -2916,7 +2920,7 @@
       </div>
 
       <!-- Events Tab -->
-      <div id="panel-events" class="tab-pane">
+      <div id="panel-events" class="embedded-panel">
         <div class="section-card">
           <h2 data-i18n="company_events_title"><i class="fa-solid fa-list-check"></i> Company Event Ledger</h2>
           <div class="table-container">
@@ -2966,7 +2970,7 @@
       </div>
 
       <!-- Telemetry Tab -->
-      <div id="panel-telemetry" class="tab-pane">
+      <div id="panel-telemetry" class="embedded-panel">
         <div class="section-card">
           <h2 data-i18n="telemetry_title_sub"><i class="fa-solid fa-chart-line"></i> Distributed Trace Telemetry</h2>
           <p style="font-size: 13px; color: var(--text-secondary); margin-bottom: 15px;" data-i18n="telemetry_desc">
