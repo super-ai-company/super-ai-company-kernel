@@ -1923,7 +1923,39 @@ def record_budget_event_internal(
     conn.commit()
     event = record_event(conn, "budget.spent", employee_id, task_id=resolved_task_id, trace_id=resolved_trace_id, payload={"budget_event_id": item["budget_event_id"], "attempt_id": attempt_id, "amount": item["amount"], "currency": item["currency"], "cost_type": cost_type, "token_input": item["token_input"], "token_output": item["token_output"]})
     audit(conn, employee_id, "budget.record", item["budget_event_id"], {"task_id": resolved_task_id, "attempt_id": attempt_id, "amount": item["amount"], "currency": item["currency"], "event_id": event["id"]})
-    return {"budget_event": hydrate_budget_event(row_by_id(conn, "budget_events", "budget_event_id", item["budget_event_id"])), "event_id": event["id"]}
+    current_summary = budget_summary(conn, task_id=resolved_task_id, employee_id=employee_id, trace_id=resolved_trace_id, attempt_id=attempt_id)
+    limits = current_summary.get("budget_limits", {}) if isinstance(current_summary.get("budget_limits"), dict) else {}
+    approval: dict = {}
+    if str(limits.get("status") or "") in {"soft_exceeded", "hard_exceeded"}:
+        approval_id = f"budget-overrun-{resolved_task_id or item['budget_event_id']}"
+        approval_result = create_approval_internal(
+            conn,
+            source=employee_id,
+            action="budget_overrun",
+            reason=f"Budget {limits.get('status')} for task={resolved_task_id or '-'} amount={current_summary.get('total_amount')} {current_summary.get('currency')}",
+            target=employee_id,
+            risk="P0" if limits.get("status") == "hard_exceeded" else "P1",
+            approval_id=approval_id,
+            metadata={
+                "task_id": resolved_task_id,
+                "trace_id": resolved_trace_id,
+                "attempt_id": attempt_id,
+                "budget_event_id": item["budget_event_id"],
+                "budget_account_id": limits.get("budget_account_id", ""),
+                "budget_amount": current_summary.get("total_amount", 0),
+                "currency": current_summary.get("currency") or item["currency"],
+                "limit_status": limits.get("status", ""),
+                "soft_limit": limits.get("soft_limit", 0),
+                "hard_limit": limits.get("hard_limit", 0),
+            },
+        )
+        approval = approval_result.get("approval", {})
+    return {
+        "budget_event": hydrate_budget_event(row_by_id(conn, "budget_events", "budget_event_id", item["budget_event_id"])),
+        "event_id": event["id"],
+        "budget_limits": limits,
+        "approval": approval,
+    }
 
 
 def task_attempts(conn: sqlite3.Connection, task_id: str) -> list[dict]:
