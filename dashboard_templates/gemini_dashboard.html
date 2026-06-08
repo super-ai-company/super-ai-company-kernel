@@ -6974,6 +6974,15 @@
     }
   }
 
+  function runStartupStep(name, fn) {
+    try {
+      return fn();
+    } catch (err) {
+      companyApiLog('ERROR', `Startup step failed: ${name}: ${err.message}`, 'error');
+      return null;
+    }
+  }
+
   const TRANSLATIONS = {
     en: {
       "nav_overview": "Cockpit Console",
@@ -7174,18 +7183,19 @@
     if (langSelect) {
       langSelect.value = currentLang;
     }
-    applyTranslations(currentLang);
+    runStartupStep('applyTranslations', () => applyTranslations(currentLang));
 
-    populateDashboard();
-    populateKanban();
-    populateTraces();
-    renderInteractiveNetworkMap();
-    refreshKernelEventConsole();
-    populateChatHub();
-    installNotificationSettingsPanel();
+    runStartupStep('populateDashboard', populateDashboard);
+    runStartupStep('populateKanban', populateKanban);
+    runStartupStep('populateTraces', populateTraces);
+    runStartupStep('renderInteractiveNetworkMap', renderInteractiveNetworkMap);
+    runStartupStep('refreshKernelEventConsole', refreshKernelEventConsole);
+    runStartupStep('populateChatHub', populateChatHub);
+    runStartupStep('installNotificationSettingsPanel', installNotificationSettingsPanel);
     
     // Auto-refresh state check
-    const isAutoRefresh = localStorage.getItem('dashboard-auto-refresh') === 'true';
+    const savedAutoRefresh = localStorage.getItem('dashboard-auto-refresh');
+    const isAutoRefresh = savedAutoRefresh !== 'false';
     const toggle = document.getElementById('refresh-toggle');
     if (toggle) {
       toggle.checked = isAutoRefresh;

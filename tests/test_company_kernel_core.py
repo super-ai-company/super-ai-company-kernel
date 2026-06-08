@@ -1836,6 +1836,7 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertIn("sse-status-chip", html)
         self.assertIn("setSseStatus", html)
         self.assertIn("SSE / REST fallback", html)
+        self.assertIn("savedAutoRefresh !== 'false'", html)
         self.assertIn("Progress Stagnant", html)
         self.assertIn("stagnantTaskGuidance", html)
         self.assertIn("员工仍在线，但 15 分钟没有新进度。可继续等待、发送探针、查看日志或请求 Hermes 纠偏。", html)
@@ -2515,7 +2516,18 @@ class CompanyKernelCoreTest(unittest.TestCase):
     def test_api_gateway_streams_company_events_as_sse(self) -> None:
         conn = companyctl.connect()
         try:
-            companyctl.record_event(conn, "task.progress", "codex", task_id="task-sse", payload={"message": "stream me"}, trace_id="trace-sse")
+            companyctl.record_event(
+                conn,
+                "task.progress",
+                "codex",
+                task_id="task-sse",
+                payload={
+                    "message": "stream me api_key=sk-test-secret",
+                    "path": str(self.root / ".ssh" / "id_rsa"),
+                    "files": [str(self.root / ".env")],
+                },
+                trace_id="trace-sse",
+            )
         finally:
             conn.close()
 
@@ -2547,6 +2559,10 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertIn("single_company_kernel_ledger", output)
         self.assertIn("sync_wait_window", output)
         self.assertIn("task_failure_decided_by_attempt_evidence", output)
+        self.assertNotIn("/Users/owner", output)
+        self.assertNotIn("id_rsa", output)
+        self.assertNotIn(".env", output)
+        self.assertNotIn("sk-test-secret", output)
 
     def test_api_gateway_sse_resumes_after_last_event_id_without_replaying_old_events(self) -> None:
         conn = companyctl.connect()
@@ -6370,6 +6386,29 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertIn("event_type", events["events"][0])
         self.assertIn("source_agent", events["events"][0])
         self.assertIn("processed_at", events["events"][0])
+        conn = companyctl.connect()
+        try:
+            companyctl.record_event(
+                conn,
+                "artifact.created",
+                "codex",
+                task_id="task-api-event-sanitize",
+                payload={
+                    "path": str(self.root / ".ssh" / "id_rsa"),
+                    "message": "api_key=sk-test-secret and /Users/owner/project/.env",
+                },
+                trace_id="trace-api-event-sanitize",
+            )
+        finally:
+            conn.close()
+        status, sanitized_events = api_gateway.route_get("/v1/events", {"limit": ["1"]})
+        self.assertEqual(200, status, sanitized_events)
+        event_json = json.dumps(sanitized_events, ensure_ascii=False)
+        self.assertNotIn("/Users/owner", event_json)
+        self.assertNotIn("id_rsa", event_json)
+        self.assertNotIn(".env", event_json)
+        self.assertNotIn("sk-test-secret", event_json)
+        self.assertIn("payload", sanitized_events["events"][0])
 
     def test_api_gateway_exposes_communication_observability_summary(self) -> None:
         code, handshake = run_cli("message", "send", "--from", "openclaw-main", "--to", "codex", "--body", "handshake")

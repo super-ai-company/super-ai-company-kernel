@@ -237,6 +237,58 @@ def truthy(value: object) -> bool:
     return value is True or str(value).lower() in {"1", "true", "yes", "on"}
 
 
+PATH_LIKE_EVENT_KEYS = {
+    "artifact",
+    "artifact_path",
+    "evidence",
+    "evidence_path",
+    "file",
+    "files",
+    "log",
+    "path",
+    "path_or_url",
+    "profile",
+    "state_file",
+    "original_path",
+}
+
+
+def sanitize_event_value(value: object, *, key: str = "") -> object:
+    key_lower = key.lower()
+    if isinstance(value, dict):
+        return {str(item_key): sanitize_event_value(item_value, key=str(item_key)) for item_key, item_value in value.items()}
+    if isinstance(value, list):
+        return [sanitize_event_value(item, key=key) for item in value]
+    if isinstance(value, str):
+        if any(marker in key_lower for marker in PATH_LIKE_EVENT_KEYS):
+            display = companyctl.sanitize_evidence_path_for_display(value)
+            return {
+                "relative_path": display.get("relative_path", ""),
+                "basename": display.get("basename", ""),
+                "allowed": display.get("allowed", False),
+                "reason": display.get("reason", ""),
+                "absolute_path_exposed": False,
+            }
+        return companyctl.sanitize_log_text(value)
+    return value
+
+
+def sanitize_event_row(row: dict) -> dict:
+    event = dict(row)
+    raw_payload = event.get("payload_json", "")
+    if raw_payload:
+        try:
+            payload = json.loads(raw_payload)
+        except (TypeError, json.JSONDecodeError):
+            payload = companyctl.sanitize_log_text(raw_payload)
+        event["payload"] = sanitize_event_value(payload)
+        event["payload_json"] = json.dumps(event["payload"], ensure_ascii=False, sort_keys=True)
+    else:
+        event["payload"] = {}
+        event["payload_json"] = ""
+    return event
+
+
 def recent_event_rows(*, limit: int = 20, after_created_at: str = "", after_id: str = "") -> list[dict]:
     conn = companyctl.connect_readonly()
     try:
@@ -377,7 +429,7 @@ def route_get(path: str, query: dict[str, list[str]]) -> tuple[int, dict]:
                 conn.close()
         else:
             events = list(reversed(recent_event_rows(limit=limit)))
-        return HTTPStatus.OK, {"ok": True, "events": events, "pending_only": pending_only}
+        return HTTPStatus.OK, {"ok": True, "events": [sanitize_event_row(event) for event in events], "pending_only": pending_only}
     if path == "/v1/evidence":
         conn = companyctl.connect_readonly()
         try:
@@ -1282,7 +1334,8 @@ class ApiHandler(BaseHTTPRequestHandler):
             try:
                 events = recent_event_rows(limit=limit, after_created_at=last_created_at, after_id=last_id)
                 for event in events:
-                    self.send_sse_event("company_event", event, event_id=event.get("id", ""))
+                    safe_event = sanitize_event_row(event)
+                    self.send_sse_event("company_event", safe_event, event_id=safe_event.get("id", ""))
                     last_created_at = event.get("created_at", last_created_at)
                     last_id = event.get("id", last_id)
                 if not events:
