@@ -498,23 +498,30 @@ def ceo_timeline_items(timeline: list[dict]) -> list[dict]:
             severity = "success"
         elif kind == "budget_event":
             recommended_action = "review spend"
+        elif label == "approval.requested":
+            recommended_action = "owner approval required"
+            severity = "critical" if str(item.get("approval_action", "")) in {"budget_overrun", "budget.overrun", "external_send", "telegram_send", "openclaw_send", "rule_change", "delete_file", "sensitive_file", "publish", "payment", "compensation", "salary", "penalty"} else "attention"
         if kind == "adapter" and status.lower() == "failed":
             title = f"adapter failed: {label}"
-        items.append(
-            {
-                "at": item.get("at", ""),
-                "kind": kind,
-                "stage": label,
-                "status": status,
-                "task_id": item.get("task_id", ""),
-                "attempt_id": item.get("attempt_id", ""),
-                "actor": item.get("actor", ""),
-                "title": companyctl.sanitize_log_text(title),
-                "summary": companyctl.sanitize_log_text(item.get("sanitized_log") or item.get("message") or label),
-                "severity": severity,
-                "recommended_action": recommended_action,
-            }
-        )
+        ceo_item = {
+            "at": item.get("at", ""),
+            "kind": kind,
+            "stage": label,
+            "status": status,
+            "task_id": item.get("task_id", ""),
+            "attempt_id": item.get("attempt_id", ""),
+            "actor": item.get("actor", ""),
+            "title": companyctl.sanitize_log_text(title),
+            "summary": companyctl.sanitize_log_text(item.get("sanitized_log") or item.get("message") or label),
+            "severity": severity,
+            "recommended_action": recommended_action,
+        }
+        for key in ("approval_id", "approval_action", "risk"):
+            if item.get(key):
+                ceo_item[key] = item[key]
+        if label == "approval.requested" and item.get("approval_action"):
+            ceo_item["summary"] = companyctl.sanitize_log_text(f"{item.get('approval_action')} requires owner approval risk={item.get('risk', '-') or '-'}")
+        items.append(ceo_item)
     return items
 
 

@@ -5524,6 +5524,10 @@ class CompanyKernelCoreTest(unittest.TestCase):
         approval_events = [item for item in timeline if item.get("label") == "approval.requested"]
         self.assertEqual(["budget-overrun-task-budget-auto-approval"], [item["approval_id"] for item in approval_events])
         self.assertEqual(["budget_overrun"], [item["approval_action"] for item in approval_events])
+        ceo_approval_items = [item for item in trace["ceo_timeline"] if item.get("approval_id") == "budget-overrun-task-budget-auto-approval"]
+        self.assertEqual(["critical"], [item["severity"] for item in ceo_approval_items])
+        self.assertEqual(["owner approval required"], [item["recommended_action"] for item in ceo_approval_items])
+        self.assertIn("budget_overrun", ceo_approval_items[0]["summary"])
 
     def test_budget_summary_reports_mixed_currency_ledger_rows(self) -> None:
         code, submitted = run_cli("task", "submit", "--from", "openclaw-main", "--to", "codex", "--task-id", "task-budget-mixed", "--title", "Mixed currency budget")
