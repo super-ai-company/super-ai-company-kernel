@@ -4123,7 +4123,7 @@
     if (!evidenceId) return;
     companyApiLog('SYSTEM', `Loading safe evidence preview ${evidenceId}. Absolute paths and downloads stay disabled.`, 'normal');
     try {
-      const payload = await companyApiGet(`/v1/evidence/${encodeURIComponent(evidenceId)}/content`);
+      const payload = await companyApiGet(`/v1/evidence/${encodeURIComponent(evidenceId)}/safe-preview`);
       const evidence = payload.evidence || {};
       const display = payload.display || {};
       const content = payload.content || {};

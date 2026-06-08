@@ -1986,6 +1986,7 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertIn("data-attempt-id", html)
         self.assertIn("viewEvidenceContent", html)
         self.assertIn("/v1/evidence/", html)
+        self.assertIn("/safe-preview", html)
         self.assertIn("View Safe Evidence", html)
         self.assertIn("Safe Evidence: ${evidenceId}", html)
         self.assertIn("Absolute Path Exposed", html)
@@ -7276,6 +7277,7 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertIn("/v1/approvals/{approval_id}/resolve", openapi["paths"])
         self.assertIn("/v1/evidence", openapi["paths"])
         self.assertIn("/v1/evidence/{evidence_id}/content", openapi["paths"])
+        self.assertIn("/v1/evidence/{evidence_id}/safe-preview", openapi["paths"])
         self.assertIn("/v1/artifacts", openapi["paths"])
         self.assertIn("/v1/handoffs", openapi["paths"])
         self.assertIn("/v1/failures", openapi["paths"])
@@ -7524,6 +7526,13 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertIn("safe-report.md", safe["display"]["relative_path"])
         self.assertNotIn(str(self.root), json.dumps(safe, ensure_ascii=False))
 
+        status, safe_alias = api_gateway.route_get("/v1/evidence/evidence-safe-content/safe-preview", {})
+        self.assertEqual(200, status, safe_alias)
+        self.assertTrue(safe_alias["display"]["allowed"])
+        self.assertEqual("safe evidence body\n", safe_alias["content"]["text"])
+        self.assertEqual(safe["display"]["relative_path"], safe_alias["display"]["relative_path"])
+        self.assertNotIn(str(self.root), json.dumps(safe_alias, ensure_ascii=False))
+
         status, blocked = api_gateway.route_get("/v1/evidence/evidence-secret-content/content", {})
         self.assertEqual(403, status, blocked)
         self.assertFalse(blocked["display"]["allowed"])
@@ -7531,6 +7540,13 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual("", blocked["content"]["text"])
         self.assertNotIn("API_KEY", json.dumps(blocked, ensure_ascii=False))
         self.assertNotIn(str(secret_path), json.dumps(blocked, ensure_ascii=False))
+
+        status, blocked_alias = api_gateway.route_get("/v1/evidence/evidence-secret-content/safe-preview", {})
+        self.assertEqual(403, status, blocked_alias)
+        self.assertFalse(blocked_alias["display"]["allowed"])
+        self.assertEqual("", blocked_alias["content"]["text"])
+        self.assertNotIn("API_KEY", json.dumps(blocked_alias, ensure_ascii=False))
+        self.assertNotIn(str(secret_path), json.dumps(blocked_alias, ensure_ascii=False))
 
     def test_api_gateway_exposes_conversations_approvals_and_adapter_run_recovery(self) -> None:
         status, started = api_gateway.route_post(
