@@ -104,6 +104,12 @@ def build_traces(conn: sqlite3.Connection, *, limit: int = 20) -> list[dict]:
               SELECT trace_id, created_at FROM handoffs WHERE trace_id != ''
               UNION ALL
               SELECT trace_id, started_at AS created_at FROM execution_attempts WHERE trace_id != ''
+              UNION ALL
+              SELECT trace_id, started_at AS created_at FROM runtime_sessions WHERE trace_id != ''
+              UNION ALL
+              SELECT trace_id, started_at AS created_at FROM agent_tool_calls WHERE trace_id != ''
+              UNION ALL
+              SELECT trace_id, created_at FROM budget_events WHERE trace_id != ''
             )
             GROUP BY trace_id
             ORDER BY last_seen DESC
@@ -148,9 +154,47 @@ def build_traces(conn: sqlite3.Connection, *, limit: int = 20) -> list[dict]:
             """,
             (trace_id,),
         )
+        session_rows = rows(
+            conn,
+            """
+            SELECT session_id, task_id, attempt_id, employee_id, adapter_type, runtime_type,
+                   status, started_at, last_heartbeat_at, last_progress_at, stopped_at
+            FROM runtime_sessions
+            WHERE trace_id = ?
+            ORDER BY started_at ASC
+            """,
+            (trace_id,),
+        )
+        tool_call_rows = rows(
+            conn,
+            """
+            SELECT tool_call_id, task_id, attempt_id, employee_id, session_id, tool_name,
+                   tool_type, status, risk_level, started_at, finished_at, output_summary, error_message
+            FROM agent_tool_calls
+            WHERE trace_id = ?
+            ORDER BY started_at ASC
+            """,
+            (trace_id,),
+        )
+        budget_rows = rows(
+            conn,
+            """
+            SELECT budget_event_id, task_id, attempt_id, employee_id, cost_type, amount,
+                   currency, token_input, token_output, runtime_seconds, summary, created_at
+            FROM budget_events
+            WHERE trace_id = ?
+            ORDER BY created_at ASC
+            """,
+            (trace_id,),
+        )
         timestamps = [item["created_at"] for item in [*event_rows, *run_rows, *artifact_rows, *evidence_rows, *handoff_rows] if item.get("created_at")]
         timestamps.extend(item["started_at"] for item in attempt_rows if item.get("started_at"))
         timestamps.extend(item["finished_at"] for item in attempt_rows if item.get("finished_at"))
+        timestamps.extend(item["started_at"] for item in session_rows if item.get("started_at"))
+        timestamps.extend(item["stopped_at"] for item in session_rows if item.get("stopped_at"))
+        timestamps.extend(item["started_at"] for item in tool_call_rows if item.get("started_at"))
+        timestamps.extend(item["finished_at"] for item in tool_call_rows if item.get("finished_at"))
+        timestamps.extend(item["created_at"] for item in budget_rows if item.get("created_at"))
         if not timestamps:
             continue
         start = min(timestamps)
@@ -264,6 +308,55 @@ def build_traces(conn: sqlite3.Connection, *, limit: int = 20) -> list[dict]:
                     "runtime_policy": runtime_policy,
                     "created_at": attempt["started_at"],
                     "label": attempt["adapter_type"],
+                }
+            )
+        for session in session_rows:
+            spans.append(
+                {
+                    "name": f"runtime.session.{session['status']}",
+                    "service": session["employee_id"] or "runtime",
+                    "duration_ms": milliseconds_between(session["started_at"], session.get("stopped_at") or session.get("last_heartbeat_at") or session["started_at"]),
+                    "start_ms": milliseconds_between(start, session["started_at"]),
+                    "session_id": session["session_id"],
+                    "attempt_id": session.get("attempt_id", ""),
+                    "task_id": session.get("task_id", ""),
+                    "created_at": session["started_at"],
+                    "label": f"{session.get('runtime_type') or session.get('adapter_type') or 'runtime'} session",
+                }
+            )
+        for tool_call in tool_call_rows:
+            spans.append(
+                {
+                    "name": f"tool.call.{tool_call['status']}",
+                    "service": tool_call["employee_id"] or "tool",
+                    "duration_ms": milliseconds_between(tool_call["started_at"], tool_call.get("finished_at") or tool_call["started_at"]),
+                    "start_ms": milliseconds_between(start, tool_call["started_at"]),
+                    "tool_call_id": tool_call["tool_call_id"],
+                    "session_id": tool_call.get("session_id", ""),
+                    "attempt_id": tool_call.get("attempt_id", ""),
+                    "task_id": tool_call.get("task_id", ""),
+                    "created_at": tool_call["started_at"],
+                    "label": companyctl.sanitize_log_text(tool_call.get("output_summary") or tool_call.get("error_message") or tool_call.get("tool_name", "")),
+                    "risk_level": tool_call.get("risk_level", ""),
+                }
+            )
+        for budget_event in budget_rows:
+            spans.append(
+                {
+                    "name": f"budget.{budget_event['cost_type'] or 'spent'}",
+                    "service": budget_event["employee_id"] or "budget",
+                    "duration_ms": 24,
+                    "start_ms": milliseconds_between(start, budget_event["created_at"]),
+                    "budget_event_id": budget_event["budget_event_id"],
+                    "attempt_id": budget_event.get("attempt_id", ""),
+                    "task_id": budget_event.get("task_id", ""),
+                    "created_at": budget_event["created_at"],
+                    "label": f"{budget_event['amount']} {budget_event['currency']} · {budget_event['summary']}",
+                    "amount": float(budget_event.get("amount") or 0),
+                    "currency": budget_event.get("currency", ""),
+                    "token_input": int(budget_event.get("token_input") or 0),
+                    "token_output": int(budget_event.get("token_output") or 0),
+                    "runtime_seconds": int(budget_event.get("runtime_seconds") or 0),
                 }
             )
         spans.sort(key=lambda item: (item.get("start_ms", 0), item.get("event_sequence", 999999), item.get("name", "")))
@@ -606,6 +699,27 @@ def build_cockpit_summary(summary: dict) -> dict:
                 "actions": attention_actions("evidence", task_id=task_id),
             }
         )
+    for tool_call in summary.get("tool_calls", [])[:10]:
+        if str(tool_call.get("status", "") or "") not in {"running", "failed", "blocked", "cancelled"}:
+            continue
+        task_id = str(tool_call.get("task_id", "") or "")
+        owner_attention.append(
+            {
+                "kind": "tool_call",
+                "state": tool_call.get("status", ""),
+                "approval_id": tool_call.get("approval_id", ""),
+                "task_id": task_id,
+                "approval_action": "",
+                "risk": tool_call.get("risk_level", ""),
+                "title": tool_call.get("tool_name", ""),
+                "target_agent": tool_call.get("employee_id", ""),
+                "attempt_id": tool_call.get("attempt_id", ""),
+                "trace_id": tool_call.get("trace_id", ""),
+                "message": f"tool call {tool_call.get('status', '')}: {tool_call.get('tool_name', '')} · {tool_call.get('output_summary') or tool_call.get('input_summary') or ''}",
+                "updated_at": tool_call.get("finished_at") or tool_call.get("started_at") or "",
+                "actions": attention_actions("blocked_task" if str(tool_call.get("status", "")) in {"failed", "blocked"} else "stagnant_task", task_id=task_id, attempt_id=str(tool_call.get("attempt_id", "") or "")),
+            }
+        )
     evidence_issues = summary.get("evidence_health", {}).get("issues", [])
     if not isinstance(evidence_issues, list):
         evidence_issues = []
@@ -769,6 +883,15 @@ def build_cockpit_summary(summary: dict) -> dict:
             "employee_status_counts": employee_status_counts,
             "readiness_counts": readiness_counts,
             "active_attempts": len(active_attempts),
+            "runtime_sessions": int(raw_counts.get("runtime_sessions") or len(summary.get("runtime_sessions", []))),
+            "active_runtime_sessions": int(raw_counts.get("active_runtime_sessions") or sum(1 for item in summary.get("runtime_sessions", []) if str(item.get("status", "")) in {"active", "idle"})),
+            "tool_calls": int(raw_counts.get("tool_calls") or len(summary.get("tool_calls", []))),
+            "running_tool_calls": int(raw_counts.get("running_tool_calls") or sum(1 for item in summary.get("tool_calls", []) if str(item.get("status", "")) == "running")),
+            "failed_tool_calls": int(raw_counts.get("failed_tool_calls") or sum(1 for item in summary.get("tool_calls", []) if str(item.get("status", "")) in {"failed", "blocked", "cancelled"})),
+            "budget_events": int(raw_counts.get("budget_events") or len(summary.get("budget_events", []))),
+            "estimated_cost": float(summary.get("budget_summary", {}).get("total_amount", 0) or 0),
+            "token_input": int(summary.get("budget_summary", {}).get("token_input", 0) or 0),
+            "token_output": int(summary.get("budget_summary", {}).get("token_output", 0) or 0),
             "running_tasks": sum(1 for item in summary.get("tasks", []) if str(item.get("status", "")).lower() in {"claimed", "running"}),
             "stagnant_tasks": sum(1 for item in long_tasks if item.get("long_task_state") == "progress_stagnant"),
             "blocked_tasks": sum(1 for item in summary.get("tasks", []) if str(item.get("status", "")).lower() in {"blocked", "failed", "stale"}),
@@ -791,6 +914,10 @@ def build_cockpit_summary(summary: dict) -> dict:
         "registry_reconciliation": registry_reconciliation,
         "employees": employee_states,
         "long_tasks": long_tasks,
+        "runtime_sessions": summary.get("runtime_sessions", [])[:20],
+        "tool_calls": summary.get("tool_calls", [])[:30],
+        "budget_events": summary.get("budget_events", [])[:50],
+        "budget_summary": summary.get("budget_summary", {}),
         "supervisor_activity": supervisor_activity[:10],
         "owner_attention": owner_attention[:20],
         "pending_approvals": pending_approvals[:10],
@@ -1594,6 +1721,12 @@ def load_summary(conn: sqlite3.Connection) -> dict:
             "pending_events": scalar(conn, "SELECT COUNT(*) FROM company_events WHERE processed_at = ''"),
             "locks": scalar(conn, "SELECT COUNT(*) FROM locks"),
             "adapter_runs": scalar(conn, "SELECT COUNT(*) FROM adapter_runs"),
+            "runtime_sessions": scalar(conn, "SELECT COUNT(*) FROM runtime_sessions"),
+            "active_runtime_sessions": scalar(conn, "SELECT COUNT(*) FROM runtime_sessions WHERE status IN ('active', 'idle')"),
+            "tool_calls": scalar(conn, "SELECT COUNT(*) FROM agent_tool_calls"),
+            "running_tool_calls": scalar(conn, "SELECT COUNT(*) FROM agent_tool_calls WHERE status = 'running'"),
+            "failed_tool_calls": scalar(conn, "SELECT COUNT(*) FROM agent_tool_calls WHERE status IN ('failed', 'blocked', 'cancelled')"),
+            "budget_events": scalar(conn, "SELECT COUNT(*) FROM budget_events"),
         },
         "task_status": status_counts(conn, "tasks"),
         "project_status": status_counts(conn, "projects"),
@@ -1680,6 +1813,10 @@ def load_summary(conn: sqlite3.Connection) -> dict:
         "pending_events": rows(conn, "SELECT * FROM company_events WHERE processed_at = '' ORDER BY created_at ASC LIMIT 20"),
         "events": rows(conn, "SELECT * FROM company_events ORDER BY created_at DESC LIMIT 20"),
         "adapter_runs": adapter_runs,
+        "runtime_sessions": companyctl.list_runtime_sessions(conn, limit=20),
+        "tool_calls": companyctl.list_tool_calls(conn, limit=30),
+        "budget_events": companyctl.list_budget_events(conn, limit=50),
+        "budget_summary": companyctl.budget_summary(conn),
         "evidence_records": companyctl.audit_evidence_records(conn, limit=50),
         "artifact_records": companyctl.audit_artifact_records(conn, limit=50),
         "handoff_records": companyctl.audit_handoff_records(conn, limit=50),

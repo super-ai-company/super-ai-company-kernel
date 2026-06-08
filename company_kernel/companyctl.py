@@ -1418,6 +1418,389 @@ def finish_execution_attempt_internal(conn: sqlite3.Connection, *, attempt_id: s
     return {"attempt": row_by_id(conn, "execution_attempts", "attempt_id", attempt_id), "event_id": event["id"]}
 
 
+def runtime_session_row(conn: sqlite3.Connection, session_id: str) -> dict:
+    return row_by_id(conn, "runtime_sessions", "session_id", session_id)
+
+
+def hydrate_runtime_session(session: dict) -> dict:
+    item = dict(session)
+    try:
+        metadata = json.loads(item.get("metadata_json", "") or "{}")
+    except json.JSONDecodeError:
+        metadata = {}
+    item["metadata"] = metadata if isinstance(metadata, dict) else {}
+    item.pop("metadata_json", None)
+    return item
+
+
+def list_runtime_sessions(conn: sqlite3.Connection, *, employee_id: str = "", task_id: str = "", trace_id: str = "", limit: int = 50) -> list[dict]:
+    where = []
+    params: list[object] = []
+    if employee_id:
+        where.append("employee_id = ?")
+        params.append(employee_id)
+    if task_id:
+        where.append("task_id = ?")
+        params.append(task_id)
+    if trace_id:
+        where.append("trace_id = ?")
+        params.append(trace_id)
+    clause = f"WHERE {' AND '.join(where)}" if where else ""
+    safe_limit = max(1, min(int(limit or 50), 200))
+    rows_out = rows(
+        conn,
+        f"SELECT * FROM runtime_sessions {clause} ORDER BY COALESCE(last_heartbeat_at, started_at) DESC, started_at DESC LIMIT ?",
+        tuple([*params, safe_limit]),
+    )
+    return [hydrate_runtime_session(item) for item in rows_out]
+
+
+def start_runtime_session_internal(
+    conn: sqlite3.Connection,
+    *,
+    session_id: str = "",
+    employee_id: str,
+    adapter_type: str = "",
+    runtime_type: str = "",
+    pid: str = "",
+    session_key: str = "",
+    task_id: str = "",
+    attempt_id: str = "",
+    metadata: dict | None = None,
+) -> dict:
+    require_employee(conn, employee_id)
+    attempt = row_by_id(conn, "execution_attempts", "attempt_id", attempt_id) if attempt_id else {}
+    if task_id:
+        require_task(conn, task_id)
+    resolved_task_id = task_id or str(attempt.get("task_id", "") or "")
+    trace_id = trace_id_for_task(conn, resolved_task_id, str(attempt.get("trace_id", "") or ""))
+    ts = now()
+    session = {
+        "session_id": session_id or f"session-{datetime.now().strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:8]}",
+        "trace_id": trace_id,
+        "task_id": resolved_task_id,
+        "attempt_id": attempt_id,
+        "employee_id": employee_id,
+        "adapter_type": adapter_type or str(attempt.get("adapter_type", "") or ""),
+        "runtime_type": runtime_type,
+        "pid": str(pid or ""),
+        "session_key": str(session_key or attempt.get("session_key", "") or ""),
+        "status": "active",
+        "started_at": ts,
+        "last_heartbeat_at": ts,
+        "last_progress_at": "",
+        "stopped_at": "",
+        "metadata_json": json.dumps(metadata or {}, ensure_ascii=False),
+    }
+    conn.execute(
+        """
+        INSERT INTO runtime_sessions(
+          session_id, trace_id, task_id, attempt_id, employee_id, adapter_type, runtime_type,
+          pid, session_key, status, started_at, last_heartbeat_at, last_progress_at,
+          stopped_at, metadata_json
+        )
+        VALUES (
+          :session_id, :trace_id, :task_id, :attempt_id, :employee_id, :adapter_type, :runtime_type,
+          :pid, :session_key, :status, :started_at, :last_heartbeat_at, :last_progress_at,
+          :stopped_at, :metadata_json
+        )
+        ON CONFLICT(session_id) DO UPDATE SET
+          trace_id = excluded.trace_id,
+          task_id = excluded.task_id,
+          attempt_id = excluded.attempt_id,
+          employee_id = excluded.employee_id,
+          adapter_type = excluded.adapter_type,
+          runtime_type = excluded.runtime_type,
+          pid = excluded.pid,
+          session_key = excluded.session_key,
+          status = excluded.status,
+          last_heartbeat_at = excluded.last_heartbeat_at,
+          metadata_json = excluded.metadata_json
+        """,
+        session,
+    )
+    conn.commit()
+    event = record_event(conn, "runtime.session.started", employee_id, task_id=resolved_task_id, trace_id=trace_id, payload={"session_id": session["session_id"], "attempt_id": attempt_id, "adapter_type": session["adapter_type"], "runtime_type": runtime_type})
+    audit(conn, employee_id, "runtime.session.start", session["session_id"], {"task_id": resolved_task_id, "attempt_id": attempt_id, "event_id": event["id"]})
+    return {"session": hydrate_runtime_session(runtime_session_row(conn, session["session_id"])), "event_id": event["id"]}
+
+
+def heartbeat_runtime_session_internal(conn: sqlite3.Connection, *, session_id: str, status: str = "active", progress: bool = False) -> dict:
+    session = runtime_session_row(conn, session_id)
+    ts = now()
+    fields = ["status = ?", "last_heartbeat_at = ?"]
+    params: list[object] = [status, ts]
+    if progress:
+        fields.append("last_progress_at = ?")
+        params.append(ts)
+    params.append(session_id)
+    conn.execute(f"UPDATE runtime_sessions SET {', '.join(fields)} WHERE session_id = ?", tuple(params))
+    if session.get("attempt_id"):
+        attempt_fields = ["last_heartbeat_at = ?"]
+        attempt_params: list[object] = [ts]
+        if progress:
+            attempt_fields.append("last_progress_at = ?")
+            attempt_params.append(ts)
+        attempt_params.append(session["attempt_id"])
+        conn.execute(f"UPDATE execution_attempts SET {', '.join(attempt_fields)} WHERE attempt_id = ?", tuple(attempt_params))
+    conn.commit()
+    event_type = "runtime.session.progress" if progress else "runtime.session.heartbeat"
+    event = record_event(conn, event_type, session["employee_id"], task_id=session.get("task_id", ""), trace_id=session.get("trace_id", ""), payload={"session_id": session_id, "attempt_id": session.get("attempt_id", ""), "status": status})
+    return {"session": hydrate_runtime_session(runtime_session_row(conn, session_id)), "event_id": event["id"]}
+
+
+def stop_runtime_session_internal(conn: sqlite3.Connection, *, session_id: str, status: str = "stopped", error: str = "") -> dict:
+    if status not in {"stopped", "failed", "stale", "cancelled"}:
+        raise SystemExit("status must be stopped, failed, stale, or cancelled")
+    session = runtime_session_row(conn, session_id)
+    ts = now()
+    conn.execute("UPDATE runtime_sessions SET status = ?, stopped_at = ?, metadata_json = ? WHERE session_id = ?", (status, ts, json.dumps({**attempt_json_field(session, "metadata_json"), "stop_error": error}, ensure_ascii=False), session_id))
+    conn.commit()
+    event = record_event(conn, "runtime.session.stopped", session["employee_id"], task_id=session.get("task_id", ""), trace_id=session.get("trace_id", ""), payload={"session_id": session_id, "attempt_id": session.get("attempt_id", ""), "status": status, "error": error})
+    audit(conn, session["employee_id"], "runtime.session.stop", session_id, {"status": status, "error": error, "event_id": event["id"]})
+    return {"session": hydrate_runtime_session(runtime_session_row(conn, session_id)), "event_id": event["id"]}
+
+
+def tool_call_row(conn: sqlite3.Connection, tool_call_id: str) -> dict:
+    return row_by_id(conn, "agent_tool_calls", "tool_call_id", tool_call_id)
+
+
+def hydrate_tool_call(tool_call: dict) -> dict:
+    item = dict(tool_call)
+    for source_field, target_field in [("input_json", "input"), ("output_json", "output"), ("metadata_json", "metadata")]:
+        try:
+            parsed = json.loads(item.get(source_field, "") or "{}")
+        except json.JSONDecodeError:
+            parsed = {}
+        item[target_field] = parsed if isinstance(parsed, dict) else {}
+        item.pop(source_field, None)
+    item["input_summary"] = sanitize_log_text(item.get("input_summary", ""))
+    item["output_summary"] = sanitize_log_text(item.get("output_summary", ""))
+    item["error_message"] = sanitize_log_text(item.get("error_message", ""))
+    return item
+
+
+def list_tool_calls(conn: sqlite3.Connection, *, employee_id: str = "", task_id: str = "", trace_id: str = "", attempt_id: str = "", limit: int = 50) -> list[dict]:
+    where = []
+    params: list[object] = []
+    for column, value in [("employee_id", employee_id), ("task_id", task_id), ("trace_id", trace_id), ("attempt_id", attempt_id)]:
+        if value:
+            where.append(f"{column} = ?")
+            params.append(value)
+    clause = f"WHERE {' AND '.join(where)}" if where else ""
+    safe_limit = max(1, min(int(limit or 50), 200))
+    rows_out = rows(conn, f"SELECT * FROM agent_tool_calls {clause} ORDER BY started_at DESC LIMIT ?", tuple([*params, safe_limit]))
+    return [hydrate_tool_call(item) for item in rows_out]
+
+
+def start_tool_call_internal(
+    conn: sqlite3.Connection,
+    *,
+    tool_call_id: str = "",
+    trace_id: str = "",
+    task_id: str = "",
+    attempt_id: str = "",
+    employee_id: str,
+    session_id: str = "",
+    tool_name: str,
+    tool_type: str = "other",
+    input_summary: str = "",
+    input_payload: dict | None = None,
+    risk_level: str = "",
+    approval_id: str = "",
+    metadata: dict | None = None,
+) -> dict:
+    require_employee(conn, employee_id)
+    if task_id:
+        require_task(conn, task_id)
+    attempt = row_by_id(conn, "execution_attempts", "attempt_id", attempt_id) if attempt_id else {}
+    resolved_task_id = task_id or str(attempt.get("task_id", "") or "")
+    resolved_trace_id = trace_id or trace_id_for_task(conn, resolved_task_id, str(attempt.get("trace_id", "") or ""))
+    ts = now()
+    tool_call = {
+        "tool_call_id": tool_call_id or f"tool-call-{datetime.now().strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:8]}",
+        "trace_id": resolved_trace_id,
+        "task_id": resolved_task_id,
+        "attempt_id": attempt_id,
+        "employee_id": employee_id,
+        "session_id": session_id,
+        "tool_name": tool_name,
+        "tool_type": tool_type,
+        "input_summary": input_summary,
+        "input_json": json.dumps(input_payload or {}, ensure_ascii=False),
+        "output_summary": "",
+        "output_json": "{}",
+        "status": "running",
+        "risk_level": risk_level,
+        "approval_id": approval_id,
+        "started_at": ts,
+        "finished_at": "",
+        "error_message": "",
+        "metadata_json": json.dumps(metadata or {}, ensure_ascii=False),
+    }
+    conn.execute(
+        """
+        INSERT INTO agent_tool_calls(
+          tool_call_id, trace_id, task_id, attempt_id, employee_id, session_id,
+          tool_name, tool_type, input_summary, input_json, output_summary, output_json,
+          status, risk_level, approval_id, started_at, finished_at, error_message, metadata_json
+        )
+        VALUES (
+          :tool_call_id, :trace_id, :task_id, :attempt_id, :employee_id, :session_id,
+          :tool_name, :tool_type, :input_summary, :input_json, :output_summary, :output_json,
+          :status, :risk_level, :approval_id, :started_at, :finished_at, :error_message, :metadata_json
+        )
+        """,
+        tool_call,
+    )
+    conn.commit()
+    event = record_event(conn, "tool.call.started", employee_id, task_id=resolved_task_id, trace_id=resolved_trace_id, payload={"tool_call_id": tool_call["tool_call_id"], "attempt_id": attempt_id, "session_id": session_id, "tool_name": tool_name, "tool_type": tool_type, "risk_level": risk_level})
+    audit(conn, employee_id, "tool.call.start", tool_call["tool_call_id"], {"task_id": resolved_task_id, "attempt_id": attempt_id, "session_id": session_id, "event_id": event["id"]})
+    return {"tool_call": hydrate_tool_call(tool_call_row(conn, tool_call["tool_call_id"])), "event_id": event["id"]}
+
+
+def finish_tool_call_internal(conn: sqlite3.Connection, *, tool_call_id: str, status: str, output_summary: str = "", output_payload: dict | None = None, error: str = "") -> dict:
+    if status not in {"success", "failed", "blocked", "cancelled"}:
+        raise SystemExit("status must be success, failed, blocked, or cancelled")
+    tool_call = tool_call_row(conn, tool_call_id)
+    ts = now()
+    conn.execute(
+        "UPDATE agent_tool_calls SET status = ?, output_summary = ?, output_json = ?, finished_at = ?, error_message = ? WHERE tool_call_id = ?",
+        (status, output_summary, json.dumps(output_payload or {}, ensure_ascii=False), ts, error, tool_call_id),
+    )
+    conn.commit()
+    event = record_event(conn, f"tool.call.{status}", tool_call["employee_id"], task_id=tool_call.get("task_id", ""), trace_id=tool_call.get("trace_id", ""), payload={"tool_call_id": tool_call_id, "attempt_id": tool_call.get("attempt_id", ""), "session_id": tool_call.get("session_id", ""), "status": status})
+    audit(conn, tool_call["employee_id"], "tool.call.finish", tool_call_id, {"status": status, "event_id": event["id"]})
+    return {"tool_call": hydrate_tool_call(tool_call_row(conn, tool_call_id)), "event_id": event["id"]}
+
+
+def hydrate_budget_event(event: dict) -> dict:
+    item = dict(event)
+    try:
+        metadata = json.loads(item.get("metadata_json", "") or "{}")
+    except json.JSONDecodeError:
+        metadata = {}
+    item["metadata"] = metadata if isinstance(metadata, dict) else {}
+    item.pop("metadata_json", None)
+    item["summary"] = sanitize_log_text(item.get("summary", ""))
+    item["amount"] = float(item.get("amount") or 0)
+    item["token_input"] = int(item.get("token_input") or 0)
+    item["token_output"] = int(item.get("token_output") or 0)
+    item["runtime_seconds"] = int(item.get("runtime_seconds") or 0)
+    return item
+
+
+def list_budget_events(conn: sqlite3.Connection, *, task_id: str = "", employee_id: str = "", trace_id: str = "", attempt_id: str = "", limit: int = 50) -> list[dict]:
+    where = []
+    params: list[object] = []
+    for column, value in [("task_id", task_id), ("employee_id", employee_id), ("trace_id", trace_id), ("attempt_id", attempt_id)]:
+        if value:
+            where.append(f"{column} = ?")
+            params.append(value)
+    clause = f"WHERE {' AND '.join(where)}" if where else ""
+    safe_limit = max(1, min(int(limit or 50), 500))
+    rows_out = rows(conn, f"SELECT * FROM budget_events {clause} ORDER BY created_at DESC LIMIT ?", tuple([*params, safe_limit]))
+    return [hydrate_budget_event(item) for item in rows_out]
+
+
+def budget_summary(conn: sqlite3.Connection, *, task_id: str = "", employee_id: str = "", trace_id: str = "", attempt_id: str = "") -> dict:
+    events = list_budget_events(conn, task_id=task_id, employee_id=employee_id, trace_id=trace_id, attempt_id=attempt_id, limit=500)
+    by_employee: dict[str, float] = {}
+    by_task: dict[str, float] = {}
+    by_cost_type: dict[str, float] = {}
+    currencies = sorted({str(item.get("currency") or "USD") for item in events})
+    for item in events:
+        amount = float(item.get("amount") or 0)
+        employee_key = str(item.get("employee_id") or "")
+        task_key = str(item.get("task_id") or "")
+        cost_key = str(item.get("cost_type") or "unknown")
+        if employee_key:
+            by_employee[employee_key] = round(by_employee.get(employee_key, 0.0) + amount, 6)
+        if task_key:
+            by_task[task_key] = round(by_task.get(task_key, 0.0) + amount, 6)
+        by_cost_type[cost_key] = round(by_cost_type.get(cost_key, 0.0) + amount, 6)
+    return {
+        "event_count": len(events),
+        "total_amount": round(sum(float(item.get("amount") or 0) for item in events), 6),
+        "currency": currencies[0] if len(currencies) == 1 else ("mixed" if currencies else "USD"),
+        "currencies": currencies,
+        "token_input": sum(int(item.get("token_input") or 0) for item in events),
+        "token_output": sum(int(item.get("token_output") or 0) for item in events),
+        "runtime_seconds": sum(int(item.get("runtime_seconds") or 0) for item in events),
+        "by_employee": by_employee,
+        "by_task": by_task,
+        "by_cost_type": by_cost_type,
+    }
+
+
+def record_budget_event_internal(
+    conn: sqlite3.Connection,
+    *,
+    budget_event_id: str = "",
+    budget_account_id: str = "",
+    trace_id: str = "",
+    task_id: str = "",
+    attempt_id: str = "",
+    employee_id: str,
+    cost_type: str,
+    amount: float,
+    currency: str = "USD",
+    token_input: int = 0,
+    token_output: int = 0,
+    model_name: str = "",
+    provider: str = "",
+    runtime_seconds: int = 0,
+    summary: str = "",
+    metadata: dict | None = None,
+) -> dict:
+    if task_id:
+        require_task(conn, task_id)
+    if employee_id:
+        require_employee(conn, employee_id)
+    attempt = row_by_id(conn, "execution_attempts", "attempt_id", attempt_id) if attempt_id else {}
+    resolved_task_id = task_id or str(attempt.get("task_id", "") or "")
+    resolved_trace_id = trace_id or trace_id_for_task(conn, resolved_task_id, str(attempt.get("trace_id", "") or ""))
+    ts = now()
+    item = {
+        "budget_event_id": budget_event_id or f"budget-event-{datetime.now().strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:8]}",
+        "budget_account_id": budget_account_id,
+        "trace_id": resolved_trace_id,
+        "task_id": resolved_task_id,
+        "attempt_id": attempt_id,
+        "employee_id": employee_id,
+        "cost_type": cost_type,
+        "amount": float(amount),
+        "currency": currency or "USD",
+        "token_input": int(token_input or 0),
+        "token_output": int(token_output or 0),
+        "model_name": model_name,
+        "provider": provider,
+        "runtime_seconds": int(runtime_seconds or 0),
+        "summary": summary,
+        "created_at": ts,
+        "metadata_json": json.dumps(metadata or {}, ensure_ascii=False),
+    }
+    conn.execute(
+        """
+        INSERT INTO budget_events(
+          budget_event_id, budget_account_id, trace_id, task_id, attempt_id, employee_id,
+          cost_type, amount, currency, token_input, token_output, model_name, provider,
+          runtime_seconds, summary, created_at, metadata_json
+        )
+        VALUES (
+          :budget_event_id, :budget_account_id, :trace_id, :task_id, :attempt_id, :employee_id,
+          :cost_type, :amount, :currency, :token_input, :token_output, :model_name, :provider,
+          :runtime_seconds, :summary, :created_at, :metadata_json
+        )
+        """,
+        item,
+    )
+    conn.commit()
+    event = record_event(conn, "budget.spent", employee_id, task_id=resolved_task_id, trace_id=resolved_trace_id, payload={"budget_event_id": item["budget_event_id"], "attempt_id": attempt_id, "amount": item["amount"], "currency": item["currency"], "cost_type": cost_type, "token_input": item["token_input"], "token_output": item["token_output"]})
+    audit(conn, employee_id, "budget.record", item["budget_event_id"], {"task_id": resolved_task_id, "attempt_id": attempt_id, "amount": item["amount"], "currency": item["currency"], "event_id": event["id"]})
+    return {"budget_event": hydrate_budget_event(row_by_id(conn, "budget_events", "budget_event_id", item["budget_event_id"])), "event_id": event["id"]}
+
+
 def task_attempts(conn: sqlite3.Connection, task_id: str) -> list[dict]:
     attempts = rows(conn, "SELECT * FROM execution_attempts WHERE task_id = ? ORDER BY started_at ASC", (task_id,))
     return [hydrate_execution_attempt(attempt) for attempt in attempts]
@@ -3741,6 +4124,137 @@ def cmd_trace_timeline(args: argparse.Namespace) -> int:
     finally:
         conn.close()
     emit(company_trace.safe_trace_payload(trace))
+    return 0
+
+
+def cmd_runtime_session_start(args: argparse.Namespace) -> int:
+    conn = connect()
+    try:
+        payload = start_runtime_session_internal(
+            conn,
+            session_id=args.session_id,
+            employee_id=args.employee,
+            adapter_type=args.adapter_type,
+            runtime_type=args.runtime_type,
+            pid=args.pid,
+            session_key=args.session_key,
+            task_id=args.task_id,
+            attempt_id=args.attempt_id,
+        )
+    finally:
+        conn.close()
+    emit({"ok": True, **payload})
+    return 0
+
+
+def cmd_runtime_session_heartbeat(args: argparse.Namespace) -> int:
+    conn = connect()
+    try:
+        payload = heartbeat_runtime_session_internal(conn, session_id=args.session_id, status=args.status, progress=args.progress)
+    finally:
+        conn.close()
+    emit({"ok": True, **payload})
+    return 0
+
+
+def cmd_runtime_session_stop(args: argparse.Namespace) -> int:
+    conn = connect()
+    try:
+        payload = stop_runtime_session_internal(conn, session_id=args.session_id, status=args.status, error=args.error)
+    finally:
+        conn.close()
+    emit({"ok": True, **payload})
+    return 0
+
+
+def cmd_runtime_session_list(args: argparse.Namespace) -> int:
+    conn = connect_readonly()
+    try:
+        sessions = list_runtime_sessions(conn, employee_id=args.employee, task_id=args.task_id, trace_id=args.trace_id, limit=args.limit)
+    finally:
+        conn.close()
+    emit({"ok": True, "runtime_sessions": sessions})
+    return 0
+
+
+def cmd_tool_call_start(args: argparse.Namespace) -> int:
+    conn = connect()
+    try:
+        payload = start_tool_call_internal(
+            conn,
+            tool_call_id=args.tool_call_id,
+            trace_id=args.trace_id,
+            task_id=args.task_id,
+            attempt_id=args.attempt_id,
+            employee_id=args.employee,
+            session_id=args.session_id,
+            tool_name=args.tool_name,
+            tool_type=args.tool_type,
+            input_summary=args.input_summary,
+            risk_level=args.risk_level,
+            approval_id=args.approval_id,
+        )
+    finally:
+        conn.close()
+    emit({"ok": True, **payload})
+    return 0
+
+
+def cmd_tool_call_finish(args: argparse.Namespace) -> int:
+    conn = connect()
+    try:
+        payload = finish_tool_call_internal(conn, tool_call_id=args.tool_call_id, status=args.status, output_summary=args.output_summary, error=args.error)
+    finally:
+        conn.close()
+    emit({"ok": True, **payload})
+    return 0
+
+
+def cmd_tool_call_list(args: argparse.Namespace) -> int:
+    conn = connect_readonly()
+    try:
+        tool_calls = list_tool_calls(conn, employee_id=args.employee, task_id=args.task_id, trace_id=args.trace_id, attempt_id=args.attempt_id, limit=args.limit)
+    finally:
+        conn.close()
+    emit({"ok": True, "tool_calls": tool_calls})
+    return 0
+
+
+def cmd_budget_record(args: argparse.Namespace) -> int:
+    conn = connect()
+    try:
+        payload = record_budget_event_internal(
+            conn,
+            budget_event_id=args.budget_event_id,
+            budget_account_id=args.budget_account_id,
+            task_id=args.task_id,
+            trace_id=args.trace_id,
+            attempt_id=args.attempt_id,
+            employee_id=args.employee,
+            cost_type=args.cost_type,
+            amount=float(args.amount),
+            currency=args.currency,
+            token_input=args.token_input,
+            token_output=args.token_output,
+            model_name=args.model_name,
+            provider=args.provider,
+            runtime_seconds=args.runtime_seconds,
+            summary=args.summary,
+        )
+    finally:
+        conn.close()
+    emit({"ok": True, **payload})
+    return 0
+
+
+def cmd_budget_summary(args: argparse.Namespace) -> int:
+    conn = connect_readonly()
+    try:
+        summary = budget_summary(conn, task_id=args.task_id, employee_id=args.employee, trace_id=args.trace_id, attempt_id=args.attempt_id)
+        events = list_budget_events(conn, task_id=args.task_id, employee_id=args.employee, trace_id=args.trace_id, attempt_id=args.attempt_id, limit=args.limit)
+    finally:
+        conn.close()
+    emit({"ok": True, "summary": summary, "budget_events": events})
     return 0
 
 
@@ -9688,6 +10202,90 @@ def build_parser() -> argparse.ArgumentParser:
     runtime_retry_adapter_run.add_argument("--reason", required=True)
     runtime_retry_adapter_run.add_argument("--task-id", default="")
     runtime_retry_adapter_run.set_defaults(func=cmd_runtime_retry_adapter_run)
+    runtime_session = runtime_sub.add_parser("session")
+    runtime_session_sub = runtime_session.add_subparsers(dest="runtime_session_cmd", required=True)
+    runtime_session_start = runtime_session_sub.add_parser("start")
+    runtime_session_start.add_argument("--session-id", default="")
+    runtime_session_start.add_argument("--employee", required=True)
+    runtime_session_start.add_argument("--adapter-type", default="")
+    runtime_session_start.add_argument("--runtime-type", default="")
+    runtime_session_start.add_argument("--pid", default="")
+    runtime_session_start.add_argument("--session-key", default="")
+    runtime_session_start.add_argument("--task-id", default="")
+    runtime_session_start.add_argument("--attempt-id", default="")
+    runtime_session_start.set_defaults(func=cmd_runtime_session_start)
+    runtime_session_heartbeat = runtime_session_sub.add_parser("heartbeat")
+    runtime_session_heartbeat.add_argument("--session-id", required=True)
+    runtime_session_heartbeat.add_argument("--status", default="active")
+    runtime_session_heartbeat.add_argument("--progress", action="store_true")
+    runtime_session_heartbeat.set_defaults(func=cmd_runtime_session_heartbeat)
+    runtime_session_stop = runtime_session_sub.add_parser("stop")
+    runtime_session_stop.add_argument("--session-id", required=True)
+    runtime_session_stop.add_argument("--status", choices=["stopped", "failed", "stale", "cancelled"], default="stopped")
+    runtime_session_stop.add_argument("--error", default="")
+    runtime_session_stop.set_defaults(func=cmd_runtime_session_stop)
+    runtime_session_list = runtime_session_sub.add_parser("list")
+    runtime_session_list.add_argument("--employee", default="")
+    runtime_session_list.add_argument("--task-id", default="")
+    runtime_session_list.add_argument("--trace-id", default="")
+    runtime_session_list.add_argument("--limit", type=int, default=50)
+    runtime_session_list.set_defaults(func=cmd_runtime_session_list)
+
+    tool_call = sub.add_parser("tool-call")
+    tool_call_sub = tool_call.add_subparsers(dest="tool_call_cmd", required=True)
+    tool_call_start = tool_call_sub.add_parser("start")
+    tool_call_start.add_argument("--tool-call-id", default="")
+    tool_call_start.add_argument("--trace-id", default="")
+    tool_call_start.add_argument("--task-id", default="")
+    tool_call_start.add_argument("--attempt-id", default="")
+    tool_call_start.add_argument("--employee", required=True)
+    tool_call_start.add_argument("--session-id", default="")
+    tool_call_start.add_argument("--tool-name", required=True)
+    tool_call_start.add_argument("--tool-type", default="other")
+    tool_call_start.add_argument("--input-summary", default="")
+    tool_call_start.add_argument("--risk-level", default="")
+    tool_call_start.add_argument("--approval-id", default="")
+    tool_call_start.set_defaults(func=cmd_tool_call_start)
+    tool_call_finish = tool_call_sub.add_parser("finish")
+    tool_call_finish.add_argument("--tool-call-id", required=True)
+    tool_call_finish.add_argument("--status", choices=["success", "failed", "blocked", "cancelled"], required=True)
+    tool_call_finish.add_argument("--output-summary", default="")
+    tool_call_finish.add_argument("--error", default="")
+    tool_call_finish.set_defaults(func=cmd_tool_call_finish)
+    tool_call_list = tool_call_sub.add_parser("list")
+    tool_call_list.add_argument("--employee", default="")
+    tool_call_list.add_argument("--task-id", default="")
+    tool_call_list.add_argument("--trace-id", default="")
+    tool_call_list.add_argument("--attempt-id", default="")
+    tool_call_list.add_argument("--limit", type=int, default=50)
+    tool_call_list.set_defaults(func=cmd_tool_call_list)
+
+    budget = sub.add_parser("budget")
+    budget_sub = budget.add_subparsers(dest="budget_cmd", required=True)
+    budget_record = budget_sub.add_parser("record")
+    budget_record.add_argument("--budget-event-id", default="")
+    budget_record.add_argument("--budget-account-id", default="")
+    budget_record.add_argument("--task-id", default="")
+    budget_record.add_argument("--trace-id", default="")
+    budget_record.add_argument("--attempt-id", default="")
+    budget_record.add_argument("--employee", required=True)
+    budget_record.add_argument("--cost-type", required=True)
+    budget_record.add_argument("--amount", required=True)
+    budget_record.add_argument("--currency", default="USD")
+    budget_record.add_argument("--token-input", type=int, default=0)
+    budget_record.add_argument("--token-output", type=int, default=0)
+    budget_record.add_argument("--model-name", default="")
+    budget_record.add_argument("--provider", default="")
+    budget_record.add_argument("--runtime-seconds", type=int, default=0)
+    budget_record.add_argument("--summary", default="")
+    budget_record.set_defaults(func=cmd_budget_record)
+    budget_summary_cmd = budget_sub.add_parser("summary")
+    budget_summary_cmd.add_argument("--task-id", default="")
+    budget_summary_cmd.add_argument("--trace-id", default="")
+    budget_summary_cmd.add_argument("--attempt-id", default="")
+    budget_summary_cmd.add_argument("--employee", default="")
+    budget_summary_cmd.add_argument("--limit", type=int, default=50)
+    budget_summary_cmd.set_defaults(func=cmd_budget_summary)
 
     doctor = sub.add_parser("doctor")
     doctor.add_argument("--summary", action="store_true", help="return compact health counts for low-token alert checks")

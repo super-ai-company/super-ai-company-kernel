@@ -2574,6 +2574,10 @@
               <div class="cockpit-list" id="cockpit-acceptance-signals">
                 <!-- Populated by JS -->
               </div>
+              <h3 style="font-size:13px;color:var(--text-secondary);margin:18px 0 10px;">Tool Calls</h3>
+              <div class="cockpit-list" id="cockpit-tool-calls">
+                <!-- Populated by JS -->
+              </div>
             </div>
             <div class="right-col">
               <h3 style="font-size:13px;color:var(--text-secondary);margin-bottom:10px;">Owner Attention</h3>
@@ -2596,6 +2600,14 @@
               </div>
               <h3 style="font-size:13px;color:var(--text-secondary);margin:18px 0 10px;">Recent Evidence</h3>
               <div class="cockpit-list" id="cockpit-recent-evidence">
+                <!-- Populated by JS -->
+              </div>
+              <h3 style="font-size:13px;color:var(--text-secondary);margin:18px 0 10px;">Runtime Sessions</h3>
+              <div class="cockpit-list" id="cockpit-runtime-sessions">
+                <!-- Populated by JS -->
+              </div>
+              <h3 style="font-size:13px;color:var(--text-secondary);margin:18px 0 10px;">Budget</h3>
+              <div class="cockpit-list" id="cockpit-budget-summary">
                 <!-- Populated by JS -->
               </div>
             </div>
@@ -3715,6 +3727,9 @@
     const attention = document.getElementById('cockpit-owner-attention');
     const supervisorActivity = document.getElementById('cockpit-supervisor-activity');
     const recentEvidence = document.getElementById('cockpit-recent-evidence');
+    const runtimeSessions = document.getElementById('cockpit-runtime-sessions');
+    const toolCalls = document.getElementById('cockpit-tool-calls');
+    const budgetSummary = document.getElementById('cockpit-budget-summary');
     if (!cards || !longTasks || !attention || !supervisorActivity || !recentEvidence) return;
     const counts = (cockpit && cockpit.counts) || {};
     const employeeStatusCounts = counts.employee_status_counts || {};
@@ -3739,6 +3754,21 @@
         <h3>Active Attempts</h3>
         <div class="cockpit-value">${escapeHtml(counts.active_attempts || 0)}</div>
         <div class="cockpit-subtext">managed by task_id + attempt_id, not a CLI timeout</div>
+      </div>
+      <div class="cockpit-card">
+        <h3>Runtime Sessions</h3>
+        <div class="cockpit-value" style="color:${Number(counts.active_runtime_sessions || 0) ? 'var(--color-blue)' : 'var(--text-primary)'}">${escapeHtml(counts.active_runtime_sessions || 0)}</div>
+        <div class="cockpit-subtext">${escapeHtml(counts.runtime_sessions || 0)} total sessions · CLI/GUI/script runs must bind employee_id + task_id + attempt_id</div>
+      </div>
+      <div class="cockpit-card">
+        <h3>Tool Calls</h3>
+        <div class="cockpit-value" style="color:${Number(counts.failed_tool_calls || 0) ? 'var(--color-rose)' : 'var(--text-primary)'}">${escapeHtml(counts.tool_calls || 0)}</div>
+        <div class="cockpit-subtext">${escapeHtml(counts.running_tool_calls || 0)} running · ${escapeHtml(counts.failed_tool_calls || 0)} failed · tools must be ledgered, not hidden in stdout</div>
+      </div>
+      <div class="cockpit-card">
+        <h3>Budget</h3>
+        <div class="cockpit-value" style="color:${Number(counts.estimated_cost || 0) ? 'var(--color-amber)' : 'var(--text-primary)'}">${escapeHtml(counts.estimated_cost || 0)}</div>
+        <div class="cockpit-subtext">estimated cost · input ${escapeHtml(counts.token_input || 0)} tokens · output ${escapeHtml(counts.token_output || 0)} tokens</div>
       </div>
       <div class="cockpit-card">
         <h3>Running Tasks</h3>
@@ -3842,6 +3872,47 @@
         <div class="long-task-state success">evidence</div>
       </div>
     `).join('') : `<div class="cockpit-row"><div><strong>No recent evidence</strong><span>Final evidence from completed work will appear here.</span></div><div class="long-task-state running">empty</div></div>`;
+    const sessions = (cockpit && cockpit.runtime_sessions) || [];
+    if (runtimeSessions) {
+      runtimeSessions.innerHTML = sessions.length ? sessions.slice(0, 6).map(item => `
+        <div class="cockpit-row" ${item.task_id ? `onclick="openTaskDetailDrawer('${escapeHtml(item.task_id || '')}')"` : ''}>
+          <div>
+            <strong>${escapeHtml(item.session_id || '-')}</strong>
+            <span>${escapeHtml(item.employee_id || '-')} · task=${escapeHtml(item.task_id || '-')} · attempt=${escapeHtml(item.attempt_id || '-')}</span>
+            <span>adapter=${escapeHtml(item.adapter_type || '-')} · pid=${escapeHtml(item.pid || '-')} · heartbeat=${escapeHtml(item.last_heartbeat_at || '-')}</span>
+          </div>
+          <div class="long-task-state ${escapeHtml(item.status || 'running')}">${escapeHtml(item.status || 'running')}</div>
+        </div>
+      `).join('') : `<div class="cockpit-row"><div><strong>No runtime sessions</strong><span>CLI/GUI/script sessions will appear after an adapter starts a managed attempt.</span></div><div class="long-task-state running">empty</div></div>`;
+    }
+    const calls = (cockpit && cockpit.tool_calls) || [];
+    if (toolCalls) {
+      toolCalls.innerHTML = calls.length ? calls.slice(0, 6).map(item => `
+        <div class="cockpit-row" ${item.task_id ? `onclick="openTaskDetailDrawer('${escapeHtml(item.task_id || '')}')"` : ''}>
+          <div>
+            <strong>${escapeHtml(item.tool_name || item.tool_call_id || '-')}</strong>
+            <span>${escapeHtml(item.employee_id || '-')} · ${escapeHtml(item.tool_type || '-')} · task=${escapeHtml(item.task_id || '-')}</span>
+            <span>${escapeHtml(item.input_summary || item.output_summary || item.error_message || 'No sanitized summary yet')}</span>
+          </div>
+          <div class="long-task-state ${escapeHtml(item.status || 'running')}">${escapeHtml(item.status || 'running')}</div>
+        </div>
+      `).join('') : `<div class="cockpit-row"><div><strong>No tool calls</strong><span>Employee commands, APIs, browsers, and file operations must be recorded here.</span></div><div class="long-task-state running">empty</div></div>`;
+    }
+    const budget = (cockpit && cockpit.budget_summary) || {};
+    if (budgetSummary) {
+      const byEmployee = budget.by_employee || {};
+      const topEmployees = Object.entries(byEmployee).slice(0, 4).map(([employee, amount]) => `${employee}=${amount}`).join(' · ');
+      budgetSummary.innerHTML = `
+        <div class="cockpit-row">
+          <div>
+            <strong>Estimated spend ${escapeHtml(budget.currency || 'USD')} ${escapeHtml(budget.total_amount || 0)}</strong>
+            <span>events=${escapeHtml(budget.event_count || 0)} · input=${escapeHtml(budget.token_input || 0)} · output=${escapeHtml(budget.token_output || 0)} · runtime=${escapeHtml(budget.runtime_seconds || 0)}s</span>
+            <span>${escapeHtml(topEmployees || 'No employee cost rows yet')}</span>
+          </div>
+          <div class="long-task-state ${Number(budget.total_amount || 0) ? 'progress_stagnant' : 'running'}">budget</div>
+        </div>
+      `;
+    }
   }
 
   function renderAcceptanceSignals() {

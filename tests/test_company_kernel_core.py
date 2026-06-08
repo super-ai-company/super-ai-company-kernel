@@ -439,6 +439,16 @@ class CompanyKernelCoreTest(unittest.TestCase):
             self.assertIn("trace_id", event_columns)
             evidence_columns = {row["name"] for row in conn.execute("PRAGMA table_info(evidence)").fetchall()}
             self.assertIn("attempt_id", evidence_columns)
+            runtime_session_columns = {row["name"] for row in conn.execute("PRAGMA table_info(runtime_sessions)").fetchall()}
+            self.assertIn("session_id", runtime_session_columns)
+            self.assertIn("attempt_id", runtime_session_columns)
+            tool_call_columns = {row["name"] for row in conn.execute("PRAGMA table_info(agent_tool_calls)").fetchall()}
+            self.assertIn("tool_call_id", tool_call_columns)
+            self.assertIn("attempt_id", tool_call_columns)
+            budget_event_columns = {row["name"] for row in conn.execute("PRAGMA table_info(budget_events)").fetchall()}
+            self.assertIn("budget_event_id", budget_event_columns)
+            self.assertIn("amount", budget_event_columns)
+            self.assertIn("token_input", budget_event_columns)
             backfilled = conn.execute("SELECT task_id FROM adapter_runs WHERE id = 'adapter-run-backfill-task'").fetchone()
             self.assertEqual("task-backfilled-adapter-run", backfilled["task_id"])
             migrations = conn.execute("SELECT id FROM schema_migrations ORDER BY id").fetchall()
@@ -464,6 +474,10 @@ class CompanyKernelCoreTest(unittest.TestCase):
                     "20260607_execution_attempts_supervisor_state_json",
                     "20260607_v3_file_flow_tables",
                     "20260608_evidence_attempt_id",
+                    "20260609_agent_tool_calls",
+                    "20260609_budget_accounts",
+                    "20260609_budget_events",
+                    "20260609_runtime_sessions",
                 ],
                 [row["id"] for row in migrations],
             )
@@ -3776,6 +3790,25 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertIn("action.dry_run_default === false ? 'live action' : 'dry-run default'", html)
         self.assertIn("action.dangerous ? 'danger' : ''", html)
 
+    def test_dashboard_cockpit_renders_runtime_tool_call_and_budget_panels(self) -> None:
+        template = Path(__file__).resolve().parents[1] / "dashboard_templates" / "gemini_dashboard.html"
+        html = template.read_text(encoding="utf-8")
+        for snippet in [
+            'id="cockpit-runtime-sessions"',
+            'id="cockpit-tool-calls"',
+            'id="cockpit-budget-summary"',
+            "const runtimeSessions = document.getElementById('cockpit-runtime-sessions');",
+            "const toolCalls = document.getElementById('cockpit-tool-calls');",
+            "const budgetSummary = document.getElementById('cockpit-budget-summary');",
+            "cockpit.runtime_sessions",
+            "cockpit.tool_calls",
+            "cockpit.budget_summary",
+            "counts.active_runtime_sessions",
+            "counts.running_tool_calls",
+            "counts.estimated_cost",
+        ]:
+            self.assertIn(snippet, html)
+
     def test_dashboard_renders_task_evidence_blocker_and_approval_counts(self) -> None:
         code, submitted = run_cli("task", "submit", "--from", "ops", "--to", "maker", "--task-id", "task-dashboard-blocked", "--title", "blocked task")
         self.assertEqual(code, 0, submitted)
@@ -4933,7 +4966,192 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertNotIn(secret, payload_json)
         self.assertNotIn("id_rsa", payload_json)
         self.assertNotIn("path_or_url", payload_json)
-        self.assertNotIn("result_json", payload_json)
+
+    def test_runtime_sessions_and_tool_calls_are_first_class_trace_records(self) -> None:
+        code, submitted = run_cli("task", "submit", "--from", "openclaw-main", "--to", "codex", "--task-id", "task-control-plane-ledger", "--title", "Control plane ledger")
+        self.assertEqual(0, code, submitted)
+        trace_id = submitted["task"]["metadata"]["trace_id"]
+        code, running = run_cli("task", "run", "--task-id", "task-control-plane-ledger", "--agent", "codex", "--by", "hermes", "--adapter-type", "codex")
+        self.assertEqual(0, code, running)
+        attempt_id = running["attempt"]["attempt_id"]
+
+        code, session = run_cli(
+            "runtime",
+            "session",
+            "start",
+            "--session-id",
+            "session-control-plane-ledger",
+            "--employee",
+            "codex",
+            "--adapter-type",
+            "codex",
+            "--runtime-type",
+            "cli",
+            "--pid",
+            "4242",
+            "--session-key",
+            "codex-plan-session",
+            "--task-id",
+            "task-control-plane-ledger",
+            "--attempt-id",
+            attempt_id,
+        )
+        self.assertEqual(0, code, session)
+        self.assertEqual("active", session["session"]["status"])
+        self.assertEqual(trace_id, session["session"]["trace_id"])
+
+        code, heartbeat = run_cli("runtime", "session", "heartbeat", "--session-id", "session-control-plane-ledger", "--status", "active")
+        self.assertEqual(0, code, heartbeat)
+        self.assertEqual("active", heartbeat["session"]["status"])
+        self.assertNotEqual("", heartbeat["session"]["last_heartbeat_at"])
+
+        secret = "sk-toolCallSECRET1234567890"
+        code, tool = run_cli(
+            "tool-call",
+            "start",
+            "--tool-call-id",
+            "tool-call-control-plane-ledger",
+            "--trace-id",
+            trace_id,
+            "--task-id",
+            "task-control-plane-ledger",
+            "--attempt-id",
+            attempt_id,
+            "--employee",
+            "codex",
+            "--session-id",
+            "session-control-plane-ledger",
+            "--tool-name",
+            "shell",
+            "--tool-type",
+            "shell",
+            "--input-summary",
+            f"run tests with token={secret}",
+            "--risk-level",
+            "low",
+        )
+        self.assertEqual(0, code, tool)
+        self.assertEqual("running", tool["tool_call"]["status"])
+
+        code, finished_tool = run_cli(
+            "tool-call",
+            "finish",
+            "--tool-call-id",
+            "tool-call-control-plane-ledger",
+            "--status",
+            "success",
+            "--output-summary",
+            f"tests passed; inspected /Users/shift/.ssh/id_rsa; token={secret}",
+        )
+        self.assertEqual(0, code, finished_tool)
+        self.assertEqual("success", finished_tool["tool_call"]["status"])
+
+        status, sessions = api_gateway.route_get("/v1/runtime-sessions", {"employee_id": ["codex"]})
+        self.assertEqual(HTTPStatus.OK, status, sessions)
+        self.assertTrue(sessions["ok"])
+        self.assertEqual(["session-control-plane-ledger"], [item["session_id"] for item in sessions["runtime_sessions"]])
+
+        status, tool_calls = api_gateway.route_get("/v1/tool-calls", {"task_id": ["task-control-plane-ledger"]})
+        self.assertEqual(HTTPStatus.OK, status, tool_calls)
+        self.assertTrue(tool_calls["ok"])
+        self.assertEqual(["tool-call-control-plane-ledger"], [item["tool_call_id"] for item in tool_calls["tool_calls"]])
+        tool_payload = json.dumps(tool_calls, ensure_ascii=False)
+        self.assertNotIn(secret, tool_payload)
+        self.assertNotIn("id_rsa", tool_payload)
+
+        status, api_payload = api_gateway.route_get(f"/v1/traces/{trace_id}/timeline", {})
+        self.assertEqual(HTTPStatus.OK, status, api_payload)
+        self.assertEqual(1, api_payload["counts"]["runtime_sessions"])
+        self.assertEqual(1, api_payload["counts"]["tool_calls"])
+        kinds = [item["kind"] for item in api_payload["timeline"]]
+        self.assertIn("runtime_session", kinds)
+        self.assertIn("tool_call", kinds)
+        trace_payload = json.dumps(api_payload, ensure_ascii=False)
+        self.assertIn("tool-call-control-plane-ledger", trace_payload)
+        self.assertIn("session-control-plane-ledger", trace_payload)
+        self.assertNotIn(secret, trace_payload)
+        self.assertNotIn("id_rsa", trace_payload)
+        self.assertNotIn("result_json", trace_payload)
+
+        status, cockpit = api_gateway.route_get("/v1/dashboard/cockpit", {})
+        self.assertEqual(HTTPStatus.OK, status, cockpit)
+        self.assertEqual(1, cockpit["counts"]["runtime_sessions"])
+        self.assertEqual(1, cockpit["counts"]["active_runtime_sessions"])
+        self.assertEqual(1, cockpit["counts"]["tool_calls"])
+        self.assertEqual(0, cockpit["counts"]["running_tool_calls"])
+        self.assertEqual(["session-control-plane-ledger"], [item["session_id"] for item in cockpit["runtime_sessions"]])
+        self.assertEqual(["tool-call-control-plane-ledger"], [item["tool_call_id"] for item in cockpit["tool_calls"]])
+
+    def test_budget_center_records_costs_in_trace_and_cockpit(self) -> None:
+        code, submitted = run_cli("task", "submit", "--from", "openclaw-main", "--to", "codex", "--task-id", "task-budget-ledger", "--title", "Budget ledger")
+        self.assertEqual(0, code, submitted)
+        trace_id = submitted["task"]["metadata"]["trace_id"]
+        code, running = run_cli("task", "run", "--task-id", "task-budget-ledger", "--agent", "codex", "--by", "hermes", "--adapter-type", "codex")
+        self.assertEqual(0, code, running)
+        attempt_id = running["attempt"]["attempt_id"]
+
+        code, budget = run_cli(
+            "budget",
+            "record",
+            "--budget-event-id",
+            "budget-event-ledger",
+            "--task-id",
+            "task-budget-ledger",
+            "--attempt-id",
+            attempt_id,
+            "--employee",
+            "codex",
+            "--cost-type",
+            "model_api",
+            "--amount",
+            "0.42",
+            "--currency",
+            "USD",
+            "--token-input",
+            "1200",
+            "--token-output",
+            "340",
+            "--model-name",
+            "gpt-5",
+            "--provider",
+            "openai",
+            "--runtime-seconds",
+            "75",
+            "--summary",
+            "budget smoke cost",
+        )
+        self.assertEqual(0, code, budget)
+        self.assertEqual("budget-event-ledger", budget["budget_event"]["budget_event_id"])
+        self.assertEqual(trace_id, budget["budget_event"]["trace_id"])
+
+        code, summary = run_cli("budget", "summary", "--task-id", "task-budget-ledger")
+        self.assertEqual(0, code, summary)
+        self.assertEqual(1, summary["summary"]["event_count"])
+        self.assertEqual(0.42, summary["summary"]["total_amount"])
+        self.assertEqual(1200, summary["summary"]["token_input"])
+        self.assertEqual(340, summary["summary"]["token_output"])
+        self.assertEqual(75, summary["summary"]["runtime_seconds"])
+
+        status, budget_events = api_gateway.route_get("/v1/budget-events", {"task_id": ["task-budget-ledger"]})
+        self.assertEqual(HTTPStatus.OK, status, budget_events)
+        self.assertTrue(budget_events["ok"])
+        self.assertEqual(["budget-event-ledger"], [item["budget_event_id"] for item in budget_events["budget_events"]])
+
+        status, budget_summary = api_gateway.route_get("/v1/budget-summary", {"task_id": ["task-budget-ledger"]})
+        self.assertEqual(HTTPStatus.OK, status, budget_summary)
+        self.assertEqual(0.42, budget_summary["summary"]["total_amount"])
+
+        status, trace = api_gateway.route_get(f"/v1/traces/{trace_id}/timeline", {})
+        self.assertEqual(HTTPStatus.OK, status, trace)
+        self.assertEqual(1, trace["counts"]["budget_events"])
+        self.assertIn("budget_event", [item["kind"] for item in trace["timeline"]])
+
+        status, cockpit = api_gateway.route_get("/v1/dashboard/cockpit", {})
+        self.assertEqual(HTTPStatus.OK, status, cockpit)
+        self.assertEqual(1, cockpit["counts"]["budget_events"])
+        self.assertEqual(0.42, cockpit["budget_summary"]["total_amount"])
+        self.assertEqual(1200, cockpit["budget_summary"]["token_input"])
+        self.assertEqual(340, cockpit["budget_summary"]["token_output"])
 
     def test_v3_workspace_artifact_handoff_attempt_and_trace_flow(self) -> None:
         for employee_id, role in [("manager", "supervisor"), ("writer", "copywriter"), ("qa", "qa")]:
@@ -9636,10 +9854,18 @@ class CompanyKernelCoreTest(unittest.TestCase):
         try:
             artifact_count = conn.execute("SELECT COUNT(*) FROM artifacts WHERE task_id = ?", (task_id,)).fetchone()[0]
             evidence_count = conn.execute("SELECT COUNT(*) FROM evidence WHERE task_id = ?", (task_id,)).fetchone()[0]
+            tool_call_count = conn.execute("SELECT COUNT(*) FROM agent_tool_calls WHERE task_id = ? AND employee_id = ?", (task_id, "image-copy-skill")).fetchone()[0]
+            budget_event_count = conn.execute("SELECT COUNT(*) FROM budget_events WHERE task_id = ? AND employee_id = ?", (task_id, "image-copy-skill")).fetchone()[0]
         finally:
             conn.close()
         self.assertEqual(1, artifact_count)
         self.assertEqual(1, evidence_count)
+        self.assertEqual(1, tool_call_count)
+        self.assertEqual(1, budget_event_count)
+        status, trace = api_gateway.route_get(f"/v1/traces/{submitted['task']['metadata']['trace_id']}/timeline", {})
+        self.assertEqual(HTTPStatus.OK, status, trace)
+        self.assertIn("tool_call", [item["kind"] for item in trace["timeline"]])
+        self.assertIn("budget_event", [item["kind"] for item in trace["timeline"]])
 
     def test_skill_package_worker_can_continue_claimed_retry_task(self) -> None:
         code, runtime = run_cli("runtime", "register", "--runtime", "skill", "--command", "company-skill-package-worker", "--notes", "Skill Package runtime")
