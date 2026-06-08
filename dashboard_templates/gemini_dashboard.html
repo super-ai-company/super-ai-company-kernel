@@ -2547,6 +2547,16 @@
       <!-- Tasks Tab -->
       <div id="tab-tasks" class="tab-pane">
         <div class="section-card">
+          <h2><i class="fa-solid fa-clock-rotate-left"></i> Attempt History</h2>
+          <p style="font-size: 12px; color: var(--text-secondary); margin-bottom: 12px;">
+            Retry and reassign create new attempt_id records while preserving older attempts under the same trace_id.
+          </p>
+          <div class="cockpit-list" id="attempt-history-container">
+            <!-- Populated by JS -->
+          </div>
+        </div>
+
+        <div class="section-card">
           <h2 data-i18n="tasks_registry_title"><i class="fa-solid fa-list-check"></i> Tasks Registry</h2>
           <div class="controls-row">
             <div class="search-wrapper">
@@ -6068,7 +6078,75 @@
     refreshGovernanceTables();
     refreshTraceTelemetry();
     renderOpenClawRuntimeInventory();
+    renderAttemptHistorySummary();
     refreshKernelEventConsole();
+  }
+
+  function attemptHistoryRows(summary) {
+    const rows = [];
+    (Array.isArray(summary.tasks) ? summary.tasks : []).forEach(task => {
+      const attempt = currentTaskAttempt(task);
+      if (!attempt || !attempt.attempt_id) return;
+      rows.push({
+        source: 'task.current_attempt',
+        task_id: task.id || attempt.task_id || '',
+        trace_id: attempt.trace_id || task.trace_id || '',
+        attempt_id: attempt.attempt_id || '',
+        employee_id: attempt.employee_id || task.claimed_by || task.target_agent || '',
+        adapter_type: attempt.adapter_type || attempt.runtime || '',
+        status: attempt.status || task.long_task_state || task.status || '',
+        started_at: attempt.started_at || task.created_at || '',
+        finished_at: attempt.finished_at || '',
+        error_message: attempt.error_message || task.blocker || ''
+      });
+    });
+    (Array.isArray(summary.adapter_runs) ? summary.adapter_runs : []).forEach(run => {
+      rows.push({
+        source: 'adapter_runs',
+        task_id: run.task_id || '',
+        trace_id: run.trace_id || '',
+        attempt_id: run.attempt_id || run.id || '',
+        employee_id: run.agent_id || '',
+        adapter_type: run.command || 'adapter',
+        status: Number(run.ok) === 1 ? 'success' : 'failed',
+        started_at: run.created_at || '',
+        finished_at: run.processed_at || '',
+        error_message: run.sanitized_log || ''
+      });
+    });
+    const seen = new Set();
+    return rows
+      .filter(row => {
+        const key = `${row.source}:${row.attempt_id}:${row.task_id}`;
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      })
+      .sort((a, b) => String(b.started_at || b.finished_at || '').localeCompare(String(a.started_at || a.finished_at || '')))
+      .slice(0, 10);
+  }
+
+  function renderAttemptHistorySummary() {
+    const summary = getDashboardSummary();
+    const container = document.getElementById('attempt-history-container');
+    if (!container) return;
+    const rows = attemptHistoryRows(summary);
+    container.innerHTML = rows.length ? rows.map(row => {
+      const statusClass = ['success', 'completed', 'done'].includes(String(row.status || '').toLowerCase())
+        ? 'success'
+        : (['failed', 'blocked', 'stale', 'cancelled'].includes(String(row.status || '').toLowerCase()) ? 'blocked' : 'running');
+      return `
+        <div class="cockpit-row" data-attempt-id="${escapeHtml(row.attempt_id)}" onclick="openTaskDetailDrawer('${escapeHtml(row.task_id || '')}')">
+          <div>
+            <strong>${escapeHtml(row.attempt_id || row.task_id || '-')}</strong>
+            <span>task=${escapeHtml(row.task_id || '-')} · trace=${escapeHtml(row.trace_id || '-')} · employee=${escapeHtml(row.employee_id || '-')} · adapter=${escapeHtml(row.adapter_type || '-')}</span>
+            <span>started=${escapeHtml(formatDate(row.started_at) || '-')} · finished=${escapeHtml(formatDate(row.finished_at) || '-')}</span>
+            ${row.error_message ? `<span>${escapeHtml(shortText(row.error_message, 160))}</span>` : ''}
+          </div>
+          <div class="long-task-state ${statusClass}">${escapeHtml(row.status || '-')}</div>
+        </div>
+      `;
+    }).join('') : `<div class="cockpit-row"><div><strong>No attempt history yet</strong><span>Managed attempts, retry, and reassign records will appear here once tasks run.</span></div><div class="long-task-state running">empty</div></div>`;
   }
 
   function populateFollowups() {
