@@ -1326,7 +1326,7 @@
     .modal {
       display: none;
       position: fixed;
-      z-index: 100;
+      z-index: 10000;
       left: 0;
       top: 0;
       width: 100%;
@@ -1348,7 +1348,7 @@
       border-radius: 16px;
       max-width: 720px;
       width: 100%;
-      max-height: 85vh;
+      max-height: min(88vh, calc(100vh - 32px));
       display: flex;
       flex-direction: column;
       box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.6);
@@ -1356,7 +1356,8 @@
     }
 
     .detail-modal-content {
-      max-width: min(960px, calc(100vw - 32px));
+      width: min(1040px, calc(100vw - 32px));
+      max-width: min(1040px, calc(100vw - 32px));
       max-height: calc(100vh - 32px);
       overflow: hidden;
     }
@@ -1376,9 +1377,10 @@
       flex: 0 0 auto;
       position: sticky;
       top: 0;
-      z-index: 3;
-      background: #0d111d;
+      z-index: 5;
+      background: linear-gradient(180deg, #111827 0%, #0d111d 100%);
       border-radius: 16px 16px 0 0;
+      box-shadow: 0 14px 28px rgba(2, 6, 23, 0.35);
     }
 
     .modal-header h3 {
@@ -1407,20 +1409,22 @@
       align-items: center;
       justify-content: center;
       flex: 0 0 auto;
-      background: rgba(255, 255, 255, 0.04);
-      border: 1px solid rgba(255, 255, 255, 0.08);
-      border-radius: 10px;
-      color: #cbd5e1;
+      background: #f8fafc;
+      border: 2px solid rgba(15, 23, 42, 0.7);
+      border-radius: 12px;
+      color: #0f172a;
       font-size: 28px;
+      font-weight: 900;
       line-height: 1;
       cursor: pointer;
       position: relative;
-      z-index: 2;
+      z-index: 6;
+      box-shadow: 0 12px 30px rgba(0, 0, 0, 0.35);
     }
 
     .close-btn:hover {
-      background: rgba(239, 68, 68, 0.14);
-      border-color: rgba(239, 68, 68, 0.35);
+      background: #ef4444;
+      border-color: rgba(254, 202, 202, 0.85);
       color: #fff;
     }
 
@@ -1429,6 +1433,7 @@
       overflow-y: auto;
       overflow-x: hidden;
       min-height: 0;
+      max-height: calc(100vh - 128px);
       font-family: 'Fira Code', monospace;
       font-size: 12.5px;
       line-height: 1.5;
@@ -6140,22 +6145,49 @@
     const detail = approval.detail || {};
     const requestDetail = parseApprovalRequestReason(detail.request_reason);
     const action = detail.action || approval.action || '';
-    if (action !== 'task.correct') return;
     const taskId = detail.task_id || requestDetail.task_id || (detail.metadata && detail.metadata.task_id) || detail.target || '';
     const attemptId = detail.attempt_id || requestDetail.attempt_id || '';
-    const message = detail.correction_message || requestDetail.correction_message || requestDetail.reason || detail.reason || '';
     const by = detail.requested_by || requestDetail.requested_by || detail.by || 'hermes';
-    if (!taskId || !message) {
-      companyApiLog('ERROR', `Approved correction ${approval.id || ''} is missing task_id or message; no correction sent.`, 'error');
+    if (!taskId) {
+      companyApiLog('ERROR', `Approved dashboard action ${approval.id || ''} is missing task_id; no action sent.`, 'error');
       return;
     }
-    companyApiLog('SYSTEM', `Owner-approved correction dispatching to ledger: task=${taskId} attempt=${attemptId || '-'}`, 'normal');
-    await companyApiPost(`/v1/tasks/${encodeURIComponent(taskId)}/correct`, {
-      attempt_id: attemptId,
-      by,
-      message
-    });
-    companyApiLog('SYSTEM', `Owner-approved correction recorded for ${taskId}.`, 'success');
+    if (action === 'task.correct') {
+      const message = detail.correction_message || requestDetail.correction_message || requestDetail.reason || detail.reason || '';
+      if (!message) {
+        companyApiLog('ERROR', `Approved correction ${approval.id || ''} is missing message; no correction sent.`, 'error');
+        return;
+      }
+      companyApiLog('SYSTEM', `Owner-approved correction dispatching to ledger: task=${taskId} attempt=${attemptId || '-'}`, 'normal');
+      await companyApiPost(`/v1/tasks/${encodeURIComponent(taskId)}/correct`, {attempt_id: attemptId, by, message});
+      companyApiLog('SYSTEM', `Owner-approved correction recorded for ${taskId}.`, 'success');
+      return;
+    }
+    if (action === 'task.cancel') {
+      const reason = detail.cancel_reason || requestDetail.cancel_reason || requestDetail.reason || detail.reason || 'owner-approved dashboard cancel';
+      companyApiLog('SYSTEM', `Owner-approved cancellation dispatching to ledger: task=${taskId} attempt=${attemptId || '-'}`, 'normal');
+      await companyApiPost(`/v1/tasks/${encodeURIComponent(taskId)}/cancel`, {attempt_id: attemptId, by, reason});
+      companyApiLog('SYSTEM', `Owner-approved cancellation recorded for ${taskId}.`, 'success');
+      return;
+    }
+    if (action === 'task.retry') {
+      const reason = detail.retry_reason || requestDetail.retry_reason || requestDetail.reason || detail.reason || 'owner-approved dashboard retry';
+      companyApiLog('SYSTEM', `Owner-approved retry dispatching to ledger: task=${taskId}`, 'normal');
+      await companyApiPost(`/v1/tasks/${encodeURIComponent(taskId)}/retry`, {by, reason});
+      companyApiLog('SYSTEM', `Owner-approved retry recorded for ${taskId}.`, 'success');
+      return;
+    }
+    if (action === 'task.reassign') {
+      const to = detail.reassign_to || requestDetail.reassign_to || '';
+      const reason = detail.reassign_reason || requestDetail.reassign_reason || requestDetail.reason || detail.reason || 'owner-approved dashboard reassign';
+      if (!to) {
+        companyApiLog('ERROR', `Approved reassign ${approval.id || ''} is missing target employee; no reassign sent.`, 'error');
+        return;
+      }
+      companyApiLog('SYSTEM', `Owner-approved reassign dispatching to ledger: task=${taskId} to=${to}`, 'normal');
+      await companyApiPost(`/v1/tasks/${encodeURIComponent(taskId)}/reassign`, {by, to, reason});
+      companyApiLog('SYSTEM', `Owner-approved reassign recorded for ${taskId}.`, 'success');
+    }
   }
 
   function parseApprovalRequestReason(raw) {
