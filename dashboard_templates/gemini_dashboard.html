@@ -4577,6 +4577,33 @@
     ].join('\n');
   }
 
+  function employeeCurrentActivitySummary(currentActivity) {
+    const item = currentActivity || {};
+    const latest = item.latest_progress || {};
+    const taskId = item.task_id || '-';
+    const attemptId = item.attempt_id || '-';
+    const taskTitle = item.task_title || '';
+    const longTaskState = item.long_task_state || item.task_status || item.attempt_status || 'idle';
+    const progressState = item.progress_state || latest.progress_state || '-';
+    const heartbeatState = item.heartbeat_state || '-';
+    const latestMessage = latest.message || 'No progress event recorded for the current attempt.';
+    const progress = latest.progress === undefined || latest.progress === null ? '-' : latest.progress;
+    let action = 'idle: no current task assigned.';
+    if (taskId !== '-') action = 'monitor heartbeat/progress; use task detail for correction, cancel, retry, or evidence review.';
+    if (longTaskState === 'progress_stagnant' || progressState === 'stagnant') action = 'employee is online but progress is stagnant; send probe or request Hermes correction.';
+    if (longTaskState === 'heartbeat_stale' || heartbeatState === 'stale') action = 'heartbeat is stale; verify session, then retry/reassign/cancel.';
+    if (['blocked', 'failed', 'stale'].includes(String(longTaskState))) action = 'review blocker and evidence before retry or reassign.';
+    if (['done', 'success', 'completed'].includes(String(longTaskState))) action = 'review task-bound final evidence before accepting delivery.';
+    return [
+      `active_task_count=${item.active_task_count || 0}`,
+      `task=${taskId} · title=${taskTitle || '-'} · task_status=${item.task_status || '-'}`,
+      `attempt=${attemptId} · attempt_status=${item.attempt_status || '-'} · trace=${item.trace_id || '-'}`,
+      `long_task_state=${longTaskState} · heartbeat=${heartbeatState} · progress_state=${progressState}`,
+      `latest_progress=${latest.progress_state || '-'} · ${progress}% · ${sanitizeDisplayText(latestMessage)}`,
+      `timeout_is_sync_wait_only=${String(item.timeout_is_sync_wait_only !== false)} · action=${action}`
+    ].join('\n');
+  }
+
   function employeeBudgetSummary(summary) {
     const item = summary || {};
     return [
@@ -5221,6 +5248,7 @@
       const profile = payload.profile || {};
       const heartbeat = payload.heartbeat || {};
       const workHistory = payload.work_history || {};
+      const currentActivity = payload.current_activity || {};
       const attempts = payload.attempts || [];
       const runtimeSessions = payload.runtime_sessions || [];
       const toolCalls = payload.tool_calls || [];
@@ -5232,6 +5260,7 @@
         ['Runtime', employee.runtime || profile.runtime || '-'],
         ['Role', employee.role || profile.role || '-'],
         ['Heartbeat', heartbeat.status || heartbeat.state || heartbeat.last_seen_at || '-'],
+        ['Current Activity', employeeCurrentActivitySummary(currentActivity)],
         ['Work History', employeeWorkHistorySummary(workHistory)],
         ['Runtime Sessions', runtimeSessionsSummary(runtimeSessions)],
         ['Attempts', attemptHistorySummary(attempts)],
