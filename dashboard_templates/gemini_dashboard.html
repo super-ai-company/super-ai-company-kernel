@@ -221,6 +221,33 @@
       margin-top: 8px;
     }
 
+    .cockpit-actions-summary {
+      margin-top: 8px;
+      color: var(--text-muted);
+      font-size: 11px;
+      line-height: 1.45;
+    }
+
+    .cockpit-action-panel {
+      margin-top: 8px;
+    }
+
+    .cockpit-action-panel:not([open]) .cockpit-action-list {
+      display: none;
+    }
+
+    .cockpit-action-panel summary {
+      cursor: pointer;
+      color: #a5b4fc;
+      font-size: 11px;
+      font-weight: 800;
+      list-style: none;
+    }
+
+    .cockpit-action-panel summary::-webkit-details-marker {
+      display: none;
+    }
+
     .mini-btn {
       display: inline-flex;
       flex-direction: column;
@@ -1365,9 +1392,17 @@
       white-space: nowrap;
     }
 
+    .modal-header-hint {
+      color: var(--text-muted);
+      font-size: 11px;
+      font-weight: 700;
+      white-space: nowrap;
+      margin-left: auto;
+    }
+
     .close-btn {
-      width: 36px;
-      height: 36px;
+      width: 44px;
+      height: 44px;
       display: inline-flex;
       align-items: center;
       justify-content: center;
@@ -1376,7 +1411,7 @@
       border: 1px solid rgba(255, 255, 255, 0.08);
       border-radius: 10px;
       color: #cbd5e1;
-      font-size: 22px;
+      font-size: 28px;
       line-height: 1;
       cursor: pointer;
       position: relative;
@@ -1412,6 +1447,38 @@
       white-space: normal;
       font-family: inherit;
       color: var(--text-primary);
+    }
+
+    .detail-overview {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+      gap: 10px;
+      margin-bottom: 14px;
+    }
+
+    .detail-overview-card {
+      border: 1px solid rgba(148, 163, 184, 0.16);
+      border-radius: 12px;
+      background: rgba(15, 23, 42, 0.62);
+      padding: 10px 12px;
+      min-width: 0;
+    }
+
+    .detail-overview-card small {
+      display: block;
+      color: var(--text-muted);
+      font-size: 10px;
+      font-weight: 900;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      margin-bottom: 5px;
+    }
+
+    .detail-overview-card strong {
+      display: block;
+      color: var(--text-primary);
+      font-size: 13px;
+      overflow-wrap: anywhere;
     }
 
     .lock-item {
@@ -3155,6 +3222,7 @@
   <div class="modal-content detail-modal-content">
     <div class="modal-header">
       <h3 id="modal-title">Details Information</h3>
+      <span class="modal-header-hint">ESC or click X to close</span>
       <button type="button" class="close-btn" data-testid="details-modal-close" aria-label="Close task detail modal" onclick="closeModal()">&times;</button>
     </div>
     <div class="modal-body" id="modal-body">
@@ -3640,6 +3708,32 @@
       ...pending.slice(0, 5).map(item => ({kind: 'approval', title: item.action || item.id, meta: `${item.source_agent || '-'} · ${item.status || '-'}`, state: 'blocked', id: item.id || '', message: '需要 owner approval'})),
       ...evidence.slice(0, 5).map(item => ({kind: 'evidence', title: item.title || item.task_id, meta: `${item.target_agent || '-'} · ${item.evidence ? item.evidence.relative_path : ''}`, state: 'success', id: item.task_id || '', message: 'Final evidence 可验收'}))
     ];
+    function renderOwnerAttentionActions(item) {
+      const actions = Array.isArray(item.actions) ? item.actions : [];
+      if (!actions.length && item.kind !== 'stagnant_task') return '';
+      const actionButtons = actions.map(action => {
+        const safetyChips = [
+          action.method ? String(action.method).toUpperCase() : 'GET',
+          action.requires_owner_approval ? 'owner approval' : '',
+          action.dry_run_default === false ? 'live action' : 'dry-run default',
+          action.dangerous ? 'danger' : ''
+        ].filter(Boolean).join(' · ');
+        return `<button class="mini-btn owner-attention-action" data-action-id="${escapeHtml(action.id || '')}" data-task-id="${escapeHtml(item.task_id || '')}" data-attempt-id="${escapeHtml(item.attempt_id || '')}" data-approval-id="${escapeHtml(item.approval_id || '')}" data-employee-id="${escapeHtml(item.employee_id || item.target_agent || '')}" data-method="${escapeHtml(action.method || 'GET')}" data-requires-owner-approval="${action.requires_owner_approval ? 'true' : 'false'}" data-dry-run-default="${action.dry_run_default === false ? 'false' : 'true'}" data-dangerous="${action.dangerous ? 'true' : 'false'}" title="${escapeHtml(safetyChips)}" onclick="event.stopPropagation(); window.handleOwnerAttentionAction('${escapeHtml(item.task_id || '')}', '${escapeHtml(item.attempt_id || '')}', '${escapeHtml(item.approval_id || '')}', '${escapeHtml(action.id || '')}', '${escapeHtml(item.employee_id || item.target_agent || '')}')">${escapeHtml(action.label || action.id || '')}<small>${escapeHtml(safetyChips)}</small></button>`;
+      });
+      if (item.kind === 'stagnant_task') {
+        actionButtons.push(`<button class="mini-btn owner-attention-action" data-action-id="send_probe" data-task-id="${escapeHtml(item.task_id || '')}" data-attempt-id="${escapeHtml(item.attempt_id || '')}" data-approval-id="${escapeHtml(item.approval_id || '')}" data-employee-id="${escapeHtml(item.employee_id || item.target_agent || '')}" data-ledger-action="task.probe" data-requires-owner-approval="true" data-dangerous="false" title="${escapeHtml(stagnantGuidance)}">Send Probe<small>ledger correction · owner approval</small></button>`);
+      }
+      const summary = actions.length
+        ? `${actions.length} safe action${actions.length === 1 ? '' : 's'} available · click row for detail`
+        : 'Probe action available · owner approval required';
+      return `
+        <div class="cockpit-actions-summary">${escapeHtml(summary)}</div>
+        <details class="cockpit-action-panel" onclick="event.stopPropagation()">
+          <summary>Show controlled actions</summary>
+          <span class="cockpit-action-list">${actionButtons.join('')}</span>
+        </details>
+      `;
+    }
     attention.innerHTML = attentionRows.length ? attentionRows.map(item => `
       <div class="cockpit-row" ${item.task_id ? `onclick="openTaskDetailDrawer('${escapeHtml(item.task_id || '')}')"` : ''}>
         <div>
@@ -3647,15 +3741,7 @@
           <strong>${escapeHtml(item.kind)} · ${escapeHtml(item.title || '-')}</strong>
           <span>${escapeHtml([item.target_agent ? `target=${item.target_agent}` : '', item.task_id ? `task=${item.task_id}` : '', item.approval_id ? `approval=${item.approval_id}` : '', item.approval_action ? `action=${item.approval_action}` : '', item.risk ? `risk=${item.risk}` : ''].filter(Boolean).join(' · '))}</span>
           <span>${escapeHtml(item.message || item.meta || '')}</span>
-          ${Array.isArray(item.actions) && item.actions.length ? `<span class="cockpit-action-list">${item.actions.map(action => {
-            const safetyChips = [
-              action.method ? String(action.method).toUpperCase() : 'GET',
-              action.requires_owner_approval ? 'owner approval' : '',
-              action.dry_run_default === false ? 'live action' : 'dry-run default',
-              action.dangerous ? 'danger' : ''
-            ].filter(Boolean).join(' · ');
-            return `<button class="mini-btn owner-attention-action" data-action-id="${escapeHtml(action.id || '')}" data-task-id="${escapeHtml(item.task_id || '')}" data-attempt-id="${escapeHtml(item.attempt_id || '')}" data-approval-id="${escapeHtml(item.approval_id || '')}" data-employee-id="${escapeHtml(item.employee_id || item.target_agent || '')}" data-method="${escapeHtml(action.method || 'GET')}" data-requires-owner-approval="${action.requires_owner_approval ? 'true' : 'false'}" data-dry-run-default="${action.dry_run_default === false ? 'false' : 'true'}" data-dangerous="${action.dangerous ? 'true' : 'false'}" title="${escapeHtml(safetyChips)}" onclick="event.stopPropagation(); window.handleOwnerAttentionAction('${escapeHtml(item.task_id || '')}', '${escapeHtml(item.attempt_id || '')}', '${escapeHtml(item.approval_id || '')}', '${escapeHtml(action.id || '')}', '${escapeHtml(item.employee_id || item.target_agent || '')}')">${escapeHtml(action.label || action.id || '')}<small>${escapeHtml(safetyChips)}</small></button>`;
-          }).join('')}${item.kind === 'stagnant_task' ? `<button class="mini-btn owner-attention-action" data-action-id="send_probe" data-task-id="${escapeHtml(item.task_id || '')}" data-attempt-id="${escapeHtml(item.attempt_id || '')}" data-approval-id="${escapeHtml(item.approval_id || '')}" data-employee-id="${escapeHtml(item.employee_id || item.target_agent || '')}" data-ledger-action="task.probe" data-requires-owner-approval="true" data-dangerous="false" title="${escapeHtml(stagnantGuidance)}">Send Probe<small>ledger correction · owner approval</small></button>` : ''}</span>` : ''}
+          ${renderOwnerAttentionActions(item)}
         </div>
         <div class="long-task-state ${escapeHtml(item.state)}">${escapeHtml(item.state)}</div>
       </div>
@@ -4333,9 +4419,19 @@
     const rawKey = storeDashboardDetail('raw-detail', raw);
     const rawTargetId = `raw-json-${rawKey.replace(/[^a-zA-Z0-9_-]/g, '-')}`;
     const rawSummary = summarizeRawPayload(raw);
+    const overviewRows = rows.slice(0, 6);
+    const detailRows = rows.slice(6);
     const html = `
+      <div class="detail-overview">
+        ${overviewRows.map(row => `
+          <div class="detail-overview-card">
+            <small>${escapeHtml(row[0])}</small>
+            <strong>${stripHtmlToText(renderDetailValue(row[1])).slice(0, 220) || '-'}</strong>
+          </div>
+        `).join('')}
+      </div>
       <div class="detail-summary">
-        ${rows.map(row => `
+        ${detailRows.map(row => `
           <div class="detail-row">
             <div class="detail-key">${escapeHtml(row[0])}</div>
             <div class="detail-value">${renderDetailValue(row[1])}</div>
@@ -7495,6 +7591,13 @@
       .replace(/>/g, '&gt;')
       .replace(/"/g, '&quot;')
       .replace(/'/g, '&#039;');
+  }
+
+  function stripHtmlToText(html) {
+    if (html === null || html === undefined) return '';
+    const tmp = document.createElement('div');
+    tmp.innerHTML = String(html);
+    return (tmp.textContent || tmp.innerText || '').replace(/\s+/g, ' ').trim();
   }
 
   // Helper function to format Date in Bangkok timezone
