@@ -3522,7 +3522,9 @@ class CompanyKernelCoreTest(unittest.TestCase):
             code = company_dashboard.main(["--variant", "advanced", "--template", str(template), "--output", str(output), "--api-base", "http://127.0.0.1:8765"])
         self.assertEqual(0, code)
         html = output.read_text(encoding="utf-8")
-        self.assertIn(str(self.root / "company.sqlite"), html)
+        self.assertIn("company.sqlite", html)
+        self.assertNotIn(str(self.root / "company.sqlite"), html)
+        self.assertNotIn(str(self.root), html)
         stale_external_db = "/tmp/external-dashboard/company.sqlite"
         self.assertNotIn(stale_external_db, html)
         self.assertIn('"employees": 7', html)
@@ -3658,6 +3660,22 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertIn("overflow-wrap: anywhere;", html)
         self.assertIn("word-break: break-word;", html)
         self.assertIn('class="detail-text"', html)
+
+    def test_real_dashboard_template_redacts_local_paths_in_visible_text(self) -> None:
+        template = Path(__file__).resolve().parents[1] / "dashboard_templates" / "gemini_dashboard.html"
+        html = template.read_text(encoding="utf-8")
+        self.assertIn("function displayPath(value)", html)
+        self.assertIn("const homePrefix = '/Users/' + 'shift';", html)
+        self.assertIn(".replaceAll(homePrefix + '/', '~/')", html)
+        self.assertIn("function sanitizeDisplayText(value)", html)
+        self.assertIn("escapeHtml(displayPath(summary.runtime_health.daemon.state_file))", html)
+        self.assertIn("escapeHtml(displayPath(summary.runtime_health.launchd.installed_path))", html)
+        self.assertIn("path: displayPath(item.path || '')", html)
+        self.assertIn("displayPath(item.workspace || '-')", html)
+        self.assertIn("escapeHtml(sanitizeDisplayText(message.body || ''))", html)
+        self.assertIn("escapeHtml(sanitizeDisplayText(item.body || '(empty)'))", html)
+        self.assertIn("openFireEmployeeModal('${escapeHtml(emp.id)}')", html)
+        self.assertNotIn("openFireEmployeeModal('${escapeHtml(emp.id)}', '${escapeHtml(emp.runtime)}', '${escapeHtml(emp.workspace)}')", html)
         self.assertIn("function storeDashboardDetail(prefix, raw)", html)
         self.assertIn("showStoredDetails('Employee details:", html)
         self.assertIn("showStoredDetails('Adapter Run:", html)

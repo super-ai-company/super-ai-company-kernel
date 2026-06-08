@@ -2189,7 +2189,7 @@ def render(summary: dict) -> str:
       const name = document.getElementById('employee-name').value.trim() || id;
       const role = document.getElementById('employee-role').value.trim() || 'business-agent';
       const runtime = document.getElementById('employee-runtime').value;
-      const workspace = document.getElementById('employee-workspace').value.trim() || `${{window.companyKernelRoot || '.'}}/employees/${{id}}`;
+      const workspace = document.getElementById('employee-workspace').value.trim() || `employees/${{id}}`;
       const skills = document.getElementById('employee-skills').value.trim();
       if (!id) {{
         setEmployeeApiStatus('employee id is required', true);
@@ -2487,17 +2487,17 @@ def inject_advanced_dashboard(template: str, summary: dict, *, db_path: Path, ap
     injection = (
         f"<script>\n"
         f"  window.kernelSummary = JSON.parse(decodeURIComponent(escape(atob({json.dumps(payload_b64)}))));\n"
-        f"  window.dbPath = {json.dumps(str(db_path), ensure_ascii=False)};\n"
+        f"  window.dbPath = {json.dumps(db_path.name, ensure_ascii=False)};\n"
         f"  window.companyApiBase = {json.dumps(api_base, ensure_ascii=False)};\n"
-        f"  window.companyKernelRoot = {json.dumps(str(ROOT), ensure_ascii=False)};\n"
+        f"  window.companyKernelRoot = '.';\n"
         f"</script>\n"
     )
     resync = (
         f"<script>\n"
         f"  window.kernelSummary = JSON.parse(decodeURIComponent(escape(atob({json.dumps(payload_b64)}))));\n"
-        f"  window.dbPath = {json.dumps(str(db_path), ensure_ascii=False)};\n"
+        f"  window.dbPath = {json.dumps(db_path.name, ensure_ascii=False)};\n"
         f"  window.companyApiBase = {json.dumps(api_base, ensure_ascii=False)};\n"
-        f"  window.companyKernelRoot = {json.dumps(str(ROOT), ensure_ascii=False)};\n"
+        f"  window.companyKernelRoot = '.';\n"
         f"  window.summaryData = window.kernelSummary;\n"
         f"  try {{ summaryData = window.kernelSummary; }} catch (_) {{}}\n"
         f"</script>\n"
