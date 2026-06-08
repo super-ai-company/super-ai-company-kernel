@@ -3372,7 +3372,7 @@
       <div class="cockpit-card">
         <h3>Done Tasks</h3>
         <div class="cockpit-value" style="color:var(--color-green)">${escapeHtml(counts.done_tasks || 0)}</div>
-        <div class="cockpit-subtext">done requires task_id / attempt_id bound final evidence</div>
+        <div class="cockpit-subtext">done requires task_id / attempt_id bound final evidence · ${escapeHtml(counts.evidence_issues || 0)} evidence issues</div>
       </div>
     `;
     const rows = (cockpit && cockpit.long_tasks) || [];

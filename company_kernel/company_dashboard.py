@@ -400,6 +400,11 @@ def build_cockpit_summary(summary: dict) -> dict:
                 action("review_evidence", "Review evidence", f"/v1/tasks/{task_id}"),
                 action("view_trace", "View trace", ""),
             ]
+        if kind == "evidence_issue":
+            return [
+                action("review_task", "Review task", f"/v1/tasks/{task_id}"),
+                action("view_trace", "View trace", ""),
+            ]
         return []
 
     for item in long_tasks:
@@ -519,6 +524,29 @@ def build_cockpit_summary(summary: dict) -> dict:
                 "actions": attention_actions("evidence", task_id=task_id),
             }
         )
+    evidence_issues = summary.get("evidence_health", {}).get("issues", [])
+    if not isinstance(evidence_issues, list):
+        evidence_issues = []
+    for issue in evidence_issues[:10]:
+        task_id = str(issue.get("task_id", ""))
+        owner_attention.append(
+            {
+                "kind": "evidence_issue",
+                "state": "blocked",
+                "approval_id": "",
+                "task_id": task_id,
+                "approval_action": "",
+                "risk": "P0",
+                "title": task_id,
+                "target_agent": issue.get("agent", ""),
+                "attempt_id": "",
+                "trace_id": "",
+                "reason": issue.get("reason", ""),
+                "message": f"任务 done 但缺少 final evidence：{issue.get('reason', '')}",
+                "updated_at": "",
+                "actions": attention_actions("evidence_issue", task_id=task_id),
+            }
+        )
     owner_attention.sort(key=lambda item: item.get("updated_at") or "", reverse=True)
     employee_states = []
     for employee in employees:
@@ -593,6 +621,7 @@ def build_cockpit_summary(summary: dict) -> dict:
             ),
             "pending_approvals": len(pending_approvals),
             "recent_evidence": len(recent_evidence),
+            "evidence_issues": len(evidence_issues),
         },
         "employees": employee_states,
         "long_tasks": long_tasks,
