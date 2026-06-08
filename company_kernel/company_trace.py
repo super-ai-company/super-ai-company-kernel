@@ -103,6 +103,19 @@ def load_trace(conn: sqlite3.Connection, trace_id: str) -> dict:
                     "message": payload.get("message", ""),
                 }
             )
+        elif event["event_type"] == "approval.requested":
+            try:
+                payload = json.loads(event.get("payload_json", "{}") or "{}")
+            except json.JSONDecodeError:
+                payload = {}
+            timeline_item.update(
+                {
+                    "approval_id": str(payload.get("approval_id", "") or ""),
+                    "approval_action": str(payload.get("action", "") or ""),
+                    "risk": str(payload.get("risk", "") or ""),
+                    "target": str(payload.get("target", "") or ""),
+                }
+            )
         timeline.append(timeline_item)
     for run in adapter_runs:
         timeline.append({"kind": "adapter", "at": run["created_at"], "label": f"{run['agent_id']} {run['command']}", "status": "ok" if run.get("ok") else "failed", "run_id": run["id"], "task_id": run.get("task_id", ""), "attempt": run.get("attempt", 1)})
@@ -159,7 +172,7 @@ def safe_trace_payload(trace: dict) -> dict:
             "label": companyctl.sanitize_log_text(raw_item.get("label", "")),
             "task_id": raw_item.get("task_id", ""),
         }
-        for key in ("event_id", "run_id", "artifact_id", "evidence_id", "handoff_id", "attempt_id", "attempt", "actor", "target", "action", "session_id", "tool_call_id", "budget_event_id"):
+        for key in ("event_id", "run_id", "artifact_id", "evidence_id", "handoff_id", "attempt_id", "attempt", "actor", "target", "action", "session_id", "tool_call_id", "budget_event_id", "approval_id", "approval_action", "risk"):
             if raw_item.get(key) not in {None, ""}:
                 item[key] = raw_item[key]
         if item.get("action") in {"correction_requested", "correction_acknowledged"}:

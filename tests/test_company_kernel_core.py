@@ -4817,7 +4817,9 @@ class CompanyKernelCoreTest(unittest.TestCase):
 
         code, pending = run_cli("scheduler", "events", "--pending")
         self.assertEqual(code, 0, pending)
-        self.assertEqual(1, len(pending["events"]))
+        pending_event_types = [event["event_type"] for event in pending["events"]]
+        self.assertIn("task.done", pending_event_types)
+        self.assertIn("approval.requested", pending_event_types)
 
         code, approval = run_cli("approval", "approve", "--approval-id", "approval-publish-task-video-001", "--by", "ops", "--reason", "允许发布")
         self.assertEqual(code, 0, approval)
@@ -5507,11 +5509,21 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual("task-budget-auto-approval", budget["approval"]["detail"]["metadata"]["task_id"])
         self.assertEqual(1.25, budget["approval"]["detail"]["metadata"]["budget_amount"])
         self.assertEqual(1.0, budget["approval"]["detail"]["metadata"]["hard_limit"])
+        self.assertEqual("approval.requested", budget["approval_event"]["event_type"])
+        self.assertEqual("task-budget-auto-approval", budget["approval_event"]["task_id"])
 
         status, approvals = api_gateway.route_get("/v1/approvals", {"status": ["pending"], "action": ["budget_overrun"]})
         self.assertEqual(HTTPStatus.OK, status, approvals)
         self.assertEqual(["budget-overrun-task-budget-auto-approval"], [item["id"] for item in approvals["approvals"]])
         self.assertEqual(1, approvals["approval_control_summary"]["real_execution_blockers"]["budget_overrun"])
+        trace_id = submitted["task"]["metadata"]["trace_id"]
+        status, trace = api_gateway.route_get(f"/v1/traces/{trace_id}/timeline", {})
+        self.assertEqual(HTTPStatus.OK, status, trace)
+        timeline = trace["timeline"]
+        self.assertIn("budget_event", [item["kind"] for item in timeline])
+        approval_events = [item for item in timeline if item.get("label") == "approval.requested"]
+        self.assertEqual(["budget-overrun-task-budget-auto-approval"], [item["approval_id"] for item in approval_events])
+        self.assertEqual(["budget_overrun"], [item["approval_action"] for item in approval_events])
 
     def test_budget_summary_reports_mixed_currency_ledger_rows(self) -> None:
         code, submitted = run_cli("task", "submit", "--from", "openclaw-main", "--to", "codex", "--task-id", "task-budget-mixed", "--title", "Mixed currency budget")
