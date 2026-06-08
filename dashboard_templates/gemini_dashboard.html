@@ -3612,6 +3612,20 @@
     }).join('\n');
   }
 
+  function attemptHistoryContractSummary(attemptHistory, attempts) {
+    const history = attemptHistory || {};
+    const chain = attemptHistory && Array.isArray(attemptHistory.chain) ? attemptHistory.chain : [];
+    if (!chain.length) return attemptHistorySummary(attempts);
+    const lines = [
+      `total=${history.total || chain.length} · latest=${history.latest_attempt_id || '-'} · trace=${history.trace_id || '-'}`,
+      attemptHistory.recovery_summary || 'old attempts retained; retry/reassign creates a new attempt with the same trace_id and previous_attempt_id.'
+    ];
+    chain.forEach(item => {
+      lines.push(`#${item.index || '-'} ${item.status || '-'} · attempt=${item.attempt_id || '-'} · previous_attempt_id=${item.previous_attempt_id || '-'} · adapter=${item.adapter_type || '-'} · employee=${item.employee_id || '-'}${item.reason ? ` · reason=${item.reason}` : ''}`);
+    });
+    return lines.join('\n');
+  }
+
   function attemptLineageSummary(attempts) {
     const rows = Array.isArray(attempts) ? attempts : [];
     if (!rows.length) return '-';
@@ -3921,6 +3935,7 @@
       const evidenceRecords = payload.evidence_records || [];
       const supervisorState = payload.supervisor_state || {};
       const correctionSummary = payload.correction_summary || {};
+      const attemptHistory = payload.attempt_history || {};
       const latestAttempt = latestAttemptDetail(attempts);
       renderDetails(`Task Detail: ${taskId}`, [
         ['Status', task.status || '-'],
@@ -3941,7 +3956,7 @@
         ['Supervisor State', supervisorState],
         ['Progress Events', progressEventsSummary(progressEvents)],
         ['Sanitized Logs', sanitizedLogsSummary(sanitizedLogs)],
-        ['Attempt History', attemptHistorySummary(attempts)],
+        ['Attempt History', attemptHistoryContractSummary(attemptHistory, attempts)],
         ['Attempt Lineage', attemptLineageSummary(attempts)],
         ['Attempt Recovery Chain', attemptRecoveryChainSummary(attempts)],
         ['Recent Events', events.slice(-8).map(item => `${item.created_at} ${item.event_type} ${item.id}`).join('\n') || '-'],

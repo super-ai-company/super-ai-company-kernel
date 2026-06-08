@@ -1406,6 +1406,39 @@ def task_attempts(conn: sqlite3.Connection, task_id: str) -> list[dict]:
     return [hydrate_execution_attempt(attempt) for attempt in attempts]
 
 
+def task_attempt_history(attempts: list[dict]) -> dict:
+    chain = []
+    for index, attempt in enumerate(attempts):
+        metadata = attempt.get("metadata", {}) if isinstance(attempt.get("metadata", {}), dict) else {}
+        previous_attempt_id = str(metadata.get("previous_attempt_id", "") or "")
+        reason = str(metadata.get("reason", "") or metadata.get("retry_reason", "") or "")
+        chain.append(
+            {
+                "index": index + 1,
+                "attempt_id": attempt.get("attempt_id", ""),
+                "previous_attempt_id": previous_attempt_id,
+                "trace_id": attempt.get("trace_id", ""),
+                "employee_id": attempt.get("employee_id", ""),
+                "adapter_type": attempt.get("adapter_type", ""),
+                "status": attempt.get("status", ""),
+                "reason": reason,
+                "started_at": attempt.get("started_at", ""),
+                "finished_at": attempt.get("finished_at", ""),
+            }
+        )
+    latest = chain[-1] if chain else {}
+    trace_id = str(latest.get("trace_id", "") or (chain[0].get("trace_id", "") if chain else ""))
+    return {
+        "total": len(chain),
+        "trace_id": trace_id,
+        "latest_attempt_id": latest.get("attempt_id", ""),
+        "latest_status": latest.get("status", ""),
+        "latest_employee_id": latest.get("employee_id", ""),
+        "chain": chain,
+        "recovery_summary": "old attempts retained; retry/reassign creates a new attempt with the same trace_id and previous_attempt_id.",
+    }
+
+
 def task_evidence_records(conn: sqlite3.Connection, task_id: str) -> list[dict]:
     records = rows(
         conn,
@@ -6962,6 +6995,7 @@ def cmd_task_show(args: argparse.Namespace) -> int:
     evidence = sanitize_evidence_path_for_display(evidence_path)
     audit_rows = rows(conn, "SELECT * FROM audit_logs WHERE target = ? ORDER BY created_at ASC", (task_id,))
     attempts = task_attempts(conn, task_id)
+    attempt_history = task_attempt_history(attempts)
     evidence_records = task_evidence_records(conn, task_id)
     sanitized_logs = []
     for run in rows(
@@ -7010,6 +7044,7 @@ def cmd_task_show(args: argparse.Namespace) -> int:
             "events": events,
             "hook_runs": hook_runs,
             "attempts": attempts,
+            "attempt_history": attempt_history,
             "progress_events": task_progress_events(events),
             "correction_events": task_correction_events(events),
             "sanitized_logs": sanitized_logs,
