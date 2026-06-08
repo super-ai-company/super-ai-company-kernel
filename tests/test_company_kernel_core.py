@@ -1840,6 +1840,7 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertIn("counts.employees_abnormal", html)
         self.assertIn("counts.done_tasks", html)
         self.assertIn("counts.evidence_issues", html)
+        self.assertIn("counts.blocked_tasks", html)
         self.assertIn("counts.awaiting_approval_tasks", html)
         self.assertIn("counts.employee_status_counts", html)
         self.assertIn("counts.readiness_counts", html)
