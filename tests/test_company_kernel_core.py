@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import base64
 import contextlib
 import io
 import json
 import os
 import plistlib
+import re
 import runpy
 import sqlite3
 import subprocess
@@ -1807,6 +1809,23 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual("advanced", payload["variant"])
         html = output.read_text(encoding="utf-8")
         self.assertIn("window.companyApiBase", html)
+        bootstrap_match = re.search(r'atob\((".*?")\)', html)
+        self.assertIsNotNone(bootstrap_match)
+        bootstrap_b64 = json.loads(bootstrap_match.group(1))
+        bootstrap_payload = json.loads(base64.b64decode(bootstrap_b64).decode("utf-8"))
+        self.assertEqual("api-first-lightweight", bootstrap_payload["bootstrap_mode"])
+        self.assertEqual([], bootstrap_payload["employees"])
+        self.assertEqual([], bootstrap_payload["tasks"])
+        self.assertIn("kernel-summary-debug", html)
+        debug_match = re.search(r"kernel-summary-debug (.*?) -->", html)
+        self.assertIsNotNone(debug_match)
+        debug_payload = json.loads(debug_match.group(1))
+        self.assertEqual({"generated_at", "counts", "api_base"}, set(debug_payload))
+        self.assertNotIn("direct_messages_recent", debug_match.group(1))
+        self.assertNotIn("\"employees\": [", debug_match.group(1))
+        self.assertNotIn("\"tasks\": [", debug_match.group(1))
+        self.assertNotIn("本次还车里程是 10234 km", html)
+        self.assertNotIn("conv-dashboard-001", html)
         self.assertIn("/v1/telemetry/traces", html)
         self.assertIn("/v1/messages/recent-direct", html)
         self.assertIn("Live SQLite + OpenClaw Runtime", html)
@@ -1816,6 +1835,11 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertIn("window.showDetails", html)
         self.assertIn("showStoredDetails", html)
         self.assertIn("dashboardDetailStore", html)
+        self.assertIn("summarizeRawPayload", html)
+        self.assertIn("expandRawDetail", html)
+        self.assertIn("Full raw payload is stored off-DOM", html)
+        self.assertIn("data-testid=\"raw-json-expand\"", html)
+        self.assertNotIn("<summary>Raw JSON</summary>", html)
         self.assertNotIn("JSON.stringify(event).replace", html)
         self.assertIn("Read-only live event stream", html)
         self.assertIn("refreshKernelEventConsole", html)
@@ -1823,6 +1847,7 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertIn("evidenceRecordsSummary", html)
         self.assertIn("display.relative_path", html)
         self.assertIn("display.absolute_path_exposed", html)
+        self.assertIn("absolute_path_exposed=${String(!!display.absolute_path_exposed)}", html)
         self.assertIn("Excludes human owner", html)
         self.assertIn("Includes human owner records", html)
         self.assertNotIn("terminalLogs", html)
@@ -3283,7 +3308,13 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertIn("direct_messages_recent", html)
         self.assertIn("Recent Direct Messages", html)
         self.assertIn("messages table", html)
-        self.assertIn("dashboard direct UI ping", html)
+        conn = companyctl.connect()
+        try:
+            summary = company_dashboard.load_summary(conn)
+        finally:
+            conn.close()
+        self.assertIn("dashboard direct UI ping", [item["body"] for item in summary["direct_messages_recent"]])
+        self.assertNotIn("dashboard direct UI ping", html)
         self.assertIn("renderDirectMessagesRecent", html)
         self.assertIn("show-chat-handshakes-toggle", html)
         self.assertIn("isLowSignalChatMessage", html)
@@ -3448,7 +3479,13 @@ class CompanyKernelCoreTest(unittest.TestCase):
         stale_external_db = "/tmp/external-dashboard/company.sqlite"
         self.assertNotIn(stale_external_db, html)
         self.assertIn('"employees": 7', html)
-        self.assertIn('"id": "hermes"', html)
+        conn = companyctl.connect()
+        try:
+            summary = company_dashboard.load_summary(conn)
+        finally:
+            conn.close()
+        self.assertIn("hermes", [employee["id"] for employee in summary["employees"]])
+        self.assertNotIn('"id": "hermes"', html)
         self.assertIn("window.companyApiBase", html)
         self.assertIn("companyApiGet", html)
         self.assertIn("checkCompanyApi", html)
@@ -4950,7 +4987,7 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertIn("Handoff Artifact Flow", html)
         self.assertIn("fileFlowNarrative", html)
         self.assertIn("created artifact -> handoff -> promoted evidence", html)
-        self.assertIn(submitted["task"]["metadata"]["trace_id"], html)
+        self.assertNotIn(submitted["task"]["metadata"]["trace_id"], html)
 
     def test_dashboard_trace_spans_highlight_supervisor_corrections(self) -> None:
         for employee_id, role in [("main", "operator"), ("hermes", "supervisor"), ("codex", "developer")]:
@@ -4978,6 +5015,7 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual(["hermes", "codex"], [span["service"] for span in correction_spans])
         self.assertTrue(all(span["attempt_id"] == attempt_id for span in correction_spans))
         self.assertTrue(all("correction_direction" in span for span in correction_spans))
+        self.assertEqual(["supervisor_to_worker", "worker_to_supervisor"], [span["correction_direction"] for span in correction_spans])
         output = self.root / "state" / "trace-correction-dashboard.html"
         with contextlib.redirect_stdout(io.StringIO()):
             code = company_dashboard.main(["--output", str(output), "--variant", "advanced"])
@@ -4985,8 +5023,8 @@ class CompanyKernelCoreTest(unittest.TestCase):
         html = output.read_text(encoding="utf-8")
         self.assertIn("traceCorrectionSummary", html)
         self.assertIn("Supervisor Corrections", html)
-        self.assertIn("supervisor_to_worker", html)
-        self.assertIn("worker_to_supervisor", html)
+        self.assertIn("span.correction_direction", html)
+        self.assertNotIn("请只交付 evidence，不要继续闲聊", html)
 
     def test_v3_handoff_reject_scan_and_recovery_attempts(self) -> None:
         for employee_id, role in [("manager", "supervisor"), ("writer", "copywriter"), ("qa", "qa"), ("backup", "copywriter")]:
@@ -5750,7 +5788,7 @@ class CompanyKernelCoreTest(unittest.TestCase):
         html = output.read_text(encoding="utf-8")
         self.assertIn("Skill Registry", html)
         self.assertIn("skill-registry-container", html)
-        self.assertIn("ecommerce-copy-demo", html)
+        self.assertNotIn("ecommerce-copy-demo", html)
 
     def test_dashboard_renders_managed_task_control_buttons(self) -> None:
         for employee_id, role in [("main", "operator"), ("hermes", "supervisor"), ("codex", "developer")]:
@@ -5769,8 +5807,11 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertIn('<body class="dashboard-layout-fix">', html)
         self.assertIn("Tasks & Workflows", html)
         self.assertIn("openTaskDetailDrawer", html)
-        self.assertIn("task-dashboard-controls", html)
-        self.assertIn(run["attempt"]["attempt_id"], html)
+        status, tasks_payload = api_gateway.route_get("/v1/tasks", {"limit": ["50"]})
+        self.assertEqual(HTTPStatus.OK, status, tasks_payload)
+        self.assertIn("task-dashboard-controls", [task["id"] for task in tasks_payload["tasks"]])
+        self.assertNotIn("task-dashboard-controls", html)
+        self.assertNotIn(run["attempt"]["attempt_id"], html)
         self.assertIn("correctTaskAttempt", html)
         self.assertIn("cancelTaskAttempt", html)
         self.assertIn("retryTask", html)
@@ -6810,9 +6851,18 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertIn("External Mirror Sync", html)
         self.assertIn("Adapter Run Summary", html)
         self.assertIn("Internal Receipt Watchdog", html)
-        self.assertIn("Dashboard should show this direct message", html)
-        self.assertIn("tg-dashboard-observability", html)
-        self.assertIn("reports/dashboard-progress.json", html)
+        conn = companyctl.connect()
+        try:
+            summary = company_dashboard.load_summary(conn)
+            observability = company_dashboard.communication_observability_summary(summary)
+        finally:
+            conn.close()
+        self.assertIn("Dashboard should show this direct message", [item["body"] for item in observability["direct_messages"]["items"]])
+        self.assertIn("tg-dashboard-observability", [item["id"] for item in observability["external_mirror"]["threads"]])
+        self.assertIn("reports/dashboard-progress.json", json.dumps(observability, ensure_ascii=False))
+        self.assertNotIn("Dashboard should show this direct message", html)
+        self.assertNotIn("tg-dashboard-observability", html)
+        self.assertNotIn("reports/dashboard-progress.json", html)
 
     def test_advanced_dashboard_renders_supervisor_loop_panel(self) -> None:
         code, created = run_cli("employee", "create", "--id", "codex-dashboard-supervisor", "--name", "codex-dashboard-supervisor", "--role", "engineer", "--runtime", "codex", "--workspace", str(self.root / "workspace" / "codex-dashboard-supervisor"))
