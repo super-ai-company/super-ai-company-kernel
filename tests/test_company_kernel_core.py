@@ -1888,6 +1888,9 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertIn("Trace Timeline", html)
         self.assertIn("Correction State", html)
         self.assertIn("Correction Events", html)
+        self.assertIn("viewEvidenceContent", html)
+        self.assertIn("/v1/evidence/", html)
+        self.assertIn("View Safe Evidence", html)
         self.assertIn("correctionEventsSummary", html)
         self.assertIn("Supervisor State", html)
         self.assertIn("Latest Attempt", html)
@@ -5780,6 +5783,7 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertIn("/v1/approvals/{approval_id}/approve", openapi["paths"])
         self.assertIn("/v1/approvals/{approval_id}/resolve", openapi["paths"])
         self.assertIn("/v1/evidence", openapi["paths"])
+        self.assertIn("/v1/evidence/{evidence_id}/content", openapi["paths"])
         self.assertIn("/v1/artifacts", openapi["paths"])
         self.assertIn("/v1/handoffs", openapi["paths"])
         self.assertIn("/v1/failures", openapi["paths"])
@@ -5978,6 +5982,45 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual("answered", followup_answered["followup"]["status"])
         self.assertEqual("nestcar", followup_answered["delivery"]["target"])
         self.assertTrue(followup_calls)
+
+    def test_api_gateway_evidence_content_uses_whitelist_and_hides_absolute_paths(self) -> None:
+        safe_path = self.root / "evidence" / "safe-report.md"
+        safe_path.parent.mkdir(parents=True, exist_ok=True)
+        safe_path.write_text("safe evidence body\n", encoding="utf-8")
+        secret_path = self.root / ".env"
+        secret_path.write_text("API_KEY=secret\n", encoding="utf-8")
+        with sqlite3.connect(self.root / "company.sqlite") as conn:
+            conn.execute(
+                """
+                INSERT INTO evidence(evidence_id, trace_id, task_id, attempt_id, employee_id, artifact_id, type, path_or_url, summary, checksum, is_final, metadata_json, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                ("evidence-safe-content", "trace-safe-content", "task-safe-content", "attempt-safe-content", "codex", "", "text", str(safe_path), "safe summary", "", 1, "{}", companyctl.now()),
+            )
+            conn.execute(
+                """
+                INSERT INTO evidence(evidence_id, trace_id, task_id, attempt_id, employee_id, artifact_id, type, path_or_url, summary, checksum, is_final, metadata_json, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                ("evidence-secret-content", "trace-secret-content", "task-secret-content", "attempt-secret-content", "codex", "", "text", str(secret_path), "secret summary", "", 1, "{}", companyctl.now()),
+            )
+            conn.commit()
+
+        status, safe = api_gateway.route_get("/v1/evidence/evidence-safe-content/content", {})
+        self.assertEqual(200, status, safe)
+        self.assertTrue(safe["display"]["allowed"])
+        self.assertFalse(safe["display"]["absolute_path_exposed"])
+        self.assertEqual("safe evidence body\n", safe["content"]["text"])
+        self.assertIn("safe-report.md", safe["display"]["relative_path"])
+        self.assertNotIn(str(self.root), json.dumps(safe, ensure_ascii=False))
+
+        status, blocked = api_gateway.route_get("/v1/evidence/evidence-secret-content/content", {})
+        self.assertEqual(403, status, blocked)
+        self.assertFalse(blocked["display"]["allowed"])
+        self.assertFalse(blocked["display"]["absolute_path_exposed"])
+        self.assertEqual("", blocked["content"]["text"])
+        self.assertNotIn("API_KEY", json.dumps(blocked, ensure_ascii=False))
+        self.assertNotIn(str(secret_path), json.dumps(blocked, ensure_ascii=False))
 
     def test_api_gateway_exposes_conversations_approvals_and_adapter_run_recovery(self) -> None:
         status, started = api_gateway.route_post(
