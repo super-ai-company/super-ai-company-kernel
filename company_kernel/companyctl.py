@@ -1926,6 +1926,7 @@ def record_budget_event_internal(
     current_summary = budget_summary(conn, task_id=resolved_task_id, employee_id=employee_id, trace_id=resolved_trace_id, attempt_id=attempt_id)
     limits = current_summary.get("budget_limits", {}) if isinstance(current_summary.get("budget_limits"), dict) else {}
     approval: dict = {}
+    approval_event: dict = {}
     if str(limits.get("status") or "") in {"soft_exceeded", "hard_exceeded"}:
         approval_id = f"budget-overrun-{resolved_task_id or item['budget_event_id']}"
         approval_result = create_approval_internal(
@@ -1950,11 +1951,13 @@ def record_budget_event_internal(
             },
         )
         approval = approval_result.get("approval", {})
+        approval_event = approval_result.get("event", {})
     return {
         "budget_event": hydrate_budget_event(row_by_id(conn, "budget_events", "budget_event_id", item["budget_event_id"])),
         "event_id": event["id"],
         "budget_limits": limits,
         "approval": approval,
+        "approval_event": approval_event,
     }
 
 
@@ -7827,13 +7830,27 @@ def create_approval_internal(
     row = conn.execute("SELECT * FROM approvals WHERE id = ?", (aid,)).fetchone()
     approval = normalize_approval(row)
     path = write_approval_state(approval)
+    approval_event = record_event(
+        conn,
+        "approval.requested",
+        source,
+        task_id=str((metadata or {}).get("task_id", "") or ""),
+        trace_id=str((metadata or {}).get("trace_id", "") or ""),
+        payload={
+            "approval_id": aid,
+            "action": action,
+            "target": detail["target"],
+            "risk": risk,
+            "metadata": metadata or {},
+        },
+    )
     audit(conn, source, "approval.request", aid, approval)
     notification = notification_send_result(
         kind="approval",
         subject=f"Company Kernel approval required: {aid}",
         message=f"source={source}\naction={action}\nrisk={risk or '-'}\ntarget={detail['target'] or '-'}\nreason={reason}\nevidence={evidence or '-'}",
     )
-    return {"approval": approval, "file": path, "notification": notification}
+    return {"approval": approval, "file": path, "notification": notification, "event": approval_event}
 
 
 def cmd_approval_list(args: argparse.Namespace) -> int:
