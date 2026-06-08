@@ -2423,7 +2423,56 @@ def load_advanced_template(path: str = "") -> tuple[Path | None, str]:
 
 
 def inject_advanced_dashboard(template: str, summary: dict, *, db_path: Path, api_base: str) -> str:
-    payload = json.dumps(summary, ensure_ascii=False)
+    bootstrap_summary = {
+        "generated_at": summary.get("generated_at", ""),
+        "counts": summary.get("counts", {}),
+        "projects": [],
+        "tasks": [],
+        "employees": [],
+        "conversations": [],
+        "direct_messages_recent": [],
+        "events": [],
+        "adapter_runs": [],
+        "approvals": [],
+        "evidence_records": [],
+        "artifact_records": [],
+        "handoff_records": [],
+        "failure_records": [],
+        "traces": [],
+        "cockpit": {
+            "ok": True,
+            "counts": {
+                "employees": 0,
+                "employees_total": 0,
+                "employees_online": 0,
+                "employees_abnormal": 0,
+                "active_attempts": 0,
+                "running_tasks": 0,
+                "stagnant_tasks": 0,
+                "blocked_tasks": 0,
+                "done_tasks": 0,
+                "awaiting_approval_tasks": 0,
+                "pending_approvals": 0,
+                "recent_evidence": 0,
+                "legacy_task_evidence": 0,
+                "evidence_issues": 0,
+                "chat_task_bound": 0,
+                "chat_work_relevant": 0,
+                "chat_handshake_or_idle": 0,
+            },
+            "long_tasks": [],
+            "owner_attention": [],
+            "supervisor_activity": [],
+            "recent_evidence": [],
+            "ledger_consistency": summary.get("cockpit", {}).get("ledger_consistency", {}),
+        },
+        "runtime_health": {},
+        "communication_observability": {},
+        "skill_registry": {"skills": []},
+        "openclaw_runtime_inventory": {},
+        "bootstrap_mode": "api-first-lightweight",
+    }
+    payload = json.dumps(bootstrap_summary, ensure_ascii=False)
     payload_b64 = base64.b64encode(payload.encode("utf-8")).decode("ascii")
     html_text = template
 
@@ -2442,6 +2491,16 @@ def inject_advanced_dashboard(template: str, summary: dict, *, db_path: Path, ap
         f"  window.companyKernelRoot = {json.dumps(str(ROOT), ensure_ascii=False)};\n"
         f"</script>\n"
     )
+    resync = (
+        f"<script>\n"
+        f"  window.kernelSummary = JSON.parse(decodeURIComponent(escape(atob({json.dumps(payload_b64)}))));\n"
+        f"  window.dbPath = {json.dumps(str(db_path), ensure_ascii=False)};\n"
+        f"  window.companyApiBase = {json.dumps(api_base, ensure_ascii=False)};\n"
+        f"  window.companyKernelRoot = {json.dumps(str(ROOT), ensure_ascii=False)};\n"
+        f"  window.summaryData = window.kernelSummary;\n"
+        f"  try {{ summaryData = window.kernelSummary; }} catch (_) {{}}\n"
+        f"</script>\n"
+    )
 
     idx = html_text.find("<script>")
     if idx != -1:
@@ -2450,9 +2509,14 @@ def inject_advanced_dashboard(template: str, summary: dict, *, db_path: Path, ap
         html_text = append_before_body(html_text, injection)
 
     if "kernel-summary-debug" not in html_text:
-        html_text = html_text.replace("</script>", f'  <!-- kernel-summary-debug {payload} -->\n</script>', 1)
+        debug_meta = {
+            "generated_at": summary.get("generated_at", ""),
+            "counts": summary.get("counts", {}),
+            "api_base": api_base,
+        }
+        html_text = html_text.replace("</script>", f"  <!-- kernel-summary-debug {json.dumps(debug_meta, ensure_ascii=False)} -->\n</script>", 1)
 
-    return html_text
+    return append_before_body(html_text, resync)
 
 
 def run(args: argparse.Namespace) -> int:

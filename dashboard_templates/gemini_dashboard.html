@@ -2322,6 +2322,25 @@
       margin-top: 12px;
       color: var(--text-secondary);
     }
+
+    .detail-raw-actions {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+
+    .detail-raw-toggle {
+      border: 1px solid rgba(148, 163, 184, 0.22);
+      background: rgba(148, 163, 184, 0.08);
+      color: var(--text-primary);
+      border-radius: 8px;
+      padding: 6px 10px;
+      cursor: pointer;
+      font-size: 11px;
+      font-weight: 700;
+    }
   </style>
 </head>
 <body class="dashboard-layout-fix">
@@ -4161,14 +4180,42 @@
     }).join('\n');
   }
 
+  function summarizeRawPayload(value) {
+    if (!value || typeof value !== 'object') return { type: typeof value, keys: 0, bytes: String(value || '').length };
+    const keys = Array.isArray(value) ? [] : Object.keys(value);
+    return {
+      type: Array.isArray(value) ? 'array' : 'object',
+      keys: Array.isArray(value) ? value.length : keys.length,
+      preview_keys: keys.slice(0, 20),
+      estimated_bytes: JSON.stringify(value).length,
+      note: 'Raw payload is kept in dashboardDetailStore and rendered only on demand to avoid freezing the cockpit.'
+    };
+  }
+
+  function renderLargeObjectValue(value) {
+    const text = JSON.stringify(value, null, 2);
+    if (text.length <= 6000) return `<pre class="detail-json">${escapeHtml(text)}</pre>`;
+    return `<pre class="detail-json">${escapeHtml(JSON.stringify(summarizeRawPayload(value), null, 2))}</pre>`;
+  }
+
+  window.expandRawDetail = function(key, targetId) {
+    const target = document.getElementById(targetId);
+    const raw = (window.dashboardDetailStore || {})[key] || {};
+    if (!target) return;
+    target.textContent = JSON.stringify(raw, null, 2);
+  };
+
   function renderDetailValue(value) {
     if (value === null || value === undefined || value === '') return '<span style="color: var(--text-muted);">-</span>';
     if (Array.isArray(value)) return `<div class="detail-list">${value.map(item => `<span>${escapeHtml(typeof item === 'object' ? JSON.stringify(item) : item)}</span>`).join('')}</div>`;
-    if (typeof value === 'object') return `<pre class="detail-json">${escapeHtml(JSON.stringify(value, null, 2))}</pre>`;
+    if (typeof value === 'object') return renderLargeObjectValue(value);
     return escapeHtml(value);
   }
 
   function renderDetails(title, rows, raw) {
+    const rawKey = storeDashboardDetail('raw-detail', raw);
+    const rawTargetId = `raw-json-${rawKey.replace(/[^a-zA-Z0-9_-]/g, '-')}`;
+    const rawSummary = summarizeRawPayload(raw);
     const html = `
       <div class="detail-summary">
         ${rows.map(row => `
@@ -4179,8 +4226,12 @@
         `).join('')}
       </div>
       <details class="detail-raw">
-        <summary>Raw JSON</summary>
-        <pre>${escapeHtml(JSON.stringify(raw, null, 2))}</pre>
+        <summary>Raw JSON summary</summary>
+        <div class="detail-raw-actions">
+          <span>Full raw payload is stored off-DOM to keep the cockpit responsive.</span>
+          <button type="button" class="detail-raw-toggle" data-testid="raw-json-expand" onclick="expandRawDetail('${escapeHtml(rawKey)}', '${escapeHtml(rawTargetId)}')">Render full raw JSON</button>
+        </div>
+        <pre id="${escapeHtml(rawTargetId)}">${escapeHtml(JSON.stringify(rawSummary, null, 2))}</pre>
       </details>
     `;
     const modalTitle = document.getElementById('modal-title');
@@ -5637,7 +5688,7 @@
           <td><span class="badge ${item.is_final ? 'approved' : 'claimed'}">${item.is_final ? 'final' : 'supporting'}</span></td>
           <td>
             <div style="font-family: monospace;">${escapeHtml(display.relative_path || display.basename || '-')}</div>
-            <div style="color:var(--text-muted);font-size:11px;">absolute_path_exposed=${display.absolute_path_exposed ? 'yes' : 'no'}</div>
+            <div style="color:var(--text-muted);font-size:11px;">absolute_path_exposed=${String(!!display.absolute_path_exposed)}</div>
             <div style="color:var(--text-muted);font-size:11px;">policy=${escapeHtml(policySummary)}</div>
           </td>
           <td><span class="long-task-state ${allowed ? 'success' : 'blocked'}">${escapeHtml(state)}</span></td>
@@ -5667,7 +5718,7 @@
           <td>${escapeHtml(item.version || '-')}</td>
           <td>
             <div style="font-family: monospace;">${escapeHtml(display.relative_path || display.basename || '-')}</div>
-            <div style="color:var(--text-muted);font-size:11px;">absolute_path_exposed=${display.absolute_path_exposed ? 'yes' : 'no'}</div>
+            <div style="color:var(--text-muted);font-size:11px;">absolute_path_exposed=${String(!!display.absolute_path_exposed)}</div>
             <div style="color:var(--text-muted);font-size:11px;">policy=${escapeHtml(policySummary)}</div>
           </td>
         </tr>
