@@ -2241,6 +2241,12 @@ class CompanyKernelCoreTest(unittest.TestCase):
         status, cockpit = api_gateway.route_get("/v1/dashboard/cockpit", {})
         self.assertEqual(200, status, cockpit)
         self.assertTrue(cockpit["ok"])
+        self.assertIn("doctor", cockpit)
+        self.assertFalse(cockpit["doctor"]["ok"])
+        self.assertEqual(1, cockpit["doctor"]["exit_code"])
+        self.assertEqual(len(cockpit["doctor"]["issues"]), cockpit["doctor"]["issue_count"])
+        self.assertIn("task_evidence_issues", cockpit["doctor"]["issues"])
+        self.assertIn("generated_at", cockpit["doctor"])
         conn = companyctl.connect()
         try:
             employee_total = conn.execute("SELECT COUNT(*) AS count FROM employees").fetchone()["count"]

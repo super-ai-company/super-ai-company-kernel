@@ -388,6 +388,7 @@ def long_task_state(attempt: dict, *, generated_at: str) -> dict:
 
 def build_cockpit_summary(summary: dict) -> dict:
     generated_at = str(summary.get("generated_at") or now())
+    doctor = summary.get("doctor") if isinstance(summary.get("doctor"), dict) else {}
     employees = summary.get("employees", [])
     active_attempts = summary.get("active_attempts", [])
     chat_counts = chat_classification_counts(summary.get("direct_messages_recent", []))
@@ -921,12 +922,14 @@ def build_cockpit_summary(summary: dict) -> dict:
             "legacy_task_evidence": len(legacy_task_evidence),
             "evidence_issues": len(evidence_issues),
             "completion_invalid_tasks": len(completion_invalid_tasks),
+            "doctor_issues": int(doctor.get("issue_count") or len(doctor.get("issues", []) or [])) if doctor else 0,
             "chat_task_bound": chat_counts["task_bound"],
             "chat_work_relevant": chat_counts["work_relevant"],
             "chat_handshake_or_idle": chat_counts["handshake_or_idle"],
         },
         "employee_counts": employee_counts,
         "registry_reconciliation": registry_reconciliation,
+        "doctor": doctor,
         "employees": employee_states,
         "long_tasks": long_tasks,
         "runtime_sessions": summary.get("runtime_sessions", [])[:20],

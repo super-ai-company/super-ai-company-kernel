@@ -3744,11 +3744,18 @@
     const schedulableTotal = registryReconciliation.schedulable_total ?? counts.employees_total ?? counts.employees ?? 0;
     const excludedHumanOwners = registryReconciliation.excluded_human_owners ?? counts.excluded_human_owners ?? 0;
     const ledgerConsistency = ledgerConsistencySummary(cockpit && cockpit.ledger_consistency);
+    const doctor = (cockpit && cockpit.doctor) || {};
+    const doctorIssues = doctor.issue_count ?? counts.doctor_issues ?? (Array.isArray(doctor.issues) ? doctor.issues.length : 0);
     cards.innerHTML = `
       <div class="cockpit-card">
         <h3>Ledger Consistency</h3>
         <div class="cockpit-value" style="color:var(--color-green)">1</div>
         <div class="cockpit-subtext">${escapeHtml(ledgerConsistency)}</div>
+      </div>
+      <div class="cockpit-card">
+        <h3>Doctor Health</h3>
+        <div class="cockpit-value" style="color:${Number(doctorIssues || 0) ? 'var(--color-amber)' : 'var(--color-green)'}">${escapeHtml(doctorIssues || 0)}</div>
+        <div class="cockpit-subtext">doctor.ok=${escapeHtml(String(doctor.ok !== false))} · exit=${escapeHtml(doctor.exit_code ?? 0)} · generated=${escapeHtml(doctor.generated_at || '-')}</div>
       </div>
       <div class="cockpit-card">
         <h3>Employees Online</h3>
