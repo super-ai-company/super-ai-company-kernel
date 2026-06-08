@@ -3731,6 +3731,20 @@
     };
   }
 
+  function longTaskStatusContractSummary(task, attempt) {
+    const sourceTask = task || {};
+    const sourceAttempt = attempt || {};
+    const longTaskState = sourceTask.long_task_state || sourceAttempt.long_task_state || sourceTask.status || sourceAttempt.status || '-';
+    const heartbeatState = sourceTask.heartbeat_state || sourceAttempt.heartbeat_state || '-';
+    const progressState = sourceTask.progress_state || sourceAttempt.progress_state || '-';
+    const attemptStatus = sourceAttempt.status || '-';
+    return [
+      'timeout is sync wait only; it is not task failure.',
+      `task failure is decided by task_id + attempt_id + heartbeat + progress + blocker/evidence.`,
+      `long_task_state=${longTaskState} · attempt_status=${attemptStatus} · heartbeat=${heartbeatState} · progress=${progressState}`
+    ].join('\n');
+  }
+
   function currentTaskAttempt(task) {
     if (!task || typeof task !== 'object') return {};
     if (task.current_attempt && typeof task.current_attempt === 'object') return task.current_attempt;
@@ -4007,6 +4021,7 @@
         ['Claimed By', task.claimed_by || '-'],
         ['Trace', (attempts[0] && attempts[0].trace_id) || task.trace_id || '-'],
         ['Long Task State', task.long_task_state || latestAttempt.long_task_state || task.status || '-'],
+        ['Status Contract', longTaskStatusContractSummary(task, latestAttempt)],
         ['Heartbeat State', task.heartbeat_state || latestAttempt.heartbeat_state || '-'],
         ['Progress State', task.progress_state || latestAttempt.progress_state || '-'],
         ['Evidence', payload.evidence || {}],

@@ -1888,6 +1888,8 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertIn("Runtime Policy", html)
         self.assertIn("Long Task State", html)
         self.assertIn("task.long_task_state || latestAttempt.long_task_state || task.status", html)
+        self.assertIn("longTaskStatusContractSummary", html)
+        self.assertIn("timeout is sync wait only", html)
         self.assertIn("log_policy", html)
         self.assertIn("raw_available", html)
         self.assertIn("raw stdout/stderr hidden", html)
