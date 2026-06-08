@@ -1938,13 +1938,10 @@ def render_employee_table(items: list[dict]) -> str:
         employee_id = e(item.get("id", ""))
         runtime = str(item.get("runtime", "") or "")
         schedulable = bool(item.get("schedulable"))
-        can_direct = runtime not in {"skill", "human"} and str(item.get("employee_status", "") or item.get("status", "")) == "active"
         cells = "".join(f"<td>{e(item.get(field, ''))}</td>" for field in fields)
         action_items = []
         if runtime == "skill":
             action_items.append("<span class='muted'>No chat; task/evidence only</span>")
-        if can_direct:
-            action_items.append(f"<button type='button' onclick=\"directMessageEmployee('{employee_id}')\">Direct</button>")
         if schedulable:
             action_items.append(f"<button type='button' onclick=\"submitTaskToEmployee('{employee_id}')\">Task</button>")
         elif runtime != "skill":
@@ -2458,20 +2455,6 @@ def render(summary: dict) -> str:
         setEmployeeApiStatus('Notification settings saved without storing token.', false);
       }} catch (err) {{
         setEmployeeApiStatus(`Notification save failed: ${{err.message}}`, true);
-      }}
-    }}
-    async function directMessageEmployee(id) {{
-      if (!id) return;
-      const source = prompt(`Source employee for direct message to ${{id}}`, 'main');
-      if (source === null) return;
-      const body = prompt(`Message to ${{id}}`, `只回复：${{id}}_DIRECT_OK`);
-      if (body === null) return;
-      setEmployeeApiStatus(`Direct messaging ${{id}}...`, false);
-      try {{
-        const result = await callCompanyApi('/v1/messages/direct', {{from: source || 'main', to: id, body}}, 'POST');
-        setEmployeeApiStatus(`Direct reply from ${{id}}: ${{result.reply || '(empty)'}}; evidence=${{result.file || 'n/a'}}`, false);
-      }} catch (err) {{
-        setEmployeeApiStatus(`Direct failed: ${{err.message}}`, true);
       }}
     }}
     async function submitTaskToEmployee(id) {{

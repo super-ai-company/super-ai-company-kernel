@@ -5533,37 +5533,6 @@
   });
 
   // Safe Dialog Input Transitions
-  window.routeDirectMessageToChat = async function(agentId) {
-    switchTab('chat-hub');
-    const summary = getDashboardSummary();
-    let thread = (summary.conversations || []).find(c => {
-      const parts = conversationParticipants(c);
-      return parts.includes(agentId) && parts.length === 2;
-    });
-
-    if (!thread) {
-      companyApiLog('SYSTEM', `Initializing direct session with @${agentId}...`, 'normal');
-      try {
-        const result = await companyApiPost('/v1/conversations', {
-          from: HUMAN_OWNER_ID,
-          participants: [HUMAN_OWNER_ID, agentId].join(','),
-          title: `Direct Session with ${agentId}`,
-          body: `Direct channel opened with ${agentId}.`
-        });
-        thread = upsertConversationFromApi(result);
-      } catch (err) {
-        companyApiLog('ERROR', `Failed to open direct session: ${err.message}`, 'error');
-        return;
-      }
-    }
-
-    if (thread) {
-      window.activeThreadId = thread.id;
-      populateChatHub();
-      renderRealChatMessages();
-    }
-  };
-
   // Interception status & claims coordinator
   window.toggleInterceptionMode = async function() {
     const threadId = getActiveConversationId();
@@ -6233,18 +6202,6 @@
     await realOnboardGeneratedEmployee();
     closeRecruiterDrawer();
   };
-
-  async function realDirectEmployeeMessage(id, source, body) {
-    companyApiLog('SYSTEM', `Calling Company Kernel API direct message '${source}' -> '${id}'...`, 'normal');
-    try {
-      const result = await companyApiPost('/v1/messages/direct', {from: source || 'main', to: id, body});
-      companyApiLog('SYSTEM', `Direct reply from '${id}': ${result.reply || '(empty)'}; evidence=${result.file || 'n/a'}`, 'success');
-      return result;
-    } catch (err) {
-      companyApiLog('ERROR', `Direct message failed: ${err.message}`, 'error');
-      return null;
-    }
-  }
 
   async function realUpdateEmployeeProfile(id, payload) {
     companyApiLog('SYSTEM', `Calling Company Kernel API to update '${id}'...`, 'normal');
@@ -7128,18 +7085,12 @@
       const skills = emp.skills || '';
       const skillsPills = skills ? skills.split(',').map(s => `<span class="capability-tag" style="font-size: 9px; padding: 2px 5px; margin-top: 4px;">${escapeHtml(s.trim())}</span>`).join(' ') : '';
       const detailKey = storeDashboardDetail(`employee:${emp.id || '-'}`, emp);
-      const runtime = emp.runtime || '';
-      const canDirect = runtime !== 'skill' && runtime !== 'human';
       const taskButton = emp.schedulable ? `
             <button class="card-footer-action-btn" onclick="event.stopPropagation(); submitTaskToEmployee('${escapeHtml(emp.id)}')">
               <i class="fa-solid fa-list-check"></i> Task
             </button>
       ` : '';
-      const directButton = canDirect ? `
-            <button class="card-footer-action-btn" onclick="event.stopPropagation(); routeDirectMessageToChat('${escapeHtml(emp.id)}')">
-              <i class="fa-solid fa-paper-plane"></i> Send Message
-            </button>
-      ` : `<span class="muted" style="font-size: 11px;">No chat; task/evidence only</span>`;
+      const directButton = `<span class="muted" style="font-size: 11px;">No chat; task/evidence only</span>`;
 
       return `
         <div class="employee-card" onclick="openEmployeeDetailDrawer('${escapeHtml(emp.id)}', '${escapeHtml(detailKey)}')">
