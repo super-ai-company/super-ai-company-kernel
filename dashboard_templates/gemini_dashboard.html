@@ -3390,12 +3390,14 @@
         <div class="cockpit-subtext">task-bound · work ${escapeHtml(counts.chat_work_relevant || 0)} · handshake/idle folded ${escapeHtml(counts.chat_handshake_or_idle || 0)}</div>
       </div>
     `;
+    const stagnantGuidance = stagnantTaskGuidance();
     const rows = (cockpit && cockpit.long_tasks) || [];
     longTasks.innerHTML = rows.length ? rows.slice(0, 8).map(item => `
       <div class="cockpit-row" onclick="openTaskDetailDrawer('${escapeHtml(item.task_id || '')}')">
         <div>
           <strong>${escapeHtml(item.title || item.task_id || '-')}</strong>
           <span>${escapeHtml(item.target_agent || '-')} · attempt=${escapeHtml(item.attempt_id || '-')} · progress_age=${escapeHtml(item.progress_age_seconds ?? '-')}s</span>
+          ${item.progress_state === 'stagnant' ? `<span>${escapeHtml(stagnantGuidance)}</span>` : ''}
         </div>
         <div class="long-task-state ${escapeHtml(item.long_task_state || 'running')}">${escapeHtml(item.long_task_state || 'running')}</div>
       </div>
@@ -3422,7 +3424,7 @@
               action.dangerous ? 'danger' : ''
             ].filter(Boolean).join(' · ');
             return `<button class="mini-btn" data-action-id="${escapeHtml(action.id || '')}" data-method="${escapeHtml(action.method || 'GET')}" data-requires-owner-approval="${action.requires_owner_approval ? 'true' : 'false'}" data-dry-run-default="${action.dry_run_default === false ? 'false' : 'true'}" data-dangerous="${action.dangerous ? 'true' : 'false'}" title="${escapeHtml(safetyChips)}" onclick="event.stopPropagation(); handleOwnerAttentionAction('${escapeHtml(item.task_id || '')}', '${escapeHtml(item.attempt_id || '')}', '${escapeHtml(item.approval_id || '')}', '${escapeHtml(action.id || '')}')">${escapeHtml(action.label || action.id || '')}<small>${escapeHtml(safetyChips)}</small></button>`;
-          }).join('')}</span>` : ''}
+          }).join('')}${item.kind === 'stagnant_task' ? `<button class="mini-btn" title="${escapeHtml(stagnantGuidance)}" onclick="event.stopPropagation(); handleOwnerAttentionAction('${escapeHtml(item.task_id || '')}', '${escapeHtml(item.attempt_id || '')}', '${escapeHtml(item.approval_id || '')}', 'send_probe')">Send Probe<small>ledger correction</small></button>` : ''}</span>` : ''}
         </div>
         <div class="long-task-state ${escapeHtml(item.state)}">${escapeHtml(item.state)}</div>
       </div>
@@ -3438,7 +3440,15 @@
     `).join('') : `<div class="cockpit-row"><div><strong>No recent evidence</strong><span>Final evidence from completed work will appear here.</span></div><div class="long-task-state running">empty</div></div>`;
   }
 
+  function stagnantTaskGuidance() {
+    return '员工仍在线，但 15 分钟没有新进度。可继续等待、发送探针、查看日志或请求 Hermes 纠偏。';
+  }
+
   function handleOwnerAttentionAction(taskId, attemptId, approvalId, actionId) {
+    if (actionId === 'send_probe') {
+      sendStagnantProbe(taskId, attemptId);
+      return;
+    }
     if (actionId === 'send_correction') {
       correctTaskAttempt(taskId, attemptId);
       return;
@@ -4062,6 +4072,19 @@
       await refreshLiveDashboardFromApi();
     } catch (err) {
       companyApiLog('ERROR', `Correction failed: ${err.message}`, 'error');
+    }
+  };
+
+  window.sendStagnantProbe = async function(taskId, attemptId) {
+    if (!taskId) return;
+    const message = `${stagnantTaskGuidance()} 请在当前 task_id/attempt_id 下回复 heartbeat、progress、blocker 或 evidence 状态。`;
+    companyApiLog('SYSTEM', `Sending stagnant probe for ${taskId}...`, 'normal');
+    try {
+      await companyApiPost(`/v1/tasks/${encodeURIComponent(taskId)}/correct`, {attempt_id: attemptId || '', by: 'hermes', message});
+      companyApiLog('SYSTEM', `Stagnant probe recorded for ${taskId}.`, 'success');
+      await refreshLiveDashboardFromApi();
+    } catch (err) {
+      companyApiLog('ERROR', `Stagnant probe failed: ${err.message}`, 'error');
     }
   };
 
