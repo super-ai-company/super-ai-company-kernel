@@ -718,6 +718,13 @@ def build_cockpit_summary(summary: dict) -> dict:
         readiness_level = str(item.get("readiness_level") or "unknown")
         employee_status_counts[employee_status] = employee_status_counts.get(employee_status, 0) + 1
         readiness_counts[readiness_level] = readiness_counts.get(readiness_level, 0) + 1
+    employee_counts = {
+        "total": employees_total,
+        "online": employees_online,
+        "abnormal": employees_abnormal,
+        "status_counts": employee_status_counts,
+        "readiness_counts": readiness_counts,
+    }
     return {
         "ok": True,
         "generated_at": generated_at,
@@ -758,6 +765,7 @@ def build_cockpit_summary(summary: dict) -> dict:
             "chat_work_relevant": chat_counts["work_relevant"],
             "chat_handshake_or_idle": chat_counts["handshake_or_idle"],
         },
+        "employee_counts": employee_counts,
         "employees": employee_states,
         "long_tasks": long_tasks,
         "supervisor_activity": supervisor_activity[:10],
