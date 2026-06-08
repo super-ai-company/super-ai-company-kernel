@@ -3438,7 +3438,7 @@
       <div class="cockpit-card">
         <h3>Done Tasks</h3>
         <div class="cockpit-value" style="color:var(--color-green)">${escapeHtml(counts.done_tasks || 0)}</div>
-        <div class="cockpit-subtext">done requires task_id / attempt_id bound final evidence · ${escapeHtml(counts.evidence_issues || 0)} evidence issues</div>
+        <div class="cockpit-subtext">${escapeHtml(counts.recent_evidence || 0)} promoted evidence · ${escapeHtml(counts.legacy_task_evidence || 0)} legacy task evidence_path · ${escapeHtml(counts.evidence_issues || 0)} evidence issues</div>
       </div>
       <div class="cockpit-card">
         <h3>Chat Signal</h3>

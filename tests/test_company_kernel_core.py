@@ -1933,6 +1933,8 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertIn("correction_pending_ack", html)
         self.assertIn("Hermes supervised corrections and stagnant checks appear here", html)
         self.assertIn("Recent Evidence", html)
+        self.assertIn("promoted evidence", html)
+        self.assertIn("legacy task evidence_path", html)
         self.assertIn("cockpit-recent-evidence", html)
         self.assertIn("audit-evidence-tbody", html)
         self.assertIn("/v1/evidence?limit=50", html)
@@ -2049,6 +2051,25 @@ class CompanyKernelCoreTest(unittest.TestCase):
             done_workspace = companyctl.ensure_task_workspace(conn, "task-cockpit-done")
             done_evidence = Path(done_workspace["path"]) / "evidence" / "done.md"
             done_evidence.write_text("done evidence\n", encoding="utf-8")
+            final_artifact_path = Path(done_workspace["path"]) / "final" / "done-final.md"
+            final_artifact_path.write_text("promoted final evidence\n", encoding="utf-8")
+            final_artifact = companyctl.register_artifact_internal(
+                conn,
+                task_id="task-cockpit-done",
+                employee_id="codex-cockpit",
+                path=str(final_artifact_path),
+                artifact_type="md",
+                name="done-final.md",
+                stage="final",
+                summary="promoted cockpit final evidence",
+                is_final=True,
+            )
+            promoted = companyctl.promote_artifact_to_evidence_internal(
+                conn,
+                artifact_id=final_artifact["artifact"]["artifact_id"],
+                by="codex-cockpit",
+                summary="promoted cockpit final evidence",
+            )
             conn.execute("UPDATE tasks SET evidence_path = ?, status = 'completed', claimed_by = 'codex-cockpit', summary = 'done', updated_at = ? WHERE id = ?", (str(done_evidence), companyctl.now(), "task-cockpit-done"))
             conn.execute("UPDATE tasks SET status = 'completed', claimed_by = 'codex-cockpit', summary = 'missing evidence', updated_at = ? WHERE id = ?", (companyctl.now(), "task-cockpit-done-missing-evidence"))
             conn.commit()
@@ -2121,10 +2142,16 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertTrue(long_task["evidence"]["allowed"])
         self.assertFalse(long_task["evidence"]["absolute_path_exposed"])
         self.assertIn("evidence/result.md", long_task["evidence"]["relative_path"])
-        recent_evidence = next(item for item in cockpit["recent_evidence"] if item["task_id"] == "task-cockpit-long")
+        self.assertEqual(1, cockpit["counts"]["recent_evidence"])
+        self.assertEqual(2, cockpit["counts"]["legacy_task_evidence"])
+        recent_evidence = next(item for item in cockpit["recent_evidence"] if item["task_id"] == "task-cockpit-done")
+        self.assertEqual(promoted["evidence"]["evidence_id"], recent_evidence["evidence_id"])
         self.assertTrue(recent_evidence["evidence"]["allowed"])
         self.assertFalse(recent_evidence["evidence"]["absolute_path_exposed"])
-        self.assertIn("evidence/result.md", recent_evidence["evidence"]["relative_path"])
+        self.assertIn("artifacts/done-final.md", recent_evidence["evidence"]["relative_path"])
+        legacy_evidence = next(item for item in cockpit["legacy_task_evidence"] if item["task_id"] == "task-cockpit-long")
+        self.assertTrue(legacy_evidence["evidence"]["allowed"])
+        self.assertIn("evidence/result.md", legacy_evidence["evidence"]["relative_path"])
         attention = next(item for item in cockpit["owner_attention"] if item["task_id"] == "task-cockpit-long" and item["kind"] == "stagnant_task")
         self.assertEqual("stagnant_task", attention["kind"])
         self.assertEqual("correcting", attention["state"])

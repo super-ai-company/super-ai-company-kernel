@@ -355,17 +355,35 @@ def build_cockpit_summary(summary: dict) -> dict:
             metadata = detail.get("metadata", {})
             if isinstance(metadata, dict) and metadata.get("task_id"):
                 pending_approval_task_ids.add(str(metadata["task_id"]))
-    recent_evidence = []
+    legacy_task_evidence = []
     for task in summary.get("tasks", []):
         evidence = companyctl.sanitize_evidence_path_for_display(str(task.get("evidence_path") or ""))
         if evidence.get("allowed"):
-            recent_evidence.append(
+            legacy_task_evidence.append(
                 {
                     "task_id": task.get("id", ""),
                     "title": task.get("title", ""),
                     "status": task.get("status", ""),
                     "target_agent": task.get("target_agent", ""),
                     "updated_at": task.get("updated_at", ""),
+                    "evidence": evidence,
+                }
+            )
+    recent_evidence = []
+    for item in summary.get("evidence_records", []):
+        evidence = item.get("display") if isinstance(item.get("display"), dict) else companyctl.sanitize_evidence_path_for_display(str(item.get("path_or_url") or ""))
+        if evidence.get("allowed") and item.get("is_final"):
+            recent_evidence.append(
+                {
+                    "evidence_id": item.get("evidence_id", ""),
+                    "task_id": item.get("task_id", ""),
+                    "title": tasks_by_id.get(str(item.get("task_id", "")), {}).get("title", ""),
+                    "status": tasks_by_id.get(str(item.get("task_id", "")), {}).get("status", ""),
+                    "target_agent": item.get("employee_id", ""),
+                    "updated_at": item.get("created_at", ""),
+                    "summary": item.get("summary", ""),
+                    "artifact_id": item.get("artifact_id", ""),
+                    "attempt_id": item.get("attempt_id", ""),
                     "evidence": evidence,
                 }
             )
@@ -734,6 +752,7 @@ def build_cockpit_summary(summary: dict) -> dict:
             ),
             "pending_approvals": len(pending_approvals),
             "recent_evidence": len(recent_evidence),
+            "legacy_task_evidence": len(legacy_task_evidence),
             "evidence_issues": len(evidence_issues),
             "chat_task_bound": chat_counts["task_bound"],
             "chat_work_relevant": chat_counts["work_relevant"],
@@ -745,6 +764,7 @@ def build_cockpit_summary(summary: dict) -> dict:
         "owner_attention": owner_attention[:20],
         "pending_approvals": pending_approvals[:10],
         "recent_evidence": recent_evidence[:10],
+        "legacy_task_evidence": legacy_task_evidence[:10],
     }
 
 
@@ -1613,6 +1633,10 @@ def load_summary(conn: sqlite3.Connection) -> dict:
         "pending_events": rows(conn, "SELECT * FROM company_events WHERE processed_at = '' ORDER BY created_at ASC LIMIT 20"),
         "events": rows(conn, "SELECT * FROM company_events ORDER BY created_at DESC LIMIT 20"),
         "adapter_runs": adapter_runs,
+        "evidence_records": companyctl.audit_evidence_records(conn, limit=50),
+        "artifact_records": companyctl.audit_artifact_records(conn, limit=50),
+        "handoff_records": companyctl.audit_handoff_records(conn, limit=50),
+        "failure_records": companyctl.audit_failure_records(conn, limit=50),
         "active_attempts": rows(
             conn,
             """
