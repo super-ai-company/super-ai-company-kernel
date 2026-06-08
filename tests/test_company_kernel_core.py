@@ -1844,6 +1844,10 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertIn("AI Employee Cockpit", html)
         self.assertIn("counts.employees_online", html)
         self.assertIn("counts.employees_total", html)
+        self.assertIn("registry_reconciliation", html)
+        self.assertIn("registeredTotal", html)
+        self.assertIn("schedulableTotal", html)
+        self.assertIn("human owner excluded", html)
         self.assertIn("counts.employees_abnormal", html)
         self.assertIn("counts.running_tasks", html)
         self.assertIn("counts.done_tasks", html)
@@ -2691,6 +2695,14 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual(1, prepared["counts"]["employees"])
         self.assertEqual(1, prepared["counts"]["active_employees"])
         self.assertEqual(["codex"], [employee["id"] for employee in prepared["employees"]])
+        cockpit = company_dashboard.build_cockpit_summary(prepared)
+        self.assertEqual(2, cockpit["registry_reconciliation"]["registered_total"])
+        self.assertEqual(1, cockpit["registry_reconciliation"]["schedulable_total"])
+        self.assertEqual(1, cockpit["registry_reconciliation"]["excluded_human_owners"])
+        self.assertEqual(["owner"], cockpit["registry_reconciliation"]["excluded_employee_ids"])
+        self.assertEqual(1, cockpit["counts"]["employees_total"])
+        self.assertEqual(2, cockpit["counts"]["registered_employees_total"])
+        self.assertEqual(1, cockpit["counts"]["excluded_human_owners"])
 
     def test_dashboard_auto_variant_falls_back_to_basic_when_template_missing(self) -> None:
         output = self.root / "state" / "dashboard-auto-fallback.html"
