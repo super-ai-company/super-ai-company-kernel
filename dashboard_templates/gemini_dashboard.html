@@ -3868,10 +3868,10 @@
     const traceId = attempt.trace_id || task.trace_id || '';
     return `
       <button class="filter-tab" onclick="event.stopPropagation(); openTaskDetailDrawer('${escapeHtml(taskId)}')">Detail</button>
-      <button class="filter-tab" onclick="event.stopPropagation(); correctTaskAttempt('${escapeHtml(taskId)}', '${escapeHtml(attemptId)}')">Correct</button>
-      <button class="filter-tab" onclick="event.stopPropagation(); cancelTaskAttempt('${escapeHtml(taskId)}', '${escapeHtml(attemptId)}')">Cancel</button>
-      <button class="filter-tab" onclick="event.stopPropagation(); retryTask('${escapeHtml(taskId)}')">Retry</button>
-      <button class="filter-tab" onclick="event.stopPropagation(); reassignTask('${escapeHtml(taskId)}', '${escapeHtml(target)}')">Reassign</button>
+      <button class="filter-tab" data-ledger-action="task.correct" data-requires-owner-approval="true" onclick="event.stopPropagation(); correctTaskAttempt('${escapeHtml(taskId)}', '${escapeHtml(attemptId)}')">Correct <small>owner approval</small></button>
+      <button class="filter-tab" data-ledger-action="task.cancel" data-requires-owner-approval="true" data-dangerous="true" onclick="event.stopPropagation(); cancelTaskAttempt('${escapeHtml(taskId)}', '${escapeHtml(attemptId)}')">Cancel <small>danger</small></button>
+      <button class="filter-tab" data-ledger-action="task.retry" data-requires-owner-approval="true" onclick="event.stopPropagation(); retryTask('${escapeHtml(taskId)}')">Retry <small>owner approval</small></button>
+      <button class="filter-tab" data-ledger-action="task.reassign" data-requires-owner-approval="true" onclick="event.stopPropagation(); reassignTask('${escapeHtml(taskId)}', '${escapeHtml(target)}')">Reassign <small>owner approval</small></button>
       <button class="filter-tab" onclick="event.stopPropagation(); viewTaskTrace('${escapeHtml(traceId)}')">Trace</button>
     `;
   }
