@@ -4895,6 +4895,24 @@
     }).join('\n');
   }
 
+  function traceStorySummary(story) {
+    const item = story || {};
+    return [
+      `state=${item.state || '-'} · failure_or_recovery=${String(!!item.has_failure_or_recovery)}`,
+      `observed=${(item.observed_stages || []).join(' -> ') || '-'}`,
+      `missing=${(item.missing_required || []).join(' -> ') || '-'}`,
+      item.summary || 'Trace story unavailable.'
+    ].join('\n');
+  }
+
+  function ceoTimelineSummary(timeline) {
+    const rows = Array.isArray(timeline) ? timeline : [];
+    if (!rows.length) return 'No CEO timeline available for this trace.';
+    return rows.map(item => {
+      return sanitizeDisplayText(`${item.at || '-'} · ${item.severity || '-'} · ${item.title || item.stage || item.kind || '-'} · task=${item.task_id || '-'} · action=${item.recommended_action || '-'} · ${item.summary || ''}`);
+    }).join('\n');
+  }
+
   function traceObjectSummary(rows, formatter) {
     const items = Array.isArray(rows) ? rows : [];
     if (!items.length) return '-';
@@ -4944,6 +4962,8 @@
       renderDetails(`Trace Timeline: ${traceId}`, [
         ['Trace ID', payload.trace_id || traceId],
         ['Counts', payload.counts || {}],
+        ['Trace Story', traceStorySummary(payload.trace_story || {})],
+        ['CEO Timeline', ceoTimelineSummary(payload.ceo_timeline || [])],
         ['Tasks', (payload.tasks || []).map(task => `${task.id || '-'} · ${task.status || '-'} · ${task.target_agent || '-'}`).join('\n') || '-'],
         ['Attempts', traceObjectSummary(payload.execution_attempts || [], item => `${item.attempt_id || '-'} · ${item.status || '-'} · ${item.employee_id || '-'} · ${item.adapter_type || '-'} · started=${item.started_at || '-'}`)],
         ['Artifacts', traceObjectSummary(payload.artifacts || [], item => `${item.artifact_id || '-'} · ${item.task_id || '-'} · ${item.employee_id || '-'} · ${item.stage || '-'} · ${item.status || '-'} · ${(item.display || {}).relative_path || (item.display || {}).basename || '-'}`)],

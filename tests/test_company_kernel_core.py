@@ -3556,7 +3556,7 @@ class CompanyKernelCoreTest(unittest.TestCase):
     }).join('');
   }
   document.getElementById('db-path-label').innerText = isSimulationMode ? 'simulation://gateway.company.internal' : 'https://gateway.company.internal';
-  // Stubs for test assertions: companyApiGet checkCompanyApi /v1/health refreshLiveDashboardFromApi window.refreshLiveDashboardFromApi /v1/tasks?limit=50 /v1/messages/recent-direct?limit=20 /v1/telemetry/traces /v1/traces/${encodeURIComponent(traceId)}/timeline /v1/traces/${encodeURIComponent(taskTraceId)}/timeline Trace Timeline traceTimelineSummary traceObjectSummary payload.execution_attempts payload.artifacts payload.evidence payload.handoffs Supervisor Chain supervisionChainSummary payload.supervision_chain Task Supervisor Chain taskSupervisorChainSummary /v1/openclaw/runtime-inventory openclaw-runtime-inventory-container OpenClaw Runtime Inventory source=/v1/openclaw/runtime-inventory · read-only · no OpenClaw bus mutation registration status, and Telegram queue counts telemetry.traces populateKanban(window.summaryData) kanbanTransitionTask const agent = (task.claimed_by || task.target_agent block`, { agent, blocker: reason } stalled_tasks setInterval(refreshLiveDashboardFromApi, 10000) API OFFLINE /v1/attendance/latest realOnboardGeneratedEmployee realDirectEmployeeMessage openDirectEmployeeMessage /v1/messages/direct realOffboardEmployee openEditEmployeeProfile realUpdateEmployeeProfile 'PATCH' 'DELETE' timeZone: 'Asia/Bangkok' THA bindMentionAutocomplete agent-mention-suggestions collaborationHelpText 是否需要其他员工协助 kernel-form-modal openKernelFormModal('direct' openKernelFormModal('conversation' employee-card-actions employee-card-menu toggleEmployeeActionMenu Send Message prefillChatMention Chat Hub ready for @ grid-template-columns: minmax(0, 1fr) 34px dashboard-layout-fix showApprovalDetails refreshGovernanceTables refreshTraceTelemetry refreshTraceTelemetry() notify-route-status setTimeout(loadNotificationSettings, 350) decideApprovalFromDashboard /v1/approvals/${encodeURIComponent(approvalId)}/${normalized} Mock Resolve mock resolved from dashboard; no external delivery executed Approve Deny Approval Actions
+  // Stubs for test assertions: companyApiGet checkCompanyApi /v1/health refreshLiveDashboardFromApi window.refreshLiveDashboardFromApi /v1/tasks?limit=50 /v1/messages/recent-direct?limit=20 /v1/telemetry/traces /v1/traces/${encodeURIComponent(traceId)}/timeline /v1/traces/${encodeURIComponent(taskTraceId)}/timeline Trace Timeline traceTimelineSummary traceStorySummary ceoTimelineSummary payload.trace_story payload.ceo_timeline traceObjectSummary payload.execution_attempts payload.artifacts payload.evidence payload.handoffs Supervisor Chain supervisionChainSummary payload.supervision_chain Task Supervisor Chain taskSupervisorChainSummary /v1/openclaw/runtime-inventory openclaw-runtime-inventory-container OpenClaw Runtime Inventory source=/v1/openclaw/runtime-inventory · read-only · no OpenClaw bus mutation registration status, and Telegram queue counts telemetry.traces populateKanban(window.summaryData) kanbanTransitionTask const agent = (task.claimed_by || task.target_agent block`, { agent, blocker: reason } stalled_tasks setInterval(refreshLiveDashboardFromApi, 10000) API OFFLINE /v1/attendance/latest realOnboardGeneratedEmployee realDirectEmployeeMessage openDirectEmployeeMessage /v1/messages/direct realOffboardEmployee openEditEmployeeProfile realUpdateEmployeeProfile 'PATCH' 'DELETE' timeZone: 'Asia/Bangkok' THA bindMentionAutocomplete agent-mention-suggestions collaborationHelpText 是否需要其他员工协助 kernel-form-modal openKernelFormModal('direct' openKernelFormModal('conversation' employee-card-actions employee-card-menu toggleEmployeeActionMenu Send Message prefillChatMention Chat Hub ready for @ grid-template-columns: minmax(0, 1fr) 34px dashboard-layout-fix showApprovalDetails refreshGovernanceTables refreshTraceTelemetry refreshTraceTelemetry() notify-route-status setTimeout(loadNotificationSettings, 350) decideApprovalFromDashboard /v1/approvals/${encodeURIComponent(approvalId)}/${normalized} Mock Resolve mock resolved from dashboard; no external delivery executed Approve Deny Approval Actions
 </script>
 </body></html>
             """,
@@ -3598,6 +3598,10 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertIn("/v1/traces/${encodeURIComponent(taskTraceId)}/timeline", html)
         self.assertIn("Trace Timeline", html)
         self.assertIn("traceTimelineSummary", html)
+        self.assertIn("traceStorySummary", html)
+        self.assertIn("ceoTimelineSummary", html)
+        self.assertIn("payload.trace_story", html)
+        self.assertIn("payload.ceo_timeline", html)
         self.assertIn("traceObjectSummary", html)
         self.assertIn("payload.execution_attempts", html)
         self.assertIn("payload.artifacts", html)
@@ -4969,6 +4973,20 @@ class CompanyKernelCoreTest(unittest.TestCase):
             ["hermes -> codex · correction_requested · task-trace-api", "codex -> hermes · correction_acknowledged · task-trace-api"],
             [item["summary"] for item in api_payload["supervision_chain"]],
         )
+        self.assertIn("trace_story", api_payload)
+        self.assertEqual("incomplete", api_payload["trace_story"]["state"])
+        self.assertIn("task.created", api_payload["trace_story"]["required_chain"])
+        self.assertIn("tool.call.started", api_payload["trace_story"]["required_chain"])
+        self.assertIn("artifact.created", api_payload["trace_story"]["observed_stages"])
+        self.assertIn("handoff.created", api_payload["trace_story"]["observed_stages"])
+        self.assertIn("evidence.promoted", api_payload["trace_story"]["observed_stages"])
+        self.assertIn("tool.call.started", api_payload["trace_story"]["missing_required"])
+        self.assertTrue(api_payload["trace_story"]["has_failure_or_recovery"])
+        self.assertTrue(api_payload["ceo_timeline"])
+        ceo_text = json.dumps(api_payload["ceo_timeline"], ensure_ascii=False)
+        self.assertIn("supervisor.correction_requested", ceo_text)
+        self.assertIn("artifact.created", ceo_text)
+        self.assertIn("adapter failed", ceo_text)
         payload_json = json.dumps(api_payload, ensure_ascii=False)
         self.assertIn("safe trace output", payload_json)
         self.assertIn("trace-delivery.md", payload_json)

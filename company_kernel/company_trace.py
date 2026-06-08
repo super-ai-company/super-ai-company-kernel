@@ -352,6 +352,8 @@ def safe_trace_payload(trace: dict) -> dict:
                 "created_at": budget_event.get("created_at", ""),
             }
         )
+    trace_story = trace_stage_story(timeline, trace)
+    ceo_timeline = ceo_timeline_items(timeline)
     return {
         "ok": True,
         "source": "trace.timeline",
@@ -390,8 +392,117 @@ def safe_trace_payload(trace: dict) -> dict:
         "tool_calls": sanitized_tool_calls,
         "budget_events": sanitized_budget_events,
         "supervision_chain": supervision_chain,
+        "trace_story": trace_story,
+        "ceo_timeline": ceo_timeline,
         "timeline": timeline,
     }
+
+
+def trace_stage_story(timeline: list[dict], trace: dict) -> dict:
+    required_chain = [
+        "task.created",
+        "task.claimed",
+        "attempt.started",
+        "tool.call.started",
+        "task.progress",
+        "artifact.created",
+        "handoff.created",
+        "evidence.promoted",
+        "task.done",
+    ]
+    observed: set[str] = set()
+    for item in timeline:
+        kind = item.get("kind", "")
+        label = item.get("label", "")
+        status = str(item.get("status", "")).lower()
+        if kind == "task":
+            observed.add("task.created")
+            if status in {"claimed", "running", "completed", "done", "success"}:
+                observed.add("task.claimed")
+            if status in {"completed", "done", "success"}:
+                observed.add("task.done")
+        if kind == "attempt" or label == "task.attempt.started":
+            observed.add("attempt.started")
+        if kind == "tool_call" or str(label).startswith("tool.call."):
+            observed.add("tool.call.started")
+        if label.startswith("task.progress") or label in {"runtime.session.progress"}:
+            observed.add("task.progress")
+        if kind == "artifact" or label == "artifact.created":
+            observed.add("artifact.created")
+        if kind == "handoff" or label == "handoff.created":
+            observed.add("handoff.created")
+        if kind == "evidence" or label == "artifact.promoted_to_evidence":
+            observed.add("evidence.promoted")
+        if label in {"task.done", "task.completed", "task.output_submitted"}:
+            observed.add("task.done")
+    has_failure_or_recovery = any(
+        str(item.get("status", "")).lower() in {"failed", "blocked", "stale", "cancelled", "retrying"}
+        or str(item.get("label", "")).startswith(("task.retry", "task.reassign"))
+        or item.get("kind") == "adapter" and str(item.get("status", "")).lower() == "failed"
+        for item in timeline
+    )
+    missing_required = [stage for stage in required_chain if stage not in observed]
+    done_complete = not missing_required
+    return {
+        "state": "complete" if done_complete else "incomplete",
+        "required_chain": required_chain,
+        "observed_stages": sorted(observed),
+        "missing_required": missing_required,
+        "has_failure_or_recovery": has_failure_or_recovery,
+        "summary": "Trace has complete task-to-evidence chain." if done_complete else f"Trace is missing {len(missing_required)} required stage(s).",
+        "counts": {
+            "tasks": len(trace.get("tasks", [])),
+            "attempts": len(trace.get("execution_attempts", [])),
+            "tool_calls": len(trace.get("tool_calls", [])),
+            "artifacts": len(trace.get("artifacts", [])),
+            "handoffs": len(trace.get("handoffs", [])),
+            "evidence": len(trace.get("evidence", [])),
+            "budget_events": len(trace.get("budget_events", [])),
+        },
+    }
+
+
+def ceo_timeline_items(timeline: list[dict]) -> list[dict]:
+    items = []
+    for item in timeline:
+        kind = item.get("kind", "")
+        label = item.get("label", "")
+        status = str(item.get("status", "") or "")
+        title = label or kind
+        recommended_action = "observe"
+        severity = "info"
+        if item.get("action") in {"correction_requested", "correction_acknowledged"}:
+            recommended_action = "verify correction ack" if item.get("action") == "correction_requested" else "continue monitoring"
+            severity = "attention"
+        elif status.lower() in {"failed", "blocked", "stale", "cancelled"}:
+            recommended_action = "review blocker, retry, reassign, or request approval"
+            severity = "critical"
+        elif kind == "evidence":
+            recommended_action = "review final evidence"
+            severity = "success"
+        elif kind == "artifact":
+            recommended_action = "check artifact readiness for handoff/evidence"
+            severity = "success"
+        elif kind == "budget_event":
+            recommended_action = "review spend"
+        if kind == "adapter" and status.lower() == "failed":
+            title = f"adapter failed: {label}"
+        items.append(
+            {
+                "at": item.get("at", ""),
+                "kind": kind,
+                "stage": label,
+                "status": status,
+                "task_id": item.get("task_id", ""),
+                "attempt_id": item.get("attempt_id", ""),
+                "actor": item.get("actor", ""),
+                "title": companyctl.sanitize_log_text(title),
+                "summary": companyctl.sanitize_log_text(item.get("sanitized_log") or item.get("message") or label),
+                "severity": severity,
+                "recommended_action": recommended_action,
+            }
+        )
+    return items
 
 
 def render_html(trace: dict) -> str:
