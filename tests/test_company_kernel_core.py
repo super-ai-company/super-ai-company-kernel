@@ -3564,9 +3564,9 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertIn("/v1/health", html)
         self.assertIn("API offline", html)
         self.assertIn("editEmployee", html)
-        self.assertIn("directMessageEmployee", html)
-        self.assertIn("/v1/messages/direct", html)
-        self.assertIn("Direct reply from", html)
+        self.assertNotIn("directMessageEmployee", html)
+        self.assertNotIn("/v1/messages/direct", html)
+        self.assertNotIn("Direct reply from", html)
         self.assertIn("'PATCH'", html)
         self.assertIn("'DELETE'", html)
         self.assertIn("/v1/employees/${encodeURIComponent(id)}", html)
@@ -3645,7 +3645,7 @@ class CompanyKernelCoreTest(unittest.TestCase):
     }).join('');
   }
   document.getElementById('db-path-label').innerText = isSimulationMode ? 'simulation://gateway.company.internal' : 'https://gateway.company.internal';
-  // Stubs for test assertions: companyApiGet checkCompanyApi /v1/health refreshLiveDashboardFromApi window.refreshLiveDashboardFromApi /v1/tasks?limit=50 /v1/messages/recent-direct?limit=20 /v1/telemetry/traces /v1/traces/${encodeURIComponent(traceId)}/timeline /v1/traces/${encodeURIComponent(taskTraceId)}/timeline Trace Timeline traceTimelineSummary traceStorySummary ceoTimelineSummary payload.trace_story payload.ceo_timeline traceObjectSummary payload.execution_attempts payload.artifacts payload.evidence payload.handoffs Supervisor Chain supervisionChainSummary payload.supervision_chain Task Supervisor Chain taskSupervisorChainSummary /v1/openclaw/runtime-inventory openclaw-runtime-inventory-container OpenClaw Runtime Inventory source=/v1/openclaw/runtime-inventory · read-only · no OpenClaw bus mutation registration status, and Telegram queue counts telemetry.traces populateKanban(window.summaryData) kanbanTransitionTask const agent = (task.claimed_by || task.target_agent block`, { agent, blocker: reason } stalled_tasks setInterval(refreshLiveDashboardFromApi, 10000) API OFFLINE /v1/attendance/latest realOnboardGeneratedEmployee realDirectEmployeeMessage openDirectEmployeeMessage /v1/messages/direct realOffboardEmployee openEditEmployeeProfile realUpdateEmployeeProfile 'PATCH' 'DELETE' timeZone: 'Asia/Bangkok' THA bindMentionAutocomplete agent-mention-suggestions collaborationHelpText 是否需要其他员工协助 kernel-form-modal openKernelFormModal('direct' openKernelFormModal('conversation' employee-card-actions employee-card-menu toggleEmployeeActionMenu Send Message prefillChatMention Chat Hub ready for @ grid-template-columns: minmax(0, 1fr) 34px dashboard-layout-fix showApprovalDetails refreshGovernanceTables refreshTraceTelemetry refreshTraceTelemetry() notify-route-status setTimeout(loadNotificationSettings, 350) decideApprovalFromDashboard /v1/approvals/${encodeURIComponent(approvalId)}/${normalized} Mock Resolve mock resolved from dashboard; no external delivery executed Approve Deny Approval Actions
+  // Stubs for test assertions: companyApiGet checkCompanyApi /v1/health refreshLiveDashboardFromApi window.refreshLiveDashboardFromApi /v1/tasks?limit=50 /v1/messages/recent-direct?limit=20 /v1/telemetry/traces /v1/traces/${encodeURIComponent(traceId)}/timeline /v1/traces/${encodeURIComponent(taskTraceId)}/timeline Trace Timeline traceTimelineSummary traceStorySummary ceoTimelineSummary payload.trace_story payload.ceo_timeline traceObjectSummary payload.execution_attempts payload.artifacts payload.evidence payload.handoffs Supervisor Chain supervisionChainSummary payload.supervision_chain Task Supervisor Chain taskSupervisorChainSummary /v1/openclaw/runtime-inventory openclaw-runtime-inventory-container OpenClaw Runtime Inventory source=/v1/openclaw/runtime-inventory · read-only · no OpenClaw bus mutation registration status, and Telegram queue counts telemetry.traces populateKanban(window.summaryData) kanbanTransitionTask const agent = (task.claimed_by || task.target_agent block`, { agent, blocker: reason } stalled_tasks setInterval(refreshLiveDashboardFromApi, 10000) API OFFLINE /v1/attendance/latest realOnboardGeneratedEmployee realOffboardEmployee openEditEmployeeProfile realUpdateEmployeeProfile 'PATCH' 'DELETE' timeZone: 'Asia/Bangkok' THA bindMentionAutocomplete agent-mention-suggestions collaborationHelpText 是否需要其他员工协助 kernel-form-modal openKernelFormModal('conversation' employee-card-actions employee-card-menu toggleEmployeeActionMenu Task Chat Hub ready for @ grid-template-columns: minmax(0, 1fr) 34px dashboard-layout-fix showApprovalDetails refreshGovernanceTables refreshTraceTelemetry refreshTraceTelemetry() notify-route-status setTimeout(loadNotificationSettings, 350) decideApprovalFromDashboard /v1/approvals/${encodeURIComponent(approvalId)}/${normalized} Mock Resolve mock resolved from dashboard; no external delivery executed Approve Deny Approval Actions
 </script>
 </body></html>
             """,
@@ -3718,9 +3718,9 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertIn("API OFFLINE", html)
         self.assertIn("/v1/attendance/latest", html)
         self.assertIn("realOnboardGeneratedEmployee", html)
-        self.assertIn("realDirectEmployeeMessage", html)
-        self.assertIn("openDirectEmployeeMessage", html)
-        self.assertIn("/v1/messages/direct", html)
+        self.assertNotIn("realDirectEmployeeMessage", html)
+        self.assertNotIn("openDirectEmployeeMessage", html)
+        self.assertNotIn("/v1/messages/direct", html)
         self.assertIn("realOffboardEmployee", html)
         self.assertIn("openEditEmployeeProfile", html)
         self.assertIn("realUpdateEmployeeProfile", html)
@@ -3734,13 +3734,13 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertIn("collaborationHelpText", html)
         self.assertIn("是否需要其他员工协助", html)
         self.assertIn("kernel-form-modal", html)
-        self.assertIn("openKernelFormModal('direct'", html)
+        self.assertNotIn("openKernelFormModal('direct'", html)
         self.assertIn("openKernelFormModal('conversation'", html)
         self.assertIn("employee-card-actions", html)
         self.assertIn("employee-card-menu", html)
         self.assertIn("toggleEmployeeActionMenu", html)
-        self.assertIn("Send Message", html)
-        self.assertIn("prefillChatMention", html)
+        self.assertNotIn("Send Message", html)
+        self.assertNotIn("prefillChatMention", html)
         self.assertIn("Chat Hub ready for @", html)
         self.assertIn("grid-template-columns: minmax(0, 1fr) 34px", html)
         self.assertNotIn("prompt('Participants, comma-separated", html)
