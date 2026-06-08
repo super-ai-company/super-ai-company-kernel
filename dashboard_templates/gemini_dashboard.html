@@ -3399,7 +3399,15 @@
     return window.summaryData;
   }
 
+  let liveRefreshInFlight = false;
+  let liveRefreshQueued = false;
+
   async function refreshLiveDashboardFromApi() {
+    if (liveRefreshInFlight) {
+      liveRefreshQueued = true;
+      return false;
+    }
+    liveRefreshInFlight = true;
     try {
       const health = await companyApiGet('/v1/health');
       const cockpit = await companyApiGet('/v1/dashboard/cockpit');
@@ -3449,6 +3457,12 @@
     } catch (err) {
       companyApiLog('ERROR', `Live refresh failed: ${err.message}`, 'error');
       return false;
+    } finally {
+      liveRefreshInFlight = false;
+      if (liveRefreshQueued) {
+        liveRefreshQueued = false;
+        setTimeout(refreshLiveDashboardFromApi, 250);
+      }
     }
   }
   window.refreshLiveDashboardFromApi = refreshLiveDashboardFromApi;
@@ -3546,8 +3560,8 @@
               action.dry_run_default === false ? 'live action' : 'dry-run default',
               action.dangerous ? 'danger' : ''
             ].filter(Boolean).join(' · ');
-            return `<button class="mini-btn" data-action-id="${escapeHtml(action.id || '')}" data-method="${escapeHtml(action.method || 'GET')}" data-requires-owner-approval="${action.requires_owner_approval ? 'true' : 'false'}" data-dry-run-default="${action.dry_run_default === false ? 'false' : 'true'}" data-dangerous="${action.dangerous ? 'true' : 'false'}" title="${escapeHtml(safetyChips)}" onclick="event.stopPropagation(); handleOwnerAttentionAction('${escapeHtml(item.task_id || '')}', '${escapeHtml(item.attempt_id || '')}', '${escapeHtml(item.approval_id || '')}', '${escapeHtml(action.id || '')}')">${escapeHtml(action.label || action.id || '')}<small>${escapeHtml(safetyChips)}</small></button>`;
-          }).join('')}${item.kind === 'stagnant_task' ? `<button class="mini-btn" data-ledger-action="task.probe" data-requires-owner-approval="true" data-dangerous="false" title="${escapeHtml(stagnantGuidance)}" onclick="event.stopPropagation(); handleOwnerAttentionAction('${escapeHtml(item.task_id || '')}', '${escapeHtml(item.attempt_id || '')}', '${escapeHtml(item.approval_id || '')}', 'send_probe')">Send Probe<small>ledger correction · owner approval</small></button>` : ''}</span>` : ''}
+            return `<button class="mini-btn owner-attention-action" data-action-id="${escapeHtml(action.id || '')}" data-task-id="${escapeHtml(item.task_id || '')}" data-attempt-id="${escapeHtml(item.attempt_id || '')}" data-approval-id="${escapeHtml(item.approval_id || '')}" data-employee-id="${escapeHtml(item.employee_id || item.target_agent || '')}" data-method="${escapeHtml(action.method || 'GET')}" data-requires-owner-approval="${action.requires_owner_approval ? 'true' : 'false'}" data-dry-run-default="${action.dry_run_default === false ? 'false' : 'true'}" data-dangerous="${action.dangerous ? 'true' : 'false'}" title="${escapeHtml(safetyChips)}" onclick="event.stopPropagation(); window.handleOwnerAttentionAction('${escapeHtml(item.task_id || '')}', '${escapeHtml(item.attempt_id || '')}', '${escapeHtml(item.approval_id || '')}', '${escapeHtml(action.id || '')}', '${escapeHtml(item.employee_id || item.target_agent || '')}')">${escapeHtml(action.label || action.id || '')}<small>${escapeHtml(safetyChips)}</small></button>`;
+          }).join('')}${item.kind === 'stagnant_task' ? `<button class="mini-btn owner-attention-action" data-action-id="send_probe" data-task-id="${escapeHtml(item.task_id || '')}" data-attempt-id="${escapeHtml(item.attempt_id || '')}" data-approval-id="${escapeHtml(item.approval_id || '')}" data-employee-id="${escapeHtml(item.employee_id || item.target_agent || '')}" data-ledger-action="task.probe" data-requires-owner-approval="true" data-dangerous="false" title="${escapeHtml(stagnantGuidance)}">Send Probe<small>ledger correction · owner approval</small></button>` : ''}</span>` : ''}
         </div>
         <div class="long-task-state ${escapeHtml(item.state)}">${escapeHtml(item.state)}</div>
       </div>
@@ -3599,7 +3613,7 @@
     return '员工仍在线，但 15 分钟没有新进度。可继续等待、发送探针、查看日志或请求 Hermes 纠偏。';
   }
 
-  function handleOwnerAttentionAction(taskId, attemptId, approvalId, actionId) {
+  function handleOwnerAttentionAction(taskId, attemptId, approvalId, actionId, employeeId) {
     if (actionId === 'send_probe') {
       sendStagnantProbe(taskId, attemptId);
       return;
@@ -3634,8 +3648,7 @@
       return;
     }
     if (actionId === 'verify_runtime') {
-      companyApiLog('SYSTEM', 'Verify runtime evidence requested. Candidate/reviewer employees require structured execution evidence before automatic scheduling.', 'normal');
-      refreshLiveDashboardFromApi();
+      window.verifyRuntimeEvidence(employeeId);
       return;
     }
     if (actionId === 'view_employee') {
@@ -3648,6 +3661,26 @@
       return;
     }
     if (taskId) openTaskDetailDrawer(taskId);
+  }
+  window.handleOwnerAttentionAction = handleOwnerAttentionAction;
+
+  function installOwnerAttentionActionHandlers() {
+    const container = document.getElementById('cockpit-owner-attention');
+    if (!container || container.dataset.actionHandlersInstalled === 'true') return;
+    container.dataset.actionHandlersInstalled = 'true';
+    container.addEventListener('click', (event) => {
+      const button = event.target.closest('.owner-attention-action');
+      if (!button) return;
+      event.preventDefault();
+      event.stopPropagation();
+      handleOwnerAttentionAction(
+        button.dataset.taskId || '',
+        button.dataset.attemptId || '',
+        button.dataset.approvalId || '',
+        button.dataset.actionId || '',
+        button.dataset.employeeId || ''
+      );
+    });
   }
 
   function viewTaskLogs(taskId) {
@@ -4433,6 +4466,32 @@
       await refreshLiveDashboardFromApi();
     } catch (err) {
       companyApiLog('ERROR', `Stagnant probe failed: ${err.message}`, 'error');
+    }
+  };
+
+  window.verifyRuntimeEvidence = async function(employeeId) {
+    const agent = (employeeId || '').trim();
+    if (!agent) {
+      companyApiLog('ERROR', 'Verify runtime evidence failed: missing employee id.', 'error');
+      return;
+    }
+    companyApiLog('SYSTEM', `Verifying runtime evidence for ${agent} through Kernel agent matrix...`, 'normal');
+    try {
+      const payload = await companyApiGet(`/v1/agent-matrix?agents=${encodeURIComponent(agent)}`);
+      const row = Array.isArray(payload.employees) ? payload.employees.find(item => item.agent === agent) : null;
+      if (!row) {
+        companyApiLog('ERROR', `Runtime evidence check returned no matrix row for ${agent}.`, 'error');
+        return;
+      }
+      const checks = row.checks || {};
+      companyApiLog(
+        'SYSTEM',
+        `Runtime evidence ${agent}: level=${row.level || '-'} reason=${row.reason || '-'} attendance=${checks.attendance || '-'} runtime=${checks.runtime || '-'} task=${checks.task || '-'} evidence=${checks.evidence || '-'}`,
+        row.level === 'active_ready' ? 'success' : 'normal'
+      );
+      await refreshLiveDashboardFromApi();
+    } catch (err) {
+      companyApiLog('ERROR', `Verify runtime evidence failed for ${agent}: ${err.message}`, 'error');
     }
   };
 
@@ -7192,6 +7251,7 @@
     runStartupStep('refreshKernelEventConsole', refreshKernelEventConsole);
     runStartupStep('populateChatHub', populateChatHub);
     runStartupStep('installNotificationSettingsPanel', installNotificationSettingsPanel);
+    runStartupStep('installOwnerAttentionActionHandlers', installOwnerAttentionActionHandlers);
     
     // Auto-refresh state check
     const savedAutoRefresh = localStorage.getItem('dashboard-auto-refresh');
