@@ -743,12 +743,29 @@ def task_workspace(conn: sqlite3.Connection, task_id: str) -> dict:
 
 def require_workspace_path(conn: sqlite3.Connection, task_id: str, raw_path: str) -> Path:
     workspace = task_workspace(conn, task_id)
-    root = Path(workspace["path"]).resolve()
-    candidate = Path(raw_path).expanduser().resolve()
-    try:
-        candidate.relative_to(root)
-    except ValueError as exc:
-        raise ValueError(f"artifact path must be inside task workspace: {candidate}") from exc
+    root = Path(os.path.realpath(Path(workspace["path"]).expanduser()))
+    candidate = Path(os.path.realpath(Path(raw_path).expanduser()))
+    def macos_var_aliases(path: Path) -> set[str]:
+        text = str(path)
+        aliases = {text}
+        if text.startswith("/private/var/"):
+            aliases.add(text.replace("/private/var/", "/var/", 1))
+        elif text.startswith("/var/"):
+            aliases.add(text.replace("/var/", "/private/var/", 1))
+        return aliases
+
+    root_aliases = macos_var_aliases(root)
+    candidate_aliases = macos_var_aliases(candidate)
+    allowed = False
+    for root_alias in root_aliases:
+        for candidate_alias in candidate_aliases:
+            if candidate_alias == root_alias or candidate_alias.startswith(root_alias.rstrip("/") + "/"):
+                allowed = True
+                break
+        if allowed:
+            break
+    if not allowed:
+        raise ValueError(f"artifact path must be inside task workspace: {candidate}")
     return candidate
 
 
@@ -1850,24 +1867,34 @@ def has_v3_file_flow(conn: sqlite3.Connection, task_id: str) -> bool:
 
 
 def final_evidence_for_path(conn: sqlite3.Connection, task_id: str, evidence_path: str) -> dict | None:
-    row = conn.execute(
+    def path_variants(value: str) -> set[str]:
+        variants = {str(value or "")}
+        if value:
+            try:
+                variants.add(str(Path(value).resolve()))
+            except (OSError, RuntimeError):
+                pass
+        return {item for item in variants if item}
+
+    evidence_path_variants = path_variants(evidence_path)
+    evidence_rows = rows(
+        conn,
         """
         SELECT * FROM evidence
         WHERE task_id = ?
-          AND path_or_url = ?
           AND is_final = 1
         ORDER BY created_at DESC
-        LIMIT 1
         """,
-        (task_id, evidence_path),
-    ).fetchone()
-    if row:
-        return dict(row)
+        (task_id,),
+    )
+    for evidence_row in evidence_rows:
+        if path_variants(evidence_row.get("path_or_url", "")) & evidence_path_variants:
+            return evidence_row
     artifact_rows = rows(conn, "SELECT artifact_id, metadata_json FROM artifacts WHERE task_id = ? AND is_final = 1", (task_id,))
     matching_artifact_ids = []
     for artifact in artifact_rows:
         metadata = parse_json_arg(artifact.get("metadata_json", ""), {})
-        if isinstance(metadata, dict) and metadata.get("original_path") == evidence_path:
+        if isinstance(metadata, dict) and path_variants(str(metadata.get("original_path") or "")) & evidence_path_variants:
             matching_artifact_ids.append(artifact["artifact_id"])
     if not matching_artifact_ids:
         return None
