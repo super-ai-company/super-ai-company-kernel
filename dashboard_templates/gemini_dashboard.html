@@ -4335,6 +4335,7 @@
 
   function extractTaskContext(messageOrConversation) {
     const item = messageOrConversation || {};
+    if (item.task_context) return String(item.task_context);
     const direct = item.task_id || item.taskId || '';
     if (direct) return String(direct);
     const text = [
@@ -4353,6 +4354,7 @@
   }
 
   function isLowSignalChatMessage(message) {
+    if (message && typeof message.low_signal === 'boolean') return message.low_signal;
     const body = String(message && message.body ? message.body : '').trim();
     if (!body) return true;
     if (isTaskBoundChatItem(message)) return false;
