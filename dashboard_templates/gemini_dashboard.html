@@ -4105,6 +4105,23 @@
     return oneLine.length > maxLength ? oneLine.slice(0, maxLength - 1) + '…' : oneLine;
   }
 
+  function displayPath(value) {
+    const raw = value === null || value === undefined ? '' : String(value);
+    if (!raw) return '-';
+    const homePrefix = '/Users/' + 'shift';
+    return raw
+      .replaceAll(homePrefix + '/', '~/')
+      .replaceAll(homePrefix, '~')
+      .replaceAll('/private/var/folders/', '~/tmp/')
+      .replaceAll('/var/folders/', '~/tmp/');
+  }
+
+  function sanitizeDisplayText(value) {
+    const raw = value === null || value === undefined ? '' : String(value);
+    if (!raw) return '';
+    return displayPath(raw);
+  }
+
   function readinessBadge(employee) {
     const level = String(employee.readiness_level || employee.status || 'unknown');
     const safeLevel = level.replace(/[^a-zA-Z0-9_-]/g, '-');
@@ -4157,7 +4174,7 @@
           <td>${readinessBadge(emp)}</td>
           <td><span class="long-task-state ${isolation === 'none' ? 'running' : 'success'}">${escapeHtml(isolation)}</span></td>
           <td><span class="long-task-state ${network === 'none' ? 'success' : 'progress_stagnant'}">${escapeHtml(network)}</span></td>
-          <td style="font-family: monospace;">${escapeHtml(workspaceScope)}</td>
+          <td style="font-family: monospace;">${escapeHtml(displayPath(workspaceScope))}</td>
           <td>${escapeHtml(approvals.join(', ') || 'none')}</td>
           <td><span class="badge ${badgeClass}">${escapeHtml(source)}</span></td>
         </tr>
@@ -4187,7 +4204,7 @@
         <div class="employee-meta" style="margin-top: 8px; font-size: 11px;">
           <div><strong>ID:</strong> ${escapeHtml(skill.id || '-')}</div>
           <div><strong>Runtime:</strong> ${escapeHtml(skill.runtime_type || '-')}</div>
-          <div><strong>Workspace:</strong> ${escapeHtml(skill.workspace_permission || '-')}</div>
+          <div><strong>Workspace:</strong> ${escapeHtml(displayPath(skill.workspace_permission || '-'))}</div>
           <div><strong>Final:</strong> ${escapeHtml(skill.final_artifact || '-')}</div>
           <div><strong>Price:</strong> ${escapeHtml(skill.pricing_amount || '-')} ${escapeHtml(skill.pricing_currency || '')} / ${escapeHtml(skill.pricing_unit || '-')}</div>
         </div>
@@ -4274,7 +4291,7 @@
     if (!rows.length) return '-';
     return rows.slice(-8).map(item => {
       const direction = item.ack ? 'acknowledged' : 'requested';
-      return `${formatDate(item.created_at || '') || '-'} · ${direction} · ${item.source_agent || '-'} · attempt=${item.attempt_id || '-'} · ${item.message || ''}`;
+      return sanitizeDisplayText(`${formatDate(item.created_at || '') || '-'} · ${direction} · ${item.source_agent || '-'} · attempt=${item.attempt_id || '-'} · ${item.message || ''}`);
     }).join('\n');
   }
 
@@ -4284,7 +4301,7 @@
     return rows.slice(0, 8).map(item => {
       const policy = item.log_policy || {};
       const sourceFields = Array.isArray(policy.source_fields) ? policy.source_fields.join(',') : '-';
-      return `${formatDate(item.created_at || '') || '-'} · ${item.run_id || '-'} · ${item.agent_id || '-'} · ok=${item.ok ? 'yes' : 'no'} · raw_available=${item.raw_available ? 'yes' : 'no'} · policy=${policy.mode || 'sanitized_only'} · ${policy.summary || 'raw stdout/stderr hidden'} · source_fields=${sourceFields} · ${item.sanitized_log || ''}`;
+      return sanitizeDisplayText(`${formatDate(item.created_at || '') || '-'} · ${item.run_id || '-'} · ${item.agent_id || '-'} · ok=${item.ok ? 'yes' : 'no'} · raw_available=${item.raw_available ? 'yes' : 'no'} · policy=${policy.mode || 'sanitized_only'} · ${policy.summary || 'raw stdout/stderr hidden'} · source_fields=${sourceFields} · ${item.sanitized_log || ''}`);
     }).join('\n');
   }
 
@@ -4619,9 +4636,9 @@
     if (!rows.length) return '-';
     return rows.map(item => {
       const id = item.event_id || item.run_id || item.artifact_id || item.evidence_id || item.handoff_id || item.attempt_id || '';
-      const display = item.display && item.display.relative_path ? ` · ${item.display.relative_path}` : '';
-      const log = item.sanitized_log ? ` · ${item.sanitized_log}` : '';
-      return `${item.at || '-'} · ${item.kind || '-'} · ${item.status || '-'} · ${item.task_id || '-'} · ${item.label || id}${display}${log}`;
+      const display = item.display && item.display.relative_path ? ` · ${displayPath(item.display.relative_path)}` : '';
+      const log = item.sanitized_log ? ` · ${sanitizeDisplayText(item.sanitized_log)}` : '';
+      return sanitizeDisplayText(`${item.at || '-'} · ${item.kind || '-'} · ${item.status || '-'} · ${item.task_id || '-'} · ${item.label || id}${display}${log}`);
     }).join('\n');
   }
 
@@ -5364,7 +5381,7 @@
     container.innerHTML = hiddenChatNotice(filtered.hiddenCount) + displayMessages.map((message, index) => {
       // Inline System Event Cards inside conversations
       if (message.source_agent === 'system' || message.source_agent === 'SYSTEM') {
-        return `<div class="chat-system-log" data-message-id="${escapeHtml(message.id || message.message_id || `system-${index}`)}" data-chat-classification="system">${escapeHtml(message.body)}</div>`;
+        return `<div class="chat-system-log" data-message-id="${escapeHtml(message.id || message.message_id || `system-${index}`)}" data-chat-classification="system">${escapeHtml(sanitizeDisplayText(message.body))}</div>`;
       }
       
       const isOwner = message.source_agent === HUMAN_OWNER_ID;
@@ -5375,7 +5392,7 @@
           <div class="chat-bubble-avatar">${escapeHtml(avatarChar)}</div>
           <div class="chat-bubble-wrapper">
             <div class="chat-bubble-sender">${escapeHtml(message.source_agent || '-')}${messageTask ? ` <span class="chat-task-context-pill">Task-bound ${escapeHtml(messageTask)}</span>` : ''}</div>
-            <div class="chat-bubble-body">${escapeHtml(message.body || '')}</div>
+            <div class="chat-bubble-body">${escapeHtml(sanitizeDisplayText(message.body || ''))}</div>
             <div class="chat-bubble-time">${formatDate(message.created_at || message.time || '')}</div>
           </div>
         </div>
@@ -5424,7 +5441,7 @@
           <div class="chat-bubble-avatar">${escapeHtml(avatarChar)}</div>
           <div class="chat-bubble-wrapper">
             <div class="chat-bubble-sender">${escapeHtml(source)} → ${escapeHtml(target)} <span class="direct-message-pill">direct</span><span class="chat-task-context-pill">${escapeHtml(classification)}</span>${taskContext ? ` <span class="chat-task-context-pill">Task-bound ${escapeHtml(taskContext)}</span>` : ''}</div>
-            <div class="chat-bubble-body">${escapeHtml(message.body || '')}</div>
+            <div class="chat-bubble-body">${escapeHtml(sanitizeDisplayText(message.body || ''))}</div>
             <div class="chat-bubble-time">${formatDate(message.created_at || '')}</div>
           </div>
         </div>
@@ -5884,6 +5901,9 @@
   }
 
   window.openFireEmployeeModal = function(employeeId, runtime, workspace) {
+    const employee = (getDashboardSummary().employees || []).find(emp => String(emp.id || '') === String(employeeId || '')) || {};
+    runtime = runtime || employee.runtime || '';
+    workspace = workspace || employee.workspace || '';
     selectedFireEmployee = {employeeId, runtime, workspace};
     const title = document.getElementById('fire-modal-title');
     const input = document.getElementById('fire-confirm-id-input');
@@ -5894,7 +5914,7 @@
     if (input) input.value = '';
     if (soft) soft.checked = true;
     if (button) button.disabled = false;
-    if (list) list.innerHTML = `<li>${escapeHtml(workspace || 'workspace not recorded')}</li><li>runtime=${escapeHtml(runtime || '-')}</li>`;
+    if (list) list.innerHTML = `<li>${escapeHtml(displayPath(workspace || 'workspace not recorded'))}</li><li>runtime=${escapeHtml(runtime || '-')}</li>`;
     toggleDeleteMode('soft');
     const modal = document.getElementById('fire-employee-modal');
     if (modal) modal.style.display = 'flex';
@@ -6149,7 +6169,7 @@
     tbody.innerHTML = candidates.length ? candidates.map(item => {
       const ageDays = item.age_days === undefined || item.age_days === null ? '-' : `${item.age_days}d`;
       const size = item.bytes === undefined || item.bytes === null ? '-' : `${item.bytes} bytes`;
-      const path = item.workspace || '-';
+      const path = displayPath(item.workspace || '-');
       return `
         <tr>
           <td style="font-family: monospace;">${escapeHtml(item.task_id || '-')}</td>
@@ -6327,7 +6347,7 @@
         registered: item.registered ? 'yes' : 'no',
         sessions: item.session_count || 0,
         queue: '-',
-        path: item.path || ''
+        path: displayPath(item.path || '')
       })),
       ...spools.slice(0, 12).map(item => ({
         kind: 'telegram_spool',
@@ -6335,7 +6355,7 @@
         registered: item.registered ? 'yes' : 'no',
         sessions: '-',
         queue: `${item.pending || 0} pending / ${item.processing || 0} processing`,
-        path: item.path || ''
+        path: displayPath(item.path || '')
       }))
     ];
     const rowsHtml = rows.length ? rows.map(row => `
@@ -6409,7 +6429,7 @@
         status: Number(run.ok) === 1 ? 'success' : 'failed',
         started_at: run.created_at || '',
         finished_at: run.processed_at || '',
-        error_message: run.sanitized_log || ''
+        error_message: sanitizeDisplayText(run.sanitized_log || '')
       });
     });
     const seen = new Set();
@@ -6598,7 +6618,7 @@
           <span class="health-badge ${daemonOk ? 'ok' : 'fail'}">${daemonOk ? 'OK' : 'STALE'}</span>
         </div>
         <div class="health-meta">
-          <span>State File: ${escapeHtml(summary.runtime_health.daemon.state_file)}</span>
+          <span>State File: ${escapeHtml(displayPath(summary.runtime_health.daemon.state_file))}</span>
         </div>
       </div>
 
@@ -6608,7 +6628,7 @@
           <span class="health-badge ${launchdInstalled ? 'ok' : 'fail'}">${launchdInstalled ? 'INSTALLED' : 'ERROR'}</span>
         </div>
         <div class="health-meta">
-          <span>Path: ${escapeHtml(summary.runtime_health.launchd.installed_path)}</span>
+          <span>Path: ${escapeHtml(displayPath(summary.runtime_health.launchd.installed_path))}</span>
         </div>
       </div>
     `;
@@ -6709,7 +6729,7 @@
                   <i class="fa-solid ${commPaused ? 'fa-play' : 'fa-pause'}"></i> ${commPaused ? 'Resume Comm' : 'Pause Comm'}
                 </button>
                 ${emp.id !== 'openclaw-main' && emp.id !== 'video-ops' ? `
-                  <button class="card-dropdown-item danger" onclick="event.stopPropagation(); openFireEmployeeModal('${escapeHtml(emp.id)}', '${escapeHtml(emp.runtime)}', '${escapeHtml(emp.workspace)}')">
+                  <button class="card-dropdown-item danger" onclick="event.stopPropagation(); openFireEmployeeModal('${escapeHtml(emp.id)}')">
                     <i class="fa-solid fa-user-minus"></i> Fire Employee
                   </button>
                 ` : ''}
@@ -6849,7 +6869,7 @@
           <td>${escapeHtml(run.processed)}</td>
           <td>${escapeHtml(run.acknowledged_by || '-')}</td>
           <td>${escapeHtml(run.acknowledgement_reason || '-')}</td>
-          <td>${escapeHtml(shortText(run.sanitized_log || '-', 120))}</td>
+          <td>${escapeHtml(shortText(sanitizeDisplayText(run.sanitized_log || '-'), 120))}</td>
           <td>${escapeHtml(adapterRunLogPolicySummary(run))}</td>
           <td>${formatDate(run.created_at)}</td>
         </tr>
@@ -6874,7 +6894,7 @@
           <div class="observability-route">${escapeHtml(item.source_agent)} → ${escapeHtml(item.target_agent)}</div>
           <span class="observability-chip">${formatDate(item.created_at)}</span>
         </div>
-        <div class="observability-body">${escapeHtml(item.body || '(empty)')}</div>
+        <div class="observability-body">${escapeHtml(sanitizeDisplayText(item.body || '(empty)'))}</div>
       </div>
     `).join('') || `<div class="chat-direct-empty">No direct messages captured in current snapshot.</div>`;
 
@@ -6884,7 +6904,7 @@
           <div class="observability-route">${escapeHtml(item.platform || 'external')} · ${escapeHtml(item.id)}</div>
           <span class="observability-chip">${escapeHtml(item.cursor || 'no-cursor')}</span>
         </div>
-        <div class="observability-body">${escapeHtml(item.external_title || '(untitled thread)')}</div>
+        <div class="observability-body">${escapeHtml(sanitizeDisplayText(item.external_title || '(untitled thread)'))}</div>
         <div class="observability-meta">
           <span>owner=${escapeHtml(item.owner_agent || '-')}</span>
           <span>bridge=${escapeHtml(item.bridge_agent || '-')}</span>
@@ -6899,7 +6919,7 @@
           <div class="observability-route">${escapeHtml(item.command || 'adapter.run')} · ${escapeHtml(item.task_id || item.id)}</div>
           <span class="observability-chip ${item.ok ? 'good' : 'warn'}">${item.ok ? 'ok' : 'needs-review'}</span>
         </div>
-        <div class="observability-body">${escapeHtml(item.progress_file || item.state_file || item.summary || 'No repo-local progress path')}</div>
+        <div class="observability-body">${escapeHtml(sanitizeDisplayText(item.progress_file || item.state_file || item.summary || 'No repo-local progress path'))}</div>
         <div class="observability-meta">
           <span>progress=${escapeHtml(item.progress_layer || 'unknown')}</span>
           <span>state=${escapeHtml(item.progress_state || 'unknown')}</span>
@@ -6916,7 +6936,7 @@
           <div class="observability-route">${escapeHtml(item.agent_id || item.source_agent || '-')} · ${escapeHtml(item.from_layer || '?')} → ${escapeHtml(item.to_layer || '?')}</div>
           <span class="observability-chip ${item.pending ? 'warn' : 'good'}">${escapeHtml(item.delivery_status || (item.pending ? 'pending' : 'recorded'))}</span>
         </div>
-        <div class="observability-body">${escapeHtml(item.message || '(empty)')}</div>
+        <div class="observability-body">${escapeHtml(sanitizeDisplayText(item.message || '(empty)'))}</div>
         <div class="observability-meta">
           <span>reason=${escapeHtml(item.reason || '-')}</span>
           <span>state=${escapeHtml(item.from_state || '?')} → ${escapeHtml(item.to_state || '?')}</span>
@@ -6935,7 +6955,7 @@
           <div class="observability-route">${escapeHtml(item.source_agent)} → ${escapeHtml(item.target_agent)}</div>
           <span class="observability-chip warn">no_receipt</span>
         </div>
-        <div class="observability-body">${escapeHtml(item.body || '(empty)')}</div>
+        <div class="observability-body">${escapeHtml(sanitizeDisplayText(item.body || '(empty)'))}</div>
         <div class="observability-meta">
           <span>age=${escapeHtml(item.age_min ?? '-')}m</span>
           <span>${escapeHtml(item.reason || '-')}</span>
@@ -6948,7 +6968,7 @@
           <div class="observability-route">${escapeHtml(item.id)} · ${escapeHtml(item.target_agent)}</div>
           <span class="observability-chip warn">${escapeHtml(item.watchdog_status || item.status || 'open')}</span>
         </div>
-        <div class="observability-body">${escapeHtml(item.title || '(untitled task)')}</div>
+        <div class="observability-body">${escapeHtml(sanitizeDisplayText(item.title || '(untitled task)'))}</div>
         <div class="observability-meta">
           <span>age=${escapeHtml(item.age_min ?? '-')}m</span>
           <span>${escapeHtml(item.reason || '-')}</span>
@@ -7391,7 +7411,7 @@
       lines.push({
         at: message.created_at,
         tag: 'direct',
-        text: `${message.source_agent || '-'} → ${message.target_agent || '-'} ${message.body || ''}`.slice(0, 180),
+        text: sanitizeDisplayText(`${message.source_agent || '-'} → ${message.target_agent || '-'} ${message.body || ''}`).slice(0, 180),
         type: 'normal'
       });
     });
@@ -7399,7 +7419,7 @@
       lines.push({
         at: run.created_at,
         tag: 'adapter',
-        text: `${run.agent_id || '-'} ${run.command || '-'} ok=${run.ok} ${run.sanitized_log || ''}`,
+        text: sanitizeDisplayText(`${run.agent_id || '-'} ${run.command || '-'} ok=${run.ok} ${run.sanitized_log || ''}`),
         type: Number(run.ok) === 1 ? 'success' : 'warn'
       });
     });
@@ -7431,7 +7451,7 @@
     line.innerHTML = `
       <span class="terminal-time">[${timeStr}]</span>
       <span class="terminal-tag">[${logObj.tag}]</span>
-      <span class="${textClass}">${escapeHtml(logObj.text)}</span>
+      <span class="${textClass}">${escapeHtml(sanitizeDisplayText(logObj.text))}</span>
     `;
     
     stdout.appendChild(line);
