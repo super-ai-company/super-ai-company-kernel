@@ -3360,6 +3360,11 @@
         <div class="cockpit-subtext">managed by task_id + attempt_id, not a CLI timeout</div>
       </div>
       <div class="cockpit-card">
+        <h3>Running Tasks</h3>
+        <div class="cockpit-value" style="color:${Number(counts.running_tasks || 0) ? 'var(--color-blue)' : 'var(--text-primary)'}">${escapeHtml(counts.running_tasks || 0)}</div>
+        <div class="cockpit-subtext">claimed or running tasks tracked by the Company Kernel ledger</div>
+      </div>
+      <div class="cockpit-card">
         <h3>Progress Stagnant</h3>
         <div class="cockpit-value" style="color:${Number(counts.stagnant_tasks || 0) ? 'var(--color-amber)' : 'var(--color-green)'}">${escapeHtml(counts.stagnant_tasks || 0)}</div>
         <div class="cockpit-subtext">heartbeat fresh, but no progress for the configured interval</div>

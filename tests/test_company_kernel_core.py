@@ -1838,6 +1838,7 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertIn("counts.employees_online", html)
         self.assertIn("counts.employees_total", html)
         self.assertIn("counts.employees_abnormal", html)
+        self.assertIn("counts.running_tasks", html)
         self.assertIn("counts.done_tasks", html)
         self.assertIn("counts.evidence_issues", html)
         self.assertIn("counts.blocked_tasks", html)
