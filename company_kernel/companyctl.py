@@ -4499,6 +4499,25 @@ def employee_file_bundle(conn: sqlite3.Connection, employee_id: str) -> dict:
     )
     heartbeat = load_json_or_default(paths["heartbeat"], {})
     sandbox_profile = employee_sandbox_profile(profile, permissions)
+    task_rows = rows(
+        conn,
+        """
+        SELECT *
+        FROM tasks
+        WHERE source_agent = ? OR target_agent = ? OR claimed_by = ?
+        ORDER BY updated_at DESC, created_at DESC
+        LIMIT 50
+        """,
+        (employee_id, employee_id, employee_id),
+    )
+    current_tasks = [dict(item) for item in task_rows if str(item.get("status", "")).lower() in {"submitted", "claimed", "running", "waiting_approval", "blocked", "stale", "retrying"}][:10]
+    recent_tasks = [dict(item) for item in task_rows[:10]]
+    attempt_rows = [hydrate_execution_attempt(item) for item in rows(conn, "SELECT * FROM execution_attempts WHERE employee_id = ? ORDER BY started_at DESC LIMIT 50", (employee_id,))]
+    runtime_sessions = list_runtime_sessions(conn, employee_id=employee_id, limit=50)
+    tool_calls = list_tool_calls(conn, employee_id=employee_id, limit=100)
+    budget_events = list_budget_events(conn, employee_id=employee_id, limit=100)
+    employee_budget_summary = budget_summary(conn, employee_id=employee_id)
+    evidence_records = [item for item in audit_evidence_records(conn, limit=200) if item.get("employee_id") == employee_id][:50]
     return {
         "employee": profile,
         "profile": file_profile,
@@ -4506,6 +4525,26 @@ def employee_file_bundle(conn: sqlite3.Connection, employee_id: str) -> dict:
         "permissions": permissions,
         "sandbox_profile": sandbox_profile,
         "heartbeat": heartbeat,
+        "work_history": {
+            "current_tasks": current_tasks,
+            "recent_tasks": recent_tasks,
+            "tasks": [dict(item) for item in task_rows],
+            "counts": {
+                "tasks": len(task_rows),
+                "current_tasks": len(current_tasks),
+                "attempts": len(attempt_rows),
+                "runtime_sessions": len(runtime_sessions),
+                "tool_calls": len(tool_calls),
+                "budget_events": len(budget_events),
+                "evidence_records": len(evidence_records),
+            },
+        },
+        "attempts": attempt_rows,
+        "runtime_sessions": runtime_sessions,
+        "tool_calls": tool_calls,
+        "budget_events": budget_events,
+        "budget_summary": employee_budget_summary,
+        "evidence_records": evidence_records,
         "files": {key: str(value) for key, value in paths.items()},
     }
 
