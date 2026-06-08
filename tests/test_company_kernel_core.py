@@ -3352,6 +3352,15 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertIn("event.stopPropagation()", html)
         self.assertNotIn("Promise.all([\n        companyApiGet('/v1/health')", html)
 
+    def test_dashboard_approvals_table_exposes_safety_summary(self) -> None:
+        template = Path(__file__).resolve().parents[1] / "dashboard_templates" / "gemini_dashboard.html"
+        html = template.read_text(encoding="utf-8")
+        self.assertIn("approvalTableSafetySummary(app)", html)
+        self.assertIn("mode=${escapeHtml(safety.resolution_mode || '-')}", html)
+        self.assertIn("dry_run=${String(!!safety.dry_run)}", html)
+        self.assertIn("external_send_executed=${String(!!safety.external_send_executed)}", html)
+        self.assertIn("owner approval required before real external delivery", html)
+
     def test_dashboard_owner_attention_actions_render_safety_metadata(self) -> None:
         template = Path(__file__).resolve().parents[1] / "dashboard_templates" / "gemini_dashboard.html"
         html = template.read_text(encoding="utf-8")

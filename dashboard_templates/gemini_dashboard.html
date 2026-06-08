@@ -3862,6 +3862,11 @@
     }).join('\n');
   }
 
+  function approvalTableSafetySummary(app) {
+    const safety = (app && app.safety) || {};
+    return `mode=${escapeHtml(safety.resolution_mode || '-')} · dry_run=${String(!!safety.dry_run)} · external_send_executed=${String(!!safety.external_send_executed)} · ${escapeHtml(safety.summary || 'owner approval required before real external delivery')}`;
+  }
+
   function evidenceRecordsSummary(records) {
     const rows = Array.isArray(records) ? records : [];
     if (!rows.length) return '-';
@@ -5122,6 +5127,7 @@
       const approvals = summary.approvals || [];
       approvalsTbody.innerHTML = approvals.length ? approvals.map((app, index) => {
         const detail = approvalSummary(app);
+        const safetySummary = approvalTableSafetySummary(app);
         return `
           <tr data-approval-index="${index}">
             <td style="font-family: monospace; max-width: 260px;">${escapeHtml(app.id || '')}</td>
@@ -5132,6 +5138,9 @@
               <div style="font-weight:700;color:var(--text-primary);">${escapeHtml(shortText(detail.request_reason, 120))}</div>
               <div style="margin-top:4px;color:var(--text-muted);font-size:11px;">
                 target=${escapeHtml(detail.target || '-')} · risk=${escapeHtml(detail.risk || '-')}${detail.task_id ? ` · task=${escapeHtml(detail.task_id)}` : ''}
+              </div>
+              <div style="margin-top:4px;color:var(--text-muted);font-size:11px;">
+                safety=${safetySummary}
               </div>
             </td>
             <td>${formatDate(app.updated_at || '')}</td>
