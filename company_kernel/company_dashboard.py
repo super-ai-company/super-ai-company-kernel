@@ -297,6 +297,7 @@ def build_cockpit_summary(summary: dict) -> dict:
     generated_at = str(summary.get("generated_at") or now())
     employees = summary.get("employees", [])
     active_attempts = summary.get("active_attempts", [])
+    chat_counts = chat_classification_counts(summary.get("direct_messages_recent", []))
     tasks_by_id = {str(task.get("id", "")): task for task in summary.get("tasks", [])}
     long_tasks = []
     for attempt in active_attempts:
@@ -622,6 +623,9 @@ def build_cockpit_summary(summary: dict) -> dict:
             "pending_approvals": len(pending_approvals),
             "recent_evidence": len(recent_evidence),
             "evidence_issues": len(evidence_issues),
+            "chat_task_bound": chat_counts["task_bound"],
+            "chat_work_relevant": chat_counts["work_relevant"],
+            "chat_handshake_or_idle": chat_counts["handshake_or_idle"],
         },
         "employees": employee_states,
         "long_tasks": long_tasks,
@@ -679,6 +683,19 @@ def is_low_signal_chat_message(item: dict, *, task_context: str = "") -> bool:
     if re.search(r"^(hi|hello|hey|ping|pong|ack|ok|okay|thanks|thank you|收到|在|在线|你好|谢谢|感谢|早上好|晚上好|direct channel opened|dashboard direct ui ping|rest ping|smoke|handshake|greeting|idle|round\s*\d+|direct_ok|message direct ok)[\s.!。！]*$", body, re.IGNORECASE):
         return True
     return bool(re.search(r"\b(handshake|greeting|idle chatter|direct_ok|message direct ok)\b", body, re.IGNORECASE))
+
+
+def chat_classification_counts(items: list[dict]) -> dict[str, int]:
+    counts = {"task_bound": 0, "work_relevant": 0, "handshake_or_idle": 0}
+    for item in items:
+        classification = str(item.get("chat_classification") or "").strip()
+        if not classification:
+            task_context = extract_task_context_from_chat_item(item)
+            classification = "task_bound" if task_context else ("handshake_or_idle" if is_low_signal_chat_message(item, task_context=task_context) else "work_relevant")
+        if classification not in counts:
+            classification = "work_relevant"
+        counts[classification] += 1
+    return counts
 
 
 def internal_communication_watchdog(conn: sqlite3.Connection, *, generated_at: str, limit: int = 20) -> dict:
@@ -1139,6 +1156,10 @@ def communication_observability_summary(summary: dict) -> dict:
                 "source_agent": item.get("source_agent", ""),
                 "target_agent": item.get("target_agent", ""),
                 "body": item.get("body", ""),
+                "task_context": item.get("task_context", ""),
+                "task_bound": bool(item.get("task_bound")),
+                "low_signal": bool(item.get("low_signal")),
+                "chat_classification": item.get("chat_classification", ""),
                 "created_at": item.get("created_at", ""),
             }
         )
@@ -1239,7 +1260,7 @@ def communication_observability_summary(summary: dict) -> dict:
     return {
         "generated_at": summary.get("generated_at", ""),
         "direct_messages": {
-            "counts": {"total": len(summary.get("direct_messages_recent", [])), "shown": len(direct_items)},
+            "counts": {"total": len(summary.get("direct_messages_recent", [])), "shown": len(direct_items), **chat_classification_counts(summary.get("direct_messages_recent", []))},
             "items": direct_items,
         },
         "external_mirror": {
