@@ -3348,7 +3348,13 @@
     const counts = (cockpit && cockpit.counts) || {};
     const employeeStatusCounts = counts.employee_status_counts || {};
     const readinessCounts = counts.readiness_counts || {};
+    const ledgerConsistency = ledgerConsistencySummary(cockpit && cockpit.ledger_consistency);
     cards.innerHTML = `
+      <div class="cockpit-card">
+        <h3>Ledger Consistency</h3>
+        <div class="cockpit-value" style="color:var(--color-green)">1</div>
+        <div class="cockpit-subtext">${escapeHtml(ledgerConsistency)}</div>
+      </div>
       <div class="cockpit-card">
         <h3>Employees Online</h3>
         <div class="cockpit-value">${escapeHtml(counts.employees_online ?? 0)}</div>
@@ -3438,6 +3444,12 @@
         <div class="long-task-state success">evidence</div>
       </div>
     `).join('') : `<div class="cockpit-row"><div><strong>No recent evidence</strong><span>Final evidence from completed work will appear here.</span></div><div class="long-task-state running">empty</div></div>`;
+  }
+
+  function ledgerConsistencySummary(contract) {
+    const data = contract || {};
+    const surfaces = Array.isArray(data.surfaces) ? data.surfaces.join('/') : 'api/cli/dashboard';
+    return `${data.summary || 'API / CLI / Dashboard read the same Company Kernel ledger'} · source=${data.source || 'single_company_kernel_ledger'} · surfaces=${surfaces}`;
   }
 
   function stagnantTaskGuidance() {

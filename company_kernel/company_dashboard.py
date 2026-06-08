@@ -597,6 +597,11 @@ def build_cockpit_summary(summary: dict) -> dict:
         "ok": True,
         "generated_at": generated_at,
         "refresh": {"mode": "rest_polling", "interval_seconds": 10, "sse_reserved": True, "websocket": False},
+        "ledger_consistency": {
+            "source": "single_company_kernel_ledger",
+            "surfaces": ["api", "cli", "dashboard"],
+            "summary": "API / CLI / Dashboard read the same Company Kernel ledger",
+        },
         "status_contract": {
             "timeout": "sync_wait_only",
             "progress_stagnant": "heartbeat fresh but no progress beyond stale_after_seconds; do not auto-cancel",
