@@ -4485,6 +4485,46 @@
     }).join('\n');
   }
 
+  function employeeWorkHistorySummary(workHistory) {
+    const source = workHistory || {};
+    const counts = source.counts || {};
+    const current = Array.isArray(source.current_tasks) ? source.current_tasks : [];
+    const recent = Array.isArray(source.recent_tasks) ? source.recent_tasks : [];
+    const currentRows = current.slice(0, 5).map(item => `${item.status || '-'} · ${item.id || '-'} · ${item.title || item.summary || ''}`).join('\n');
+    const recentRows = recent.slice(0, 5).map(item => `${item.status || '-'} · ${item.id || '-'} · ${item.title || item.summary || ''}`).join('\n');
+    return [
+      `tasks=${counts.tasks || 0} · current=${counts.current_tasks || 0} · attempts=${counts.attempts || 0}`,
+      currentRows ? `Current:\n${sanitizeDisplayText(currentRows)}` : 'Current: idle',
+      recentRows ? `Recent:\n${sanitizeDisplayText(recentRows)}` : 'Recent: none'
+    ].join('\n');
+  }
+
+  function employeeBudgetSummary(summary) {
+    const item = summary || {};
+    return [
+      `events=${item.event_count || 0} · total=${item.currency || 'USD'} ${item.total_amount || 0}`,
+      `tokens input=${item.token_input || 0} · output=${item.token_output || 0} · runtime=${item.runtime_seconds || 0}s`
+    ].join('\n');
+  }
+
+  function employeeToolCallsSummary(calls) {
+    const rows = Array.isArray(calls) ? calls : [];
+    if (!rows.length) return 'No tool calls recorded for this employee.';
+    return rows.slice(0, 8).map(item => {
+      return sanitizeDisplayText(`${item.status || '-'} · ${item.tool_name || item.tool_call_id || '-'} · task=${item.task_id || '-'} · attempt=${item.attempt_id || '-'} · session=${item.session_id || '-'} · ${item.output_summary || item.input_summary || item.error_message || ''}`);
+    }).join('\n');
+  }
+
+  function employeeEvidenceSummary(records) {
+    const rows = Array.isArray(records) ? records : [];
+    if (!rows.length) return 'No evidence recorded for this employee.';
+    return rows.slice(0, 8).map(item => {
+      const display = item.display || {};
+      const path = display.relative_path || display.basename || item.path_or_url || '-';
+      return sanitizeDisplayText(`${item.evidence_id || '-'} · task=${item.task_id || '-'} · attempt=${item.attempt_id || '-'} · final=${item.is_final} · ${path} · ${item.summary || ''}`);
+    }).join('\n');
+  }
+
   function adapterRunLogPolicySummary(run) {
     const policy = (run && run.log_policy) || {};
     return `${policy.mode || 'sanitized_only'} · ${policy.summary || 'raw stdout/stderr hidden'}`;
@@ -5031,6 +5071,47 @@
     }
   }
   window.openTaskDetailDrawer = openTaskDetailDrawer;
+
+  async function openEmployeeDetailDrawer(employeeId, fallbackKey) {
+    if (!employeeId) return;
+    companyApiLog('SYSTEM', `Loading employee detail ${employeeId}...`, 'normal');
+    try {
+      const payload = await companyApiGet(`/v1/employees/${encodeURIComponent(employeeId)}`);
+      const employee = payload.employee || {};
+      const profile = payload.profile || {};
+      const heartbeat = payload.heartbeat || {};
+      const workHistory = payload.work_history || {};
+      const attempts = payload.attempts || [];
+      const runtimeSessions = payload.runtime_sessions || [];
+      const toolCalls = payload.tool_calls || [];
+      const budgetSummary = payload.budget_summary || {};
+      const budgetEvents = payload.budget_events || [];
+      const evidenceRecords = payload.evidence_records || [];
+      renderDetails(`Employee Detail: ${employeeId}`, [
+        ['Status', employee.status || profile.status || '-'],
+        ['Runtime', employee.runtime || profile.runtime || '-'],
+        ['Role', employee.role || profile.role || '-'],
+        ['Heartbeat', heartbeat.status || heartbeat.state || heartbeat.last_seen_at || '-'],
+        ['Work History', employeeWorkHistorySummary(workHistory)],
+        ['Runtime Sessions', runtimeSessionsSummary(runtimeSessions)],
+        ['Attempts', attemptHistorySummary(attempts)],
+        ['Tool Calls', employeeToolCallsSummary(toolCalls)],
+        ['Budget Summary', employeeBudgetSummary(budgetSummary)],
+        ['Budget Events', budgetEventsSummary(budgetEvents)],
+        ['Evidence Records', employeeEvidenceSummary(evidenceRecords)],
+        ['Capabilities', payload.capabilities || {}],
+        ['Permissions', payload.permissions || {}],
+        ['Sandbox', payload.sandbox_profile || {}],
+        ['Raw', payload],
+      ], payload);
+    } catch (err) {
+      companyApiLog('ERROR', `Employee detail ${employeeId} failed: ${err.message}`, 'error');
+      if (fallbackKey) {
+        showStoredDetails(`Employee details: ${employeeId}`, fallbackKey);
+      }
+    }
+  }
+  window.openEmployeeDetailDrawer = openEmployeeDetailDrawer;
 
   window.correctTaskAttempt = async function(taskId, attemptId, ownerApproved) {
     const by = prompt(`Supervisor correcting ${taskId}`, 'hermes');
@@ -6917,7 +6998,7 @@
       ` : `<span class="muted" style="font-size: 11px;">No chat; task/evidence only</span>`;
 
       return `
-        <div class="employee-card" onclick="showStoredDetails('Employee details: ${escapeHtml(emp.id)}', '${escapeHtml(detailKey)}')">
+        <div class="employee-card" onclick="openEmployeeDetailDrawer('${escapeHtml(emp.id)}', '${escapeHtml(detailKey)}')">
           <div class="employee-card-header">
             <div class="employee-identity">
               <div class="employee-avatar"><i class="fa-solid fa-robot"></i></div>
@@ -6975,7 +7056,7 @@
         const sandboxBadge = sandboxProfileChip(emp);
         const detailKey = storeDashboardDetail(`candidate:${emp.id || '-'}`, emp);
         return `
-          <div class="employee-card" onclick="showStoredDetails('Candidate employee: ${escapeHtml(emp.id)}', '${escapeHtml(detailKey)}')">
+          <div class="employee-card" onclick="openEmployeeDetailDrawer('${escapeHtml(emp.id)}', '${escapeHtml(detailKey)}')">
             <div class="employee-card-header">
               <div class="employee-identity">
                 <div class="employee-avatar"><i class="fa-solid fa-user-clock"></i></div>
