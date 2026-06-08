@@ -771,6 +771,11 @@ def evidence_display_roots() -> list[Path]:
 
 def sanitize_evidence_path_for_display(raw_path: str) -> dict:
     value = str(raw_path or "").strip()
+    policy = {
+        "summary": "workspace/evidence/reports/artifacts/final only; absolute paths and secret/config paths stay hidden",
+        "allowed_segments": sorted(EVIDENCE_DISPLAY_ALLOWED_NAMES),
+        "forbidden_policy": "sensitive_path_tokens_redacted",
+    }
     result = {
         "path": "",
         "relative_path": "",
@@ -780,6 +785,7 @@ def sanitize_evidence_path_for_display(raw_path: str) -> dict:
         "reason": "",
         "checksum": "",
         "absolute_path_exposed": False,
+        "policy": policy,
     }
     if not value:
         result["reason"] = "empty"
