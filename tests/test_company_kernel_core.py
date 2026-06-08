@@ -2016,6 +2016,12 @@ class CompanyKernelCoreTest(unittest.TestCase):
             ["send_correction", "view_logs", "wait", "cancel_attempt"],
             [action["id"] for action in attention["actions"]],
         )
+        action_meta = {action["id"]: action for action in attention["actions"]}
+        self.assertEqual("POST", action_meta["send_correction"]["method"])
+        self.assertTrue(action_meta["send_correction"]["requires_owner_approval"])
+        self.assertEqual("GET", action_meta["view_logs"]["method"])
+        self.assertEqual("none", action_meta["wait"]["method"])
+        self.assertTrue(action_meta["cancel_attempt"]["dangerous"])
         self.assertTrue(all(action["task_id"] == "task-cockpit-long" for action in attention["actions"]))
         self.assertTrue(all(action["attempt_id"] == attempt_id for action in attention["actions"]))
         blocked_attention = next(item for item in cockpit["owner_attention"] if item["task_id"] == "task-cockpit-blocked" and item["kind"] == "blocked_task")
@@ -2029,6 +2035,11 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual("P1", approval_attention["risk"])
         self.assertIn("approval bound to cockpit task", approval_attention["message"])
         self.assertEqual(["approve", "deny", "mock_resolve"], [action["id"] for action in approval_attention["actions"]])
+        approval_action_meta = {action["id"]: action for action in approval_attention["actions"]}
+        self.assertTrue(approval_action_meta["approve"]["requires_owner_approval"])
+        self.assertFalse(approval_action_meta["approve"]["dry_run_default"])
+        self.assertTrue(approval_action_meta["mock_resolve"]["dry_run_default"])
+        self.assertTrue(approval_action_meta["deny"]["requires_owner_approval"])
         self.assertTrue(all(action["task_id"] == "task-cockpit-awaiting-approval" for action in approval_attention["actions"]))
         self.assertTrue(all(action["approval_id"] == "approval-cockpit-awaiting" for action in approval_attention["actions"]))
 

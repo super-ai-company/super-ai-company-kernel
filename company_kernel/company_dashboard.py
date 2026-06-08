@@ -351,30 +351,41 @@ def build_cockpit_summary(summary: dict) -> dict:
     owner_attention = []
     def attention_actions(kind: str, *, task_id: str = "", attempt_id: str = "", approval_id: str = "") -> list[dict]:
         base = {"task_id": task_id, "attempt_id": attempt_id, "approval_id": approval_id}
+        def action(action_id: str, label: str, api: str, *, method: str = "GET", requires_owner_approval: bool = False, dry_run_default: bool = True, dangerous: bool = False) -> dict:
+            return {
+                **base,
+                "id": action_id,
+                "label": label,
+                "api": api,
+                "method": method,
+                "requires_owner_approval": requires_owner_approval,
+                "dry_run_default": dry_run_default,
+                "dangerous": dangerous,
+            }
         if kind == "stagnant_task":
             return [
-                {**base, "id": "send_correction", "label": "Request Hermes correction", "api": f"/v1/tasks/{task_id}/correct"},
-                {**base, "id": "view_logs", "label": "View sanitized logs", "api": f"/v1/tasks/{task_id}"},
-                {**base, "id": "wait", "label": "Keep waiting", "api": ""},
-                {**base, "id": "cancel_attempt", "label": "Cancel attempt", "api": f"/v1/tasks/{task_id}/cancel"},
+                action("send_correction", "Request Hermes correction", f"/v1/tasks/{task_id}/correct", method="POST", requires_owner_approval=True),
+                action("view_logs", "View sanitized logs", f"/v1/tasks/{task_id}"),
+                action("wait", "Keep waiting", "", method="none"),
+                action("cancel_attempt", "Cancel attempt", f"/v1/tasks/{task_id}/cancel", method="POST", requires_owner_approval=True, dangerous=True),
             ]
         if kind == "blocked_task":
             return [
-                {**base, "id": "send_correction", "label": "Send correction", "api": f"/v1/tasks/{task_id}/correct"},
-                {**base, "id": "view_logs", "label": "View sanitized logs", "api": f"/v1/tasks/{task_id}"},
-                {**base, "id": "retry", "label": "Retry / reassign", "api": f"/v1/tasks/{task_id}/retry"},
-                {**base, "id": "reassign", "label": "Reassign employee", "api": f"/v1/tasks/{task_id}/reassign"},
+                action("send_correction", "Send correction", f"/v1/tasks/{task_id}/correct", method="POST", requires_owner_approval=True),
+                action("view_logs", "View sanitized logs", f"/v1/tasks/{task_id}"),
+                action("retry", "Retry / reassign", f"/v1/tasks/{task_id}/retry", method="POST", requires_owner_approval=True),
+                action("reassign", "Reassign employee", f"/v1/tasks/{task_id}/reassign", method="POST", requires_owner_approval=True),
             ]
         if kind == "approval":
             return [
-                {**base, "id": "approve", "label": "Approve", "api": f"/v1/approvals/{approval_id}/approve"},
-                {**base, "id": "deny", "label": "Deny", "api": f"/v1/approvals/{approval_id}/deny"},
-                {**base, "id": "mock_resolve", "label": "Mock resolve dry-run", "api": f"/v1/approvals/{approval_id}/resolve"},
+                action("approve", "Approve", f"/v1/approvals/{approval_id}/approve", method="POST", requires_owner_approval=True, dry_run_default=False, dangerous=True),
+                action("deny", "Deny", f"/v1/approvals/{approval_id}/deny", method="POST", requires_owner_approval=True),
+                action("mock_resolve", "Mock resolve dry-run", f"/v1/approvals/{approval_id}/resolve", method="POST"),
             ]
         if kind == "evidence":
             return [
-                {**base, "id": "review_evidence", "label": "Review evidence", "api": f"/v1/tasks/{task_id}"},
-                {**base, "id": "view_trace", "label": "View trace", "api": ""},
+                action("review_evidence", "Review evidence", f"/v1/tasks/{task_id}"),
+                action("view_trace", "View trace", ""),
             ]
         return []
 
