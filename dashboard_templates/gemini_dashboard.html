@@ -3853,6 +3853,17 @@
     }).join('\n');
   }
 
+  function traceCorrectionSummary(spans) {
+    const correctionSpans = (Array.isArray(spans) ? spans : []).filter(span => String(span.name || '').startsWith('supervisor.correction.'));
+    if (!correctionSpans.length) return '';
+    return correctionSpans.map(span => {
+      const direction = span.correction_direction || 'correction';
+      const attempt = span.attempt_id ? ` · attempt=${span.attempt_id}` : '';
+      const label = span.label ? ` · ${span.label}` : '';
+      return `${span.service || '-'} · ${direction}${attempt}${label}`;
+    }).join(' | ');
+  }
+
   async function openTraceTimeline(traceId) {
     if (!traceId) {
       companyApiLog('ERROR', 'No trace_id for this task yet.', 'error');
@@ -5169,6 +5180,7 @@
       const match = !q || trace.trace_id.toLowerCase().includes(q) || String(trace.title || '').toLowerCase().includes(q) || services.join(' ').toLowerCase().includes(q) || spans.some(span => String(span.name || '').toLowerCase().includes(q));
       if (!match) return '';
       const duration = Math.max(Number(trace.duration_ms || 1), 1);
+      const corrections = traceCorrectionSummary(spans);
       const spansHtml = spans.map((span, spanIndex) => {
         const widthPct = Math.max(4, Math.min(100, (Number(span.duration_ms || 1) / duration) * 100));
         const leftPct = Math.max(0, Math.min(96, (Number(span.start_ms || 0) / duration) * 100));
@@ -5190,6 +5202,7 @@
               <span>Total: <strong class="trace-duration">${Math.round(duration)}ms</strong></span>
             </div>
           </div>
+          ${corrections ? `<div class="cockpit-subtext"><strong>Supervisor Corrections</strong> · ${escapeHtml(corrections)}</div>` : ''}
           <div class="flamegraph-container">${spansHtml}</div>
         </div>`;
     }).join('');

@@ -4648,6 +4648,15 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual(["hermes", "codex"], [span["service"] for span in correction_spans])
         self.assertTrue(all(span["attempt_id"] == attempt_id for span in correction_spans))
         self.assertTrue(all("correction_direction" in span for span in correction_spans))
+        output = self.root / "state" / "trace-correction-dashboard.html"
+        with contextlib.redirect_stdout(io.StringIO()):
+            code = company_dashboard.main(["--output", str(output), "--variant", "advanced"])
+        self.assertEqual(0, code)
+        html = output.read_text(encoding="utf-8")
+        self.assertIn("traceCorrectionSummary", html)
+        self.assertIn("Supervisor Corrections", html)
+        self.assertIn("supervisor_to_worker", html)
+        self.assertIn("worker_to_supervisor", html)
 
     def test_v3_handoff_reject_scan_and_recovery_attempts(self) -> None:
         for employee_id, role in [("manager", "supervisor"), ("writer", "copywriter"), ("qa", "qa"), ("backup", "copywriter")]:
