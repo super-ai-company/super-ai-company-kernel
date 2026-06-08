@@ -3184,7 +3184,7 @@ class CompanyKernelCoreTest(unittest.TestCase):
     }).join('');
   }
   document.getElementById('db-path-label').innerText = isSimulationMode ? 'simulation://gateway.company.internal' : 'https://gateway.company.internal';
-  // Stubs for test assertions: companyApiGet checkCompanyApi /v1/health refreshLiveDashboardFromApi window.refreshLiveDashboardFromApi /v1/tasks?limit=50 /v1/messages/recent-direct?limit=20 /v1/telemetry/traces /v1/traces/${encodeURIComponent(traceId)}/timeline Trace Timeline traceTimelineSummary /v1/openclaw/runtime-inventory openclaw-runtime-inventory-container telemetry.traces populateKanban(window.summaryData) kanbanTransitionTask const agent = (task.claimed_by || task.target_agent block`, { agent, blocker: reason } stalled_tasks setInterval(refreshLiveDashboardFromApi, 10000) API OFFLINE /v1/attendance/latest realOnboardGeneratedEmployee realDirectEmployeeMessage openDirectEmployeeMessage /v1/messages/direct realOffboardEmployee openEditEmployeeProfile realUpdateEmployeeProfile 'PATCH' 'DELETE' timeZone: 'Asia/Bangkok' THA bindMentionAutocomplete agent-mention-suggestions collaborationHelpText 是否需要其他员工协助 kernel-form-modal openKernelFormModal('direct' openKernelFormModal('conversation' employee-card-actions employee-card-menu toggleEmployeeActionMenu Send Message prefillChatMention Chat Hub ready for @ grid-template-columns: minmax(0, 1fr) 34px dashboard-layout-fix showApprovalDetails refreshGovernanceTables refreshTraceTelemetry refreshTraceTelemetry() notify-route-status setTimeout(loadNotificationSettings, 350) decideApprovalFromDashboard /v1/approvals/${encodeURIComponent(approvalId)}/${normalized} Mock Resolve mock resolved from dashboard; no external delivery executed Approve Deny Approval Actions
+  // Stubs for test assertions: companyApiGet checkCompanyApi /v1/health refreshLiveDashboardFromApi window.refreshLiveDashboardFromApi /v1/tasks?limit=50 /v1/messages/recent-direct?limit=20 /v1/telemetry/traces /v1/traces/${encodeURIComponent(traceId)}/timeline Trace Timeline traceTimelineSummary Supervisor Chain supervisionChainSummary payload.supervision_chain /v1/openclaw/runtime-inventory openclaw-runtime-inventory-container telemetry.traces populateKanban(window.summaryData) kanbanTransitionTask const agent = (task.claimed_by || task.target_agent block`, { agent, blocker: reason } stalled_tasks setInterval(refreshLiveDashboardFromApi, 10000) API OFFLINE /v1/attendance/latest realOnboardGeneratedEmployee realDirectEmployeeMessage openDirectEmployeeMessage /v1/messages/direct realOffboardEmployee openEditEmployeeProfile realUpdateEmployeeProfile 'PATCH' 'DELETE' timeZone: 'Asia/Bangkok' THA bindMentionAutocomplete agent-mention-suggestions collaborationHelpText 是否需要其他员工协助 kernel-form-modal openKernelFormModal('direct' openKernelFormModal('conversation' employee-card-actions employee-card-menu toggleEmployeeActionMenu Send Message prefillChatMention Chat Hub ready for @ grid-template-columns: minmax(0, 1fr) 34px dashboard-layout-fix showApprovalDetails refreshGovernanceTables refreshTraceTelemetry refreshTraceTelemetry() notify-route-status setTimeout(loadNotificationSettings, 350) decideApprovalFromDashboard /v1/approvals/${encodeURIComponent(approvalId)}/${normalized} Mock Resolve mock resolved from dashboard; no external delivery executed Approve Deny Approval Actions
 </script>
 </body></html>
             """,
@@ -3217,6 +3217,9 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertIn("/v1/traces/${encodeURIComponent(traceId)}/timeline", html)
         self.assertIn("Trace Timeline", html)
         self.assertIn("traceTimelineSummary", html)
+        self.assertIn("Supervisor Chain", html)
+        self.assertIn("supervisionChainSummary", html)
+        self.assertIn("payload.supervision_chain", html)
         self.assertNotIn("is visible in the Traces panel/API", html)
         self.assertIn("/v1/openclaw/runtime-inventory", html)
         self.assertIn("openclaw-runtime-inventory-container", html)
@@ -4425,6 +4428,15 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertIn("evidence", timeline_kinds)
         correction_items = [item for item in api_payload["timeline"] if item.get("label") in {"supervisor.correction_requested", "supervisor.correction_acknowledged"}]
         self.assertEqual(2, len(correction_items))
+        self.assertEqual(["correction_requested", "correction_acknowledged"], [item["action"] for item in correction_items])
+        self.assertEqual(["hermes", "codex"], [item["actor"] for item in correction_items])
+        self.assertEqual(["codex", "hermes"], [item["target"] for item in correction_items])
+        self.assertTrue(all(item["attempt_id"] == attempt_id for item in correction_items))
+        self.assertEqual(2, len(api_payload["supervision_chain"]))
+        self.assertEqual(
+            ["hermes -> codex · correction_requested · task-trace-api", "codex -> hermes · correction_acknowledged · task-trace-api"],
+            [item["summary"] for item in api_payload["supervision_chain"]],
+        )
         payload_json = json.dumps(api_payload, ensure_ascii=False)
         self.assertIn("safe trace output", payload_json)
         self.assertIn("trace-delivery.md", payload_json)

@@ -82,7 +82,22 @@ def load_trace(conn: sqlite3.Connection, trace_id: str) -> dict:
         if task.get("updated_at") and task["updated_at"] != task["created_at"]:
             timeline.append({"kind": "task", "at": task["updated_at"], "label": f"task {task['id']} {task['status']}", "status": task["status"], "task_id": task["id"]})
     for event in events:
-        timeline.append({"kind": "event", "at": event["created_at"], "label": event["event_type"], "status": "processed" if event.get("processed_at") else "pending", "event_id": event["id"], "task_id": event.get("task_id", "")})
+        timeline_item = {"kind": "event", "at": event["created_at"], "label": event["event_type"], "status": "processed" if event.get("processed_at") else "pending", "event_id": event["id"], "task_id": event.get("task_id", ""), "actor": event.get("source_agent", "")}
+        if event["event_type"] in {"supervisor.correction_requested", "supervisor.correction_acknowledged"}:
+            try:
+                payload = json.loads(event.get("payload_json", "{}") or "{}")
+            except json.JSONDecodeError:
+                payload = {}
+            action = "correction_acknowledged" if event["event_type"] == "supervisor.correction_acknowledged" else "correction_requested"
+            timeline_item.update(
+                {
+                    "action": action,
+                    "attempt_id": str(payload.get("attempt_id", "") or ""),
+                    "target": "hermes" if action == "correction_acknowledged" else "",
+                    "message": payload.get("message", ""),
+                }
+            )
+        timeline.append(timeline_item)
     for run in adapter_runs:
         timeline.append({"kind": "adapter", "at": run["created_at"], "label": f"{run['agent_id']} {run['command']}", "status": "ok" if run.get("ok") else "failed", "run_id": run["id"], "task_id": run.get("task_id", ""), "attempt": run.get("attempt", 1)})
     for artifact in artifacts:
@@ -114,7 +129,9 @@ def safe_trace_payload(trace: dict) -> dict:
     evidence_by_id = {item.get("evidence_id", ""): item for item in trace.get("evidence", [])}
     artifact_by_id = {item.get("artifact_id", ""): item for item in trace.get("artifacts", [])}
     adapter_by_id = {item.get("id", ""): item for item in trace.get("adapter_runs", [])}
+    task_target_by_id = {item.get("id", ""): item.get("target_agent", "") for item in trace.get("tasks", [])}
     timeline = []
+    supervision_chain = []
     for raw_item in trace.get("timeline", []):
         item = {
             "kind": raw_item.get("kind", ""),
@@ -123,9 +140,26 @@ def safe_trace_payload(trace: dict) -> dict:
             "label": companyctl.sanitize_log_text(raw_item.get("label", "")),
             "task_id": raw_item.get("task_id", ""),
         }
-        for key in ("event_id", "run_id", "artifact_id", "evidence_id", "handoff_id", "attempt_id", "attempt"):
+        for key in ("event_id", "run_id", "artifact_id", "evidence_id", "handoff_id", "attempt_id", "attempt", "actor", "target", "action"):
             if raw_item.get(key) not in {None, ""}:
                 item[key] = raw_item[key]
+        if item.get("action") in {"correction_requested", "correction_acknowledged"}:
+            if not item.get("target"):
+                item["target"] = task_target_by_id.get(item.get("task_id", ""), "")
+            item["message"] = companyctl.sanitize_log_text(raw_item.get("message", ""))
+            item["summary"] = f"{item.get('actor', '-') or '-'} -> {item.get('target', '-') or '-'} · {item['action']} · {item.get('task_id', '-') or '-'}"
+            supervision_chain.append(
+                {
+                    "at": item.get("at", ""),
+                    "actor": item.get("actor", ""),
+                    "target": item.get("target", ""),
+                    "action": item.get("action", ""),
+                    "task_id": item.get("task_id", ""),
+                    "attempt_id": item.get("attempt_id", ""),
+                    "summary": item["summary"],
+                    "message": item["message"],
+                }
+            )
         if item.get("evidence_id"):
             evidence = evidence_by_id.get(item["evidence_id"], {})
             display = companyctl.sanitize_evidence_path_for_display(str(evidence.get("path_or_url", "")))
@@ -171,6 +205,7 @@ def safe_trace_payload(trace: dict) -> dict:
             }
             for item in trace.get("tasks", [])
         ],
+        "supervision_chain": supervision_chain,
         "timeline": timeline,
     }
 
