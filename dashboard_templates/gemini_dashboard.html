@@ -2318,6 +2318,10 @@
               <div class="cockpit-list" id="cockpit-owner-attention">
                 <!-- Populated by JS -->
               </div>
+              <h3 style="font-size:13px;color:var(--text-secondary);margin:18px 0 10px;">Supervisor Activity</h3>
+              <div class="cockpit-list" id="cockpit-supervisor-activity" data-supported-kinds="correction_pending_ack,stagnant_check,supervisor_loop">
+                <!-- Populated by JS -->
+              </div>
               <h3 style="font-size:13px;color:var(--text-secondary);margin:18px 0 10px;">Recent Evidence</h3>
               <div class="cockpit-list" id="cockpit-recent-evidence">
                 <!-- Populated by JS -->
@@ -3343,8 +3347,9 @@
     const cards = document.getElementById('cockpit-cards');
     const longTasks = document.getElementById('cockpit-long-tasks');
     const attention = document.getElementById('cockpit-owner-attention');
+    const supervisorActivity = document.getElementById('cockpit-supervisor-activity');
     const recentEvidence = document.getElementById('cockpit-recent-evidence');
-    if (!cards || !longTasks || !attention || !recentEvidence) return;
+    if (!cards || !longTasks || !attention || !supervisorActivity || !recentEvidence) return;
     const counts = (cockpit && cockpit.counts) || {};
     const employeeStatusCounts = counts.employee_status_counts || {};
     const readinessCounts = counts.readiness_counts || {};
@@ -3435,6 +3440,7 @@
         <div class="long-task-state ${escapeHtml(item.state)}">${escapeHtml(item.state)}</div>
       </div>
     `).join('') : `<div class="cockpit-row"><div><strong>No owner attention needed</strong><span>Pending approvals and recent final evidence will appear here.</span></div><div class="long-task-state success">clear</div></div>`;
+    renderSupervisorActivity(cockpit.supervisor_activity || []);
     recentEvidence.innerHTML = evidence.length ? evidence.slice(0, 5).map(item => `
       <div class="cockpit-row" onclick="openTaskDetailDrawer('${escapeHtml(item.task_id || '')}')">
         <div>
@@ -3444,6 +3450,22 @@
         <div class="long-task-state success">evidence</div>
       </div>
     `).join('') : `<div class="cockpit-row"><div><strong>No recent evidence</strong><span>Final evidence from completed work will appear here.</span></div><div class="long-task-state running">empty</div></div>`;
+  }
+
+  function renderSupervisorActivity(items) {
+    const container = document.getElementById('cockpit-supervisor-activity');
+    if (!container) return;
+    const rows = Array.isArray(items) ? items : [];
+    container.innerHTML = rows.length ? rows.slice(0, 5).map(item => `
+      <div class="cockpit-row" ${item.task_id ? `onclick="openTaskDetailDrawer('${escapeHtml(item.task_id || '')}')"` : ''}>
+        <div>
+          <strong>${escapeHtml(item.supervisor || 'Hermes')} · ${escapeHtml(item.kind || 'supervisor_activity')}</strong>
+          <span>${escapeHtml([item.target_agent ? `target=${item.target_agent}` : '', item.task_id ? `task=${item.task_id}` : '', item.attempt_id ? `attempt=${item.attempt_id}` : ''].filter(Boolean).join(' · '))}</span>
+          <span>${escapeHtml(item.message || '')}</span>
+        </div>
+        <div class="long-task-state ${escapeHtml(item.state || 'running')}">${escapeHtml(item.state || 'observed')}</div>
+      </div>
+    `).join('') : `<div class="cockpit-row"><div><strong>No supervisor activity</strong><span>Hermes supervised corrections and stagnant checks appear here.</span></div><div class="long-task-state success">clear</div></div>`;
   }
 
   function ledgerConsistencySummary(contract) {
