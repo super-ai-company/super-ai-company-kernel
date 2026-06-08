@@ -3774,6 +3774,29 @@
     ].join('\n');
   }
 
+  function taskDecisionSummary(task, latestAttempt, payload) {
+    const sourceTask = task || {};
+    const sourceAttempt = latestAttempt || {};
+    const sourcePayload = payload || {};
+    const longTaskState = sourceTask.long_task_state || sourceAttempt.long_task_state || sourceTask.status || sourceAttempt.status || '';
+    const progressState = sourceTask.progress_state || sourceAttempt.progress_state || '';
+    const heartbeatState = sourceTask.heartbeat_state || sourceAttempt.heartbeat_state || '';
+    const evidence = sourcePayload.evidence || {};
+    const blocker = sourcePayload.blocker || sourceTask.blocker || sourceAttempt.error_message || '';
+    let action = 'wait for progress';
+    if (longTaskState === 'progress_stagnant' || progressState === 'stagnant') action = 'send probe, view sanitized logs, or request Hermes correction';
+    if (longTaskState === 'correcting' || sourceAttempt.status === 'correcting') action = 'wait for correction acknowledgement or send another bounded correction';
+    if (longTaskState === 'heartbeat_stale' || heartbeatState === 'stale') action = 'check employee heartbeat, then retry, reassign, or cancel';
+    if (['blocked', 'failed', 'stale'].includes(longTaskState) || blocker) action = 'review blocker, then retry, reassign, or request owner approval';
+    if (['done', 'success', 'completed'].includes(longTaskState) || sourceTask.status === 'completed') action = evidence.allowed ? 'review final evidence and accept delivery' : 'block completion until final evidence is attached';
+    if (['cancelled', 'cancelling'].includes(longTaskState) || sourceAttempt.status === 'cancelled') action = 'do not accept late progress or late evidence from this attempt';
+    return [
+      `Recommended action: ${action}.`,
+      `state=${longTaskState || '-'} · heartbeat=${heartbeatState || '-'} · progress=${progressState || '-'} · blocker=${blocker || '-'}`,
+      `Done is valid only with task_id/attempt_id bound final evidence. evidence_allowed=${String(!!evidence.allowed)}`
+    ].join('\n');
+  }
+
   function currentTaskAttempt(task) {
     if (!task || typeof task !== 'object') return {};
     if (task.current_attempt && typeof task.current_attempt === 'object') return task.current_attempt;
@@ -4051,6 +4074,7 @@
         ['Trace', (attempts[0] && attempts[0].trace_id) || task.trace_id || '-'],
         ['Long Task State', task.long_task_state || latestAttempt.long_task_state || task.status || '-'],
         ['Status Contract', longTaskStatusContractSummary(task, latestAttempt)],
+        ['Task Decision', taskDecisionSummary(task, latestAttempt, payload)],
         ['Heartbeat State', task.heartbeat_state || latestAttempt.heartbeat_state || '-'],
         ['Progress State', task.progress_state || latestAttempt.progress_state || '-'],
         ['Evidence', payload.evidence || {}],
