@@ -498,7 +498,8 @@
       border: 1px solid var(--border-color);
     }
 
-    .system-status.normal {
+    .system-status.normal,
+    .system-status.ok {
       border-color: rgba(16, 185, 129, 0.3);
       color: var(--color-green);
       box-shadow: 0 0 10px rgba(16, 185, 129, 0.05);
@@ -553,10 +554,31 @@
       display: inline-block;
     }
 
-    .system-status.normal .status-dot {
+    .system-status.normal .status-dot,
+    .system-status.ok .status-dot {
       background: var(--color-green);
       box-shadow: 0 0 8px var(--color-green);
       animation: pulse 2s infinite;
+    }
+
+    .live-data-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 12px;
+      border-radius: 999px;
+      border: 1px solid rgba(56, 189, 248, 0.28);
+      background: rgba(8, 47, 73, 0.36);
+      color: #bae6fd;
+      font-size: 11px;
+      font-weight: 800;
+      white-space: nowrap;
+    }
+
+    .live-data-chip.stale {
+      border-color: rgba(245, 158, 11, 0.32);
+      background: rgba(69, 26, 3, 0.34);
+      color: var(--color-amber);
     }
 
     .system-status.attention .status-dot {
@@ -1377,7 +1399,7 @@
       flex: 0 0 auto;
       position: sticky;
       top: 0;
-      z-index: 5;
+      z-index: 20;
       background: linear-gradient(180deg, #111827 0%, #0d111d 100%);
       border-radius: 16px 16px 0 0;
       box-shadow: 0 14px 28px rgba(2, 6, 23, 0.35);
@@ -1418,8 +1440,10 @@
       line-height: 1;
       cursor: pointer;
       position: relative;
-      z-index: 6;
+      z-index: 30;
       box-shadow: 0 12px 30px rgba(0, 0, 0, 0.35);
+      pointer-events: auto;
+      touch-action: manipulation;
     }
 
     .close-btn:hover {
@@ -2506,6 +2530,10 @@
       </div>
       
       <div class="status-cluster">
+        <div id="live-data-chip" class="live-data-chip stale" title="Live API data loaded into the cockpit">
+          <i class="fa-solid fa-database"></i>
+          <span id="live-data-text">Live data: waiting</span>
+        </div>
         <div id="sse-status-chip" class="sse-status-chip off" title="SSE / REST fallback">
           <i class="fa-solid fa-satellite-dish"></i>
           <span id="sse-status-text">SSE / REST fallback: idle</span>
@@ -3588,6 +3616,14 @@
     return summary.runtime_health;
   }
 
+  function setLiveDataStatus(state, message) {
+    const chip = document.getElementById('live-data-chip');
+    const text = document.getElementById('live-data-text');
+    const normalized = state === 'ok' ? 'ok' : 'stale';
+    if (chip) chip.className = `live-data-chip ${normalized === 'ok' ? '' : 'stale'}`.trim();
+    if (text) text.innerText = message || 'Live data: waiting';
+  }
+
   let liveRefreshInFlight = false;
   let liveRefreshQueued = false;
 
@@ -3648,9 +3684,11 @@
         const warningList = optionalWarnings.slice(0, 4).map(item => item.path).join(', ');
         companyApiLog('SYSTEM', `Live refresh partial: ${optionalWarnings.length} optional API fallback(s): ${warningList}`, 'warn');
       }
+      setLiveDataStatus('ok', `Live data: tasks=${taskRows.length} employees=${(employees.employees || []).length} events=${(events.events || []).length}`);
       companyApiLog('SYSTEM', `Live refresh ok: tasks=${taskRows.length} stalled=${stalledTasks.length}`, 'success');
       return true;
     } catch (err) {
+      setLiveDataStatus('stale', 'Live data: API refresh failed');
       companyApiLog('ERROR', `Live refresh failed: ${err.message}`, 'error');
       return false;
     } finally {
@@ -4584,6 +4622,15 @@
     if (modal) modal.style.display = 'none';
     document.body.classList.remove('modal-open');
   };
+
+  document.addEventListener('click', (event) => {
+    const target = event.target && event.target.closest ? event.target.closest('[data-testid="details-modal-close"]') : null;
+    if (target) {
+      event.preventDefault();
+      event.stopPropagation();
+      closeModal();
+    }
+  });
 
   document.addEventListener('keydown', (event) => {
     if (event.key === 'Escape') {
@@ -7359,17 +7406,20 @@
     const y1 = n1.offsetTop + 35;
     const x2 = n2.offsetLeft + 85;
     const y2 = n2.offsetTop + 35;
+    if (![x1, y1, x2, y2].every(Number.isFinite)) return;
 
     const mx = (x1 + x2) / 2;
     const my = (y1 + y2) / 2;
     const dx = x2 - x1;
     const dy = y2 - y1;
     const len = Math.sqrt(dx*dx + dy*dy);
+    if (!Number.isFinite(len) || len < 1) return;
     const ox = -dy / len * (type === 'deadlock' ? 40 : 25);
     const oy = dx / len * (type === 'deadlock' ? 40 : 25);
 
     const cx = mx + ox;
     const cy = my + oy;
+    if (![cx, cy].every(Number.isFinite)) return;
 
     const d = `M ${x1} ${y1} Q ${cx} ${cy} ${x2} ${y2}`;
 
