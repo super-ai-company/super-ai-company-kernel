@@ -3596,13 +3596,45 @@
     companyApiLog('SYSTEM', `Loading safe evidence preview ${evidenceId}. Absolute paths and downloads stay disabled.`, 'normal');
     try {
       const payload = await companyApiGet(`/v1/evidence/${encodeURIComponent(evidenceId)}/content`);
+      const evidence = payload.evidence || {};
       const display = payload.display || {};
       const content = payload.content || {};
       const location = display.relative_path || display.basename || '-';
       const text = content.text ? ` · preview=${shortText(content.text, 320)}` : '';
+      const policy = display.policy || {};
+      renderDetails(`Safe Evidence: ${evidenceId}`, [
+        ['Evidence ID', evidenceId],
+        ['Task ID', evidence.task_id || '-'],
+        ['Attempt ID', evidence.attempt_id || '-'],
+        ['Employee', evidence.employee_id || '-'],
+        ['Artifact ID', evidence.artifact_id || '-'],
+        ['Final Evidence', String(!!evidence.is_final)],
+        ['Relative Path', location],
+        ['Exists', String(!!display.exists)],
+        ['Allowed', String(!!display.allowed)],
+        ['Reason', display.reason || '-'],
+        ['Absolute Path Exposed', String(!!display.absolute_path_exposed)],
+        ['Policy', policy.summary || 'workspace/evidence/reports/artifacts/final only'],
+        ['Mode', content.mode || '-'],
+        ['Bytes', content.bytes || 0],
+        ['Truncated', String(!!content.truncated)],
+        ['Preview', content.text || '(binary, missing, or blocked)'],
+      ], {
+        ok: payload.ok,
+        evidence,
+        display,
+        content: Object.assign({}, content, {text: content.text || ''}),
+      });
       companyApiLog('EVIDENCE', `${evidenceId} · ${location} · bytes=${content.bytes || 0} · absolute_path_exposed=${display.absolute_path_exposed ? 'yes' : 'no'}${text}`, 'success');
     } catch (err) {
       companyApiLog('EVIDENCE', `Evidence preview blocked for ${evidenceId}: ${err.message}. No absolute path or file content was exposed.`, 'warn');
+      renderDetails(`Safe Evidence Blocked: ${evidenceId}`, [
+        ['Evidence ID', evidenceId],
+        ['Status', 'blocked'],
+        ['Reason', err.message],
+        ['Absolute Path Exposed', 'false'],
+        ['Preview', '(blocked by evidence whitelist policy)'],
+      ], {ok: false, evidence_id: evidenceId, error: err.message});
     }
   }
   window.viewEvidenceContent = viewEvidenceContent;
