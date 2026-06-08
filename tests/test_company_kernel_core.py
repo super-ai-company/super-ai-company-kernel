@@ -5917,6 +5917,58 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual(shown["correction_summary"], api_shown["correction_summary"])
         self.assertEqual(shown["correction_events"], api_shown["correction_events"])
 
+    def test_task_reassign_writes_event_attempt_audit_and_trace(self) -> None:
+        for employee_id, role in [("main", "operator"), ("hermes", "supervisor"), ("codex", "developer"), ("backup", "developer")]:
+            code, created = run_cli("employee", "create", "--id", employee_id, "--name", employee_id, "--role", role, "--runtime", "local", "--workspace", str(self.root / "workspace" / employee_id))
+            self.assertEqual(code, 0, created)
+            self.mark_active(employee_id)
+        code, submitted = run_cli("task", "submit", "--from", "main", "--to", "codex", "--task-id", "task-reassign-ledger", "--title", "Reassign ledger task")
+        self.assertEqual(0, code, submitted)
+        with companyctl.connect() as conn:
+            trace_id = companyctl.trace_id_for_task(conn, "task-reassign-ledger")
+        code, run = run_cli("task", "run", "--task-id", "task-reassign-ledger", "--agent", "codex", "--by", "hermes")
+        self.assertEqual(0, code, run)
+
+        code, reassigned = run_cli("task", "reassign", "--task-id", "task-reassign-ledger", "--by", "hermes", "--to", "backup", "--reason", "codex is blocked")
+        self.assertEqual(0, code, reassigned)
+        self.assertEqual("backup", reassigned["task"]["target_agent"])
+        self.assertEqual("submitted", reassigned["task"]["status"])
+        self.assertEqual(trace_id, reassigned["attempt"]["trace_id"])
+        self.assertEqual("reassign", reassigned["attempt"]["adapter_type"])
+        self.assertEqual("backup", reassigned["attempt"]["employee_id"])
+        self.assertEqual("codex is blocked", reassigned["attempt"]["metadata"]["reason"])
+        self.assertEqual("hermes", reassigned["attempt"]["metadata"]["by"])
+        self.assertEqual(run["attempt"]["attempt_id"], reassigned["attempt"]["metadata"]["previous_attempt_id"])
+        self.assertIn("event_id", reassigned)
+
+        with companyctl.connect() as conn:
+            event = conn.execute("SELECT * FROM company_events WHERE id = ?", (reassigned["event_id"],)).fetchone()
+            audit_row = conn.execute("SELECT * FROM audit_logs WHERE action = 'task.reassign' ORDER BY created_at DESC LIMIT 1").fetchone()
+        self.assertIsNotNone(event)
+        self.assertEqual("task.reassigned", event["event_type"])
+        self.assertEqual("hermes", event["source_agent"])
+        self.assertEqual("task-reassign-ledger", event["task_id"])
+        self.assertEqual(trace_id, event["trace_id"])
+        event_payload = json.loads(event["payload_json"])
+        self.assertEqual("codex", event_payload["from"])
+        self.assertEqual("backup", event_payload["to"])
+        self.assertEqual("codex is blocked", event_payload["reason"])
+        self.assertEqual(reassigned["attempt"]["attempt_id"], event_payload["attempt_id"])
+        self.assertEqual(run["attempt"]["attempt_id"], event_payload["previous_attempt_id"])
+        self.assertIsNotNone(audit_row)
+        self.assertEqual("hermes", audit_row["actor"])
+        self.assertEqual("task-reassign-ledger", audit_row["target"])
+        audit_payload = json.loads(audit_row["detail_json"])
+        self.assertEqual(reassigned["event_id"], audit_payload["event_id"])
+        self.assertEqual(reassigned["attempt"]["attempt_id"], audit_payload["attempt_id"])
+
+        code, trace = run_cli("trace", "timeline", "--trace-id", trace_id)
+        self.assertEqual(0, code, trace)
+        self.assertTrue(
+            any(item["kind"] == "event" and item["label"] == "task.reassigned" and item["task_id"] == "task-reassign-ledger" for item in trace["timeline"]),
+            trace["timeline"],
+        )
+
     def test_managed_attempt_done_requires_promoted_final_evidence(self) -> None:
         for employee_id, role in [("main", "operator"), ("codex", "developer")]:
             code, created = run_cli("employee", "create", "--id", employee_id, "--name", employee_id, "--role", role, "--runtime", "local", "--workspace", str(self.root / "workspace" / employee_id))

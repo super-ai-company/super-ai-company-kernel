@@ -8391,6 +8391,9 @@ def cmd_task_reassign(args: argparse.Namespace) -> int:
         emit({"ok": False, "error": "actor cannot reassign task", "task_id": args.task_id, "by": actor})
         return 2
     policy = require_communication_allowed(actor, target, "task.submit")
+    previous_target = task["target_agent"]
+    previous_attempt = latest_attempt_for_task(conn, args.task_id)
+    previous_attempt_id = previous_attempt["attempt_id"] if previous_attempt else ""
     conn.execute(
         "UPDATE tasks SET target_agent = ?, status = 'submitted', claimed_by = '', blocker = '', updated_at = ? WHERE id = ?",
         (target, now(), args.task_id),
@@ -8399,10 +8402,25 @@ def cmd_task_reassign(args: argparse.Namespace) -> int:
     synced_plan_items = sync_project_plan_owner_for_task(conn, task_id=args.task_id, owner=target, actor=actor)
     conn.commit()
     updated = dict(conn.execute("SELECT * FROM tasks WHERE id = ?", (args.task_id,)).fetchone())
-    attempt = start_execution_attempt_internal(conn, task_id=args.task_id, employee_id=target, adapter_type="reassign", metadata={"reason": args.reason, "by": actor})
+    attempt_result = start_execution_attempt_internal(
+        conn,
+        task_id=args.task_id,
+        employee_id=target,
+        adapter_type="reassign",
+        metadata={"reason": args.reason, "by": actor, "previous_attempt_id": previous_attempt_id},
+    )
+    attempt = hydrate_execution_attempt(row_by_id(conn, "execution_attempts", "attempt_id", attempt_result["attempt"]["attempt_id"]))
+    event = record_event(
+        conn,
+        "task.reassigned",
+        actor,
+        task_id=args.task_id,
+        trace_id=attempt["trace_id"],
+        payload={"from": previous_target, "to": target, "reason": args.reason, "attempt_id": attempt["attempt_id"], "previous_attempt_id": previous_attempt_id},
+    )
     task_file = write_task_inbox_file({**updated, "metadata": task_metadata(conn, args.task_id), "communication_policy": policy})
-    audit(conn, actor, "task.reassign", args.task_id, {"to": target, "reason": args.reason, "file": task_file, "attempt_id": attempt["attempt"]["attempt_id"]})
-    emit({"ok": True, "task": updated, "file": task_file, "attempt": attempt["attempt"], "synced_plan_items": synced_plan_items})
+    audit(conn, actor, "task.reassign", args.task_id, {"from": previous_target, "to": target, "reason": args.reason, "file": task_file, "attempt_id": attempt["attempt_id"], "previous_attempt_id": previous_attempt_id, "event_id": event["id"]})
+    emit({"ok": True, "task": updated, "file": task_file, "attempt": attempt, "event_id": event["id"], "synced_plan_items": synced_plan_items})
     return 0
 
 
