@@ -42,15 +42,15 @@ Use existing backend surfaces first. Do not invent new endpoints unless implemen
 | Employees | `GET /v1/employees` | Employee cards and readiness summary. |
 | Employee detail | `GET /v1/employees/{employee_id}` | Lazy load from card click. |
 | Readiness matrix | `GET /v1/agent-matrix?agents={id}` | Use for evidence-backed readiness badges. |
-| Task list | `GET /v1/tasks` | Secondary list if cockpit aggregate lacks enough cards. |
+| Task list | `GET /v1/tasks` | User-triggered lazy load only. Do not poll this endpoint in the main 8-second cockpit loop. |
 | Task detail drawer | `GET /v1/tasks/{task_id}` | Single call. It already aggregates attempts, runtime sessions, tool calls, budget, evidence, completion contract, and timeline. Avoid N+1 drawer fetches. |
-| Trace timeline | `GET /v1/traces/{trace_id}/timeline` | Use only when drawer needs richer trace story than task detail payload. |
+| Trace timeline | `GET /v1/traces/{trace_id}/timeline` | Use only when drawer needs richer trace story than task detail payload. The endpoint must return a sorted flat event list for MVP rendering. |
 | Runtime sessions | `GET /v1/runtime-sessions?employee_id=&task_id=&trace_id=&limit=` | No global Runtime panel in MVP. Show current session on employee/task cards and full task-bound sessions inside the task drawer. |
 | Tool calls | `GET /v1/tool-calls?employee_id=&task_id=&trace_id=&attempt_id=&session_id=&limit=200` | Max list cap is 200. Render only sanitized summaries capped to 500 characters per summary field. |
 | Budget summary | `GET /v1/budget-summary?employee_id=&task_id=&trace_id=&attempt_id=` | Frontend displays ledger values only; no currency conversion. |
 | Budget events | `GET /v1/budget-events?...` | Recent spend rows. |
 | Evidence list | `GET /v1/evidence?task_id=&limit=` | Evidence panel. |
-| Evidence preview | `GET /v1/evidence/{evidence_id}/content` | Only safe content preview. No direct file path reads. |
+| Evidence preview | `GET /v1/evidence/{evidence_id}/safe-preview` | Only safe content preview. No direct file path reads. `/content` remains compatibility-only. |
 | Correction | `POST /v1/tasks/{task_id}/correct` | Body: `attempt_id`, `by="owner-shift"`, `message`. |
 | Cancel | `POST /v1/tasks/{task_id}/cancel` | Body: `attempt_id`, `by="owner-shift"`, `reason`. No kill-session button in MVP. |
 | Retry | `POST /v1/tasks/{task_id}/retry` | Body: `by="owner-shift"`, `reason`. |
@@ -78,7 +78,10 @@ These are not frontend workarounds. They are backend/API requirements that must 
 
 1. Poll `/v1/dashboard/cockpit` every 8 seconds. No WebSocket and no SSE listener in the 3-day MVP, even if the backend exposes an SSE route.
 2. If API fails, keep last successful data visible but dimmed and show `Offline: API Connection Lost`.
+   - Retry policy: keep the next 3 retries at the normal 8-second interval, then back off to one retry every 30 seconds until the API recovers.
+   - Do not queue overlapping requests; skip a poll tick if the previous poll is still in flight.
 3. If `/v1/doctor` returns non-zero `exit_code`, show a yellow diagnostics banner with `ok`, `issue_count`, and latest timestamp. Debug mode may show raw JSON in a plain `<pre>` block; do not build a JSON tree renderer. Poll `/v1/doctor` slowly, at most once per 60 seconds, unless `/v1/dashboard/cockpit.doctor.ok === false`.
+   - If `/v1/dashboard/cockpit` already includes a fresh `doctor` aggregate, do not run separate `/v1/doctor` polling during normal refresh.
 4. Do not render raw local absolute paths. Display safe relative paths and basenames only.
 5. Do not calculate prices, exchange rates, or token-to-USD conversion in frontend. Display backend ledger totals. If multiple currencies exist, display per-currency rows, not a fake combined total.
 6. Do not add `Kill Session`, `Archive Stale Sessions`, marketplace actions, skill pricing, or user/account management in this MVP.
@@ -89,6 +92,7 @@ These are not frontend workarounds. They are backend/API requirements that must 
 11. Filters are single-field quick filters only. Do not implement compound filtering across Tool Calls, Budget, and Evidence in the 3-day MVP.
 12. `GET /v1/agent-matrix` output is summarized as the final readiness badge and a short reason. Do not render a detailed matrix checklist or scoring UI.
 13. Use plain HTML/CSS/vanilla JavaScript in the existing dashboard template. Do not introduce large UI libraries, chart libraries, graph libraries, D3, Mermaid, Gantt, or canvas packages.
+14. `GET /v1/tasks` is lazy-loaded only after user interaction such as clicking `View all tasks`; it is not part of the normal cockpit polling loop.
 
 ## 4. Page Layout
 
@@ -117,6 +121,7 @@ Displayed fields:
 - Evidence: recent final evidence count, evidence issues count.
 - Supervisor: latest Hermes correction or pending correction ack from `supervisor_activity`.
 - Doctor: `doctor.ok`, `doctor.issue_count`, `doctor.exit_code` if included by `/v1/dashboard/cockpit`; otherwise show `/v1/doctor` as separately polled.
+  If cockpit already includes fresh doctor fields, do not poll `/v1/doctor` separately.
 
 Empty states:
 - No employees: `No AI employees registered.`
@@ -128,6 +133,7 @@ Abnormal states:
 - API offline: red banner, stale data dimmed.
 - Doctor unhealthy: yellow banner, click opens `/v1/doctor` JSON modal.
 - Hard budget limit: red banner; disable retry/reassign actions that would create more paid execution, but keep cancel/correction/reopen visible.
+- Hard budget control copy must use exactly: disable `Retry` and `Reassign`; keep `Cancel`, `Correct`, and `Reject / Reopen`.
 - Completion invalid: red count and filter to invalid task cards.
 - API gap: gray banner such as `Completion invalid task list unavailable from cockpit API.` Do not guess.
 
@@ -141,6 +147,19 @@ Click actions:
 API:
 - Primary: `GET /v1/dashboard/cockpit`
 - Diagnostic detail: `GET /v1/doctor`
+
+Minimum layout:
+- Left column: CEO summary grid and employee readiness cards.
+- Center column: running/stagnant/blocked task cards sorted by owner attention priority.
+- Right column: Tool Calls, Budget, and Evidence compact panels.
+- Task detail drawer slides from the right and must not replace the cockpit overview.
+
+Required owner-visible headline copy:
+- `Who is working`: active employees, candidate employees, skill-only workers, unsafe workers.
+- `What is running`: current task, attempt, session, latest progress, stagnant/blocker state.
+- `What was used`: latest tool calls with risk/status.
+- `What it cost`: ledger totals and recent spend events.
+- `What was delivered`: final evidence and invalid completion markers.
 
 ## 6. Employee Cards
 
@@ -172,7 +191,8 @@ Click actions:
 - Click card: open Employee Detail drawer or panel using `GET /v1/employees/{employee_id}`.
 - `View Task`: open current task drawer.
 - `Filter Logs`: apply employee filter to Tool Calls/Budget panels, and apply local evidence filtering only across hydrated evidence rows unless `/v1/evidence?employee_id=` exists.
-- `Verify Runtime Evidence`: call `GET /v1/agent-matrix?agents={employee_id}` and show attendance/direct/runtime/task/progress/evidence/stale results.
+- `Filter Evidence`: if backend lacks `/v1/evidence?employee_id=`, show only the latest hydrated evidence rows and label it `Local view only: latest loaded evidence rows, not full employee history.`
+- `Verify Runtime Evidence`: call `GET /v1/agent-matrix?agents={employee_id}` and show only readiness badge plus one short backend reason. Do not render attendance/direct/runtime/task/progress/evidence/stale as a checklist or matrix table.
 
 API:
 - `GET /v1/employees`
@@ -258,11 +278,18 @@ API:
 
 Rendering rules:
 - List cap is 200.
+- No pagination, infinite scroll, or load-more controls in MVP; render only the latest 200 rows returned by the backend.
 - `input_summary`, `output_summary`, and `error_message` are display summaries capped to 500 characters each.
 - Escape all HTML.
 - Never render raw stdout/stderr or unredacted `input_json`/`output_json`.
 - Detail modal uses client-side hydrated row state only; if the row lacks sanitized detail fields, show the redacted fallback instead of requesting a non-existent detail API.
+- If `sanitized !== true` or required summary fields are missing, the detail modal must show `[Raw output redacted for safety]` and disable copy buttons.
 - Do not use virtual terminal output, transcript blobs, or full command logs in this panel.
+
+Automatic recording requirement:
+- The panel is useful only if adapters write tool-call rows automatically.
+- Codex, Agy, OpenClaw bridge, local scripts, and Docker skills must record shell/API/browser/file/model operations through the Kernel.
+- If a running attempt has progress but zero tool calls, show `Tool-call ledger missing for this attempt` instead of implying no tools were used.
 
 ## 9. Budget Panel
 
@@ -282,7 +309,7 @@ Empty states:
 
 Abnormal states:
 - Soft limit exceeded: amber warning.
-- Hard limit exceeded: red warning and disable paid run/retry/reassign actions.
+- Hard limit exceeded: red warning and disable `Retry`, `Reassign`, and any future paid run action. Keep `Cancel`, `Correct`, and `Reject / Reopen` visible.
 - Runtime activity with zero budget: yellow `Cost missing` indicator.
 - Mixed currencies: display one row per currency. Do not convert.
 - Burn rate unavailable: neutral `Burn rate unavailable from API`; do not estimate from frontend.
@@ -300,6 +327,7 @@ Mixed currency rule:
 - If `budget_summary.currency === "mixed"`, show a warning icon and the text `Mixed currencies: totals are ledger sums, not converted values.`
 - In mixed mode, the primary visual must be per-currency ledger rows. Do not present the numeric `total_amount` as a single comparable money value.
 - If the backend does not return per-currency totals, show `API gap: per-currency budget totals unavailable` instead of fabricating rows.
+- The frontend must not sum `budget-events` into per-currency totals. Aggregation belongs to `/v1/budget-summary`.
 
 ## 10. Evidence Panel
 
@@ -322,14 +350,14 @@ Abnormal states:
 - Not final: neutral row; not sufficient for task done.
 
 Click actions:
-- `Preview Content`: call `GET /v1/evidence/{evidence_id}/content`.
+- `Preview Content`: call `GET /v1/evidence/{evidence_id}/safe-preview`.
 - `Open Task`: open task drawer.
 - `Open Trace`: open timeline.
 
 API:
 - `GET /v1/evidence?limit=50`
 - `GET /v1/evidence?task_id={task_id}`
-- `GET /v1/evidence/{evidence_id}/content`
+- `GET /v1/evidence/{evidence_id}/safe-preview`
 
 Filtering rule:
 - `/v1/evidence` currently supports `task_id` and `limit`; employee-card evidence filtering must be client-side over hydrated rows unless the backend later adds `employee_id`.
@@ -337,9 +365,11 @@ Filtering rule:
 Security rules:
 - Preview only through safe content API.
 - Render only plain text, JSON text, or Markdown source in a read-only `<pre>` modal.
+- If preview text exceeds 1 MB, block or truncate preview and show `Preview too large for MVP safe viewer`.
 - For image, PDF, Word, binary, HTML, or unknown content types, show `Preview unavailable for this format in MVP` and do not add a renderer.
 - Do not create `file://` links.
 - Do not expose absolute `/Users/...` paths.
+- Do not use `/v1/evidence/{evidence_id}/content` for new UI wiring; it exists only as backward-compatible alias behavior.
 
 ## 11. Task Detail Drawer
 
@@ -372,11 +402,15 @@ Empty states:
 Abnormal states:
 - Stagnant attempt: amber attempt row and owner action hint.
 - Failed/blocked tool call: expanded sanitized error summary.
-- Hard budget limit: red sticky warning; disable paid rerun actions.
+- Hard budget limit: red sticky warning; disable `Retry` and `Reassign`.
+- Hard budget limit button policy: disable `Retry` and `Reassign`; keep `Cancel`, `Correct`, and `Reject / Reopen` available because they do not create new paid execution by themselves.
 - Done without valid final evidence: red banner, show `Reject / Reopen`.
 - Timeline render attempts to become graph/tree/Gantt: not allowed in MVP; keep the vertical text event stream.
+- If `GET /v1/traces/{trace_id}/timeline` returns nested spans instead of a sorted flat event list, show `Timeline API gap: flat event list unavailable` and do not parse it into a graph/tree.
 
 Control API bodies:
+
+MVP actor rule: `by: "owner-shift"` is a local single-owner default. Do not build dynamic user identity, login, RBAC, or multi-tenant ownership in this 3-day MVP.
 
 ```json
 {
@@ -424,10 +458,10 @@ These guardrails prevent a beautiful but misleading cockpit. If a trusted backen
    - UI rule: backend state wins. Browser may show relative age but cannot decide `failed`, `stale`, or `stagnant`.
 4. Tool-call sanitization:
    - Risk: raw stdout/stderr or tool payloads can contain secrets.
-   - UI rule: if a row lacks sanitized summaries or safe display fields, render `[Raw output redacted for safety]`.
+   - UI rule: if a row lacks sanitized summaries or safe display fields, render `[Raw output redacted for safety]` and disable copy controls.
 5. Mixed-currency budget:
    - Risk: a single `total_amount` can look like comparable money when currencies differ.
-   - UI rule: show per-currency rows only. If missing, show `API gap: per-currency budget totals unavailable`.
+   - UI rule: show per-currency rows only. If missing, show `API gap: per-currency budget totals unavailable`. Never aggregate `budget-events` in frontend to invent totals.
 6. Completion evidence:
    - Risk: `done` without final evidence looks complete.
    - UI rule: render `Completion Invalid` unless backend says final evidence is valid for the same `task_id` and current/final attempt context.
@@ -520,7 +554,7 @@ The MVP is accepted only if all items below are true in the local environment:
 5. Task drawer opens from real tasks and shows attempts, runtime sessions, tool calls, budget, evidence, and timeline.
 6. Tool Calls panel renders only sanitized summaries and redacts unsafe/unknown records.
 7. Budget panel displays ledger values by currency without frontend conversion.
-8. Evidence preview only uses `/v1/evidence/{evidence_id}/content` and renders text/JSON/Markdown source in `<pre>` only.
+8. Evidence preview only uses `/v1/evidence/{evidence_id}/safe-preview` and renders text/JSON/Markdown source in `<pre>` only.
 9. Correction, cancel, retry, reassign, and reject/reopen actions call existing APIs with `by="owner-shift"`.
 10. `python3 -m unittest discover -s tests -p 'test*.py'` passes.
 11. `bin/companyctl doctor --summary` is green or any remaining issue is classified with exact source and non-business impact.

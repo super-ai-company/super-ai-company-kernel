@@ -95,6 +95,7 @@ API_ENDPOINTS = [
     {"method": "GET", "path": "/v1/events/stream", "summary": "Server-Sent Events stream for recent Company Kernel event ledger entries", "query": {"limit": "integer optional", "poll_seconds": "integer optional", "max_cycles": "integer optional"}},
     {"method": "GET", "path": "/v1/evidence", "summary": "List sanitized evidence records for Audit Hub", "query": {"task_id": "task id optional", "limit": "integer optional"}},
     {"method": "GET", "path": "/v1/evidence/{evidence_id}/content", "summary": "Read safe text preview for a whitelisted evidence record without exposing absolute paths"},
+    {"method": "GET", "path": "/v1/evidence/{evidence_id}/safe-preview", "summary": "Alias for safe evidence text preview; enforces the same whitelist and secret-path policy"},
     {"method": "GET", "path": "/v1/artifacts", "summary": "List sanitized artifact records for Audit Hub", "query": {"task_id": "task id optional", "limit": "integer optional"}},
     {"method": "GET", "path": "/v1/handoffs", "summary": "List handoff contracts for Audit Hub", "query": {"task_id": "from or to task id optional", "limit": "integer optional"}},
     {"method": "GET", "path": "/v1/failures", "summary": "List sanitized task, attempt, and adapter failure records for Audit Hub", "query": {"task_id": "task id optional", "limit": "integer optional"}},
@@ -444,8 +445,9 @@ def route_get(path: str, query: dict[str, list[str]]) -> tuple[int, dict]:
         finally:
             conn.close()
         return HTTPStatus.OK, {"ok": True, "source": "/v1/evidence", "evidence": evidence}
-    if path.startswith("/v1/evidence/") and path.endswith("/content"):
-        evidence_id = path.removeprefix("/v1/evidence/").removesuffix("/content").strip("/")
+    if path.startswith("/v1/evidence/") and (path.endswith("/content") or path.endswith("/safe-preview")):
+        suffix = "/safe-preview" if path.endswith("/safe-preview") else "/content"
+        evidence_id = path.removeprefix("/v1/evidence/").removesuffix(suffix).strip("/")
         conn = companyctl.connect_readonly()
         try:
             payload = companyctl.safe_evidence_content(conn, evidence_id)
