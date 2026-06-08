@@ -4421,18 +4421,22 @@
   }
 
   function approvalDetail(approval) {
-    const detail = parseMaybeJson(approval && approval.reason, {});
+    const apiDetail = approval && approval.detail && typeof approval.detail === 'object' && !Array.isArray(approval.detail) ? approval.detail : {};
+    const legacyDetail = parseMaybeJson(approval && approval.reason, {});
+    const detail = Object.assign({}, legacyDetail, apiDetail);
     return detail && typeof detail === 'object' && !Array.isArray(detail) ? detail : {};
   }
 
   function approvalSummary(approval) {
     const detail = approvalDetail(approval);
+    const requestDetail = parseApprovalRequestReason(detail.request_reason);
+    const metadata = detail.metadata && typeof detail.metadata === 'object' ? detail.metadata : {};
     return {
-      request_reason: detail.request_reason || approval.reason || '',
-      target: detail.target || approval.target || '',
-      risk: detail.risk || approval.risk || '',
-      evidence: detail.evidence || '',
-      task_id: detail.metadata && detail.metadata.task_id ? detail.metadata.task_id : ''
+      request_reason: requestDetail.reason || requestDetail.request_reason || detail.request_reason || approval.reason || '',
+      target: detail.target || requestDetail.target || approval.target || '',
+      risk: detail.risk || requestDetail.risk || approval.risk || '',
+      evidence: detail.evidence || requestDetail.evidence || '',
+      task_id: metadata.task_id || requestDetail.task_id || ''
     };
   }
 
