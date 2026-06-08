@@ -4694,12 +4694,25 @@ def employee_file_bundle(conn: sqlite3.Connection, employee_id: str) -> dict:
         SELECT *
         FROM tasks
         WHERE source_agent = ? OR target_agent = ? OR claimed_by = ?
-        ORDER BY updated_at DESC, created_at DESC
+        ORDER BY
+          CASE
+            WHEN LOWER(status) IN ('submitted', 'claimed', 'running', 'waiting_approval', 'blocked', 'stale', 'retrying') THEN 0
+            ELSE 1
+          END ASC,
+          updated_at DESC,
+          created_at DESC
         LIMIT 50
         """,
         (employee_id, employee_id, employee_id),
     )
-    attempt_rows = [hydrate_execution_attempt(item) for item in rows(conn, "SELECT * FROM execution_attempts WHERE employee_id = ? ORDER BY started_at DESC LIMIT 50", (employee_id,))]
+    attempt_rows = [
+        hydrate_execution_attempt(item)
+        for item in rows(
+            conn,
+            "SELECT * FROM execution_attempts WHERE employee_id = ? ORDER BY started_at DESC, rowid DESC LIMIT 50",
+            (employee_id,),
+        )
+    ]
     runtime_sessions = list_runtime_sessions(conn, employee_id=employee_id, limit=50)
     tool_calls = list_tool_calls(conn, employee_id=employee_id, limit=100)
     budget_events = list_budget_events(conn, employee_id=employee_id, limit=100)
@@ -4753,6 +4766,61 @@ def employee_file_bundle(conn: sqlite3.Connection, employee_id: str) -> dict:
     enriched_tasks = [{**dict(item), **task_rollups.get(str(item.get("id") or ""), {})} for item in task_rows]
     current_tasks = [dict(item) for item in enriched_tasks if str(item.get("status", "")).lower() in {"submitted", "claimed", "running", "waiting_approval", "blocked", "stale", "retrying"}][:10]
     recent_tasks = [dict(item) for item in enriched_tasks[:10]]
+    active_attempt_statuses = {"starting", "running", "correcting"}
+    current_attempt = next((dict(item) for item in attempt_rows if str(item.get("status") or "") in active_attempt_statuses), {})
+    current_task_id = str(current_attempt.get("task_id") or (current_tasks[0].get("id") if current_tasks else "") or "")
+    current_task = next((dict(item) for item in enriched_tasks if str(item.get("id") or "") == current_task_id), {})
+    latest_progress: dict = {}
+    if current_task_id:
+        progress_events = rows(
+            conn,
+            """
+            SELECT *
+            FROM company_events
+            WHERE task_id = ? AND event_type = 'task.progress'
+            ORDER BY created_at DESC
+            LIMIT 20
+            """,
+            (current_task_id,),
+        )
+        for event in progress_events:
+            try:
+                payload = json.loads(event.get("payload_json", "{}") or "{}")
+            except json.JSONDecodeError:
+                payload = {}
+            if not isinstance(payload, dict):
+                payload = {}
+            if current_attempt and str(payload.get("attempt_id") or "") != str(current_attempt.get("attempt_id") or ""):
+                continue
+            latest_progress = {
+                "event_id": event.get("id", ""),
+                "created_at": event.get("created_at", ""),
+                "attempt_id": payload.get("attempt_id", ""),
+                "progress_state": payload.get("progress_state", ""),
+                "progress_layer": payload.get("progress_layer", ""),
+                "progress_label": payload.get("progress_label", ""),
+                "message": payload.get("message", ""),
+                "progress": payload.get("progress"),
+            }
+            break
+    current_trace_id = ""
+    if current_attempt:
+        current_trace_id = str(current_attempt.get("trace_id") or "")
+    elif current_task_id:
+        current_trace_id = trace_id_for_task(conn, current_task_id)
+    current_activity = {
+        "employee_id": employee_id,
+        "task_id": current_task_id,
+        "task_title": str(current_task.get("title") or ""),
+        "task_status": str(current_task.get("status") or ""),
+        "attempt_id": str(current_attempt.get("attempt_id") or ""),
+        "attempt_status": str(current_attempt.get("status") or ""),
+        "trace_id": current_trace_id,
+        "active_task_count": len(current_tasks),
+        "latest_progress": latest_progress,
+    }
+    if current_attempt:
+        current_activity.update(long_task_state_for_attempt(current_attempt))
     return {
         "employee": profile,
         "profile": file_profile,
@@ -4775,6 +4843,7 @@ def employee_file_bundle(conn: sqlite3.Connection, employee_id: str) -> dict:
             },
         },
         "attempts": attempt_rows,
+        "current_activity": current_activity,
         "runtime_sessions": runtime_sessions,
         "tool_calls": tool_calls,
         "budget_events": budget_events,
