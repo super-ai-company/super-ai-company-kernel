@@ -299,9 +299,15 @@ def build_cockpit_summary(summary: dict) -> dict:
     active_attempts = summary.get("active_attempts", [])
     chat_counts = chat_classification_counts(summary.get("direct_messages_recent", []))
     tasks_by_id = {str(task.get("id", "")): task for task in summary.get("tasks", [])}
+    progress_by_task = {}
+    for progress in companyctl.task_progress_events(summary.get("events", [])):
+        task_id = str(progress.get("task_id", ""))
+        if task_id and task_id not in progress_by_task:
+            progress_by_task[task_id] = progress
     long_tasks = []
     for attempt in active_attempts:
-        task = tasks_by_id.get(str(attempt.get("task_id", "")), {})
+        task_id = str(attempt.get("task_id", ""))
+        task = tasks_by_id.get(task_id, {})
         state = long_task_state(attempt, generated_at=generated_at)
         evidence = companyctl.sanitize_evidence_path_for_display(str(task.get("evidence_path") or ""))
         supervisor_state = companyctl.attempt_json_field(dict(attempt), "supervisor_state_json")
@@ -331,6 +337,7 @@ def build_cockpit_summary(summary: dict) -> dict:
                 "blocker": task.get("blocker", "") or attempt.get("error_message", ""),
                 "evidence": evidence,
                 "correction": correction,
+                "latest_progress": progress_by_task.get(task_id, {}),
                 **state,
             }
         )

@@ -3408,6 +3408,7 @@
         <div>
           <strong>${escapeHtml(item.title || item.task_id || '-')}</strong>
           <span>${escapeHtml(item.target_agent || '-')} · attempt=${escapeHtml(item.attempt_id || '-')} · progress_age=${escapeHtml(item.progress_age_seconds ?? '-')}s</span>
+          ${item.latest_progress ? `<span>Latest Progress · ${latestProgressSummary(item.latest_progress)}</span>` : ''}
           ${item.progress_state === 'stagnant' ? `<span>${escapeHtml(stagnantGuidance)}</span>` : ''}
         </div>
         <div class="long-task-state ${escapeHtml(item.long_task_state || 'running')}">${escapeHtml(item.long_task_state || 'running')}</div>
@@ -3466,6 +3467,11 @@
         <div class="long-task-state ${escapeHtml(item.state || 'running')}">${escapeHtml(item.state || 'observed')}</div>
       </div>
     `).join('') : `<div class="cockpit-row"><div><strong>No supervisor activity</strong><span>Hermes supervised corrections and stagnant checks appear here.</span></div><div class="long-task-state success">clear</div></div>`;
+  }
+
+  function latestProgressSummary(item) {
+    if (!item || !item.event_id) return '-';
+    return `state=${escapeHtml(item.progress_state || '-')} · progress=${escapeHtml(item.progress ?? '-')} · ${escapeHtml(item.message || '')}`;
   }
 
   function ledgerConsistencySummary(contract) {
