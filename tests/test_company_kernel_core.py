@@ -5065,6 +5065,12 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual(HTTPStatus.OK, status, tool_calls)
         self.assertTrue(tool_calls["ok"])
         self.assertEqual(["tool-call-control-plane-ledger"], [item["tool_call_id"] for item in tool_calls["tool_calls"]])
+        status, session_tool_calls = api_gateway.route_get("/v1/tool-calls", {"session_id": ["session-control-plane-ledger"]})
+        self.assertEqual(HTTPStatus.OK, status, session_tool_calls)
+        self.assertEqual(["tool-call-control-plane-ledger"], [item["tool_call_id"] for item in session_tool_calls["tool_calls"]])
+        status, other_session_tool_calls = api_gateway.route_get("/v1/tool-calls", {"session_id": ["session-control-plane-other"]})
+        self.assertEqual(HTTPStatus.OK, status, other_session_tool_calls)
+        self.assertEqual([], other_session_tool_calls["tool_calls"])
         tool_payload = json.dumps(tool_calls, ensure_ascii=False)
         self.assertNotIn(secret, tool_payload)
         self.assertNotIn("id_rsa", tool_payload)
@@ -5162,6 +5168,61 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual(0.42, cockpit["budget_summary"]["total_amount"])
         self.assertEqual(1200, cockpit["budget_summary"]["token_input"])
         self.assertEqual(340, cockpit["budget_summary"]["token_output"])
+
+    def test_budget_summary_reports_soft_and_hard_limit_status(self) -> None:
+        with sqlite3.connect(self.root / "company.sqlite") as conn:
+            conn.execute(
+                """
+                INSERT INTO budget_accounts(
+                  budget_account_id, scope_type, scope_id, currency, soft_limit, hard_limit, status, created_at, updated_at, metadata_json
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "budget-account-task-limit",
+                    "task",
+                    "task-budget-limit",
+                    "USD",
+                    0.5,
+                    1.0,
+                    "active",
+                    datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds"),
+                    datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds"),
+                    "{}",
+                ),
+            )
+            conn.commit()
+
+        code, submitted = run_cli("task", "submit", "--from", "openclaw-main", "--to", "codex", "--task-id", "task-budget-limit", "--title", "Budget limit")
+        self.assertEqual(0, code, submitted)
+        code, budget = run_cli(
+            "budget",
+            "record",
+            "--budget-event-id",
+            "budget-event-limit",
+            "--budget-account-id",
+            "budget-account-task-limit",
+            "--task-id",
+            "task-budget-limit",
+            "--employee",
+            "codex",
+            "--cost-type",
+            "model_api",
+            "--amount",
+            "0.75",
+            "--currency",
+            "USD",
+            "--summary",
+            "soft limit crossed",
+        )
+        self.assertEqual(0, code, budget)
+
+        status, budget_summary = api_gateway.route_get("/v1/budget-summary", {"task_id": ["task-budget-limit"]})
+        self.assertEqual(HTTPStatus.OK, status, budget_summary)
+        self.assertEqual("soft_exceeded", budget_summary["summary"]["limit_status"])
+        self.assertEqual(0.5, budget_summary["summary"]["budget_limits"]["soft_limit"])
+        self.assertEqual(1.0, budget_summary["summary"]["budget_limits"]["hard_limit"])
+        self.assertEqual(0.25, budget_summary["summary"]["budget_limits"]["remaining_to_hard"])
 
     def test_task_detail_includes_runtime_tool_call_and_budget_ledgers(self) -> None:
         code, submitted = run_cli("task", "submit", "--from", "openclaw-main", "--to", "codex", "--task-id", "task-detail-control-plane", "--title", "Task detail control plane")
@@ -5277,6 +5338,7 @@ class CompanyKernelCoreTest(unittest.TestCase):
             "function runtimeSessionsSummary",
             "function toolCallsSummary",
             "function budgetSummaryDetail",
+            "budgetLimitStatusSummary",
             "function budgetEventsSummary",
         ]:
             self.assertIn(snippet, html)

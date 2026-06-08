@@ -1580,10 +1580,10 @@ def hydrate_tool_call(tool_call: dict) -> dict:
     return item
 
 
-def list_tool_calls(conn: sqlite3.Connection, *, employee_id: str = "", task_id: str = "", trace_id: str = "", attempt_id: str = "", limit: int = 50) -> list[dict]:
+def list_tool_calls(conn: sqlite3.Connection, *, employee_id: str = "", task_id: str = "", trace_id: str = "", attempt_id: str = "", session_id: str = "", limit: int = 50) -> list[dict]:
     where = []
     params: list[object] = []
-    for column, value in [("employee_id", employee_id), ("task_id", task_id), ("trace_id", trace_id), ("attempt_id", attempt_id)]:
+    for column, value in [("employee_id", employee_id), ("task_id", task_id), ("trace_id", trace_id), ("attempt_id", attempt_id), ("session_id", session_id)]:
         if value:
             where.append(f"{column} = ?")
             params.append(value)
@@ -1703,6 +1703,74 @@ def list_budget_events(conn: sqlite3.Connection, *, task_id: str = "", employee_
     return [hydrate_budget_event(item) for item in rows_out]
 
 
+def budget_limit_summary(conn: sqlite3.Connection, *, task_id: str = "", employee_id: str = "", trace_id: str = "", attempt_id: str = "", total_amount: float = 0.0, currency: str = "USD") -> dict:
+    where = []
+    params: list[object] = []
+    if task_id:
+        where.append("(scope_type = 'task' AND scope_id = ?)")
+        params.append(task_id)
+    if employee_id:
+        where.append("(scope_type = 'employee' AND scope_id = ?)")
+        params.append(employee_id)
+    if trace_id:
+        where.append("(scope_type = 'trace' AND scope_id = ?)")
+        params.append(trace_id)
+    if attempt_id:
+        where.append("(scope_type = 'attempt' AND scope_id = ?)")
+        params.append(attempt_id)
+    if not where:
+        return {
+            "configured": False,
+            "scope_type": "",
+            "scope_id": "",
+            "currency": currency,
+            "soft_limit": 0,
+            "hard_limit": 0,
+            "remaining_to_soft": None,
+            "remaining_to_hard": None,
+            "status": "not_configured",
+        }
+    account_rows = rows(
+        conn,
+        f"SELECT * FROM budget_accounts WHERE status != 'archived' AND ({' OR '.join(where)}) ORDER BY updated_at DESC LIMIT 1",
+        tuple(params),
+    )
+    if not account_rows:
+        return {
+            "configured": False,
+            "scope_type": "",
+            "scope_id": "",
+            "currency": currency,
+            "soft_limit": 0,
+            "hard_limit": 0,
+            "remaining_to_soft": None,
+            "remaining_to_hard": None,
+            "status": "not_configured",
+        }
+    account = account_rows[0]
+    soft_limit = float(account.get("soft_limit") or 0)
+    hard_limit = float(account.get("hard_limit") or 0)
+    remaining_to_soft = round(soft_limit - total_amount, 6) if soft_limit else None
+    remaining_to_hard = round(hard_limit - total_amount, 6) if hard_limit else None
+    status = "within_limit"
+    if hard_limit and total_amount >= hard_limit:
+        status = "hard_exceeded"
+    elif soft_limit and total_amount >= soft_limit:
+        status = "soft_exceeded"
+    return {
+        "configured": True,
+        "budget_account_id": account.get("budget_account_id", ""),
+        "scope_type": account.get("scope_type", ""),
+        "scope_id": account.get("scope_id", ""),
+        "currency": account.get("currency") or currency,
+        "soft_limit": soft_limit,
+        "hard_limit": hard_limit,
+        "remaining_to_soft": remaining_to_soft,
+        "remaining_to_hard": remaining_to_hard,
+        "status": status,
+    }
+
+
 def budget_summary(conn: sqlite3.Connection, *, task_id: str = "", employee_id: str = "", trace_id: str = "", attempt_id: str = "") -> dict:
     events = list_budget_events(conn, task_id=task_id, employee_id=employee_id, trace_id=trace_id, attempt_id=attempt_id, limit=500)
     by_employee: dict[str, float] = {}
@@ -1719,10 +1787,13 @@ def budget_summary(conn: sqlite3.Connection, *, task_id: str = "", employee_id: 
         if task_key:
             by_task[task_key] = round(by_task.get(task_key, 0.0) + amount, 6)
         by_cost_type[cost_key] = round(by_cost_type.get(cost_key, 0.0) + amount, 6)
+    total_amount = round(sum(float(item.get("amount") or 0) for item in events), 6)
+    currency = currencies[0] if len(currencies) == 1 else ("mixed" if currencies else "USD")
+    limits = budget_limit_summary(conn, task_id=task_id, employee_id=employee_id, trace_id=trace_id, attempt_id=attempt_id, total_amount=total_amount, currency=currency)
     return {
         "event_count": len(events),
-        "total_amount": round(sum(float(item.get("amount") or 0) for item in events), 6),
-        "currency": currencies[0] if len(currencies) == 1 else ("mixed" if currencies else "USD"),
+        "total_amount": total_amount,
+        "currency": currency,
         "currencies": currencies,
         "token_input": sum(int(item.get("token_input") or 0) for item in events),
         "token_output": sum(int(item.get("token_output") or 0) for item in events),
@@ -1730,6 +1801,8 @@ def budget_summary(conn: sqlite3.Connection, *, task_id: str = "", employee_id: 
         "by_employee": by_employee,
         "by_task": by_task,
         "by_cost_type": by_cost_type,
+        "limit_status": limits["status"],
+        "budget_limits": limits,
     }
 
 
@@ -4213,7 +4286,7 @@ def cmd_tool_call_finish(args: argparse.Namespace) -> int:
 def cmd_tool_call_list(args: argparse.Namespace) -> int:
     conn = connect_readonly()
     try:
-        tool_calls = list_tool_calls(conn, employee_id=args.employee, task_id=args.task_id, trace_id=args.trace_id, attempt_id=args.attempt_id, limit=args.limit)
+        tool_calls = list_tool_calls(conn, employee_id=args.employee, task_id=args.task_id, trace_id=args.trace_id, attempt_id=args.attempt_id, session_id=args.session_id, limit=args.limit)
     finally:
         conn.close()
     emit({"ok": True, "tool_calls": tool_calls})
@@ -10304,6 +10377,7 @@ def build_parser() -> argparse.ArgumentParser:
     tool_call_list.add_argument("--task-id", default="")
     tool_call_list.add_argument("--trace-id", default="")
     tool_call_list.add_argument("--attempt-id", default="")
+    tool_call_list.add_argument("--session-id", default="")
     tool_call_list.add_argument("--limit", type=int, default=50)
     tool_call_list.set_defaults(func=cmd_tool_call_list)
 

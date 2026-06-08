@@ -3907,9 +3907,10 @@
           <div>
             <strong>Estimated spend ${escapeHtml(budget.currency || 'USD')} ${escapeHtml(budget.total_amount || 0)}</strong>
             <span>events=${escapeHtml(budget.event_count || 0)} · input=${escapeHtml(budget.token_input || 0)} · output=${escapeHtml(budget.token_output || 0)} · runtime=${escapeHtml(budget.runtime_seconds || 0)}s</span>
+            <span>${escapeHtml(budgetLimitStatusSummary(budget))}</span>
             <span>${escapeHtml(topEmployees || 'No employee cost rows yet')}</span>
           </div>
-          <div class="long-task-state ${Number(budget.total_amount || 0) ? 'progress_stagnant' : 'running'}">budget</div>
+          <div class="long-task-state ${['soft_exceeded', 'hard_exceeded'].includes(budget.limit_status || '') ? 'blocked' : (Number(budget.total_amount || 0) ? 'progress_stagnant' : 'running')}">${escapeHtml(budget.limit_status || 'budget')}</div>
         </div>
       `;
     }
@@ -4472,9 +4473,18 @@
     const employeeRows = Object.entries(byEmployee).slice(0, 6).map(([employee, amount]) => `${employee}=${amount}`).join(' · ');
     return [
       `events=${item.event_count || 0} · total=${item.currency || 'USD'} ${item.total_amount || 0}`,
+      budgetLimitStatusSummary(item),
       `tokens input=${item.token_input || 0} · output=${item.token_output || 0} · runtime=${item.runtime_seconds || 0}s`,
       employeeRows || 'No employee cost rows yet.'
     ].join('\n');
+  }
+
+  function budgetLimitStatusSummary(summary) {
+    const item = summary || {};
+    const limits = item.budget_limits || {};
+    const status = item.limit_status || limits.status || 'not_configured';
+    if (!limits.configured) return `limit=${status}`;
+    return `limit=${status} · soft=${limits.currency || item.currency || 'USD'} ${limits.soft_limit || 0} · hard=${limits.hard_limit || 0} · remaining_to_hard=${limits.remaining_to_hard ?? '-'}`;
   }
 
   function budgetEventsSummary(events) {
@@ -4503,6 +4513,7 @@
     const item = summary || {};
     return [
       `events=${item.event_count || 0} · total=${item.currency || 'USD'} ${item.total_amount || 0}`,
+      budgetLimitStatusSummary(item),
       `tokens input=${item.token_input || 0} · output=${item.token_output || 0} · runtime=${item.runtime_seconds || 0}s`
     ].join('\n');
   }
