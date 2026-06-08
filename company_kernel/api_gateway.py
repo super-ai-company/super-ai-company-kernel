@@ -38,6 +38,9 @@ API_CAPABILITIES = [
     "external_mirror",
     "openclaw_runtime_inventory",
     "operations_cockpit",
+    "runtime_sessions",
+    "tool_calls",
+    "budget",
 ]
 API_ENDPOINTS = [
     {"method": "GET", "path": "/v1/health", "summary": "Company Kernel health summary"},
@@ -65,6 +68,10 @@ API_ENDPOINTS = [
     {"method": "POST", "path": "/v1/policy-blocks/report", "summary": "Report non-popup tool-policy blockers and notify operator", "body": {"source": "employee optional", "target": "employee optional", "tool": "tool name optional", "operation": "operation optional", "error": "error text required", "dry_run": "bool optional"}},
     {"method": "GET", "path": "/v1/runtimes", "summary": "List runtimes"},
     {"method": "POST", "path": "/v1/runtimes", "summary": "Register runtime", "body": {"runtime": "runtime id", "command": "command optional", "status": "registered/disabled optional", "notes": "string optional"}},
+    {"method": "GET", "path": "/v1/runtime-sessions", "summary": "List managed runtime sessions", "query": {"employee_id": "employee optional", "task_id": "task optional", "trace_id": "trace optional", "limit": "integer optional"}},
+    {"method": "GET", "path": "/v1/tool-calls", "summary": "List structured agent tool calls", "query": {"employee_id": "employee optional", "task_id": "task optional", "trace_id": "trace optional", "attempt_id": "attempt optional", "limit": "integer optional"}},
+    {"method": "GET", "path": "/v1/budget-events", "summary": "List budget/cost ledger events", "query": {"employee_id": "employee optional", "task_id": "task optional", "trace_id": "trace optional", "attempt_id": "attempt optional", "limit": "integer optional"}},
+    {"method": "GET", "path": "/v1/budget-summary", "summary": "Read budget rollup for owner cockpit", "query": {"employee_id": "employee optional", "task_id": "task optional", "trace_id": "trace optional", "attempt_id": "attempt optional"}},
     {"method": "GET", "path": "/v1/tasks", "summary": "List tasks", "query": {"agent": "employee id optional", "status": "task status optional"}},
     {"method": "POST", "path": "/v1/tasks", "summary": "Submit task", "body": {"from": "employee id", "to": "employee id", "title": "string", "description": "string optional", "task_id": "string optional", "priority": "P0/P1/P2/P3 optional", "requires_approval": "action optional", "approval_id": "string optional"}},
     {"method": "POST", "path": "/v1/tasks/route", "summary": "Select employee by capabilities and submit routed task with approval guard", "body": {"from": "employee id", "title": "string", "description": "string optional", "priority": "P0/P1/P2/P3 optional", "task_id": "string optional", "skills": "comma-separated skills optional", "tools": "comma-separated tools optional", "task_type": "string optional", "runtime": "runtime optional", "role": "role optional", "limit": "integer optional", "include_unavailable": "bool optional", "requires_approval": "action optional", "approval_id": "string optional", "risk": "P0/P1/P2/P3 optional", "changed_files": "comma-separated paths optional", "rfc": "path optional"}},
@@ -454,6 +461,60 @@ def route_get(path: str, query: dict[str, list[str]]) -> tuple[int, dict]:
         finally:
             conn.close()
         return HTTPStatus.OK, {"ok": True, "source": "/v1/artifacts", "artifacts": artifacts}
+    if path == "/v1/runtime-sessions":
+        conn = companyctl.connect_readonly()
+        try:
+            sessions = companyctl.list_runtime_sessions(
+                conn,
+                employee_id=query_value(query, "employee_id") or query_value(query, "employee"),
+                task_id=query_value(query, "task_id"),
+                trace_id=query_value(query, "trace_id"),
+                limit=int(query_value(query, "limit", "50") or "50"),
+            )
+        finally:
+            conn.close()
+        return HTTPStatus.OK, {"ok": True, "source": "/v1/runtime-sessions", "runtime_sessions": sessions}
+    if path == "/v1/tool-calls":
+        conn = companyctl.connect_readonly()
+        try:
+            tool_calls = companyctl.list_tool_calls(
+                conn,
+                employee_id=query_value(query, "employee_id") or query_value(query, "employee"),
+                task_id=query_value(query, "task_id"),
+                trace_id=query_value(query, "trace_id"),
+                attempt_id=query_value(query, "attempt_id"),
+                limit=int(query_value(query, "limit", "50") or "50"),
+            )
+        finally:
+            conn.close()
+        return HTTPStatus.OK, {"ok": True, "source": "/v1/tool-calls", "tool_calls": tool_calls}
+    if path == "/v1/budget-events":
+        conn = companyctl.connect_readonly()
+        try:
+            budget_events = companyctl.list_budget_events(
+                conn,
+                employee_id=query_value(query, "employee_id") or query_value(query, "employee"),
+                task_id=query_value(query, "task_id"),
+                trace_id=query_value(query, "trace_id"),
+                attempt_id=query_value(query, "attempt_id"),
+                limit=int(query_value(query, "limit", "50") or "50"),
+            )
+        finally:
+            conn.close()
+        return HTTPStatus.OK, {"ok": True, "source": "/v1/budget-events", "budget_events": budget_events}
+    if path == "/v1/budget-summary":
+        conn = companyctl.connect_readonly()
+        try:
+            summary = companyctl.budget_summary(
+                conn,
+                employee_id=query_value(query, "employee_id") or query_value(query, "employee"),
+                task_id=query_value(query, "task_id"),
+                trace_id=query_value(query, "trace_id"),
+                attempt_id=query_value(query, "attempt_id"),
+            )
+        finally:
+            conn.close()
+        return HTTPStatus.OK, {"ok": True, "source": "/v1/budget-summary", "summary": summary}
     if path == "/v1/handoffs":
         conn = companyctl.connect_readonly()
         try:

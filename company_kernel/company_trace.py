@@ -66,6 +66,9 @@ def load_trace(conn: sqlite3.Connection, trace_id: str) -> dict:
     task_ids.update(row["from_task_id"] for row in rows(conn, "SELECT DISTINCT from_task_id FROM handoffs WHERE trace_id = ? AND from_task_id != ''", (trace_id,)))
     task_ids.update(row["to_task_id"] for row in rows(conn, "SELECT DISTINCT to_task_id FROM handoffs WHERE trace_id = ? AND to_task_id != ''", (trace_id,)))
     task_ids.update(row["task_id"] for row in rows(conn, "SELECT DISTINCT task_id FROM execution_attempts WHERE trace_id = ? AND task_id != ''", (trace_id,)))
+    task_ids.update(row["task_id"] for row in rows(conn, "SELECT DISTINCT task_id FROM runtime_sessions WHERE trace_id = ? AND task_id != ''", (trace_id,)))
+    task_ids.update(row["task_id"] for row in rows(conn, "SELECT DISTINCT task_id FROM agent_tool_calls WHERE trace_id = ? AND task_id != ''", (trace_id,)))
+    task_ids.update(row["task_id"] for row in rows(conn, "SELECT DISTINCT task_id FROM budget_events WHERE trace_id = ? AND task_id != ''", (trace_id,)))
     tasks = []
     if task_ids:
         placeholders = ",".join("?" for _ in task_ids)
@@ -76,6 +79,9 @@ def load_trace(conn: sqlite3.Connection, trace_id: str) -> dict:
     evidence = rows(conn, "SELECT * FROM evidence WHERE trace_id = ? ORDER BY created_at ASC", (trace_id,))
     handoffs = rows(conn, "SELECT * FROM handoffs WHERE trace_id = ? ORDER BY created_at ASC", (trace_id,))
     execution_attempts = rows(conn, "SELECT * FROM execution_attempts WHERE trace_id = ? ORDER BY started_at ASC", (trace_id,))
+    runtime_sessions = rows(conn, "SELECT * FROM runtime_sessions WHERE trace_id = ? ORDER BY started_at ASC", (trace_id,))
+    tool_calls = rows(conn, "SELECT * FROM agent_tool_calls WHERE trace_id = ? ORDER BY started_at ASC", (trace_id,))
+    budget_events = rows(conn, "SELECT * FROM budget_events WHERE trace_id = ? ORDER BY created_at ASC", (trace_id,))
     timeline = []
     for task in tasks:
         timeline.append({"kind": "task", "at": task["created_at"], "label": f"task {task['id']} submitted to {task['target_agent']}", "status": task["status"], "task_id": task["id"]})
@@ -110,6 +116,16 @@ def load_trace(conn: sqlite3.Connection, trace_id: str) -> dict:
         timeline.append({"kind": "attempt", "at": attempt["started_at"], "label": f"{attempt['employee_id']} via {attempt['adapter_type']}", "status": attempt["status"], "attempt_id": attempt["attempt_id"], "task_id": attempt["task_id"]})
         if attempt.get("finished_at"):
             timeline.append({"kind": "attempt", "at": attempt["finished_at"], "label": f"{attempt['attempt_id']} finished", "status": attempt["status"], "attempt_id": attempt["attempt_id"], "task_id": attempt["task_id"]})
+    for session in runtime_sessions:
+        timeline.append({"kind": "runtime_session", "at": session["started_at"], "label": f"{session['employee_id']} session {session['runtime_type'] or session['adapter_type']}", "status": session["status"], "session_id": session["session_id"], "attempt_id": session.get("attempt_id", ""), "task_id": session.get("task_id", "")})
+        if session.get("stopped_at"):
+            timeline.append({"kind": "runtime_session", "at": session["stopped_at"], "label": f"{session['session_id']} stopped", "status": session["status"], "session_id": session["session_id"], "attempt_id": session.get("attempt_id", ""), "task_id": session.get("task_id", "")})
+    for tool_call in tool_calls:
+        timeline.append({"kind": "tool_call", "at": tool_call["started_at"], "label": f"{tool_call['tool_name']} {tool_call['input_summary']}", "status": tool_call["status"], "tool_call_id": tool_call["tool_call_id"], "session_id": tool_call.get("session_id", ""), "attempt_id": tool_call.get("attempt_id", ""), "task_id": tool_call.get("task_id", "")})
+        if tool_call.get("finished_at"):
+            timeline.append({"kind": "tool_call", "at": tool_call["finished_at"], "label": f"{tool_call['tool_name']} {tool_call['output_summary'] or tool_call['error_message']}", "status": tool_call["status"], "tool_call_id": tool_call["tool_call_id"], "session_id": tool_call.get("session_id", ""), "attempt_id": tool_call.get("attempt_id", ""), "task_id": tool_call.get("task_id", "")})
+    for budget_event in budget_events:
+        timeline.append({"kind": "budget_event", "at": budget_event["created_at"], "label": f"{budget_event['cost_type']} {budget_event['amount']} {budget_event['currency']}: {budget_event['summary']}", "status": "spent", "budget_event_id": budget_event["budget_event_id"], "attempt_id": budget_event.get("attempt_id", ""), "task_id": budget_event.get("task_id", "")})
     timeline.sort(key=lambda item: item.get("at", ""))
     return {
         "trace_id": trace_id,
@@ -121,6 +137,9 @@ def load_trace(conn: sqlite3.Connection, trace_id: str) -> dict:
         "evidence": evidence,
         "handoffs": handoffs,
         "execution_attempts": execution_attempts,
+        "runtime_sessions": runtime_sessions,
+        "tool_calls": tool_calls,
+        "budget_events": budget_events,
         "timeline": timeline,
     }
 
@@ -140,7 +159,7 @@ def safe_trace_payload(trace: dict) -> dict:
             "label": companyctl.sanitize_log_text(raw_item.get("label", "")),
             "task_id": raw_item.get("task_id", ""),
         }
-        for key in ("event_id", "run_id", "artifact_id", "evidence_id", "handoff_id", "attempt_id", "attempt", "actor", "target", "action"):
+        for key in ("event_id", "run_id", "artifact_id", "evidence_id", "handoff_id", "attempt_id", "attempt", "actor", "target", "action", "session_id", "tool_call_id", "budget_event_id"):
             if raw_item.get(key) not in {None, ""}:
                 item[key] = raw_item[key]
         if item.get("action") in {"correction_requested", "correction_acknowledged"}:
@@ -268,6 +287,71 @@ def safe_trace_payload(trace: dict) -> dict:
                 "supervisor_state": companyctl.attempt_json_field(attempt, "supervisor_state_json"),
             }
         )
+    sanitized_sessions = []
+    for session in trace.get("runtime_sessions", []):
+        sanitized_sessions.append(
+            {
+                "session_id": session.get("session_id", ""),
+                "trace_id": session.get("trace_id", ""),
+                "task_id": session.get("task_id", ""),
+                "attempt_id": session.get("attempt_id", ""),
+                "employee_id": session.get("employee_id", ""),
+                "adapter_type": session.get("adapter_type", ""),
+                "runtime_type": session.get("runtime_type", ""),
+                "pid": session.get("pid", ""),
+                "session_key": companyctl.sanitize_log_text(session.get("session_key", "")),
+                "status": session.get("status", ""),
+                "started_at": session.get("started_at", ""),
+                "last_heartbeat_at": session.get("last_heartbeat_at", ""),
+                "last_progress_at": session.get("last_progress_at", ""),
+                "stopped_at": session.get("stopped_at", ""),
+                "metadata": companyctl.attempt_json_field(session, "metadata_json"),
+            }
+        )
+    sanitized_tool_calls = []
+    for tool_call in trace.get("tool_calls", []):
+        sanitized_tool_calls.append(
+            {
+                "tool_call_id": tool_call.get("tool_call_id", ""),
+                "trace_id": tool_call.get("trace_id", ""),
+                "task_id": tool_call.get("task_id", ""),
+                "attempt_id": tool_call.get("attempt_id", ""),
+                "employee_id": tool_call.get("employee_id", ""),
+                "session_id": tool_call.get("session_id", ""),
+                "tool_name": tool_call.get("tool_name", ""),
+                "tool_type": tool_call.get("tool_type", ""),
+                "input_summary": companyctl.sanitize_log_text(tool_call.get("input_summary", "")),
+                "output_summary": companyctl.sanitize_log_text(tool_call.get("output_summary", "")),
+                "status": tool_call.get("status", ""),
+                "risk_level": tool_call.get("risk_level", ""),
+                "approval_id": tool_call.get("approval_id", ""),
+                "started_at": tool_call.get("started_at", ""),
+                "finished_at": tool_call.get("finished_at", ""),
+                "error_message": companyctl.sanitize_log_text(tool_call.get("error_message", "")),
+            }
+        )
+    sanitized_budget_events = []
+    for budget_event in trace.get("budget_events", []):
+        sanitized_budget_events.append(
+            {
+                "budget_event_id": budget_event.get("budget_event_id", ""),
+                "budget_account_id": budget_event.get("budget_account_id", ""),
+                "trace_id": budget_event.get("trace_id", ""),
+                "task_id": budget_event.get("task_id", ""),
+                "attempt_id": budget_event.get("attempt_id", ""),
+                "employee_id": budget_event.get("employee_id", ""),
+                "cost_type": budget_event.get("cost_type", ""),
+                "amount": float(budget_event.get("amount") or 0),
+                "currency": budget_event.get("currency", ""),
+                "token_input": int(budget_event.get("token_input") or 0),
+                "token_output": int(budget_event.get("token_output") or 0),
+                "model_name": budget_event.get("model_name", ""),
+                "provider": budget_event.get("provider", ""),
+                "runtime_seconds": int(budget_event.get("runtime_seconds") or 0),
+                "summary": companyctl.sanitize_log_text(budget_event.get("summary", "")),
+                "created_at": budget_event.get("created_at", ""),
+            }
+        )
     return {
         "ok": True,
         "source": "trace.timeline",
@@ -281,6 +365,9 @@ def safe_trace_payload(trace: dict) -> dict:
             "handoffs": len(trace.get("handoffs", [])),
             "evidence": len(trace.get("evidence", [])),
             "execution_attempts": len(trace.get("execution_attempts", [])),
+            "runtime_sessions": len(trace.get("runtime_sessions", [])),
+            "tool_calls": len(trace.get("tool_calls", [])),
+            "budget_events": len(trace.get("budget_events", [])),
             "timeline": len(timeline),
         },
         "tasks": [
@@ -299,6 +386,9 @@ def safe_trace_payload(trace: dict) -> dict:
         "evidence": sanitized_evidence,
         "handoffs": sanitized_handoffs,
         "execution_attempts": sanitized_attempts,
+        "runtime_sessions": sanitized_sessions,
+        "tool_calls": sanitized_tool_calls,
+        "budget_events": sanitized_budget_events,
         "supervision_chain": supervision_chain,
         "timeline": timeline,
     }
@@ -335,7 +425,7 @@ def render_html(trace: dict) -> str:
 </head>
 <body>
   <h1>Trace {e(trace['trace_id'])}</h1>
-  <div class="meta">generated_at={e(trace['generated_at'])}; tasks={len(trace['tasks'])}; events={len(trace['events'])}; adapter_runs={len(trace['adapter_runs'])}; artifacts={len(trace.get('artifacts', []))}; handoffs={len(trace.get('handoffs', []))}; evidence={len(trace.get('evidence', []))}; attempts={len(trace.get('execution_attempts', []))}</div>
+  <div class="meta">generated_at={e(trace['generated_at'])}; tasks={len(trace['tasks'])}; events={len(trace['events'])}; adapter_runs={len(trace['adapter_runs'])}; artifacts={len(trace.get('artifacts', []))}; handoffs={len(trace.get('handoffs', []))}; evidence={len(trace.get('evidence', []))}; attempts={len(trace.get('execution_attempts', []))}; runtime_sessions={len(trace.get('runtime_sessions', []))}; tool_calls={len(trace.get('tool_calls', []))}</div>
   <table>
     <thead><tr><th>time</th><th>kind</th><th>status</th><th>timeline</th><th>task</th><th>id</th></tr></thead>
     <tbody>{''.join(rows_html)}</tbody>
@@ -385,6 +475,8 @@ def main(argv: list[str] | None = None) -> int:
                     "handoffs": len(trace.get("handoffs", [])),
                     "evidence": len(trace.get("evidence", [])),
                     "execution_attempts": len(trace.get("execution_attempts", [])),
+                    "runtime_sessions": len(trace.get("runtime_sessions", [])),
+                    "tool_calls": len(trace.get("tool_calls", [])),
                     "timeline": len(trace["timeline"]),
                 },
             },
