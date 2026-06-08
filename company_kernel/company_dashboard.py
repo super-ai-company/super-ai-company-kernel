@@ -557,6 +557,13 @@ def build_cockpit_summary(summary: dict) -> dict:
         and seconds_since(str(item.get("last_seen_at") or ""), generated_at) < 15 * 60
     )
     employees_abnormal = sum(1 for item in employee_states if str(item.get("status") or "") == "abnormal")
+    employee_status_counts: dict[str, int] = {}
+    readiness_counts: dict[str, int] = {}
+    for item in employee_states:
+        employee_status = str(item.get("status") or "unknown")
+        readiness_level = str(item.get("readiness_level") or "unknown")
+        employee_status_counts[employee_status] = employee_status_counts.get(employee_status, 0) + 1
+        readiness_counts[readiness_level] = readiness_counts.get(readiness_level, 0) + 1
     return {
         "ok": True,
         "generated_at": generated_at,
@@ -571,6 +578,8 @@ def build_cockpit_summary(summary: dict) -> dict:
             "employees_total": employees_total,
             "employees_online": employees_online,
             "employees_abnormal": employees_abnormal,
+            "employee_status_counts": employee_status_counts,
+            "readiness_counts": readiness_counts,
             "active_attempts": len(active_attempts),
             "running_tasks": sum(1 for item in summary.get("tasks", []) if str(item.get("status", "")).lower() in {"claimed", "running"}),
             "stagnant_tasks": sum(1 for item in long_tasks if item.get("long_task_state") == "progress_stagnant"),
