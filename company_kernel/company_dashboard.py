@@ -413,6 +413,12 @@ def build_cockpit_summary(summary: dict) -> dict:
                 action("review_task", "Review task", f"/v1/tasks/{task_id}"),
                 action("view_trace", "View trace", ""),
             ]
+        if kind == "employee_readiness":
+            return [
+                action("verify_runtime", "Verify runtime evidence", "/v1/agent-matrix", method="POST", requires_owner_approval=True),
+                action("view_employee", "View employee", ""),
+                action("keep_candidate", "Keep candidate", "", method="none"),
+            ]
         return []
 
     for item in long_tasks:
@@ -603,6 +609,50 @@ def build_cockpit_summary(summary: dict) -> dict:
                 "message": f"任务 done 但缺少 final evidence：{issue.get('reason', '')}",
                 "updated_at": "",
                 "actions": attention_actions("evidence_issue", task_id=task_id),
+            }
+        )
+    for employee in employees:
+        employee_id = str(employee.get("id", "") or "")
+        employee_status = str(employee.get("employee_status") or employee.get("status") or "")
+        readiness_level = str(employee.get("readiness_level", "") or "")
+        if employee_status == "candidate":
+            readiness_level = "candidate_only"
+        elif not readiness_level:
+            if employee_status == "active":
+                readiness_level = "online_only"
+            elif employee_status:
+                readiness_level = "task_unsupported"
+        if readiness_level not in {"candidate_only", "online_only", "unsafe", "task_unsupported"}:
+            continue
+        runtime = str(employee.get("runtime", "") or "")
+        reason = str(employee.get("readiness_reason", "") or "")
+        if not reason and readiness_level == "candidate_only":
+            reason = "candidate_requires_structured_runtime_evidence_before_activation"
+        if readiness_level == "candidate_only":
+            message = "员工仍是 candidate，只可评审或 smoke；必须有结构化 execution evidence 后才能参与自动派工。"
+        elif readiness_level == "online_only":
+            message = "员工在线但缺少 runtime/task/evidence 闭环；不要把在线心跳当作可交付能力。"
+        elif readiness_level == "unsafe":
+            message = "员工 readiness unsafe；禁止自动派工，先修复安全或能力证据。"
+        else:
+            message = "员工暂不支持任务闭环；只能保留观察或人工评审。"
+        owner_attention.append(
+            {
+                "kind": "employee_readiness",
+                "state": readiness_level,
+                "approval_id": "",
+                "task_id": "",
+                "employee_id": employee_id,
+                "approval_action": "",
+                "risk": "P1",
+                "title": employee.get("name") or employee_id,
+                "target_agent": employee_id,
+                "runtime": runtime,
+                "attempt_id": "",
+                "trace_id": "",
+                "message": f"{message} reason={reason}".strip(),
+                "updated_at": employee.get("last_seen_at") or generated_at,
+                "actions": attention_actions("employee_readiness"),
             }
         )
     owner_attention.sort(key=lambda item: item.get("updated_at") or "", reverse=True)

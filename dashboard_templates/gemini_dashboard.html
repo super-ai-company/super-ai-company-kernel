@@ -3529,6 +3529,20 @@
       decideApprovalFromDashboard({stopPropagation() {}}, approvalId, decision);
       return;
     }
+    if (actionId === 'verify_runtime') {
+      companyApiLog('SYSTEM', 'Verify runtime evidence requested. Candidate/reviewer employees require structured execution evidence before automatic scheduling.', 'normal');
+      refreshLiveDashboardFromApi();
+      return;
+    }
+    if (actionId === 'view_employee') {
+      companyApiLog('SYSTEM', 'View employee readiness in AI Fleet & Skills. employee_readiness attention is not task completion evidence.', 'normal');
+      showTab('employees');
+      return;
+    }
+    if (actionId === 'keep_candidate') {
+      companyApiLog('SYSTEM', 'Keep candidate selected. 结构化 execution evidence is still required before activation.', 'normal');
+      return;
+    }
     if (taskId) openTaskDetailDrawer(taskId);
   }
 
