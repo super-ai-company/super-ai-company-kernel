@@ -1381,6 +1381,11 @@ def finish_execution_attempt_internal(conn: sqlite3.Connection, *, attempt_id: s
     if status not in {"success", "failed", "cancelled", "stale"}:
         raise SystemExit("status must be success, failed, cancelled, or stale")
     attempt = row_by_id(conn, "execution_attempts", "attempt_id", attempt_id)
+    current_status = str(attempt.get("status") or "")
+    if current_status in {"success", "failed", "cancelled", "stale"}:
+        if current_status == status:
+            return {"attempt": attempt, "event_id": "", "idempotent": True}
+        raise ValueError(f"attempt is terminal and cannot be finished again: {current_status}")
     conn.execute(
         "UPDATE execution_attempts SET status = ?, finished_at = ?, error_message = ? WHERE attempt_id = ?",
         (status, now(), error, attempt_id),
@@ -7312,7 +7317,11 @@ def cmd_task_attempt_start(args: argparse.Namespace) -> int:
 
 def cmd_task_attempt_finish(args: argparse.Namespace) -> int:
     conn = connect()
-    result = finish_execution_attempt_internal(conn, attempt_id=args.attempt_id, status=args.status, error=args.error)
+    try:
+        result = finish_execution_attempt_internal(conn, attempt_id=args.attempt_id, status=args.status, error=args.error)
+    except ValueError as exc:
+        emit({"ok": False, "error": str(exc), "attempt_id": args.attempt_id})
+        return 2
     emit({"ok": True, **result})
     return 0
 
