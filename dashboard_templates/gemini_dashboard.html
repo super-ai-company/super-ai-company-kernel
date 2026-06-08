@@ -3561,6 +3561,17 @@
     return window.summaryData;
   }
 
+  function ensureRuntimeHealthShape(summary) {
+    const health = summary.runtime_health || {};
+    summary.runtime_health = health;
+    health.daemon = health.daemon || {ok: false, reason: 'runtime health unavailable', state_file: '-'};
+    health.launchd = health.launchd || {installed: false, installed_path: '-'};
+    health.daemon.reason = health.daemon.reason || '';
+    health.daemon.state_file = health.daemon.state_file || '-';
+    health.launchd.installed_path = health.launchd.installed_path || '-';
+    return summary.runtime_health;
+  }
+
   let liveRefreshInFlight = false;
   let liveRefreshQueued = false;
 
@@ -6361,6 +6372,11 @@
     if (tabId === 'telemetry') {
       populateTraces();
     }
+    if (tabId === 'governance') {
+      refreshGovernanceTables();
+      refreshTraceTelemetry();
+      refreshLiveDashboardFromApi();
+    }
   };
 
   // Global search & filtering for tasks
@@ -6411,6 +6427,7 @@
   function populateDashboard() {
     const summary = summaryData;
     if (!summary) return;
+    ensureRuntimeHealthShape(summary);
 
     // Header values
     const label = document.getElementById('db-path-label');
@@ -6454,8 +6471,8 @@
 
     // Health Checks List
     const healthList = document.getElementById('health-checks-list');
-    const daemonOk = summary.runtime_health.daemon.ok;
-    const launchdInstalled = summary.runtime_health.launchd.installed;
+    const daemonOk = !!summary.runtime_health.daemon.ok;
+    const launchdInstalled = !!summary.runtime_health.launchd.installed;
 
     healthList.innerHTML = `
       <div class="health-item">
