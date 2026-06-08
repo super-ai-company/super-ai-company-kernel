@@ -4384,6 +4384,9 @@
     const messages = conversation.messages || [];
     const filtered = visibleChatMessages(messages);
     const displayMessages = filtered.visible;
+    if (members) {
+      members.innerText = `Participants: ${participants.join(', ') || '-'} · visible=${filtered.visible.length}/${messages.length} · hidden_idle=${filtered.hiddenCount} · task_bound=${taskContext || '-'}`;
+    }
     if (!messages.length) {
       container.innerHTML = '<div style="color: var(--text-muted); font-size: 12px; padding: 28px; text-align: center;">No messages recorded in this conversation.</div>';
       return;
@@ -4433,6 +4436,10 @@
     const messages = summary.direct_messages_recent || [];
     const filtered = visibleChatMessages(messages);
     const displayMessages = filtered.visible;
+    if (members) {
+      const taskBound = messages.map(extractTaskContext).find(Boolean) || '-';
+      members.innerText = `Source: messages table · visible=${filtered.visible.length}/${messages.length} · hidden_idle=${filtered.hiddenCount} · task_bound=${taskBound}`;
+    }
     if (!messages.length) {
       container.innerHTML = '<div class="chat-direct-empty">No direct messages found in the current summary.</div>';
       return;

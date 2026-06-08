@@ -3025,6 +3025,12 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertIn("const firstTaskBoundThread", html)
         self.assertIn("Task-bound messages stay visible; handshakes hidden by default", html)
         self.assertIn("Only greeting/handshake/idle messages are hidden", html)
+        self.assertIn("const match = text.match(/\\b(task[-_:][a-zA-Z0-9._-]+|TASK[-_:][a-zA-Z0-9._-]+)\\b/)", html)
+        self.assertIn("if (isTaskBoundChatItem(message)) return false", html)
+        self.assertIn("messageTask ? ` <span class=\"chat-task-context-pill\">Task-bound ${escapeHtml(messageTask)}</span>`", html)
+        self.assertIn("visible=${filtered.visible.length}/${messages.length}", html)
+        self.assertIn("hidden_idle=${filtered.hiddenCount}", html)
+        self.assertIn("task_bound=${taskContext || '-'}", html)
 
     def test_dashboard_distinguishes_active_online_from_candidate_heartbeat(self) -> None:
         code, hermes = run_cli("employee", "create", "--id", "hermes", "--name", "Hermes", "--role", "supervisor", "--runtime", "hermes", "--workspace", str(self.root / "hermes"))
