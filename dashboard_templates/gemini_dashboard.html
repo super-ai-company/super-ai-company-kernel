@@ -2545,6 +2545,16 @@
               <div class="cockpit-list" id="cockpit-owner-attention">
                 <!-- Populated by JS -->
               </div>
+              <h3 style="font-size:13px;color:var(--text-secondary);margin:18px 0 10px;">Runtime Check Result</h3>
+              <div class="cockpit-list" id="cockpit-runtime-check-result" data-testid="runtime-check-result">
+                <div class="cockpit-row">
+                  <div>
+                    <strong>No runtime check selected</strong>
+                    <span>Click Verify runtime evidence on an employee readiness row to see attendance/direct/runtime/task/progress/evidence/stale checks here.</span>
+                  </div>
+                  <div class="long-task-state running">idle</div>
+                </div>
+              </div>
               <h3 style="font-size:13px;color:var(--text-secondary);margin:18px 0 10px;">Supervisor Activity</h3>
               <div class="cockpit-list" id="cockpit-supervisor-activity" data-supported-kinds="correction_pending_ack,stagnant_check,supervisor_loop">
                 <!-- Populated by JS -->
@@ -4845,27 +4855,62 @@
     const agent = (employeeId || '').trim();
     if (!agent) {
       companyApiLog('ERROR', 'Verify runtime evidence failed: missing employee id.', 'error');
+      renderRuntimeCheckResult({agent: '-', state: 'failed', message: 'missing employee id'});
       return;
     }
     companyApiLog('SYSTEM', `Verifying runtime evidence for ${agent} through Kernel agent matrix...`, 'normal');
+    renderRuntimeCheckResult({agent, state: 'running', message: 'checking Kernel agent matrix...'});
     try {
       const payload = await companyApiGet(`/v1/agent-matrix?agents=${encodeURIComponent(agent)}`);
-      const row = Array.isArray(payload.employees) ? payload.employees.find(item => item.agent === agent) : null;
+      const normalizedAgent = agent.replace(/_/g, '-');
+      const row = Array.isArray(payload.employees) ? payload.employees.find(item => {
+        const candidate = String(item.agent || item.id || item.employee_id || '');
+        return candidate === agent || candidate === normalizedAgent || candidate.replace(/_/g, '-') === normalizedAgent;
+      }) : null;
       if (!row) {
-        companyApiLog('ERROR', `Runtime evidence check returned no matrix row for ${agent}.`, 'error');
+        const returned = Array.isArray(payload.employees) ? payload.employees.map(item => item.agent || item.id || item.employee_id || '?').join(', ') : '-';
+        companyApiLog('ERROR', `Runtime evidence check returned no matrix row for ${agent}. returned=${returned}`, 'error');
+        renderRuntimeCheckResult({agent, state: 'failed', message: `no matrix row returned=${returned}`});
         return;
       }
       const checks = row.checks || {};
+      const resultMessage = `level=${row.level || '-'} reason=${row.reason || '-'} attendance=${checks.attendance || '-'} direct=${checks.direct || '-'} runtime=${checks.runtime || '-'} task=${checks.task || '-'} progress=${checks.progress || '-'} evidence=${checks.evidence || '-'} stale=${checks.stale || '-'}`;
       companyApiLog(
         'SYSTEM',
-        `Runtime evidence ${agent}: level=${row.level || '-'} reason=${row.reason || '-'} attendance=${checks.attendance || '-'} runtime=${checks.runtime || '-'} task=${checks.task || '-'} evidence=${checks.evidence || '-'}`,
+        `Runtime evidence ${agent}: ${resultMessage}`,
         row.level === 'active_ready' ? 'success' : 'normal'
       );
+      renderRuntimeCheckResult({
+        agent,
+        state: row.level === 'active_ready' ? 'success' : 'blocked',
+        level: row.level || '-',
+        reason: row.reason || '-',
+        checks,
+        message: resultMessage
+      });
       await refreshLiveDashboardFromApi();
     } catch (err) {
       companyApiLog('ERROR', `Verify runtime evidence failed for ${agent}: ${err.message}`, 'error');
+      renderRuntimeCheckResult({agent, state: 'failed', message: err.message});
     }
   };
+
+  function renderRuntimeCheckResult(result) {
+    const container = document.getElementById('cockpit-runtime-check-result');
+    if (!container) return;
+    const checks = result.checks || {};
+    const state = result.state || 'running';
+    container.innerHTML = `
+      <div class="cockpit-row">
+        <div>
+          <strong>${escapeHtml(result.agent || '-')} · ${escapeHtml(result.level || state)}</strong>
+          <span>${escapeHtml(result.reason || result.message || '-')}</span>
+          <span>${escapeHtml(['attendance', 'direct', 'runtime', 'task', 'progress', 'evidence', 'stale'].map(key => `${key}=${checks[key] || '-'}`).join(' · '))}</span>
+        </div>
+        <div class="long-task-state ${escapeHtml(state)}">${escapeHtml(state)}</div>
+      </div>
+    `;
+  }
 
   window.cancelTaskAttempt = async function(taskId, attemptId, ownerApproved) {
     const by = prompt(`Who cancels ${taskId}?`, 'hermes');

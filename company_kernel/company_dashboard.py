@@ -433,7 +433,7 @@ def build_cockpit_summary(summary: dict) -> dict:
             ]
         if kind == "employee_readiness":
             return [
-                action("verify_runtime", "Verify runtime evidence", "/v1/agent-matrix", method="POST", requires_owner_approval=True),
+                action("verify_runtime", "Verify runtime evidence", "/v1/agent-matrix", method="GET"),
                 action("view_employee", "View employee", ""),
                 action("keep_candidate", "Keep candidate", "", method="none"),
             ]
