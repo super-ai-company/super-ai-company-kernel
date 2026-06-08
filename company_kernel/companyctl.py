@@ -713,7 +713,7 @@ def write_workspace_manifest(task_id: str, trace_id: str, path: Path) -> Path:
 def ensure_task_workspace(conn: sqlite3.Connection, task_id: str, trace_id: str = "") -> dict:
     require_task(conn, task_id)
     task_trace_id = trace_id or trace_id_for_task(conn, task_id)
-    workspace_path = TASK_WORKSPACE_ROOT / f"task_{safe_path_token(task_id)}"
+    workspace_path = (TASK_WORKSPACE_ROOT / f"task_{safe_path_token(task_id)}").resolve()
     for subdir in ["input", "work", "artifacts", "evidence", "final"]:
         (workspace_path / subdir).mkdir(parents=True, exist_ok=True)
     manifest_path = write_workspace_manifest(task_id, task_trace_id, workspace_path)
@@ -5018,14 +5018,6 @@ def complete_task_internal(
     if task["status"] not in completable_statuses:
         raise ValueError(f"task is not completable in status {task['status']}")
     auto_promote_workspace_evidence(conn, task_id=task_id, agent=agent, evidence_path=evidence, summary=summary)
-    if has_v3_file_flow(conn, task_id) and not final_evidence_for_path(conn, task_id, evidence):
-        raise ValueError("task done requires promoted final evidence for v3 file-flow tasks")
-    cur = conn.execute(
-        "UPDATE tasks SET status = 'completed', claimed_by = CASE WHEN claimed_by = '' THEN ? ELSE claimed_by END, summary = ?, evidence_path = ?, blocker = '', updated_at = ? WHERE id = ? AND (target_agent = ? OR claimed_by = ?)",
-        (agent, summary, evidence, now(), task_id, agent, agent),
-    )
-    if cur.rowcount == 0:
-        raise SystemExit(f"task not found or not owned by agent: {task_id}")
     completed_attempt = conn.execute(
         """
         SELECT * FROM execution_attempts
@@ -5037,6 +5029,14 @@ def complete_task_internal(
         """,
         (task_id, agent),
     ).fetchone()
+    if (completed_attempt or has_v3_file_flow(conn, task_id)) and not final_evidence_for_path(conn, task_id, evidence):
+        raise ValueError("task done requires promoted final evidence for v3 file-flow tasks")
+    cur = conn.execute(
+        "UPDATE tasks SET status = 'completed', claimed_by = CASE WHEN claimed_by = '' THEN ? ELSE claimed_by END, summary = ?, evidence_path = ?, blocker = '', updated_at = ? WHERE id = ? AND (target_agent = ? OR claimed_by = ?)",
+        (agent, summary, evidence, now(), task_id, agent, agent),
+    )
+    if cur.rowcount == 0:
+        raise SystemExit(f"task not found or not owned by agent: {task_id}")
     completed_attempt_id = ""
     if completed_attempt:
         completed_attempt_id = completed_attempt["attempt_id"]

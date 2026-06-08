@@ -4710,6 +4710,30 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual(shown["correction_summary"], api_shown["correction_summary"])
         self.assertEqual(shown["correction_events"], api_shown["correction_events"])
 
+    def test_managed_attempt_done_requires_promoted_final_evidence(self) -> None:
+        for employee_id, role in [("main", "operator"), ("codex", "developer")]:
+            code, created = run_cli("employee", "create", "--id", employee_id, "--name", employee_id, "--role", role, "--runtime", "local", "--workspace", str(self.root / "workspace" / employee_id))
+            self.assertEqual(0, code, created)
+            self.mark_active(employee_id)
+        code, submitted = run_cli("task", "submit", "--from", "main", "--to", "codex", "--task-id", "task-managed-evidence", "--title", "Managed evidence gate")
+        self.assertEqual(0, code, submitted)
+        code, run = run_cli("task", "run", "--task-id", "task-managed-evidence", "--agent", "codex", "--by", "main")
+        self.assertEqual(0, code, run)
+        with companyctl.connect() as conn:
+            workspace = companyctl.ensure_task_workspace(conn, "task-managed-evidence")
+            draft = Path(workspace["path"]) / "work" / "draft.md"
+            draft.write_text("draft only\n", encoding="utf-8")
+
+        code, rejected = run_cli("task", "done", "--agent", "codex", "--task-id", "task-managed-evidence", "--summary", "draft done", "--evidence", str(draft))
+        self.assertEqual(2, code, rejected)
+        self.assertIn("promoted final evidence", rejected["error"])
+        with companyctl.connect() as conn:
+            task = conn.execute("SELECT status, evidence_path FROM tasks WHERE id = 'task-managed-evidence'").fetchone()
+            attempt = conn.execute("SELECT status FROM execution_attempts WHERE attempt_id = ?", (run["attempt"]["attempt_id"],)).fetchone()
+        self.assertEqual("claimed", task["status"])
+        self.assertEqual("", task["evidence_path"])
+        self.assertEqual("starting", attempt["status"])
+
     def test_managed_attempt_progress_refresh_prevents_stale_until_progress_stops(self) -> None:
         for employee_id, role in [("main", "operator"), ("hermes", "supervisor"), ("codex", "developer")]:
             code, created = run_cli("employee", "create", "--id", employee_id, "--name", employee_id, "--role", role, "--runtime", "local", "--workspace", str(self.root / "workspace" / employee_id))
