@@ -4501,6 +4501,9 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertIn("File Flow Graph", html)
         self.assertIn("trace-file-flow-container", html)
         self.assertIn("/v1/traces/${encodeURIComponent(traceId)}/file-flow", html)
+        self.assertIn("Handoff Artifact Flow", html)
+        self.assertIn("fileFlowNarrative", html)
+        self.assertIn("created artifact -> handoff -> promoted evidence", html)
         self.assertIn(submitted["task"]["metadata"]["trace_id"], html)
 
     def test_dashboard_trace_spans_highlight_supervisor_corrections(self) -> None:
