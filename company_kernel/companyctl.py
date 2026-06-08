@@ -6998,6 +6998,7 @@ def cmd_task_show(args: argparse.Namespace) -> int:
     attempt_history = task_attempt_history(attempts)
     evidence_records = task_evidence_records(conn, task_id)
     sanitized_logs = []
+    log_policy = sanitized_log_policy()
     for run in rows(
         conn,
         """
@@ -7028,6 +7029,8 @@ def cmd_task_show(args: argparse.Namespace) -> int:
                 "created_at": run.get("created_at", ""),
                 "sanitized_log": summary.get("sanitized_log", ""),
                 "progress_file": summary.get("progress_file", ""),
+                "raw_available": False,
+                "log_policy": log_policy,
             }
         )
     supervisor_state, correction_summary = task_supervisor_state(attempts)
@@ -8238,6 +8241,25 @@ def summarize_adapter_result(result: dict) -> dict:
         "state_file": result.get("state_file", ""),
         "sanitized_log": sanitize_log_text("\n".join(part for part in log_parts if part), max_length=1600),
         "runs": runs,
+    }
+
+
+def sanitized_log_policy() -> dict:
+    return {
+        "mode": "sanitized_only",
+        "summary": "raw stdout/stderr hidden; secrets and sensitive paths are redacted before dashboard/API display",
+        "source_fields": [
+            "stdout",
+            "stderr",
+            "companyctl_stdout",
+            "companyctl_stderr",
+            "reply",
+            "blocker",
+            "error",
+            "runs.result.stdout",
+            "runs.result.stderr",
+            "runs.parsed_stdout.summary",
+        ],
     }
 
 

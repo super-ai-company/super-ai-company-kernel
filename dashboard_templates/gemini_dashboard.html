@@ -3678,7 +3678,9 @@
     const rows = Array.isArray(logs) ? logs : [];
     if (!rows.length) return '-';
     return rows.slice(0, 8).map(item => {
-      return `${formatDate(item.created_at || '') || '-'} · ${item.run_id || '-'} · ${item.agent_id || '-'} · ok=${item.ok ? 'yes' : 'no'} · ${item.sanitized_log || ''}`;
+      const policy = item.log_policy || {};
+      const sourceFields = Array.isArray(policy.source_fields) ? policy.source_fields.join(',') : '-';
+      return `${formatDate(item.created_at || '') || '-'} · ${item.run_id || '-'} · ${item.agent_id || '-'} · ok=${item.ok ? 'yes' : 'no'} · raw_available=${item.raw_available ? 'yes' : 'no'} · policy=${policy.mode || 'sanitized_only'} · ${policy.summary || 'raw stdout/stderr hidden'} · source_fields=${sourceFields} · ${item.sanitized_log || ''}`;
     }).join('\n');
   }
 
