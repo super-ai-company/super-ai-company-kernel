@@ -3895,6 +3895,8 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertIn("approval_control_summary: approvals.approval_control_summary", html)
         self.assertIn("pending_high_risk_actions", html)
         self.assertIn("real_execution_blockers", html)
+        self.assertIn("realExecutionBlockerRows", html)
+        self.assertIn("budget_overrun", html)
         self.assertIn("blocked until owner approval", html)
 
     def test_dashboard_owner_attention_actions_render_safety_metadata(self) -> None:

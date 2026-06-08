@@ -4838,13 +4838,20 @@
     return `mode=${escapeHtml(safety.resolution_mode || '-')} · dry_run=${String(!!safety.dry_run)} · external_send_executed=${String(!!safety.external_send_executed)} · ${escapeHtml(safety.summary || 'owner approval required before real external delivery')}`;
   }
 
+  function realExecutionBlockerRows(blockers) {
+    const rows = blockers && typeof blockers === 'object' && !Array.isArray(blockers) ? Object.entries(blockers) : [];
+    if (!rows.length) return 'none';
+    return rows.map(([kind, count]) => `${kind || '-'}=${count || 0}`).join(' · ');
+  }
+
   function approvalControlSummary(controlSummary) {
     const summary = controlSummary && typeof controlSummary === 'object' && !Array.isArray(controlSummary) ? controlSummary : {};
     const byStatus = summary.by_status || {};
     const highRisk = Array.isArray(summary.high_risk_actions) ? summary.high_risk_actions : [];
     const pendingHighRisk = Array.isArray(summary.pending_high_risk_actions) ? summary.pending_high_risk_actions : [];
     const blockers = summary.real_execution_blockers || {};
-    const blockerCount = Number(blockers.external_send || 0);
+    const blockerCount = Object.values(blockers).reduce((total, value) => total + Number(value || 0), 0);
+    const blockerRows = realExecutionBlockerRows(blockers);
     const state = blockerCount || pendingHighRisk.length ? 'blocked' : 'success';
     const text = [
       `total=${summary.total || 0}`,
@@ -4855,6 +4862,8 @@
       `dry_run_resolved=${summary.dry_run_resolved || 0}`,
       `external_send_executed=${summary.external_send_executed || 0}`,
       `real_execution_blockers=${blockerCount}`,
+      `blocker_rows=${blockerRows}`,
+      'tracked_blocker_types=external_send,budget_overrun',
       summary.summary || 'real external delivery blocked until owner approval'
     ].join(' · ');
     return `<div><strong>Approval Control Summary</strong><span>${escapeHtml(text)}</span></div><div class="long-task-state ${state}">${state === 'blocked' ? 'owner gate' : 'clear'}</div>`;
