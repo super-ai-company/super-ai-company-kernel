@@ -2222,6 +2222,8 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual("candidate", cockpit_employees["agy-cockpit"]["status"])
         agy_attention = next(item for item in cockpit["owner_attention"] if item["kind"] == "employee_readiness" and item["employee_id"] == "agy-cockpit")
         self.assertEqual("candidate_only", agy_attention["state"])
+        self.assertEqual("agy-cockpit", agy_attention["title"])
+        self.assertEqual("agy-cockpit", agy_attention["display_name"])
         self.assertEqual("agy-cockpit", agy_attention["target_agent"])
         self.assertEqual("antigravity", agy_attention["runtime"])
         self.assertIn("结构化 execution evidence", agy_attention["message"])
