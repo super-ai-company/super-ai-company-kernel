@@ -5326,8 +5326,8 @@
     try {
       if (ownerApproved === true) {
         companyApiLog('SYSTEM', `Owner-approved correction executing for ${taskId}...`, 'normal');
-        await companyApiPost(`/v1/tasks/${encodeURIComponent(taskId)}/correct`, {attempt_id: attemptId || '', by: by || 'hermes', message});
-        companyApiLog('SYSTEM', `Correction sent for ${taskId}.`, 'success');
+        await companyApiPost(`/v1/tasks/${encodeURIComponent(taskId)}/correct`, {attempt_id: attemptId || '', by: by || 'hermes', message, execute: true});
+        companyApiLog('SYSTEM', `Owner-approved correction executed for ${taskId}.`, 'success');
       } else {
         companyApiLog('SYSTEM', `Requesting owner approval for correction ${taskId}; no correction is sent yet.`, 'normal');
         const approval = await requestDashboardApproval('task.correct', taskId, attemptId, by || 'hermes', message, {risk: 'P1', correction_message: message});
@@ -5422,8 +5422,8 @@
       if (ownerApproved === true) {
         if (!confirm(`Cancel attempt ${attemptId || '-'} for task ${taskId}?`)) return;
         companyApiLog('SYSTEM', `Owner-approved cancellation executing for ${taskId}...`, 'normal');
-        await companyApiPost(`/v1/tasks/${encodeURIComponent(taskId)}/cancel`, {attempt_id: attemptId || '', by: by || 'hermes', reason});
-        companyApiLog('SYSTEM', `Cancelled ${taskId}.`, 'success');
+        await companyApiPost(`/v1/tasks/${encodeURIComponent(taskId)}/cancel`, {attempt_id: attemptId || '', by: by || 'hermes', reason, execute: true});
+        companyApiLog('SYSTEM', `Owner-approved cancellation executed for ${taskId}.`, 'success');
       } else {
         companyApiLog('SYSTEM', `Requesting owner approval for cancellation ${taskId}; no cancel is sent yet.`, 'normal');
         const approval = await requestDashboardApproval('task.cancel', taskId, attemptId, by || 'hermes', reason, {risk: 'P0', cancel_reason: reason});
@@ -5443,8 +5443,8 @@
     try {
       if (ownerApproved === true) {
         companyApiLog('SYSTEM', `Owner-approved retry executing for ${taskId}...`, 'normal');
-        await companyApiPost(`/v1/tasks/${encodeURIComponent(taskId)}/retry`, {by: by || 'hermes', reason});
-        companyApiLog('SYSTEM', `Retry attempt started for ${taskId}.`, 'success');
+        await companyApiPost(`/v1/tasks/${encodeURIComponent(taskId)}/retry`, {by: by || 'hermes', reason, execute: true});
+        companyApiLog('SYSTEM', `Owner-approved retry executed for ${taskId}; retry attempt started.`, 'success');
       } else {
         companyApiLog('SYSTEM', `Requesting owner approval for retry ${taskId}; no retry is started yet.`, 'normal');
         const approval = await requestDashboardApproval('task.retry', taskId, '', by || 'hermes', reason, {risk: 'P1', retry_reason: reason});
@@ -5466,8 +5466,8 @@
     try {
       if (ownerApproved === true) {
         companyApiLog('SYSTEM', `Owner-approved reassign executing for ${taskId} to ${to}...`, 'normal');
-        await companyApiPost(`/v1/tasks/${encodeURIComponent(taskId)}/reassign`, {by: by || 'hermes', to, reason});
-        companyApiLog('SYSTEM', `Reassigned ${taskId}.`, 'success');
+        await companyApiPost(`/v1/tasks/${encodeURIComponent(taskId)}/reassign`, {by: by || 'hermes', to, reason, execute: true});
+        companyApiLog('SYSTEM', `Owner-approved reassign executed for ${taskId}.`, 'success');
       } else {
         companyApiLog('SYSTEM', `Requesting owner approval for reassign ${taskId}; no reassignment is sent yet.`, 'normal');
         const approval = await requestDashboardApproval('task.reassign', taskId, '', by || 'hermes', reason, {risk: 'P1', reassign_to: to});
