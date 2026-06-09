@@ -1915,6 +1915,7 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertIn("Runtime · sessions=", html)
         self.assertIn("Tools · calls=", html)
         self.assertIn("Budget ·", html)
+        self.assertIn("Work Health ·", html)
         self.assertIn("counts.done_tasks", html)
         self.assertIn("counts.evidence_issues", html)
         self.assertIn("counts.blocked_tasks", html)
@@ -4827,9 +4828,11 @@ class CompanyKernelCoreTest(unittest.TestCase):
             "tool_summary",
             "budget_summary",
             "evidence_summary",
+            "emp.work_health || work.work_health",
             "Runtime · sessions=",
             "Tools · calls=",
             "Budget ·",
+            "Work Health ·",
             "ledger_gaps",
             "Tool-call ledger missing",
             "Cost ledger missing",
@@ -8152,6 +8155,12 @@ class CompanyKernelCoreTest(unittest.TestCase):
             code, created = run_cli("employee", "create", "--id", employee_id, "--name", employee_id, "--role", role, "--runtime", "local", "--workspace", str(self.root / "workspace" / employee_id))
             self.assertEqual(code, 0, created)
         self.mark_active("codex")
+        attendance_dir = self.root / "state" / "attendance"
+        attendance_dir.mkdir(parents=True)
+        (attendance_dir / "latest.json").write_text(
+            json.dumps({"ok": True, "employees": [{"agent": "codex", "status": "online"}]}, ensure_ascii=False),
+            encoding="utf-8",
+        )
         code, submitted = run_cli("task", "submit", "--from", "main", "--to", "codex", "--task-id", "task-employee-card-rollup", "--title", "Employee card rollup")
         self.assertEqual(0, code, submitted)
         code, run = run_cli("task", "run", "--task-id", "task-employee-card-rollup", "--agent", "codex", "--by", "hermes", "--adapter-type", "codex")
@@ -8196,6 +8205,10 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual(0.21, codex_model["work_status_summary"]["budget_total"])
         self.assertEqual(1, codex_model["work_status_summary"]["final_evidence_count"])
         self.assertIn("monitor current task", codex_model["work_status_summary"]["owner_next_action"])
+        self.assertEqual("warn", codex_model["work_health"]["state"])
+        self.assertEqual(["readiness_online_only"], codex_model["work_health"]["reasons"])
+        self.assertIn("observable with warnings", codex_model["work_health"]["summary"])
+        self.assertEqual("warn", codex_model["work_status_summary"]["work_health"]["state"])
         status, cockpit = api_gateway.route_get("/v1/dashboard/cockpit", {})
         self.assertEqual(HTTPStatus.OK, status, cockpit)
         api_codex = next(item for item in cockpit["employees"] if item["id"] == "codex")
@@ -8209,6 +8222,7 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual(evidence["evidence"]["evidence_id"], api_codex["evidence_summary"]["latest_evidence_id"])
         self.assertEqual("task-employee-card-rollup", api_codex["work_status_summary"]["current_task_id"])
         self.assertEqual("running", api_codex["work_status_summary"]["current_state"])
+        self.assertEqual("warn", api_codex["work_health"]["state"])
         status, employees_payload = api_gateway.route_get("/v1/employees", {})
         self.assertEqual(HTTPStatus.OK, status, employees_payload)
         list_codex = next(item for item in employees_payload["employees"] if item["id"] == "codex")
@@ -8216,6 +8230,7 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual("running", list_codex["work_status_summary"]["current_state"])
         self.assertEqual(1, list_codex["work_status_summary"]["tool_call_count"])
         self.assertEqual(0.21, list_codex["work_status_summary"]["budget_total"])
+        self.assertEqual("warn", list_codex["work_health"]["state"])
 
         status, employee_detail = api_gateway.route_get("/v1/employees/codex", {})
         self.assertEqual(HTTPStatus.OK, status, employee_detail)
@@ -8288,12 +8303,19 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual(["send_probe", "view_logs", "request_correction", "wait", "cancel"], [action["id"] for action in work["recommended_actions"]])
         self.assertFalse(work["recommended_actions"][0]["requires_owner_approval"])
         self.assertEqual("POST", work["recommended_actions"][0]["method"])
+        self.assertEqual("block", codex_model["work_health"]["state"])
+        self.assertIn("progress_stagnant", codex_model["work_health"]["reasons"])
+        self.assertIn("tool_call_ledger_missing", codex_model["work_health"]["reasons"])
+        self.assertIn("budget_ledger_missing", codex_model["work_health"]["reasons"])
+        self.assertIn("final_evidence_missing_for_current_task", codex_model["work_health"]["reasons"])
+        self.assertIn("needs owner attention", codex_model["work_health"]["summary"])
 
         status, employees_payload = api_gateway.route_get("/v1/employees", {})
         self.assertEqual(HTTPStatus.OK, status, employees_payload)
         api_codex = next(item for item in employees_payload["employees"] if item["id"] == "codex")
         self.assertEqual("progress_stagnant", api_codex["work_status_summary"]["current_state"])
         self.assertEqual(["send_probe", "view_logs", "request_correction", "wait", "cancel"], [action["id"] for action in api_codex["work_status_summary"]["recommended_actions"]])
+        self.assertEqual("block", api_codex["work_health"]["state"])
 
     def test_dashboard_employee_view_models_include_readiness_badges(self) -> None:
         for employee_id, role, runtime in [

@@ -4568,6 +4568,7 @@
     const tools = emp.tool_summary || {};
     const budget = emp.budget_summary || {};
     const evidence = emp.evidence_summary || {};
+    const health = emp.work_health || work.work_health || {};
     const currency = budget.currency || 'USD';
     const total = budget.total_amount || 0;
     const actions = Array.isArray(work.recommended_actions) ? work.recommended_actions : [];
@@ -4601,6 +4602,7 @@
         <div><strong>Tools · calls=</strong>${escapeHtml(tools.tool_call_count || 0)} · failed=${escapeHtml(tools.failed_tool_call_count || 0)} · tool_call=${escapeHtml(tools.latest_tool_call_id || '-')} · latest=${escapeHtml(tools.latest_tool_name || '-')} ${escapeHtml(tools.latest_tool_status || '')}</div>
         <div><strong>Budget ·</strong> ${escapeHtml(currency)} ${escapeHtml(total)} · budget_events=${escapeHtml(budget.event_count || 0)} · input=${escapeHtml(budget.token_input || 0)} · output=${escapeHtml(budget.token_output || 0)} · runtime=${escapeHtml(budget.runtime_seconds || 0)}s</div>
         <div><strong>Evidence · final=</strong>${escapeHtml(evidence.final_evidence_count || 0)} · total=${escapeHtml(evidence.evidence_count || 0)} · latest=${escapeHtml(evidence.latest_evidence_id || '-')}</div>
+        <div><strong>Work Health ·</strong> ${escapeHtml(health.state || '-')} · ${escapeHtml(health.summary || '')}</div>
         <div><strong>Owner Next ·</strong> ${escapeHtml(work.owner_next_action || 'inspect employee detail before assigning work')}</div>
         <div><strong>Recommended Actions ·</strong> ${escapeHtml(actionSummary)}</div>
         <div class="cockpit-action-list employee-recommended-actions">${actionButtons}</div>

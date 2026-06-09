@@ -1355,6 +1355,7 @@ def build_cockpit_summary(summary: dict) -> dict:
                 "budget_summary": employee.get("budget_summary", {}) if isinstance(employee.get("budget_summary", {}), dict) else {},
                 "evidence_summary": employee.get("evidence_summary", {}) if isinstance(employee.get("evidence_summary", {}), dict) else {},
                 "work_status_summary": employee.get("work_status_summary", {}) if isinstance(employee.get("work_status_summary", {}), dict) else {},
+                "work_health": employee.get("work_health", {}) if isinstance(employee.get("work_health", {}), dict) else {},
                 "last_seen_at": employee.get("last_seen_at", ""),
             }
         )
@@ -2726,6 +2727,50 @@ def employee_view_models(summary: dict) -> list[dict]:
                     {"id": "reassign", "label": "Reassign", "method": "POST", "requires_owner_approval": True, "dry_run_default": True},
                     {"id": "cancel", "label": "Cancel", "method": "POST", "requires_owner_approval": True, "dangerous": True},
                 ]
+            work_health_reasons: list[str] = []
+            blocking_states = {"blocked", "failed", "stale", "cancelled", "progress_stagnant", "heartbeat_stale"}
+            warning_states = {"correcting"}
+            if current_state in blocking_states:
+                work_health_reasons.append(current_state)
+            elif current_state in warning_states:
+                work_health_reasons.append(f"task_{current_state}")
+            if current_task_id and int(tool_summary.get("tool_call_count") or 0) == 0:
+                work_health_reasons.append("tool_call_ledger_missing")
+            if int(tool_summary.get("failed_tool_call_count") or 0) > 0:
+                work_health_reasons.append("failed_tool_calls")
+            if current_task_id and int(budget_rollup.get("event_count") or 0) == 0:
+                work_health_reasons.append("budget_ledger_missing")
+            if current_task_id and int(evidence_summary.get("final_evidence_count") or 0) == 0:
+                work_health_reasons.append("final_evidence_missing_for_current_task")
+            if readiness.get("level") in {"candidate_only", "online_only", "no_reply", "unsafe"}:
+                work_health_reasons.append(f"readiness_{readiness.get('level')}")
+            severe_reasons = {
+                "blocked",
+                "failed",
+                "stale",
+                "cancelled",
+                "progress_stagnant",
+                "heartbeat_stale",
+                "failed_tool_calls",
+                "readiness_no_reply",
+                "readiness_unsafe",
+            }
+            if any(reason in severe_reasons for reason in work_health_reasons):
+                work_health_state = "block"
+                work_health_summary = "needs owner attention: " + ", ".join(work_health_reasons)
+            elif work_health_reasons:
+                work_health_state = "warn"
+                work_health_summary = "observable with warnings: " + ", ".join(work_health_reasons)
+            else:
+                work_health_state = "ok"
+                work_health_summary = "employee work is observable"
+            work_health = {
+                "state": work_health_state,
+                "reasons": work_health_reasons,
+                "summary": work_health_summary,
+                "current_task_id": current_task_id,
+                "owner_next_action": owner_next_action,
+            }
             can_execute_task = schedulable
             can_chat = bool(
                 str(employee.get("runtime") or "") not in {"skill"}
@@ -2795,6 +2840,7 @@ def employee_view_models(summary: dict) -> list[dict]:
                 "owner_next_action": owner_next_action,
                 "recommended_actions": recommended_actions,
                 "interaction_contract": interaction_contract,
+                "work_health": work_health,
             }
             employees.append(
                 {
@@ -2818,6 +2864,7 @@ def employee_view_models(summary: dict) -> list[dict]:
                     "tool_summary": tool_summary,
                     "budget_summary": budget_rollup,
                     "evidence_summary": evidence_summary,
+                    "work_health": work_health,
                     "work_status_summary": work_status_summary,
                     "progress_layer": heartbeat_progress.get("layer", ""),
                     "progress_state": heartbeat_progress.get("state", ""),
