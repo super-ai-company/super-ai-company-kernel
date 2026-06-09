@@ -2142,6 +2142,20 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertNotIn("directMessageEmployee('image-copy-skill')", row)
         self.assertIn("No chat; task/evidence only", row)
         self.assertIn("submitTaskToEmployee('image-copy-skill')", row)
+        with companyctl.connect() as conn:
+            summary = company_dashboard.load_summary(conn)
+            models = company_dashboard.employee_view_models(summary)
+        skill_model = next(item for item in models if item["id"] == "image-copy-skill")
+        contract = skill_model["interaction_contract"]
+        self.assertFalse(contract["can_chat"])
+        self.assertTrue(contract["can_execute_task"])
+        self.assertTrue(contract["can_submit_evidence"])
+        self.assertEqual("task_evidence_only", contract["mode"])
+        self.assertEqual("skill_runtime_no_chat", contract["reason"])
+        status, employees_payload = api_gateway.route_get("/v1/employees", {})
+        self.assertEqual(HTTPStatus.OK, status, employees_payload)
+        api_skill = next(item for item in employees_payload["employees"] if item["id"] == "image-copy-skill")
+        self.assertEqual(contract, api_skill["interaction_contract"])
 
     def test_cockpit_api_sanitizes_evidence_and_exposes_long_task_state(self) -> None:
         code, created = run_cli("employee", "create", "--id", "main", "--name", "main", "--role", "operator", "--runtime", "openclaw", "--workspace", str(self.root / "workspace" / "main"))
@@ -7755,6 +7769,11 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual("active_ready", by_id["codex"]["readiness_level"])
         self.assertEqual("online_only", by_id["main"]["readiness_level"])
         self.assertEqual("online_only", by_id["antigravity"]["readiness_level"])
+        self.assertTrue(by_id["codex"]["interaction_contract"]["can_chat"])
+        self.assertTrue(by_id["codex"]["interaction_contract"]["can_execute_task"])
+        self.assertEqual("chat_and_task", by_id["codex"]["interaction_contract"]["mode"])
+        self.assertFalse(by_id["antigravity"]["interaction_contract"]["can_execute_task"])
+        self.assertEqual("observe_only", by_id["antigravity"]["interaction_contract"]["mode"])
         self.assertTrue(by_id["codex"]["schedulable"])
         self.assertFalse(by_id["main"]["schedulable"])
         self.assertFalse(by_id["antigravity"]["schedulable"])
@@ -7788,6 +7807,8 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertIn("Limited / review", html)
         self.assertIn("Not schedulable", html)
         self.assertIn("reason=${escapeHtml(shortText(reason, 90))}", html)
+        self.assertIn("interaction_contract", html)
+        self.assertIn("employeeInteractionFooter", html)
 
     def test_dashboard_readiness_does_not_treat_heartbeat_as_direct_attendance(self) -> None:
         code, created = run_cli("employee", "create", "--id", "claude-code", "--name", "Claude Code", "--role", "runtime-agent", "--runtime", "claude", "--workspace", str(self.root / "workspace" / "claude-code"))

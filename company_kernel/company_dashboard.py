@@ -2375,6 +2375,39 @@ def employee_view_models(summary: dict) -> list[dict]:
                     {"id": "reassign", "label": "Reassign", "method": "POST", "requires_owner_approval": True, "dry_run_default": True},
                     {"id": "cancel", "label": "Cancel", "method": "POST", "requires_owner_approval": True, "dangerous": True},
                 ]
+            can_execute_task = schedulable
+            can_chat = bool(
+                str(employee.get("runtime") or "") not in {"skill"}
+                and readiness.get("level") in {"active_ready", "active_limited"}
+                and employee_status == "active"
+            )
+            can_submit_evidence = bool(readiness.get("level") in {"active_ready", "active_limited"} or str(employee.get("runtime") or "") == "skill")
+            if str(employee.get("runtime") or "") == "skill":
+                interaction_mode = "task_evidence_only"
+                interaction_reason = "skill_runtime_no_chat"
+            elif can_chat and can_execute_task:
+                interaction_mode = "chat_and_task"
+                interaction_reason = "readiness_allows_chat_and_task"
+            elif can_chat:
+                interaction_mode = "chat_only"
+                interaction_reason = "not_schedulable_without_full_task_evidence"
+            elif can_execute_task:
+                interaction_mode = "task_only"
+                interaction_reason = "task_ready_chat_unverified"
+            else:
+                interaction_mode = "observe_only"
+                interaction_reason = str(readiness.get("reason") or "not_ready")
+            interaction_contract = {
+                "mode": interaction_mode,
+                "reason": interaction_reason,
+                "can_chat": can_chat,
+                "can_execute_task": can_execute_task,
+                "can_submit_evidence": can_submit_evidence,
+                "show_chat_button": can_chat,
+                "show_task_button": can_execute_task,
+                "show_evidence_monitor": can_submit_evidence,
+                "requires_owner_approval_for_real_actions": True,
+            }
             work_status_summary = {
                 "employee_id": employee_id,
                 "current_task_id": current_task_id,
@@ -2410,6 +2443,7 @@ def employee_view_models(summary: dict) -> list[dict]:
                 "latest_evidence_id": evidence_summary.get("latest_evidence_id", ""),
                 "owner_next_action": owner_next_action,
                 "recommended_actions": recommended_actions,
+                "interaction_contract": interaction_contract,
             }
             employees.append(
                 {
@@ -2421,6 +2455,7 @@ def employee_view_models(summary: dict) -> list[dict]:
                     "readiness_level": readiness.get("level", ""),
                     "readiness_reason": readiness.get("reason", ""),
                     "readiness_checks": readiness.get("checks", {}),
+                    "interaction_contract": interaction_contract,
                     "sandbox_profile": companyctl.employee_sandbox_profile(employee, permissions),
                     "heartbeat_age_minutes": "" if age is None else age,
                     "communication_paused": bool(communication_profile.get("communication_paused")),

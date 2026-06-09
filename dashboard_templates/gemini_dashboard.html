@@ -4552,6 +4552,28 @@
     `;
   }
 
+  function employeeInteractionFooter(emp) {
+    const contract = emp.interaction_contract || {};
+    const taskButton = contract.show_task_button ? `
+            <button class="card-footer-action-btn" onclick="event.stopPropagation(); submitTaskToEmployee('${escapeHtml(emp.id)}')">
+              <i class="fa-solid fa-list-check"></i> Task
+            </button>
+      ` : '';
+    const chatButton = contract.show_chat_button ? `
+            <button class="card-footer-action-btn" onclick="event.stopPropagation(); directMessageEmployee('${escapeHtml(emp.id)}')">
+              <i class="fa-solid fa-comments"></i> Chat
+            </button>
+      ` : '';
+    const evidenceOnly = contract.show_evidence_monitor && !contract.show_chat_button
+      ? '<span class="muted" style="font-size: 11px;">No chat; task/evidence only</span>'
+      : '';
+    const observeOnly = !contract.show_task_button && !contract.show_chat_button && !contract.show_evidence_monitor
+      ? '<span class="muted" style="font-size: 11px;">Observe only; verify evidence before assigning</span>'
+      : '';
+    const reason = contract.reason ? `<span class="muted" style="font-size: 10px;" title="${escapeHtml(contract.reason)}">mode=${escapeHtml(contract.mode || 'unknown')}</span>` : '';
+    return `${taskButton}${chatButton}${evidenceOnly}${observeOnly}${reason}`;
+  }
+
   function sandboxProfileChip(employee) {
     const profile = employee.sandbox_profile || {};
     const source = profile.source || 'runtime_fallback';
@@ -7573,13 +7595,6 @@
       const skills = emp.skills || '';
       const skillsPills = skills ? skills.split(',').map(s => `<span class="capability-tag" style="font-size: 9px; padding: 2px 5px; margin-top: 4px;">${escapeHtml(s.trim())}</span>`).join(' ') : '';
       const detailKey = storeDashboardDetail(`employee:${emp.id || '-'}`, emp);
-      const taskButton = emp.schedulable ? `
-            <button class="card-footer-action-btn" onclick="event.stopPropagation(); submitTaskToEmployee('${escapeHtml(emp.id)}')">
-              <i class="fa-solid fa-list-check"></i> Task
-            </button>
-      ` : '';
-      const directButton = `<span class="muted" style="font-size: 11px;">No chat; task/evidence only</span>`;
-
       return `
         <div class="employee-card" onclick="openEmployeeDetailDrawer('${escapeHtml(emp.id)}', '${escapeHtml(detailKey)}')">
           <div class="employee-card-header">
@@ -7623,8 +7638,7 @@
             ${skillsPills}
           </div>
           <div class="employee-card-footer">
-            ${taskButton}
-            ${directButton}
+            ${employeeInteractionFooter(emp)}
           </div>
         </div>
       `;
