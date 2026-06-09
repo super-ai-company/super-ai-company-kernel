@@ -438,6 +438,11 @@ def latest_verification_summary() -> dict:
     ]
     max_report_age_minutes = max(report_ages) if report_ages else None
     freshness = "missing" if max_report_age_minutes is None else ("fresh" if max_report_age_minutes <= freshness_threshold_minutes else "stale")
+    coverage_gaps = []
+    if local_summary["available"] and not local_summary["skill_closed_loop_checked"]:
+        coverage_gaps.append("skill_closed_loop_not_checked")
+    if local_summary["available"] and not local_summary["direct_checked"]:
+        coverage_gaps.append("direct_matrix_not_checked")
     ok = bool(local_summary["available"] and local_summary["ok"] and comm_summary["available"] and comm_summary["ok"])
     if not local_summary["available"] and not comm_summary["available"]:
         status = "missing_verification_reports"
@@ -445,6 +450,9 @@ def latest_verification_summary() -> dict:
     elif freshness == "stale":
         status = "stale_verification_reports"
         owner_next_action = "rerun company-local-smoke and company-communication-acceptance; latest green reports are stale"
+    elif coverage_gaps:
+        status = "verification_coverage_gap"
+        owner_next_action = "run company-local-smoke with skill closed-loop and direct matrix coverage before claiming full local readiness"
     elif not ok:
         status = "verification_attention_required"
         owner_next_action = "inspect latest local smoke and communication acceptance reports"
@@ -458,6 +466,7 @@ def latest_verification_summary() -> dict:
         "freshness": freshness,
         "freshness_threshold_minutes": freshness_threshold_minutes,
         "max_report_age_minutes": max_report_age_minutes,
+        "coverage_gaps": coverage_gaps,
         "local_smoke": local_summary,
         "communication_acceptance": comm_summary,
         "summary": " · ".join(summary_parts) or status,

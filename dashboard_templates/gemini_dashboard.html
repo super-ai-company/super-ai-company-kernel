@@ -4000,7 +4000,7 @@
       {
         label: 'Local verification',
         state: verification.ok ? 'ok' : 'blocked',
-        message: `${verification.status || 'missing_verification_reports'} · freshness=${verification.freshness || '-'} · max_age=${verification.max_report_age_minutes ?? '-'}m · ${verification.summary || 'run local smoke and communication acceptance'} · ${verification.owner_next_action || 'rerun verification after backend changes'}`,
+        message: `${verification.status || 'missing_verification_reports'} · freshness=${verification.freshness || '-'} · max_age=${verification.max_report_age_minutes ?? '-'}m · coverage_gaps=${(verification.coverage_gaps || []).join(',') || '-'} · ${verification.summary || 'run local smoke and communication acceptance'} · ${verification.owner_next_action || 'rerun verification after backend changes'}`,
         tab: 'tasks'
       },
       {

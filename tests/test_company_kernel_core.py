@@ -2691,6 +2691,48 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertGreater(verification["max_report_age_minutes"], verification["freshness_threshold_minutes"])
         self.assertIn("rerun company-local-smoke", verification["owner_next_action"])
 
+    def test_cockpit_verification_summary_marks_missing_skill_closed_loop_coverage(self) -> None:
+        fresh_generated_at = companyctl.now()
+        local_smoke_dir = self.root / "state" / "local-smoke"
+        local_smoke_dir.mkdir(parents=True, exist_ok=True)
+        (local_smoke_dir / "latest.json").write_text(
+            json.dumps(
+                {
+                    "ok": True,
+                    "smoke_id": "local-smoke-no-skill",
+                    "generated_at": fresh_generated_at,
+                    "attendance": {"ok": True},
+                    "direct_matrix": [{"agent_id": "codex", "direct_status": "ok"}],
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        comm_dir = self.root / "reports" / "communication-acceptance"
+        comm_dir.mkdir(parents=True, exist_ok=True)
+        (comm_dir / "latest.json").write_text(
+            json.dumps(
+                {
+                    "ok": True,
+                    "mechanism_ok": True,
+                    "run_id": "comm-fresh",
+                    "generated_at": fresh_generated_at,
+                    "metrics": {"continuity_total": 10, "continuity_passed": 10, "continuity_success_rate": 1.0},
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+
+        status, cockpit = api_gateway.route_get("/v1/dashboard/cockpit", {})
+        self.assertEqual(200, status, cockpit)
+        verification = cockpit["verification_summary"]
+        self.assertTrue(verification["ok"])
+        self.assertEqual("fresh", verification["freshness"])
+        self.assertEqual("verification_coverage_gap", verification["status"])
+        self.assertEqual(["skill_closed_loop_not_checked"], verification["coverage_gaps"])
+        self.assertIn("run company-local-smoke with skill closed-loop", verification["owner_next_action"])
+
     def test_cockpit_ignores_orphan_active_attempts_on_finished_tasks(self) -> None:
         code, created = run_cli("employee", "create", "--id", "main", "--name", "main", "--role", "operator", "--runtime", "openclaw", "--workspace", str(self.root / "workspace" / "main"))
         self.assertEqual(0, code, created)
@@ -4660,6 +4702,7 @@ class CompanyKernelCoreTest(unittest.TestCase):
             "missing_verification_reports",
             "freshness=${verification.freshness || '-'}",
             "max_age=${verification.max_report_age_minutes ?? '-'}m",
+            "coverage_gaps=${(verification.coverage_gaps || []).join(',') || '-'}",
         ]:
             self.assertIn(snippet, html)
 
