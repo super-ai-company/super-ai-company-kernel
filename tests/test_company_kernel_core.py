@@ -6969,6 +6969,7 @@ class CompanyKernelCoreTest(unittest.TestCase):
             "owner_action_timeline empty: no owner probe/correction/cancel/retry/reassign/approval actions yet.",
             "requires_owner_approval=${String(!!item.requires_owner_approval)}",
             "priority=${item.priority_label}",
+            "<span>next=${escapeHtml(item.owner_next_action || '-')}</span>",
             "function ceoAcceptanceContractSummary",
             "ready_for_acceptance=",
             "truth_rules completion_requires_final_evidence=",
