@@ -1295,6 +1295,7 @@ def route_post(path: str, body: dict) -> tuple[int, dict]:
             if truthy(body.get("execute")) and not truthy(body.get("ack")):
                 response["executed"] = True
                 response["control_action"]["approval_mode"] = "owner_approved_execute"
+            response = attach_task_control_context(response, task_id)
         return (HTTPStatus.OK if code == 0 else HTTPStatus.BAD_REQUEST), response
     if path.startswith("/v1/tasks/") and path.endswith("/progress"):
         task_id = path.removeprefix("/v1/tasks/").removesuffix("/progress").strip("/")
@@ -1325,6 +1326,7 @@ def route_post(path: str, body: dict) -> tuple[int, dict]:
             response = with_control_action(response, action="cancel", event_type="supervisor.cancel_requested", dangerous=True)
             response["executed"] = True
             response["control_action"]["approval_mode"] = "owner_approved_execute"
+            response = attach_task_control_context(response, task_id)
         return (HTTPStatus.OK if code == 0 else HTTPStatus.BAD_REQUEST), response
     if path.startswith("/v1/tasks/") and path.endswith("/claim"):
         task_id = path.removeprefix("/v1/tasks/").removesuffix("/claim").strip("/")
@@ -1347,7 +1349,11 @@ def route_post(path: str, body: dict) -> tuple[int, dict]:
         if body.get("status"):
             argv.extend(["--status", str(body["status"])])
         code, payload = run_companyctl(argv)
-        return (HTTPStatus.OK if code == 0 else HTTPStatus.BAD_REQUEST), {"exit_code": code, **payload}
+        response = {"exit_code": code, **payload}
+        if code == 0:
+            response = with_control_action(response, action="reopen", event_type="task.reopened")
+            response = attach_task_control_context(response, task_id)
+        return (HTTPStatus.OK if code == 0 else HTTPStatus.BAD_REQUEST), response
     if path.startswith("/v1/tasks/") and path.endswith("/retry"):
         task_id = path.removeprefix("/v1/tasks/").removesuffix("/retry").strip("/")
         if not truthy(body.get("execute")):

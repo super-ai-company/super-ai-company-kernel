@@ -8992,11 +8992,12 @@ def cmd_task_reopen(args: argparse.Namespace) -> int:
     )
     conn.execute("DELETE FROM locks WHERE resource_key = ?", (f"task:{args.task_id}",))
     synced_plan_items = sync_project_plan_for_task(conn, task_id=args.task_id, task_status=args.status, actor=actor)
+    event = record_event(conn, "task.reopened", actor, task_id=args.task_id, payload={"reason": args.reason, "status": args.status})
     conn.commit()
     updated = dict(conn.execute("SELECT * FROM tasks WHERE id = ?", (args.task_id,)).fetchone())
     task_file = write_task_inbox_file(updated)
-    audit(conn, actor, "task.reopen", args.task_id, {"reason": args.reason, "status": args.status, "file": task_file})
-    emit({"ok": True, "task": updated, "file": task_file, "synced_plan_items": synced_plan_items})
+    audit(conn, actor, "task.reopen", args.task_id, {"reason": args.reason, "status": args.status, "file": task_file, "event_id": event["id"]})
+    emit({"ok": True, "task": updated, "file": task_file, "synced_plan_items": synced_plan_items, "event_id": event["id"]})
     return 0
 
 
