@@ -38,7 +38,7 @@ Use existing backend surfaces first. Do not invent new endpoints unless implemen
 | Need | Existing API | Notes |
 |---|---|---|
 | Cockpit home aggregate | `GET /v1/dashboard/cockpit` | Primary polling endpoint. Includes `generated_at`; backend owns stale/stagnant/session state and `task_cards[]`. |
-| Doctor banner | `GET /v1/doctor` | Browser cannot run `bin/companyctl`; show returned JSON summary in modal. |
+| Doctor banner | `GET /v1/doctor` | Browser cannot run `bin/companyctl`; use this only when `/v1/dashboard/cockpit` does not include fresh doctor fields or when the owner clicks the diagnostics banner. |
 | Employees | `GET /v1/employees` | Employee cards and readiness summary. |
 | Employee detail | `GET /v1/employees/{employee_id}` | Lazy load from card click. |
 | Readiness matrix | `GET /v1/agent-matrix?agents={id}` | Use for evidence-backed readiness badges. |
@@ -51,10 +51,10 @@ Use existing backend surfaces first. Do not invent new endpoints unless implemen
 | Budget events | `GET /v1/budget-events?...` | Recent spend rows. |
 | Evidence list | `GET /v1/evidence?task_id=&employee_id=&limit=` | Evidence panel and employee-bound evidence history. |
 | Evidence preview | `GET /v1/evidence/{evidence_id}/safe-preview` | Only safe content preview. No direct file path reads. `/content` remains compatibility-only. |
-| Correction | `POST /v1/tasks/{task_id}/correct` | Body: `attempt_id`, `by="owner-shift"`, `message`. |
-| Cancel | `POST /v1/tasks/{task_id}/cancel` | Body: `attempt_id`, `by="owner-shift"`, `reason`. No kill-session button in MVP. |
-| Retry | `POST /v1/tasks/{task_id}/retry` | Body: `by="owner-shift"`, `reason`. |
-| Reassign | `POST /v1/tasks/{task_id}/reassign` | Body: `by="owner-shift"`, `to`, `reason`. |
+| Correction | `POST /v1/tasks/{task_id}/correct` | Body: `attempt_id`, `by="owner-shift"`, `message`. Default UI path requests owner approval; it must not claim the correction executed until backend returns `executed: true`. |
+| Cancel | `POST /v1/tasks/{task_id}/cancel` | Body: `attempt_id`, `by="owner-shift"`, `reason`. Default UI path requests owner approval. No kill-session button in MVP. |
+| Retry | `POST /v1/tasks/{task_id}/retry` | Body: `by="owner-shift"`, `reason`. Default UI path requests owner approval. |
+| Reassign | `POST /v1/tasks/{task_id}/reassign` | Body: `by="owner-shift"`, `to`, `reason`. Default UI path requests owner approval. |
 | Reject evidence / reopen | `POST /v1/tasks/{task_id}/reopen` | Body: `by="owner-shift"`, `reason`, `status="submitted"`. MVP has reject/reopen, not a new task-accept endpoint. |
 
 ### 2.1 Required API Gaps Before Final UI Wiring
@@ -80,8 +80,10 @@ These are not frontend workarounds. They are backend/API requirements that must 
 2. If API fails, keep last successful data visible but dimmed and show `Offline: API Connection Lost`.
    - Retry policy: keep the next 3 retries at the normal 8-second interval, then back off to one retry every 30 seconds until the API recovers.
    - Do not queue overlapping requests; skip a poll tick if the previous poll is still in flight.
-3. If `/v1/doctor` returns non-zero `exit_code`, show a yellow diagnostics banner with `ok`, `issue_count`, and latest timestamp. Debug mode may show raw JSON in a plain `<pre>` block; do not build a JSON tree renderer. Poll `/v1/doctor` slowly, at most once per 60 seconds, unless `/v1/dashboard/cockpit.doctor.ok === false`.
-   - If `/v1/dashboard/cockpit` already includes a fresh `doctor` aggregate, do not run separate `/v1/doctor` polling during normal refresh.
+3. If `/v1/dashboard/cockpit` includes `doctor`, show its `ok`, `issue_count`, `exit_code`, and latest timestamp. If `doctor.ok === false`, show a yellow diagnostics banner. Debug mode may show raw JSON in a plain `<pre>` block; do not build a JSON tree renderer.
+   - Do not poll `/v1/doctor` during the normal 8-second refresh loop when cockpit already includes fresh doctor fields.
+   - Only call `/v1/doctor` when the cockpit payload lacks doctor fields or when the owner clicks the diagnostics banner.
+   - If a diagnostics request times out, show `Connection Timeout: Retrying...` in the top health bar and keep the last known cockpit state visible but dimmed.
 4. Do not render raw local absolute paths. Display safe relative paths and basenames only.
 5. Do not calculate prices, exchange rates, or token-to-USD conversion in frontend. Display backend ledger totals. If multiple currencies exist, display per-currency rows, not a fake combined total.
 6. Do not add `Kill Session`, `Archive Stale Sessions`, marketplace actions, skill pricing, or user/account management in this MVP.
@@ -89,6 +91,8 @@ These are not frontend workarounds. They are backend/API requirements that must 
 8. Candidate employees must not be visually promoted to active. Use explicit badges: `active_ready`, `active_limited`, `candidate_only`, `online_only`, `task_unsupported`, `no_reply`, `unsafe`.
 9. Stale/stagnant/running labels are backend-owned. The frontend may display relative time labels, but must not decide task failure from local browser time.
 10. For every action button, the default confirmation modal must use human-readable business copy. API path and actor `owner-shift` appear only in developer/debug mode.
+    - Correction, cancel, retry, reassign, and reject/reopen confirmations must include: `This action requires Owner approval and will be signed as owner-shift.`
+    - The success toast must distinguish approval request from execution: `Approval requested` when `executed !== true`; `Action executed` only when the backend explicitly returns `executed: true`.
 11. Filters are single-field quick filters only. Do not implement compound filtering across Tool Calls, Budget, and Evidence in the 3-day MVP.
 12. `GET /v1/agent-matrix` output is summarized as the final readiness badge and a short reason. Do not render a detailed matrix checklist or scoring UI.
 13. Use plain HTML/CSS/vanilla JavaScript in the existing dashboard template. Do not introduce large UI libraries, chart libraries, graph libraries, D3, Mermaid, Gantt, or canvas packages.
@@ -128,6 +132,7 @@ Empty states:
 - No active tasks: `No running tasks.`
 - No budget: `No budget ledger events recorded.`
 - No evidence: `No evidence submitted yet.`
+- No supervisor activity: `No recent supervisor activity.`
 
 Abnormal states:
 - API offline: red banner, stale data dimmed.
@@ -190,15 +195,15 @@ Abnormal states:
 Click actions:
 - Click card: open Employee Detail drawer or panel using `GET /v1/employees/{employee_id}`.
 - `View Task`: open current task drawer.
-- `Filter Logs`: apply employee filter to Tool Calls/Budget panels, and apply local evidence filtering only across hydrated evidence rows unless `/v1/evidence?employee_id=` exists.
-- `Filter Evidence`: call `/v1/evidence?employee_id={employee_id}` and show only backend-filtered evidence rows.
+- `Filter Logs`: refresh only the ledger panels for this employee. Call `/v1/tool-calls?employee_id={employee_id}&limit=200`, `/v1/budget-summary?employee_id={employee_id}`, and `/v1/budget-events?employee_id={employee_id}&limit=50`. Do not run compound local filters across unrelated panels.
+- `Filter Evidence`: call `/v1/evidence?employee_id={employee_id}&limit=50` and show only backend-filtered evidence rows.
 - `Verify Runtime Evidence`: call `GET /v1/agent-matrix?agents={employee_id}` and show only readiness badge plus one short backend reason. Do not render attendance/direct/runtime/task/progress/evidence/stale as a checklist or matrix table.
 
 API:
 - `GET /v1/employees`
 - `GET /v1/employees/{employee_id}`
 - `GET /v1/agent-matrix?agents={employee_id}`
-- Optional filters: `/v1/tool-calls?employee_id=...`, `/v1/budget-summary?employee_id=...`; evidence supports only `/v1/evidence?task_id=...` in current MVP unless backend adds `employee_id`.
+- Optional filters: `/v1/tool-calls?employee_id=...`, `/v1/budget-summary?employee_id=...`, `/v1/budget-events?employee_id=...`, and `/v1/evidence?employee_id=...`.
 
 Direct Message exclusion:
 - No chat bubbles, no receipt timeline, and no DM inbox in the 3-day MVP.
@@ -235,11 +240,11 @@ Abnormal states:
 
 Click actions:
 - Click card: open Task Detail Drawer via `GET /v1/tasks/{task_id}`.
-- `Send Correction`: POST `/v1/tasks/{task_id}/correct` with current `attempt_id`, `by="owner-shift"`, user message.
-- `Cancel Attempt`: POST `/v1/tasks/{task_id}/cancel` with current `attempt_id`, `by="owner-shift"`, reason.
-- `Retry`: POST `/v1/tasks/{task_id}/retry`.
-- `Reassign`: POST `/v1/tasks/{task_id}/reassign`.
-- `Reject / Reopen`: for done evidence that fails owner review, POST `/v1/tasks/{task_id}/reopen` with `status="submitted"`.
+- `Request Correction Approval`: POST `/v1/tasks/{task_id}/correct` with current `attempt_id`, `by="owner-shift"`, user message. The default UI path requests approval; it does not claim execution unless the backend returns `executed: true`.
+- `Request Cancel Approval`: POST `/v1/tasks/{task_id}/cancel` with current `attempt_id`, `by="owner-shift"`, reason.
+- `Request Retry Approval`: POST `/v1/tasks/{task_id}/retry`.
+- `Request Reassign Approval`: POST `/v1/tasks/{task_id}/reassign`.
+- `Reject / Reopen`: for done evidence that fails owner review, POST `/v1/tasks/{task_id}/reopen` with `status="submitted"`. If backend approval is required, show the same `Approval requested` result copy.
 
 API:
 - Primary card data: `GET /v1/dashboard/cockpit.task_cards[]`
@@ -347,6 +352,7 @@ Empty states:
 Abnormal states:
 - Unsafe path: red row, preview disabled.
 - Missing file: yellow row, preview disabled.
+- Checksum mismatch: red `Checksum Error` badge, preview disabled.
 - Not final: neutral row; not sufficient for task done.
 
 Click actions:
@@ -397,6 +403,7 @@ Empty states:
 - No tool calls: `No tools used yet.`
 - No budget: `No cost recorded yet.`
 - No evidence: `No evidence submitted yet.`
+- No timeline events: `No events in trace timeline.`
 - New submitted task: collapse Tool Calls, Budget, and Evidence by default until at least one row exists.
 
 Abnormal states:
@@ -411,6 +418,8 @@ Abnormal states:
 Control API bodies:
 
 MVP actor rule: `by: "owner-shift"` is a local single-owner default. Do not build dynamic user identity, login, RBAC, or multi-tenant ownership in this 3-day MVP.
+
+Default approval rule: the dashboard sends the bodies below without `execute: true`. The normal result is an approval request, not an executed operation. Only a future explicit owner-approved execution path may include `execute: true`, and the UI must label that path separately.
 
 ```json
 {
@@ -442,6 +451,17 @@ MVP actor rule: `by: "owner-shift"` is a local single-owner default. Do not buil
 }
 ```
 
+Runtime Session badge mapping:
+
+| Backend status | UI badge | Meaning |
+|---|---|---|
+| `active` | green `Active` | Session is live and can report heartbeat/progress. |
+| `idle` | green/neutral `Idle` | Session is live but not currently reporting task progress. |
+| `stale` | amber `Stale` | Session missed backend-defined heartbeat/progress freshness. |
+| `failed` | red `Failed` | Session ended with an error. |
+| `stopped` | gray `Stopped` | Session ended normally. |
+| `cancelled` | gray `Cancelled` | Session was cancelled and cannot submit final evidence for the cancelled attempt. |
+
 ## 12. False-State Guardrails
 
 These guardrails prevent a beautiful but misleading cockpit. If a trusted backend field is missing, the UI must show a gap or a bounded empty state instead of guessing.
@@ -468,6 +488,12 @@ These guardrails prevent a beautiful but misleading cockpit. If a trusted backen
 7. Skill worker chat:
    - Risk: skill workers such as `ecommerce-copy-skill` can execute but cannot chat.
    - UI rule: hide chat/direct UI, but keep progress, runtime, tool calls, budget, artifacts, and evidence visible.
+8. Request timeout:
+   - Risk: transient API slowness can look like empty data.
+   - UI rule: show `Connection Timeout: Retrying...`, keep last known data dimmed, and do not replace a populated panel with an empty state until a successful response says it is empty.
+9. Evidence checksum:
+   - Risk: a file path can still exist while the file content no longer matches the evidence record.
+   - UI rule: show `Checksum Error`, disable preview, and require backend revalidation before the evidence can support completion.
 
 ## 13. Worker Reporting Contract For UI Truth
 
