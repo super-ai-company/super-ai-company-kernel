@@ -2,7 +2,7 @@
 
 Date: 2026-06-09
 
-Scope: local-first Super AI Company Kernel CEO Cockpit UI contract. This design is based on `docs/research/ai-company-os-research-plan.md` and two Antigravity design-review rounds. It is a 3-day MVP only.
+Scope: local-first Super AI Company Kernel CEO Cockpit UI contract. This design is based on `docs/research/ai-company-os-research-plan.md` and three Antigravity design-review rounds. It is a 3-day MVP only.
 
 ## Goal
 
@@ -16,6 +16,18 @@ The CEO Cockpit must let the owner see, from real Kernel data:
 
 The UI must not treat chat, ACK, stdout, inbox files, or heartbeat as completion.
 
+## 3-Day MVP Priorities
+
+This MVP exists to make the backend control plane visible, not to create a new marketplace UI. The implementation priority is:
+
+1. Dashboard real data binding: every panel reads Kernel API/SQLite-derived ledger state.
+2. Runtime Session visibility: every active employee/task must show where it is running.
+3. Tool Call ledger visibility: every meaningful employee action must be visible as a sanitized tool call.
+4. Budget Center MVP: every recorded cost/token/runtime event must be visible from task, employee, attempt, and trace context.
+5. Evidence visibility: every claimed completion must be backed by task/attempt-bound evidence.
+
+The page must answer one owner question: what is each AI employee doing, which tools did it use, what did it cost, and what evidence did it submit?
+
 ## Non-Goals
 
 Do not build or expose:
@@ -28,8 +40,12 @@ Do not build or expose:
 - complex multi-tenant accounts or RBAC;
 - chat/DM product;
 - WebSocket/SSE realtime layer.
+- frontend USD estimation, exchange-rate conversion, or skill price calculation;
+- raw stdout/stderr display;
+- absolute local file path display;
+- `file://` links or copyable local `open ...` commands.
 
-All employee chat/direct buttons are hidden in this MVP, including for active employees, candidates, and skill workers. Skill workers such as `ecommerce-copy-skill` show task execution, runtime sessions, tool calls, budget, artifacts, and evidence, but no chat affordance.
+All employee chat/direct buttons are hidden in this MVP, including for active employees, candidates, and skill workers. Skill workers such as `ecommerce-copy-skill` show task execution, runtime sessions, tool calls, budget, artifacts, and evidence, but no chat affordance. Candidate employees are never visually promoted to active staff unless backend readiness says they have structured runtime, progress, and evidence proof.
 
 ## API Contract
 
@@ -60,7 +76,7 @@ Default actor is `owner`. Write actions must show disabled/loading state while p
 
 ## Page Layout
 
-One high-density page:
+One high-density page, ordered by operational causality:
 
 1. Top Health Bar.
 2. CEO Summary Grid.
@@ -70,6 +86,15 @@ One high-density page:
 6. Budget Panel.
 7. Evidence Panel.
 8. Task Detail Drawer.
+
+Rationale:
+
+- Health and summary come first because the owner must know whether the data is trustworthy.
+- Employees come before tasks because employees are the execution capacity.
+- Running tasks come before tools because tasks explain why tools are being used.
+- Tool calls come before budget because tool calls are the cost cause.
+- Budget comes before evidence because budget answers what was spent before the owner accepts output.
+- Evidence is the final trust layer.
 
 Use existing static dashboard template, vanilla CSS, and vanilla JavaScript. Poll `/v1/dashboard/cockpit` every 8 seconds. Pause polling when `document.hidden === true`; refresh immediately when the tab becomes visible. If API fails, keep last successful data visible, dim it, and show `Offline: API Connection Lost`; do not replace populated panels with empty state.
 
@@ -145,6 +170,7 @@ Displayed fields:
 - Tool call count and failed tool count.
 - Evidence count and final evidence count.
 - Cost by currency and token input/output when available.
+- Chat support flag, rendered only as text such as `No chat in MVP`; never as a button.
 
 Empty states:
 
@@ -158,6 +184,8 @@ Abnormal states:
 - `candidate_only`: gray dashed border, not counted as active capacity.
 - `online_only`: yellow badge, `Online but no task/evidence proof.`
 - Heartbeat stale/offline: dim card.
+- `task_unsupported`: neutral tool-worker badge, no task assignment button.
+- Skill worker with no chat support: `No chat; task/evidence execution only.`
 
 Click actions:
 
@@ -170,6 +198,8 @@ Click actions:
 Rules:
 
 - Hide all chat/direct/message buttons.
+- Hide direct task assignment controls for `candidate_only`, `online_only`, `no_reply`, `unsafe`, and `task_unsupported`.
+- Disable filter buttons when the employee has no corresponding runtime/tool/budget/evidence records.
 - Do not promote candidate or online-only employees visually into active staff.
 
 ## 4. Running Task Cards
@@ -221,11 +251,13 @@ Displayed fields:
 - Status: planned, running, success, failed, blocked, cancelled.
 - Started/finished time and duration.
 - Sanitized input summary, output summary, error summary.
+- High-risk flag or policy code when backend supplies it.
 
 Empty states:
 
 - `No tool calls recorded yet.`
 - Filtered view: `No tool calls under this filter.`
+- Running attempt with progress but no tool-call records: `Tool-call ledger missing for this attempt.`
 
 Abnormal states:
 
@@ -233,6 +265,8 @@ Abnormal states:
 - Blocked by policy: yellow row with policy code.
 - Missing `sanitized === true`: show `[Raw output redacted for safety]` and disable copy.
 - Running attempt with progress but zero tool calls: `Tool-call ledger missing for this attempt`.
+- Failed or blocked tool calls must be pinned above successful rows when a task is selected.
+- Missing sanitized summaries are not a reason to fetch raw stdout/stderr.
 
 Click actions:
 
@@ -248,6 +282,7 @@ Rules:
 - Do not invent `/v1/tool-calls/{tool_call_id}`.
 - Cap each summary field to 500 display characters.
 - Disable copy when the row is not explicitly sanitized.
+- Do not expose local log paths or terminal commands to inspect raw logs.
 
 ## 6. Budget Panel
 
@@ -283,6 +318,8 @@ Rules:
 - No frontend token-to-USD formula.
 - No exchange-rate conversion.
 - No skill pricing.
+- No frontend-only estimated cost labels. If the backend does not record an amount, show `Cost missing`.
+- Mixed currencies are separate ledger rows and separate totals.
 
 ## 7. Evidence Panel
 
@@ -324,6 +361,8 @@ Security rules:
 - Do not create `file://` links.
 - Do not expose absolute `/Users/...` paths.
 - Do not use `/v1/evidence/{evidence_id}/content` for new UI.
+- Do not show copyable local `open ...` commands.
+- Do not allow evidence acceptance when checksum, final flag, task binding, or attempt binding is invalid.
 
 ## 8. Task Detail Drawer
 
@@ -406,6 +445,10 @@ No global Runtime Session page in the 3-day MVP. Show sessions on employee cards
 - Request timeout keeps stale data visible and dimmed; it does not create empty panels.
 - Evidence checksum mismatch disables preview and acceptance.
 - `[API Gap - Mocking Prohibited]` means disabled or empty state only, never mock data.
+- Frontend cost estimation is prohibited. Budget must come from Kernel budget ledger.
+- Raw stdout/stderr is prohibited. Tool calls must show sanitized summaries only.
+- Local absolute paths are prohibited. Evidence and artifacts must be rendered with relative safe paths only.
+- Copyable OS commands such as `open ./file` are prohibited in the browser UI.
 
 ## Three-Day Delivery Plan
 
@@ -416,6 +459,7 @@ Day 1:
 - Add doctor banner through `/v1/doctor`.
 - Render honest readiness badges: candidate, online-only, skill-only, unsafe.
 - Hide all chat/direct buttons.
+- Show runtime session IDs/status on employee and task cards when backend supplies them.
 
 Day 2:
 
@@ -423,6 +467,7 @@ Day 2:
 - Show runtime sessions on cards and drawer.
 - Add Tool Calls panel and sanitized row detail.
 - Add correction/cancel controls where backend supports them; show retry/reassign/reopen disabled if API gap.
+- Pin failed/blocked tool calls above successful calls in task-filtered views.
 
 Day 3:
 
@@ -430,6 +475,35 @@ Day 3:
 - Add Evidence Panel and safe-preview modal.
 - Run a local skill-worker smoke so runtime/tool/budget/evidence data appears from real ledger state.
 - Run focused dashboard/API tests, full unit tests, and doctor.
+
+## File-Level Implementation Map
+
+Frontend files:
+
+- `dashboard_templates/gemini_dashboard.html`: add/adjust CEO Cockpit layout, cards, panels, polling, drawer, disabled write-action states, and safe rendering.
+- `dashboard.html`: generated runtime artifact only; do not edit or commit as source.
+
+Backend/API files:
+
+- `company_kernel/api_gateway.py`: verify the documented endpoints return the required fields; missing endpoints must return clear API errors, not frontend mocks.
+- `company_kernel/company_dashboard.py`: ensure `/v1/dashboard/cockpit` includes summary counts, employee cards, running task cards, runtime/session/tool/budget/evidence rollups.
+- `company_kernel/company_trace.py`: ensure trace timeline can back the drawer when task detail lacks timeline fields.
+- `company_kernel/companyctl.py`: keep CLI/API shared ledger helpers as the source of truth for runtime sessions, tool calls, budget events, evidence, and task controls.
+
+Schema / ledger files:
+
+- `company_kernel/schema.sql`: source of first-class tables such as `runtime_sessions`, `agent_tool_calls`, `budget_accounts`, `budget_events`, `artifacts`, and `evidence`.
+- `company_kernel/schema_migrations.py`: migration path for any missing budget/tool/runtime fields.
+
+Test files:
+
+- `tests/test_company_kernel_core.py`: primary regression tests for API payloads, dashboard template contract, safe evidence preview, tool-call ledger, budget ledger, task controls, and candidate/skill-worker UI guardrails.
+
+Do not modify:
+
+- OpenClaw private bus/session/memory internals.
+- Marketplace, pricing, distributed rental, multi-tenant, or WorkGraph canvas files.
+- Runtime-only local employee profiles unless the test explicitly targets runtime state and the change is not committed.
 
 ## Acceptance Commands
 
@@ -468,3 +542,12 @@ Round 2:
 - Hide all Chat/Direct entry points in this MVP so the cockpit remains task, tool, budget, and evidence driven.
 - Clarify that Running Task Cards are sourced from `/v1/dashboard/cockpit` `task_cards` / `long_tasks`, with `/v1/tasks?limit=50` only as a fallback list source.
 - Explicitly require write-action loading/disabled states to prevent duplicate owner correction/cancel/retry/reassign/approval requests.
+
+Round 3:
+
+- Reject frontend USD estimation, exchange-rate conversion, and any skill pricing calculation. Budget values must come from the Kernel budget ledger.
+- Reject copyable local `open ...` commands, `file://` links, absolute `/Users/...` paths, and browser access to raw stdout/stderr.
+- Keep the homepage order as Health -> Summary -> Employees -> Running Tasks -> Tool Calls -> Budget -> Evidence -> Drawer.
+- Pin failed/blocked tool calls for task-filtered views so the owner sees risk before successful noise.
+- Candidate, online-only, unsafe, no-reply, and task-unsupported employees must not expose assignment/chat controls.
+- Runtime Session visibility comes before Tool Calls; Tool Calls come before Budget; Budget comes before Evidence acceptance.
