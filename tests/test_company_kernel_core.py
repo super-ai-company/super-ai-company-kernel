@@ -8293,6 +8293,12 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertFalse(safe["display"]["absolute_path_exposed"])
         self.assertEqual("safe evidence body\n", safe["content"]["text"])
         self.assertIn("safe-report.md", safe["display"]["relative_path"])
+        self.assertEqual("task-safe-content", safe["acceptance"]["task_id"])
+        self.assertEqual("attempt-safe-content", safe["acceptance"]["attempt_id"])
+        self.assertTrue(safe["acceptance"]["is_final"])
+        self.assertTrue(safe["acceptance"]["preview_allowed"])
+        self.assertTrue(safe["acceptance"]["can_accept"])
+        self.assertEqual("reviewable_final_evidence", safe["acceptance"]["state"])
         self.assertNotIn(str(self.root), json.dumps(safe, ensure_ascii=False))
 
         status, safe_alias = api_gateway.route_get("/v1/evidence/evidence-safe-content/safe-preview", {})
@@ -8307,6 +8313,9 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertFalse(blocked["display"]["allowed"])
         self.assertFalse(blocked["display"]["absolute_path_exposed"])
         self.assertEqual("", blocked["content"]["text"])
+        self.assertFalse(blocked["acceptance"]["preview_allowed"])
+        self.assertFalse(blocked["acceptance"]["can_accept"])
+        self.assertEqual("blocked_by_preview_policy", blocked["acceptance"]["state"])
         self.assertNotIn("API_KEY", json.dumps(blocked, ensure_ascii=False))
         self.assertNotIn(str(secret_path), json.dumps(blocked, ensure_ascii=False))
 

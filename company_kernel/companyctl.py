@@ -4120,10 +4120,46 @@ def audit_evidence_records(conn: sqlite3.Connection, *, task_id: str = "", emplo
     return evidence
 
 
+def evidence_acceptance_context(item: dict, display: dict) -> dict:
+    task_id = str(item.get("task_id") or "")
+    attempt_id = str(item.get("attempt_id") or "")
+    checksum = str(item.get("checksum") or "")
+    preview_allowed = bool(display.get("allowed"))
+    is_final = bool(item.get("is_final"))
+    task_bound = bool(task_id)
+    attempt_bound = bool(attempt_id)
+    can_accept = preview_allowed and task_bound and attempt_bound and is_final
+    if not preview_allowed:
+        state = "blocked_by_preview_policy"
+    elif not task_bound or not attempt_bound:
+        state = "missing_binding_context"
+    elif not is_final:
+        state = "unacceptable_draft"
+    else:
+        state = "reviewable_final_evidence"
+    return {
+        "evidence_id": str(item.get("evidence_id") or ""),
+        "trace_id": str(item.get("trace_id") or ""),
+        "task_id": task_id,
+        "attempt_id": attempt_id,
+        "employee_id": str(item.get("employee_id") or ""),
+        "artifact_id": str(item.get("artifact_id") or ""),
+        "is_final": is_final,
+        "preview_allowed": preview_allowed,
+        "task_bound": task_bound,
+        "attempt_bound": attempt_bound,
+        "checksum_status": "recorded" if checksum else "missing",
+        "can_accept": can_accept,
+        "state": state,
+        "summary": sanitize_log_text(str(item.get("summary") or "")),
+    }
+
+
 def safe_evidence_content(conn: sqlite3.Connection, evidence_id: str, *, max_bytes: int = 65536) -> dict:
     safe_id = str(evidence_id or "").strip()
     if not safe_id or "/" in safe_id:
-        return {"ok": False, "error": "invalid evidence id", "evidence_id": safe_id, "display": sanitize_evidence_path_for_display(""), "content": {"text": ""}}
+        display = sanitize_evidence_path_for_display("")
+        return {"ok": False, "error": "invalid evidence id", "evidence_id": safe_id, "display": display, "acceptance": evidence_acceptance_context({"evidence_id": safe_id}, display), "content": {"text": ""}}
     record = conn.execute(
         """
         SELECT evidence_id, trace_id, task_id, attempt_id, employee_id, artifact_id,
@@ -4134,7 +4170,8 @@ def safe_evidence_content(conn: sqlite3.Connection, evidence_id: str, *, max_byt
         (safe_id,),
     ).fetchone()
     if not record:
-        return {"ok": False, "error": "evidence not found", "evidence_id": safe_id, "display": sanitize_evidence_path_for_display(""), "content": {"text": ""}}
+        display = sanitize_evidence_path_for_display("")
+        return {"ok": False, "error": "evidence not found", "evidence_id": safe_id, "display": display, "acceptance": evidence_acceptance_context({"evidence_id": safe_id}, display), "content": {"text": ""}}
     item = dict(record)
     raw_path = item.pop("path_or_url", "")
     display = sanitize_evidence_path_for_display(raw_path)
@@ -4142,6 +4179,7 @@ def safe_evidence_content(conn: sqlite3.Connection, evidence_id: str, *, max_byt
         "ok": bool(display.get("allowed")),
         "evidence": item,
         "display": display,
+        "acceptance": evidence_acceptance_context(item, display),
         "content": {
             "text": "",
             "truncated": False,
