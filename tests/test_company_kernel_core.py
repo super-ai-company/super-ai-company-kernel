@@ -8,6 +8,7 @@ import os
 import plistlib
 import re
 import runpy
+import shutil
 import sqlite3
 import subprocess
 import sys
@@ -4486,6 +4487,25 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertIn("Live refresh partial:", html)
         self.assertNotIn("Optional API ${path} failed: ${err.message}; continuing refresh.", html)
 
+    def test_real_dashboard_inline_scripts_are_valid_javascript(self) -> None:
+        node = shutil.which("node")
+        if not node:
+            self.skipTest("node is required for dashboard JavaScript syntax validation")
+        template = Path(__file__).resolve().parents[1] / "dashboard_templates" / "gemini_dashboard.html"
+        html = template.read_text(encoding="utf-8")
+        scripts = re.findall(r"<script[^>]*>([\s\S]*?)</script>", html, flags=re.IGNORECASE)
+        self.assertGreaterEqual(len(scripts), 1)
+        for index, script in enumerate(scripts):
+            with self.subTest(script=index):
+                result = subprocess.run(
+                    [node, "--check"],
+                    input=script,
+                    text=True,
+                    capture_output=True,
+                    timeout=10,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_real_dashboard_template_task_detail_modal_is_closeable(self) -> None:
         template = Path(__file__).resolve().parents[1] / "dashboard_templates" / "gemini_dashboard.html"
         html = template.read_text(encoding="utf-8")
@@ -6759,11 +6779,13 @@ class CompanyKernelCoreTest(unittest.TestCase):
             "const budgetEvents = payload.budget_events || [];",
             "const controlPlaneTimeline = payload.control_plane_timeline || [];",
             "const controlActionSummary = payload.control_action_summary || {};",
+            "const ownerActionTimeline = payload.owner_action_timeline || [];",
             "const completionContract = payload.completion_contract || {};",
             "['Task Operational Ledger', taskOperationalLedgerSummary(payload, taskTracePayload)]",
             "['CEO Trace Brief', ceoTraceBriefSummary(taskTracePayload.ceo_trace_brief || {})]",
             "['Task Control Plane Timeline', taskControlPlaneTimelineSummary(controlPlaneTimeline)]",
             "['Control Action Summary', controlActionSummaryDetail(controlActionSummary)]",
+            "['Owner Action Timeline', ownerActionTimelineSummary(ownerActionTimeline)]",
             "['Runtime Sessions', runtimeSessionsSummary(runtimeSessions)]",
             "['Tool Calls', toolCallsSummary(toolCalls)]",
             "['Budget Summary', budgetSummaryDetail(budgetSummary)]",
@@ -6785,6 +6807,9 @@ class CompanyKernelCoreTest(unittest.TestCase):
             "item.kind || '-'",
             "item.timestamp || '-'",
             "function controlActionSummaryDetail",
+            "function ownerActionTimelineSummary",
+            "owner_action_timeline empty: no owner probe/correction/cancel/retry/reassign/approval actions yet.",
+            "requires_owner_approval=${String(!!item.requires_owner_approval)}",
             "pending_owner_approvals=",
             "executed_control_actions=",
             "owner_next_action=",
@@ -7890,6 +7915,18 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual(0, shown_after_pending["control_action_summary"]["executed_control_actions"])
         self.assertEqual(["cancel", "correction"], sorted(shown_after_pending["control_action_summary"]["pending_actions"]))
         self.assertEqual("review pending owner approvals before executing controls", shown_after_pending["control_action_summary"]["owner_next_action"])
+        pending_timeline = shown_after_pending["owner_action_timeline"]
+        self.assertEqual(["pending_approval", "pending_approval"], [item["kind"] for item in pending_timeline])
+        self.assertEqual(["cancel", "correction"], sorted(item["action"] for item in pending_timeline))
+        self.assertTrue(all(item["requires_owner_approval"] for item in pending_timeline))
+        self.assertTrue(all(item["status"] == "pending" for item in pending_timeline))
+        self.assertTrue(all(item["task_id"] == "task-control-approval" for item in pending_timeline))
+
+        status, probe = api_gateway.route_post(
+            "/v1/tasks/task-control-approval/probe",
+            {"attempt_id": attempt_id, "by": "hermes", "message": "owner probe before cancel", "reason": "owner_attention_check"},
+        )
+        self.assertEqual(200, status, probe)
 
         status, executed_cancel = api_gateway.route_post("/v1/tasks/task-control-approval/cancel", {"attempt_id": attempt_id, "by": "hermes", "reason": "owner approved execution", "execute": "true"})
         self.assertEqual(200, status, executed_cancel)
@@ -7898,10 +7935,26 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual("cancelled", executed_cancel["attempt"]["status"])
         status, shown_after_cancel = api_gateway.route_get("/v1/tasks/task-control-approval", {})
         self.assertEqual(200, status, shown_after_cancel)
-        self.assertEqual(1, shown_after_cancel["control_action_summary"]["executed_control_actions"])
+        self.assertEqual(2, shown_after_cancel["control_action_summary"]["executed_control_actions"])
         self.assertEqual("cancel", shown_after_cancel["control_action_summary"]["latest_executed_action"])
         self.assertEqual("cancelled", shown_after_cancel["control_action_summary"]["latest_attempt_status"])
         self.assertEqual("old attempt is cancelled; retry or reassign only after owner decision", shown_after_cancel["control_action_summary"]["owner_next_action"])
+        action_timeline = shown_after_cancel["owner_action_timeline"]
+        self.assertEqual(["pending_approval", "pending_approval", "executed_control", "executed_control"], [item["kind"] for item in action_timeline])
+        self.assertEqual(["cancel", "cancel", "correction", "probe"], sorted(item["action"] for item in action_timeline))
+        approval_flags = {item["action"]: item["requires_owner_approval"] for item in action_timeline}
+        self.assertTrue(approval_flags["cancel"])
+        self.assertTrue(approval_flags["correction"])
+        self.assertFalse(approval_flags["probe"])
+        probe_item = next(item for item in action_timeline if item["action"] == "probe")
+        self.assertEqual("task.probe", probe_item["event_type"])
+        self.assertEqual("owner_attention_check", probe_item["reason"])
+        self.assertEqual("hermes", probe_item["actor"])
+        self.assertIn("wait for worker response", probe_item["owner_next_action"])
+        cancel_item = next(item for item in action_timeline if item["action"] == "cancel" and item["kind"] == "executed_control")
+        self.assertEqual("supervisor.cancel_requested", cancel_item["event_type"])
+        self.assertEqual("owner approved execution", cancel_item["reason"])
+        self.assertIn("verify process stopped", cancel_item["owner_next_action"])
 
     def test_dashboard_employee_cards_include_managed_attempt_state(self) -> None:
         for employee_id, role in [("main", "operator"), ("hermes", "supervisor"), ("codex", "developer")]:
