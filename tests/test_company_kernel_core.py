@@ -2629,12 +2629,19 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertIn("artifacts/done-final.md", recent_evidence["evidence"]["relative_path"])
         self.assertEqual("pending", recent_evidence["acceptance_status"])
         self.assertEqual("reviewable_final_evidence", recent_evidence["acceptance_state"])
+        self.assertEqual("pending_review_fresh", recent_evidence["review_state"])
+        self.assertEqual(0, recent_evidence["pending_age_minutes"])
+        self.assertIn("accept or reject final evidence", recent_evidence["owner_next_action"])
         self.assertEqual(["safe_preview", "accept_evidence", "reject_evidence", "view_trace"], [action["id"] for action in recent_evidence["actions"]])
         self.assertEqual(1, cockpit["counts"]["pending_final_evidence"])
         pending_evidence = next(item for item in cockpit["evidence_acceptance_queue"] if item["task_id"] == "task-cockpit-done")
         self.assertEqual(promoted["evidence"]["evidence_id"], pending_evidence["evidence_id"])
         self.assertEqual("pending", pending_evidence["acceptance_status"])
         self.assertEqual("reviewable_final_evidence", pending_evidence["acceptance_state"])
+        self.assertEqual("pending_review_fresh", pending_evidence["review_state"])
+        self.assertEqual(0, pending_evidence["pending_age_minutes"])
+        self.assertEqual(1440, pending_evidence["review_sla_minutes"])
+        self.assertIn("accept or reject final evidence", pending_evidence["owner_next_action"])
         self.assertEqual(["safe_preview", "accept_evidence", "reject_evidence", "view_trace"], [action["id"] for action in pending_evidence["actions"]])
         approval_center = cockpit["approval_center_summary"]
         self.assertEqual("owner_action_required", approval_center["queue_health"])
@@ -2648,6 +2655,9 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertIn("review pending high-risk approvals", approval_center["owner_next_action"])
         evidence_attention = next(item for item in cockpit["owner_attention"] if item["task_id"] == "task-cockpit-done" and item["kind"] == "evidence")
         self.assertEqual("pending_review", evidence_attention["state"])
+        self.assertEqual("pending_review_fresh", evidence_attention["review_state"])
+        self.assertEqual(0, evidence_attention["pending_age_minutes"])
+        self.assertIn("accept or reject final evidence", evidence_attention["message"])
         self.assertEqual(["safe_preview", "accept_evidence", "reject_evidence", "view_trace"], [action["id"] for action in evidence_attention["actions"]])
         legacy_evidence = next(item for item in cockpit["legacy_task_evidence"] if item["task_id"] == "task-cockpit-long")
         self.assertTrue(legacy_evidence["evidence"]["allowed"])
@@ -6970,6 +6980,9 @@ class CompanyKernelCoreTest(unittest.TestCase):
             "evidence_acceptance_queue",
             "pending_final_evidence",
             "acceptance_status=${escapeHtml(item.acceptance_status || 'pending')}",
+            "review_state=${escapeHtml(item.review_state || '-')}",
+            "pending_age_minutes=${escapeHtml(item.pending_age_minutes ?? '-')}",
+            "owner_next_action=${escapeHtml(item.owner_next_action || 'Review final evidence.')}",
             "function evidenceDecisionRows",
             "acceptEvidenceFromDashboard",
             "rejectEvidenceFromDashboard",

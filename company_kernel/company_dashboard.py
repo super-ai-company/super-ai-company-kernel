@@ -69,6 +69,32 @@ def minutes_since(value: str, generated_at: str) -> int | None:
     return max(0, int((generated - timestamp).total_seconds() // 60))
 
 
+EVIDENCE_REVIEW_SLA_MINUTES = 24 * 60
+
+
+def evidence_review_context(item: dict, generated_at: str, *, sla_minutes: int = EVIDENCE_REVIEW_SLA_MINUTES) -> dict:
+    status = str(item.get("acceptance_status") or "pending")
+    age = minutes_since(str(item.get("updated_at") or ""), generated_at)
+    if status != "pending":
+        return {
+            "pending_age_minutes": age,
+            "review_sla_minutes": sla_minutes,
+            "review_state": status,
+            "owner_next_action": "Evidence already reviewed; inspect trace if the result is disputed.",
+        }
+    stale = age is not None and age >= sla_minutes
+    return {
+        "pending_age_minutes": age,
+        "review_sla_minutes": sla_minutes,
+        "review_state": "pending_review_stale" if stale else "pending_review_fresh",
+        "owner_next_action": (
+            "Prioritize stale final evidence review: safe-preview, accept or reject final evidence, or request rework."
+            if stale
+            else "Review safe preview and accept or reject final evidence."
+        ),
+    }
+
+
 def seconds_since(value: str, generated_at: str) -> int | None:
     timestamp = parse_time(value)
     generated = parse_time(generated_at)
@@ -614,25 +640,25 @@ def build_cockpit_summary(summary: dict) -> dict:
             acceptance = companyctl.evidence_acceptance_context(item, evidence)
             evidence_id = str(item.get("evidence_id", "") or "")
             task_id = str(item.get("task_id", "") or "")
-            recent_evidence.append(
-                {
-                    "evidence_id": evidence_id,
-                    "task_id": task_id,
-                    "title": tasks_by_id.get(task_id, {}).get("title", ""),
-                    "status": tasks_by_id.get(task_id, {}).get("status", ""),
-                    "target_agent": item.get("employee_id", ""),
-                    "updated_at": item.get("created_at", ""),
-                    "summary": item.get("summary", ""),
-                    "artifact_id": item.get("artifact_id", ""),
-                    "attempt_id": item.get("attempt_id", ""),
-                    "evidence": evidence,
-                    "acceptance_status": decision.get("status", "pending"),
-                    "acceptance_state": acceptance.get("state", ""),
-                    "acceptance_decision": decision,
-                    "acceptance": acceptance,
-                    "actions": evidence_owner_actions(evidence_id, task_id),
-                }
-            )
+            evidence_item = {
+                "evidence_id": evidence_id,
+                "task_id": task_id,
+                "title": tasks_by_id.get(task_id, {}).get("title", ""),
+                "status": tasks_by_id.get(task_id, {}).get("status", ""),
+                "target_agent": item.get("employee_id", ""),
+                "updated_at": item.get("created_at", ""),
+                "summary": item.get("summary", ""),
+                "artifact_id": item.get("artifact_id", ""),
+                "attempt_id": item.get("attempt_id", ""),
+                "evidence": evidence,
+                "acceptance_status": decision.get("status", "pending"),
+                "acceptance_state": acceptance.get("state", ""),
+                "acceptance_decision": decision,
+                "acceptance": acceptance,
+                "actions": evidence_owner_actions(evidence_id, task_id),
+            }
+            evidence_item.update(evidence_review_context(evidence_item, generated_at))
+            recent_evidence.append(evidence_item)
     owner_attention = []
     def attention_actions(kind: str, *, task_id: str = "", attempt_id: str = "", approval_id: str = "") -> list[dict]:
         base = {"task_id": task_id, "attempt_id": attempt_id, "approval_id": approval_id}
@@ -866,6 +892,7 @@ def build_cockpit_summary(summary: dict) -> dict:
             {
                 "kind": "evidence",
                 "state": "pending_review",
+                "review_state": item.get("review_state", "pending_review_fresh"),
                 "approval_id": "",
                 "task_id": task_id,
                 "evidence_id": item.get("evidence_id", ""),
@@ -875,8 +902,11 @@ def build_cockpit_summary(summary: dict) -> dict:
                 "target_agent": item.get("target_agent", ""),
                 "attempt_id": item.get("attempt_id", ""),
                 "trace_id": "",
-                "message": f"Final evidence 待验收：{item.get('evidence', {}).get('relative_path', '')}",
+                "message": f"{item.get('owner_next_action', 'Review final evidence.')} path={item.get('evidence', {}).get('relative_path', '')}",
                 "updated_at": item.get("updated_at", ""),
+                "pending_age_minutes": item.get("pending_age_minutes"),
+                "review_sla_minutes": item.get("review_sla_minutes"),
+                "owner_next_action": item.get("owner_next_action", ""),
                 "evidence": item.get("evidence", {}),
                 "actions": item.get("actions", attention_actions("evidence", task_id=task_id)),
             }
