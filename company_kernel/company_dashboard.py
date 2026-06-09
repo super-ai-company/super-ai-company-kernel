@@ -401,6 +401,7 @@ def latest_verification_summary() -> dict:
     current = now()
     freshness_threshold_minutes = 24 * 60
     local_skill = local.get("skill_closed_loop", {}) if isinstance(local.get("skill_closed_loop"), dict) else {}
+    local_cockpit = local_skill.get("cockpit_verification", {}) if isinstance(local_skill.get("cockpit_verification"), dict) else {}
     direct_matrix = local.get("direct_matrix", []) if isinstance(local.get("direct_matrix"), list) else []
     comm_metrics = comm.get("metrics", {}) if isinstance(comm.get("metrics"), dict) else {}
     continuity_total = int(comm_metrics.get("continuity_total") or 0)
@@ -415,6 +416,11 @@ def latest_verification_summary() -> dict:
         "direct_checked": bool((local.get("direct", {}) if isinstance(local.get("direct"), dict) else {}) or direct_matrix),
         "skill_closed_loop_ok": bool(local_skill.get("ok")),
         "skill_closed_loop_checked": bool(local_skill),
+        "cockpit_visibility_checked": bool(local_cockpit),
+        "cockpit_visible": bool(local_cockpit.get("ok") and local_cockpit.get("task_visible")),
+        "cockpit_tool_call_count": int(local_cockpit.get("tool_call_count") or 0),
+        "cockpit_budget_event_count": int(local_cockpit.get("budget_event_count") or 0),
+        "cockpit_evidence_count": int(local_cockpit.get("evidence_count") or 0),
         "summary": companyctl.sanitize_log_text(str(local.get("summary") or "")),
     }
     comm_summary = {
@@ -441,6 +447,10 @@ def latest_verification_summary() -> dict:
     coverage_gaps = []
     if local_summary["available"] and not local_summary["skill_closed_loop_checked"]:
         coverage_gaps.append("skill_closed_loop_not_checked")
+    if local_summary["skill_closed_loop_checked"] and not local_summary["cockpit_visibility_checked"]:
+        coverage_gaps.append("cockpit_visibility_not_checked")
+    elif local_summary["cockpit_visibility_checked"] and not local_summary["cockpit_visible"]:
+        coverage_gaps.append("cockpit_visibility_failed")
     if local_summary["available"] and not local_summary["direct_checked"]:
         coverage_gaps.append("direct_matrix_not_checked")
     ok = bool(local_summary["available"] and local_summary["ok"] and comm_summary["available"] and comm_summary["ok"])
@@ -452,7 +462,7 @@ def latest_verification_summary() -> dict:
         owner_next_action = "rerun company-local-smoke and company-communication-acceptance; latest green reports are stale"
     elif coverage_gaps:
         status = "verification_coverage_gap"
-        owner_next_action = "run company-local-smoke with skill closed-loop and direct matrix coverage before claiming full local readiness"
+        owner_next_action = "run company-local-smoke with skill closed-loop, cockpit visibility, and direct matrix coverage before claiming full local readiness"
     elif not ok:
         status = "verification_attention_required"
         owner_next_action = "inspect latest local smoke and communication acceptance reports"

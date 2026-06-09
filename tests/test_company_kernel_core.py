@@ -2174,7 +2174,17 @@ class CompanyKernelCoreTest(unittest.TestCase):
                     "generated_at": fresh_generated_at,
                     "attendance": {"ok": True},
                     "direct_matrix": [{"agent_id": "codex", "direct_status": "ok"}],
-                    "skill_closed_loop": {"ok": True, "task_id": "task-local-smoke-skill"},
+                    "skill_closed_loop": {
+                        "ok": True,
+                        "task_id": "task-local-smoke-skill",
+                        "cockpit_verification": {
+                            "ok": True,
+                            "task_visible": True,
+                            "tool_call_count": 1,
+                            "budget_event_count": 1,
+                            "evidence_count": 1,
+                        },
+                    },
                     "summary": "local smoke passed",
                 },
                 ensure_ascii=False,
@@ -2501,6 +2511,10 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertTrue(verification_summary["local_smoke"]["direct_ok"])
         self.assertTrue(verification_summary["local_smoke"]["skill_closed_loop_checked"])
         self.assertTrue(verification_summary["local_smoke"]["skill_closed_loop_ok"])
+        self.assertTrue(verification_summary["local_smoke"]["cockpit_visible"])
+        self.assertEqual(1, verification_summary["local_smoke"]["cockpit_tool_call_count"])
+        self.assertEqual(1, verification_summary["local_smoke"]["cockpit_budget_event_count"])
+        self.assertEqual(1, verification_summary["local_smoke"]["cockpit_evidence_count"])
         self.assertIn("local smoke passed", verification_summary["summary"])
         self.assertIn("communication acceptance passed", verification_summary["summary"])
         matrix_summary = cockpit["agent_matrix_summary"]
@@ -2788,6 +2802,49 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual("verification_coverage_gap", verification["status"])
         self.assertEqual(["skill_closed_loop_not_checked"], verification["coverage_gaps"])
         self.assertIn("run company-local-smoke with skill closed-loop", verification["owner_next_action"])
+
+    def test_cockpit_verification_summary_requires_cockpit_visibility_coverage(self) -> None:
+        fresh_generated_at = companyctl.now()
+        local_smoke_dir = self.root / "state" / "local-smoke"
+        local_smoke_dir.mkdir(parents=True, exist_ok=True)
+        (local_smoke_dir / "latest.json").write_text(
+            json.dumps(
+                {
+                    "ok": True,
+                    "smoke_id": "local-smoke-no-cockpit",
+                    "generated_at": fresh_generated_at,
+                    "attendance": {"ok": True},
+                    "direct_matrix": [{"agent_id": "codex", "direct_status": "ok"}],
+                    "skill_closed_loop": {"ok": True, "task_id": "task-local-smoke-skill"},
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        comm_dir = self.root / "reports" / "communication-acceptance"
+        comm_dir.mkdir(parents=True, exist_ok=True)
+        (comm_dir / "latest.json").write_text(
+            json.dumps(
+                {
+                    "ok": True,
+                    "mechanism_ok": True,
+                    "run_id": "comm-fresh",
+                    "generated_at": fresh_generated_at,
+                    "metrics": {"continuity_total": 10, "continuity_passed": 10, "continuity_success_rate": 1.0},
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+
+        status, cockpit = api_gateway.route_get("/v1/dashboard/cockpit", {})
+        self.assertEqual(200, status, cockpit)
+        verification = cockpit["verification_summary"]
+        self.assertTrue(verification["ok"])
+        self.assertEqual("verification_coverage_gap", verification["status"])
+        self.assertEqual(["cockpit_visibility_not_checked"], verification["coverage_gaps"])
+        self.assertFalse(verification["local_smoke"]["cockpit_visible"])
+        self.assertIn("cockpit visibility", verification["owner_next_action"])
 
     def test_cockpit_ignores_orphan_active_attempts_on_finished_tasks(self) -> None:
         code, created = run_cli("employee", "create", "--id", "main", "--name", "main", "--role", "operator", "--runtime", "openclaw", "--workspace", str(self.root / "workspace" / "main"))
