@@ -822,6 +822,111 @@ def build_cockpit_summary(summary: dict) -> dict:
             }
         )
     owner_attention.sort(key=lambda item: item.get("updated_at") or "", reverse=True)
+    task_cards_by_id: dict[str, dict] = {}
+
+    def upsert_task_card(card: dict) -> None:
+        task_id = str(card.get("task_id", "") or "")
+        if not task_id:
+            return
+        existing = task_cards_by_id.get(task_id, {})
+        merged = {**existing, **card}
+        if existing.get("actions") and not card.get("actions"):
+            merged["actions"] = existing["actions"]
+        task_cards_by_id[task_id] = merged
+
+    for item in long_tasks:
+        task_id = str(item.get("task_id", "") or "")
+        correction = item.get("correction", {}) if isinstance(item.get("correction", {}), dict) else {}
+        long_state = str(item.get("long_task_state", "") or "")
+        card_state = "correcting" if correction.get("needs_ack") else long_state or str(item.get("task_status", "") or "")
+        upsert_task_card(
+            {
+                "task_id": task_id,
+                "title": item.get("title", ""),
+                "state": card_state,
+                "task_status": item.get("task_status", ""),
+                "long_task_state": long_state,
+                "heartbeat_state": item.get("heartbeat_state", ""),
+                "progress_state": item.get("progress_state", ""),
+                "employee_id": item.get("target_agent", ""),
+                "target_agent": item.get("target_agent", ""),
+                "attempt_id": item.get("attempt_id", ""),
+                "trace_id": item.get("trace_id", ""),
+                "started_at": item.get("started_at", ""),
+                "updated_at": item.get("last_progress_at") or item.get("started_at", ""),
+                "latest_progress": item.get("latest_progress", {}),
+                "correction": correction,
+                "blocker": item.get("blocker", ""),
+                "evidence": item.get("evidence", {}),
+                "completion_invalid": False,
+                "completion_invalid_reason": "",
+                "final_evidence_count": 0,
+                "actions": attention_actions("stagnant_task", task_id=task_id, attempt_id=str(item.get("attempt_id", "") or "")),
+            }
+        )
+    for task in summary.get("tasks", []):
+        status = str(task.get("status", "") or "").lower()
+        task_id = str(task.get("id", "") or "")
+        if status not in {"blocked", "failed", "stale"}:
+            continue
+        upsert_task_card(
+            {
+                "task_id": task_id,
+                "title": task.get("title", ""),
+                "state": status,
+                "task_status": status,
+                "long_task_state": "",
+                "heartbeat_state": "",
+                "progress_state": "",
+                "employee_id": task.get("claimed_by") or task.get("target_agent", ""),
+                "target_agent": task.get("target_agent", ""),
+                "attempt_id": "",
+                "trace_id": task.get("trace_id", ""),
+                "updated_at": task.get("updated_at", ""),
+                "latest_progress": progress_by_task.get(task_id, {}),
+                "correction": {},
+                "blocker": task.get("blocker") or task.get("summary") or "",
+                "evidence": companyctl.sanitize_evidence_path_for_display(str(task.get("evidence_path") or "")),
+                "completion_invalid": False,
+                "completion_invalid_reason": "",
+                "final_evidence_count": 0,
+                "actions": attention_actions("blocked_task", task_id=task_id),
+            }
+        )
+    for invalid in completion_invalid_tasks:
+        task_id = str(invalid.get("task_id", "") or "")
+        task = tasks_by_id.get(task_id, {})
+        upsert_task_card(
+            {
+                "task_id": task_id,
+                "title": task.get("title") or task_id,
+                "state": "completion_invalid",
+                "task_status": task.get("status", ""),
+                "long_task_state": "",
+                "heartbeat_state": "",
+                "progress_state": "",
+                "employee_id": invalid.get("target_agent") or task.get("claimed_by") or task.get("target_agent", ""),
+                "target_agent": invalid.get("target_agent") or task.get("target_agent", ""),
+                "attempt_id": "",
+                "trace_id": task.get("trace_id", ""),
+                "updated_at": task.get("updated_at", ""),
+                "latest_progress": progress_by_task.get(task_id, {}),
+                "correction": {},
+                "blocker": invalid.get("message", ""),
+                "evidence": companyctl.sanitize_evidence_path_for_display(str(task.get("evidence_path") or "")),
+                "completion_invalid": True,
+                "completion_invalid_reason": invalid.get("completion_invalid_reason", ""),
+                "final_evidence_count": int(invalid.get("final_evidence_count") or 0),
+                "actions": invalid.get("actions", []),
+            }
+        )
+    task_cards = sorted(
+        task_cards_by_id.values(),
+        key=lambda item: (
+            {"completion_invalid": 0, "blocked": 1, "failed": 1, "stale": 1, "correcting": 2, "progress_stagnant": 3}.get(str(item.get("state", "")), 9),
+            str(item.get("updated_at", "")),
+        ),
+    )
     employee_states = []
     for employee in employees:
         status = str(employee.get("employee_status") or employee.get("status") or "")
@@ -974,6 +1079,7 @@ def build_cockpit_summary(summary: dict) -> dict:
         "employees": employee_states,
         "projects": projects,
         "active_limited_reasons": active_limited_reasons,
+        "task_cards": task_cards[:30],
         "long_tasks": long_tasks,
         "runtime_sessions": summary.get("runtime_sessions", [])[:20],
         "tool_calls": summary.get("tool_calls", [])[:30],

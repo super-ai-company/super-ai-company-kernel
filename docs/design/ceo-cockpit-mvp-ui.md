@@ -37,7 +37,7 @@ Use existing backend surfaces first. Do not invent new endpoints unless implemen
 
 | Need | Existing API | Notes |
 |---|---|---|
-| Cockpit home aggregate | `GET /v1/dashboard/cockpit` | Primary polling endpoint. Includes `generated_at`; backend owns stale/stagnant/session state. |
+| Cockpit home aggregate | `GET /v1/dashboard/cockpit` | Primary polling endpoint. Includes `generated_at`; backend owns stale/stagnant/session state and `task_cards[]`. |
 | Doctor banner | `GET /v1/doctor` | Browser cannot run `bin/companyctl`; show returned JSON summary in modal. |
 | Employees | `GET /v1/employees` | Employee cards and readiness summary. |
 | Employee detail | `GET /v1/employees/{employee_id}` | Lazy load from card click. |
@@ -65,7 +65,7 @@ These are not frontend workarounds. They are backend/API requirements that must 
 |---|---|---|
 | Mixed-currency budget | `/v1/budget-summary` must return per-currency totals, and preferably per-currency `by_employee` and `by_task` rows. Example: `total_amounts_by_currency: {"USD": 1.50, "THB": 120.00}`. | Show mixed-currency warning and per-currency rows only when provided. Do not show `total_amount` as a comparable money value. |
 | Doctor health in cockpit | `/v1/dashboard/cockpit` should include `doctor.ok`, `doctor.issue_count`, `doctor.exit_code`, and `doctor.generated_at` to avoid double polling during the 8-second refresh loop. | Poll `/v1/doctor` separately and show a slower diagnostics banner. |
-| Completion invalid marker | `long_tasks[]`, task cards, and `GET /v1/tasks/{task_id}` should include `completion_invalid: true/false` and `completion_invalid_reason`. | Show invalid count if present, but do not guess which task is invalid from unrelated evidence counts. |
+| Completion invalid marker | `task_cards[]`, `completion_invalid_tasks[]`, and `GET /v1/tasks/{task_id}` include `completion_invalid: true/false` and `completion_invalid_reason`. | Show invalid count if present, but do not guess which task is invalid from unrelated evidence counts. |
 | Tool-call detail payload size | `/v1/tool-calls?limit=200` must return only summarized and sanitized fields. `input_summary`, `output_summary`, and `error_message` must each be capped to 500 display characters. | Row click opens only the hydrated sanitized summary row; no invented detail endpoint and no raw stdout/stderr. |
 | Employee evidence filter | `/v1/evidence` supports `employee_id`; employee evidence panels must use the backend filter instead of local hydrated-row guessing. | If the API is unavailable, show an explicit API gap message and do not claim full employee evidence history. |
 | Direct message action | Direct message is not part of the 3-day UI MVP. | Hide all direct message/chat controls. Never use DM success as readiness or evidence. |
@@ -150,7 +150,7 @@ API:
 
 Minimum layout:
 - Left column: CEO summary grid and employee readiness cards.
-- Center column: running/stagnant/blocked task cards sorted by owner attention priority.
+- Center column: `task_cards[]` from `/v1/dashboard/cockpit`, covering running/stagnant/blocked/completion-invalid task cards sorted by owner attention priority.
 - Right column: Tool Calls, Budget, and Evidence compact panels.
 - Task detail drawer slides from the right and must not replace the cockpit overview.
 
@@ -242,7 +242,7 @@ Click actions:
 - `Reject / Reopen`: for done evidence that fails owner review, POST `/v1/tasks/{task_id}/reopen` with `status="submitted"`.
 
 API:
-- Primary card data: `GET /v1/dashboard/cockpit`
+- Primary card data: `GET /v1/dashboard/cockpit.task_cards[]`
 - Drawer: `GET /v1/tasks/{task_id}`
 
 ## 8. Tool Calls Panel
@@ -505,7 +505,7 @@ Deliver:
 - Show `/v1/doctor` status banner; debug mode may show raw JSON in a plain `<pre>`.
 - Show skill-only employees without chat buttons.
 - Show candidate employees as candidate, not active.
-- Show API gap banners for missing doctor-in-cockpit and missing completion-invalid task markers.
+- Use `task_cards[]` for running/stagnant/blocked/completion-invalid task cards; show API gap only if this field is missing.
 
 Verification:
 - `curl -s http://127.0.0.1:8765/v1/dashboard/cockpit | python3 -m json.tool`
@@ -550,7 +550,7 @@ The MVP is accepted only if all items below are true in the local environment:
 1. CEO home uses live API data from `/v1/dashboard/cockpit`; no static fake runtime truth.
 2. Every employee card shows readiness badge and does not confuse online with active.
 3. Skill workers hide chat/direct actions but show task execution and evidence state.
-4. Running task cards show latest progress, current attempt, stagnant/blocked/failed/done state, and final evidence validity.
+4. `task_cards[]` show latest progress, current attempt, stagnant/blocked/failed/done-invalid state, and final evidence validity.
 5. Task drawer opens from real tasks and shows attempts, runtime sessions, tool calls, budget, evidence, and timeline.
 6. Tool Calls panel renders only sanitized summaries and redacts unsafe/unknown records.
 7. Budget panel displays ledger values by currency without frontend conversion.
