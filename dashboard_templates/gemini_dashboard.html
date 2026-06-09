@@ -3760,7 +3760,7 @@
       </div>
       <div class="cockpit-card">
         <h3>Health Bar</h3>
-        <div class="cockpit-value" style="color:${Number(healthBar.doctor_issue_count ?? doctorIssues || 0) ? 'var(--color-amber)' : 'var(--color-green)'}">${escapeHtml(healthBar.doctor_issue_count ?? doctorIssues ?? 0)}</div>
+        <div class="cockpit-value" style="color:${Number((healthBar.doctor_issue_count ?? doctorIssues) || 0) ? 'var(--color-amber)' : 'var(--color-green)'}">${escapeHtml(healthBar.doctor_issue_count ?? doctorIssues ?? 0)}</div>
         <div class="cockpit-subtext">api=${escapeHtml(healthBar.api_status || 'online')} · doctor.ok=${escapeHtml(String(healthBar.doctor_ok ?? (doctor.ok !== false)))} · exit=${escapeHtml(healthBar.doctor_exit_code ?? doctor.exit_code ?? 0)} · poll=${escapeHtml(healthBar.poll_mode || '-')} ${escapeHtml(healthBar.poll_interval_seconds ?? '-')}s · data_age=${escapeHtml(healthBar.data_age_seconds ?? '-')}s · owner_next_action=${escapeHtml(healthBar.owner_next_action || '-')}</div>
       </div>
       <div class="cockpit-card">
@@ -4880,6 +4880,22 @@
     ].join('\n');
   }
 
+  function ownerActionTimelineSummary(timeline) {
+    const rows = Array.isArray(timeline) ? timeline : [];
+    if (!rows.length) return 'owner_action_timeline empty: no owner probe/correction/cancel/retry/reassign/approval actions yet.';
+    return rows.slice(-20).map(item => sanitizeDisplayText([
+      item.created_at || '-',
+      item.kind || '-',
+      item.action || '-',
+      `status=${item.status || '-'}`,
+      `actor=${item.actor || '-'}`,
+      `attempt=${item.attempt_id || '-'}`,
+      `requires_owner_approval=${String(!!item.requires_owner_approval)}`,
+      `reason=${item.reason || '-'}`,
+      `next=${item.owner_next_action || '-'}`
+    ].join(' · '))).join('\n');
+  }
+
   function budgetBreakdownRows(label, values) {
     const rows = values && typeof values === 'object' && !Array.isArray(values) ? Object.entries(values) : [];
     if (!rows.length) return `${label}: none`;
@@ -5667,6 +5683,7 @@
       const budgetEvents = payload.budget_events || [];
       const controlPlaneTimeline = payload.control_plane_timeline || [];
       const controlActionSummary = payload.control_action_summary || {};
+      const ownerActionTimeline = payload.owner_action_timeline || [];
       const completionContract = payload.completion_contract || {};
       const supervisorState = payload.supervisor_state || {};
       const correctionSummary = payload.correction_summary || {};
@@ -5695,6 +5712,7 @@
         ['Task Operational Ledger', taskOperationalLedgerSummary(payload, taskTracePayload)],
         ['CEO Trace Brief', ceoTraceBriefSummary(taskTracePayload.ceo_trace_brief || {})],
         ['Task Control Plane Timeline', taskControlPlaneTimelineSummary(controlPlaneTimeline)],
+        ['Owner Action Timeline', ownerActionTimelineSummary(ownerActionTimeline)],
         ['Control Action Summary', controlActionSummaryDetail(controlActionSummary)],
         ['Latest Attempt Summary', latestAttemptSummary(latestAttempt)],
         ['Attempt History Summary', attemptHistoryContractSummary(attemptHistory, attempts)],

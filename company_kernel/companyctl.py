@@ -2383,6 +2383,71 @@ def task_control_action_summary(*, approvals: list[dict], events: list[dict], at
     }
 
 
+def owner_action_next_step(action: str, *, pending: bool = False) -> str:
+    if pending:
+        return "review owner approval request before real execution"
+    if action == "probe":
+        return "wait for worker response or escalate to Hermes correction if progress remains stagnant"
+    if action == "correction":
+        return "wait for worker correction ack or fresh progress"
+    if action == "cancel":
+        return "verify process stopped and ignore late evidence"
+    if action in {"retry", "reassign", "reopen"}:
+        return "monitor new attempt heartbeat, progress, and evidence"
+    return "monitor task progress and evidence"
+
+
+def task_owner_action_timeline(*, approvals: list[dict], events: list[dict]) -> list[dict]:
+    timeline: list[dict] = []
+    for approval in approvals:
+        detail = approval.get("detail", {}) if isinstance(approval.get("detail", {}), dict) else {}
+        metadata = detail.get("metadata", {}) if isinstance(detail.get("metadata", {}), dict) else {}
+        action = str(approval.get("action") or "").removeprefix("task_control.").removeprefix("task.")
+        timeline.append(
+            {
+                "kind": "pending_approval" if str(approval.get("status") or "") == "pending" else "approval",
+                "action": action,
+                "status": approval.get("status", ""),
+                "approval_id": approval.get("id", ""),
+                "task_id": metadata.get("task_id", ""),
+                "attempt_id": metadata.get("attempt_id", ""),
+                "actor": approval.get("source_agent", ""),
+                "event_type": "approval.requested",
+                "reason": detail.get("request_reason") or approval.get("reason", ""),
+                "created_at": approval.get("created_at", ""),
+                "requires_owner_approval": True,
+                "owner_next_action": owner_action_next_step(action, pending=True),
+            }
+        )
+    for event in events:
+        event_type = str(event.get("event_type") or "")
+        action = CONTROL_EVENT_ACTIONS.get(event_type)
+        if not action:
+            continue
+        payload = parse_json_arg(event.get("payload_json", "{}") or "{}", {})
+        if not isinstance(payload, dict):
+            payload = {}
+        requires_owner_approval = action in {"correction", "cancel", "retry", "reassign", "reopen"}
+        timeline.append(
+            {
+                "kind": "executed_control",
+                "action": action,
+                "status": "executed",
+                "event_id": event.get("id", ""),
+                "event_type": event_type,
+                "task_id": event.get("task_id", ""),
+                "attempt_id": payload.get("attempt_id", ""),
+                "actor": event.get("source_agent", ""),
+                "reason": payload.get("reason") or payload.get("message") or "",
+                "created_at": event.get("created_at", ""),
+                "requires_owner_approval": requires_owner_approval,
+                "owner_next_action": owner_action_next_step(action),
+            }
+        )
+    kind_order = {"pending_approval": 0, "approval": 1, "executed_control": 2}
+    return sorted(timeline, key=lambda item: (str(item.get("created_at") or ""), kind_order.get(str(item.get("kind") or ""), 9), str(item.get("action") or "")))
+
+
 def task_completion_contract(task: dict, evidence_records: list[dict]) -> dict:
     status = str(task.get("status") or "").lower()
     done_like = status in {"completed", "done", "success"}
@@ -9049,6 +9114,7 @@ def cmd_task_show(args: argparse.Namespace) -> int:
             "correction_summary": correction_summary,
             "approvals": approvals,
             "control_action_summary": task_control_action_summary(approvals=approvals, events=events, attempts=attempts),
+            "owner_action_timeline": task_owner_action_timeline(approvals=approvals, events=events),
             "lock": dict(lock) if lock else {},
             "audit_logs": audit_rows,
         }
