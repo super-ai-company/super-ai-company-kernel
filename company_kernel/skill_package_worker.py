@@ -6,6 +6,7 @@ import os
 import shlex
 import sqlite3
 import subprocess
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -223,6 +224,7 @@ def process(args: argparse.Namespace) -> int:
         ]
     )
     run_companyctl(["task", "progress", "--task-id", task["id"], "--agent", args.agent, "--attempt-id", attempt_id, "--state", "acknowledged", "--message", f"Skill package {manifest['id']} acknowledged", "--progress", "5"])
+    started_monotonic = time.monotonic()
     try:
         cp = run_skill_command(manifest["runtime"]["command"], workspace, package_path.parent, task_id=task["id"], agent=args.agent, manifest=manifest, timeout=args.timeout)
     except subprocess.TimeoutExpired as exc:
@@ -246,10 +248,11 @@ def process(args: argparse.Namespace) -> int:
         return 1
     summary = f"Skill package {manifest['id']} produced {final_rel}"
     companyctl_json(["tool-call", "finish", "--tool-call-id", tool_call_id, "--status", "success", "--output-summary", summary])
+    runtime_seconds = max(0, int(round(time.monotonic() - started_monotonic)))
     pricing = manifest.get("pricing") if isinstance(manifest.get("pricing"), dict) else {}
     amount = str(pricing.get("amount", 0) or 0)
     currency = str(pricing.get("currency", "USD") or "USD")
-    companyctl_json(
+    budget_recorded = companyctl_json(
         [
             "budget",
             "record",
@@ -266,7 +269,7 @@ def process(args: argparse.Namespace) -> int:
             "--currency",
             currency,
             "--runtime-seconds",
-            "0",
+            str(runtime_seconds),
             "--summary",
             f"skill package {manifest['id']} pricing unit={pricing.get('unit', 'task')}",
         ]
@@ -300,6 +303,7 @@ def process(args: argparse.Namespace) -> int:
             "attempt": finish.get("attempt", run_payload["attempt"]),
             "runtime_session": session_started.get("payload", {}).get("session", {}),
             "tool_call_id": tool_call_id,
+            "budget_event": budget_recorded.get("payload", {}).get("budget_event", {}),
             "artifact": artifact,
             "evidence": evidence,
             "stdout": cp.stdout[-2000:],
