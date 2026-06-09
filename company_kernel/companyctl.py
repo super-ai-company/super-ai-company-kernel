@@ -7782,12 +7782,28 @@ def approval_control_summary(approvals: list[dict]) -> dict:
             real_execution_blockers["external_send"] = real_execution_blockers.get("external_send", 0) + 1
         if action in {"budget_overrun", "budget.overrun"} and status == "pending":
             real_execution_blockers["budget_overrun"] = real_execution_blockers.get("budget_overrun", 0) + 1
+    pending_owner_action_count = sum(
+        count for status, count in by_status.items() if status in {"pending", "requested", "waiting_approval"}
+    )
+    blocked_real_execution_count = sum(real_execution_blockers.values())
+    queue_health = "owner_action_required" if pending_owner_action_count or blocked_real_execution_count else "clear"
+    if queue_health == "owner_action_required":
+        blocker_rows = ", ".join(f"{kind}={count}" for kind, count in sorted(real_execution_blockers.items())) or "no real execution blockers"
+        pending_rows = ", ".join(sorted(pending_high_risk_actions)) or "no pending high-risk actions"
+        owner_next_action = f"review pending high-risk approvals ({pending_rows}); blocked real execution: {blocker_rows}"
+    else:
+        owner_next_action = "no pending owner approval actions; monitor queue"
     return {
         "total": len(approvals),
         "by_status": by_status,
         "by_action": by_action,
         "high_risk_actions": sorted(high_risk_actions),
         "pending_high_risk_actions": sorted(pending_high_risk_actions),
+        "pending_owner_action_count": pending_owner_action_count,
+        "blocked_real_execution_count": blocked_real_execution_count,
+        "queue_health": queue_health,
+        "owner_next_action": owner_next_action,
+        "default_policy": "dry_run_until_owner_approval",
         "dry_run_resolved": dry_run_resolved,
         "external_send_executed": external_send_executed,
         "real_external_send_requires_owner_approval": True,

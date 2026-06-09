@@ -4035,6 +4035,11 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertIn("pending_high_risk_actions", html)
         self.assertIn("real_execution_blockers", html)
         self.assertIn("realExecutionBlockerRows", html)
+        self.assertIn("pending_owner_action_count", html)
+        self.assertIn("blocked_real_execution_count", html)
+        self.assertIn("queue_health", html)
+        self.assertIn("owner_next_action", html)
+        self.assertIn("default_policy", html)
         self.assertIn("budget_overrun", html)
         self.assertIn("blocked until owner approval", html)
 
@@ -4313,6 +4318,13 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual(2, summary["real_execution_blockers"]["external_send"])
         self.assertEqual(1, summary["real_execution_blockers"]["budget_overrun"])
         self.assertTrue(summary["real_external_send_requires_owner_approval"])
+        self.assertEqual(3, summary["pending_owner_action_count"])
+        self.assertEqual(3, summary["blocked_real_execution_count"])
+        self.assertEqual("owner_action_required", summary["queue_health"])
+        self.assertEqual("dry_run_until_owner_approval", summary["default_policy"])
+        self.assertIn("review pending high-risk approvals", summary["owner_next_action"])
+        self.assertIn("external_send=2", summary["owner_next_action"])
+        self.assertIn("budget_overrun=1", summary["owner_next_action"])
         self.assertIn("blocked until owner approval", summary["summary"])
 
     def test_dashboard_renders_project_goal_acceptance_review_and_retro(self) -> None:
