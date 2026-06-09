@@ -4833,7 +4833,10 @@
       target: detail.target || requestDetail.target || approval.target || '',
       risk: detail.risk || requestDetail.risk || approval.risk || '',
       evidence: detail.evidence || requestDetail.evidence || '',
-      task_id: metadata.task_id || requestDetail.task_id || ''
+      task_id: metadata.task_id || requestDetail.task_id || '',
+      attempt_id: metadata.attempt_id || requestDetail.attempt_id || '',
+      control_action: metadata.control_action || requestDetail.action || '',
+      execute_requires: metadata.execute_requires || requestDetail.execute_requires || ''
     };
   }
 
@@ -4849,6 +4852,14 @@
   function approvalTableSafetySummary(app) {
     const safety = (app && app.safety) || {};
     return `mode=${escapeHtml(safety.resolution_mode || '-')} · dry_run=${String(!!safety.dry_run)} · external_send_executed=${String(!!safety.external_send_executed)} · ${escapeHtml(safety.summary || 'owner approval required before real external delivery')}`;
+  }
+
+  function approvalTaskControlSummary(app) {
+    const control = approvalSummary(app);
+    if (!String(app.action || '').startsWith('task_control.') && !control.control_action && !control.attempt_id) {
+      return '';
+    }
+    return `Task Control Detail · task=${escapeHtml(control.task_id || '-')} · attempt=${escapeHtml(control.attempt_id || '-')} · control_action=${escapeHtml(control.control_action || '-')} · execute_requires=${escapeHtml(control.execute_requires || '-')}`;
   }
 
   function realExecutionBlockerRows(blockers) {
@@ -5012,6 +5023,7 @@
   function showApprovalDetails(approval) {
     const detail = approvalDetail(approval);
     const summary = approvalSummary(approval);
+    const taskControl = approvalTaskControlSummary(approval);
     renderDetails(`Approval: ${approval.id || ''}`, [
       ['Status', approval.status || ''],
       ['Action', approval.action || ''],
@@ -5019,6 +5031,8 @@
       ['Target', summary.target || '-'],
       ['Risk', summary.risk || '-'],
       ['Task ID', summary.task_id || '-'],
+      ['Attempt ID', summary.attempt_id || '-'],
+      ['Task Control Detail', taskControl || '-'],
       ['Reason', summary.request_reason || '-'],
       ['Evidence', summary.evidence || '-'],
       ['Approval Safety', approvalSafetySummary([approval])],
@@ -6471,6 +6485,7 @@
       approvalsTbody.innerHTML = approvals.length ? approvals.map((app, index) => {
         const detail = approvalSummary(app);
         const safetySummary = approvalTableSafetySummary(app);
+        const taskControlSummary = approvalTaskControlSummary(app);
         return `
           <tr data-record-row="true" data-approval-index="${index}">
             <td style="font-family: monospace; max-width: 260px;">${escapeHtml(app.id || '')}</td>
@@ -6482,6 +6497,7 @@
               <div style="margin-top:4px;color:var(--text-muted);font-size:11px;">
                 target=${escapeHtml(detail.target || '-')} · risk=${escapeHtml(detail.risk || '-')}${detail.task_id ? ` · task=${escapeHtml(detail.task_id)}` : ''}
               </div>
+              ${taskControlSummary ? `<div style="margin-top:4px;color:#c7d2fe;font-size:11px;">${taskControlSummary}</div>` : ''}
               <div style="margin-top:4px;color:var(--text-muted);font-size:11px;">
                 safety=${safetySummary}
               </div>

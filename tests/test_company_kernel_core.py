@@ -4013,6 +4013,15 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertIn("external_send_executed=${String(!!safety.external_send_executed)}", html)
         self.assertIn("owner approval required before real external delivery", html)
 
+    def test_dashboard_approvals_table_exposes_task_control_traceability(self) -> None:
+        template = Path(__file__).resolve().parents[1] / "dashboard_templates" / "gemini_dashboard.html"
+        html = template.read_text(encoding="utf-8")
+        self.assertIn("approvalTaskControlSummary(app)", html)
+        self.assertIn("control_action=${escapeHtml(control.control_action || '-')}", html)
+        self.assertIn("attempt=${escapeHtml(control.attempt_id || '-')}", html)
+        self.assertIn("execute_requires=${escapeHtml(control.execute_requires || '-')}", html)
+        self.assertIn("Task Control Detail", html)
+
     def test_dashboard_approvals_render_owner_control_summary(self) -> None:
         template = Path(__file__).resolve().parents[1] / "dashboard_templates" / "gemini_dashboard.html"
         html = template.read_text(encoding="utf-8")
