@@ -5217,22 +5217,55 @@
     const detail = approvalDetail(approval);
     const summary = approvalSummary(approval);
     const taskControl = approvalTaskControlSummary(approval);
+    const task = approval.task || {};
+    const events = Array.isArray(approval.events) ? approval.events : [];
+    const auditLogs = Array.isArray(approval.audit_logs) ? approval.audit_logs : [];
+    const evidenceRecords = Array.isArray(approval.evidence_records) ? approval.evidence_records : [];
+    const budget = approval.budget_summary || {};
     renderDetails(`Approval: ${approval.id || ''}`, [
       ['Status', approval.status || ''],
       ['Action', approval.action || ''],
       ['Source', approval.source_agent || ''],
       ['Target', summary.target || '-'],
       ['Risk', summary.risk || '-'],
-      ['Task ID', summary.task_id || '-'],
+      ['Task ID', summary.task_id || task.id || '-'],
       ['Attempt ID', summary.attempt_id || '-'],
       ['Task Control Detail', taskControl || '-'],
       ['Reason', summary.request_reason || '-'],
       ['Evidence', summary.evidence || '-'],
       ['Approval Safety', approvalSafetySummary([approval])],
+      ['Bound Task', task.id ? `${task.id} · ${task.title || '-'} · ${task.status || '-'}` : '-'],
+      ['Related Events', events.length ? events.map(event => `${event.created_at || ''} ${event.event_type || '-'} ${event.id || ''}`).join('\n') : '-'],
+      ['Audit Logs', auditLogs.length ? auditLogs.map(item => `${item.created_at || ''} ${item.action || '-'} by ${item.actor || '-'}`).join('\n') : '-'],
+      ['Budget', budget && budget.event_count !== undefined ? `events=${budget.event_count || 0} · ${budget.currency || 'USD'} ${budget.total_amount || 0} · input=${budget.token_input || 0} · output=${budget.token_output || 0}` : '-'],
+      ['Evidence Records', evidenceRecordsSummary(evidenceRecords)],
       ['Updated', formatDate(approval.updated_at || '')],
       ['Decision By', detail.decided_by || detail.decision_by || '-'],
       ['Decision Reason', detail.decision_reason || '-']
     ], approval);
+  }
+
+  async function showApprovalApiDetails(approvalId, fallbackApproval) {
+    const safeId = String(approvalId || '');
+    if (!safeId) return showApprovalDetails(fallbackApproval || {});
+    companyApiLog('SYSTEM', `Loading approval detail ${safeId}: task, events, audit, budget, and evidence context.`, 'normal');
+    try {
+      const payload = await companyApiGet(`/v1/approvals/${encodeURIComponent(safeId)}`);
+      const approval = Object.assign({}, payload.approval || {}, {
+        task: payload.task || {},
+        events: payload.events || [],
+        audit_logs: payload.audit_logs || [],
+        approval_control_summary: payload.approval_control_summary || {},
+        evidence_records: payload.evidence_records || [],
+        budget_summary: payload.budget_summary || {},
+        redaction_policy: payload.redaction_policy || {}
+      });
+      showApprovalDetails(approval);
+      companyApiLog('SYSTEM', `Approval API detail loaded: ${safeId} events=${(payload.events || []).length} audit=${(payload.audit_logs || []).length}.`, 'success');
+    } catch (err) {
+      companyApiLog('ERROR', `Approval detail load failed for ${safeId}: ${err.message}; showing cached row.`, 'warn');
+      showApprovalDetails(fallbackApproval || {id: safeId});
+    }
   }
 
   function showTraceDetails(trace) {
@@ -6711,7 +6744,10 @@
         `;
       }).join('') : '<tr data-empty-row="true"><td colspan="7" style="color:var(--text-muted);text-align:center;padding:24px;">No approvals.</td></tr>';
       approvalsTbody.querySelectorAll('tr[data-approval-index]').forEach(row => {
-        row.addEventListener('click', () => showApprovalDetails(approvals[Number(row.dataset.approvalIndex)]));
+        row.addEventListener('click', () => {
+          const approval = approvals[Number(row.dataset.approvalIndex)] || {};
+          showApprovalApiDetails(approval.id || approval.approval_id || '', approval);
+        });
       });
     }
     refreshAuditEvidenceTable(summary.evidence_records || []);
