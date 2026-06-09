@@ -4962,6 +4962,29 @@
     ].join('\n');
   }
 
+  function employeeCeoWorkContractSummary(contract) {
+    const item = contract || {};
+    const task = item.current_task || {};
+    const sessions = item.runtime_sessions || {};
+    const tools = item.tool_calls || {};
+    const budget = item.budget || {};
+    const evidence = item.evidence || {};
+    const review = item.owner_review || {};
+    const rules = item.truth_rules || {};
+    const warnings = Array.isArray(review.warnings) ? review.warnings.join(',') : '';
+    return [
+      `employee=${item.employee_id || '-'} · runtime=${item.runtime || '-'} · status=${item.employee_status || '-'}`,
+      `current_task=${task.task_id || '-'} · state=${task.state || '-'} · attempt=${task.attempt_id || '-'} · session=${task.session_id || '-'}`,
+      `heartbeat=${task.heartbeat_state || '-'} · progress=${task.progress_state || '-'} · progress_age=${task.progress_age_seconds || 0}s`,
+      `runtime_sessions=${sessions.total || 0} · latest_session=${sessions.latest_session_id || '-'} ${sessions.latest_status || ''}`,
+      `tool_calls=${tools.total || 0} · failed_or_blocked=${tools.failed_or_blocked || 0} · latest=${tools.latest_tool_call_id || '-'} ${tools.latest_status || ''}`,
+      `budget=${budget.currency || 'USD'} ${budget.total_amount || 0} · events=${budget.event_count || 0} · tokens=${budget.token_input || 0}/${budget.token_output || 0} · runtime=${budget.runtime_seconds || 0}s`,
+      `evidence=${evidence.total || 0} · final=${evidence.final_count || 0} · latest=${evidence.latest_evidence_id || '-'}`,
+      `owner_review=${review.mode || 'inspect'} · warnings=${warnings || '-'} · next=${review.next_action || 'inspect employee work before assigning more tasks'}`,
+      `truth_rules completion_requires_final_evidence=${String(!!rules.completion_requires_final_evidence)} · heartbeat_is_completion=${String(!!rules.heartbeat_is_completion)} · chat_reply_is_completion=${String(!!rules.chat_reply_is_completion)} · stdout_is_completion=${String(!!rules.stdout_is_completion)}`
+    ].map(sanitizeDisplayText).join('\n');
+  }
+
   function employeeBudgetSummary(summary) {
     const item = summary || {};
     return [
@@ -5776,11 +5799,13 @@
       const budgetEvents = workPayload.budget_events || payload.budget_events || [];
       const evidenceRecords = workPayload.evidence_records || payload.evidence_records || [];
       const operationalSummary = workPayload.operational_summary || payload.operational_summary || {};
+      const ceoWorkContract = workPayload.ceo_work_contract || payload.ceo_work_contract || {};
       renderDetails(`Employee Detail: ${employeeId}`, [
         ['Status', employee.status || profile.status || '-'],
         ['Runtime', employee.runtime || profile.runtime || '-'],
         ['Role', employee.role || profile.role || '-'],
         ['Heartbeat', heartbeat.status || heartbeat.state || heartbeat.last_seen_at || '-'],
+        ['CEO Work Contract', employeeCeoWorkContractSummary(ceoWorkContract)],
         ['Operational Summary', employeeOperationalSummary(operationalSummary)],
         ['Current Activity', employeeCurrentActivitySummary(currentActivity)],
         ['Work History', employeeWorkHistorySummary(workHistory)],
