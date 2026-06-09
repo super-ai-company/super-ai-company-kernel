@@ -2347,11 +2347,34 @@ def employee_view_models(summary: dict) -> list[dict]:
                 current_state = "running"
             if not current_state:
                 current_state = "idle"
+            long_task_state = {}
+            if current_attempt:
+                long_task_state = companyctl.long_task_state_for_attempt(current_attempt, generated_at=summary.get("generated_at", ""))
+                current_state = str(long_task_state.get("long_task_state") or current_state)
             owner_next_action = "idle: assign a task when work is available"
+            recommended_actions: list[dict] = []
             if current_task_id:
                 owner_next_action = "monitor current task progress, tool calls, budget, and evidence"
-            if current_state in {"blocked", "failed", "stale", "cancelled"}:
+                recommended_actions = [
+                    {"id": "view_task", "label": "View Task", "method": "GET", "requires_owner_approval": False},
+                    {"id": "view_trace", "label": "View Trace", "method": "GET", "requires_owner_approval": False},
+                ]
+            if current_state in {"progress_stagnant", "heartbeat_stale"}:
+                owner_next_action = "employee may still be online; inspect logs, request correction, wait, or cancel"
+                recommended_actions = [
+                    {"id": "view_logs", "label": "View Logs", "method": "GET", "requires_owner_approval": False},
+                    {"id": "request_correction", "label": "Request Correction", "method": "POST", "requires_owner_approval": True, "dry_run_default": True},
+                    {"id": "wait", "label": "Keep Waiting", "method": "none", "requires_owner_approval": False},
+                    {"id": "cancel", "label": "Cancel", "method": "POST", "requires_owner_approval": True, "dangerous": True},
+                ]
+            elif current_state in {"blocked", "failed", "stale", "cancelled"}:
                 owner_next_action = "review blocker, then correct, cancel, retry, or reassign"
+                recommended_actions = [
+                    {"id": "view_logs", "label": "View Logs", "method": "GET", "requires_owner_approval": False},
+                    {"id": "retry", "label": "Retry", "method": "POST", "requires_owner_approval": True, "dry_run_default": True},
+                    {"id": "reassign", "label": "Reassign", "method": "POST", "requires_owner_approval": True, "dry_run_default": True},
+                    {"id": "cancel", "label": "Cancel", "method": "POST", "requires_owner_approval": True, "dangerous": True},
+                ]
             work_status_summary = {
                 "employee_id": employee_id,
                 "current_task_id": current_task_id,
@@ -2359,6 +2382,13 @@ def employee_view_models(summary: dict) -> list[dict]:
                 "current_attempt_id": str(current_attempt.get("attempt_id", "") or ""),
                 "current_trace_id": str(current_attempt.get("trace_id", "") or ""),
                 "current_state": current_state,
+                "long_task_state": long_task_state.get("long_task_state", ""),
+                "heartbeat_state": long_task_state.get("heartbeat_state", ""),
+                "progress_state": long_task_state.get("progress_state", ""),
+                "heartbeat_age_seconds": long_task_state.get("heartbeat_age_seconds", ""),
+                "progress_age_seconds": long_task_state.get("progress_age_seconds", ""),
+                "runtime_age_seconds": long_task_state.get("runtime_age_seconds", ""),
+                "timeout_is_sync_wait_only": bool(long_task_state.get("timeout_is_sync_wait_only")) if long_task_state else True,
                 "readiness_level": readiness.get("level", ""),
                 "readiness_reason": readiness.get("reason", ""),
                 "active_session_count": runtime_summary.get("active_session_count", 0),
@@ -2379,6 +2409,7 @@ def employee_view_models(summary: dict) -> list[dict]:
                 "final_evidence_count": evidence_summary.get("final_evidence_count", 0),
                 "latest_evidence_id": evidence_summary.get("latest_evidence_id", ""),
                 "owner_next_action": owner_next_action,
+                "recommended_actions": recommended_actions,
             }
             employees.append(
                 {
