@@ -5100,6 +5100,20 @@
     ].join('\n');
   }
 
+  function ceoAcceptanceContractSummary(contract) {
+    const item = contract || {};
+    const counts = item.ledger_counts || {};
+    const rules = item.truth_rules || {};
+    const blockers = Array.isArray(item.blocking_reasons) ? item.blocking_reasons.join(',') : '';
+    return [
+      `status=${item.status || '-'} · state=${item.current_state || '-'} · ready_for_acceptance=${String(!!item.ready_for_acceptance)}`,
+      `task=${item.task_id || '-'} · attempt=${item.current_attempt_id || '-'} · trace=${item.trace_id || '-'}`,
+      `blockers=${blockers || '-'} · owner_next_action=${item.owner_next_action || 'monitor task ledger'}`,
+      `ledger attempts=${counts.attempts || 0} · sessions=${counts.runtime_sessions || 0} · tools=${counts.tool_calls || 0} · failed_tools=${counts.failed_tool_calls || 0} · budget_events=${counts.budget_events || 0} · evidence=${counts.evidence_records || 0} · final=${counts.final_evidence || 0} · pending_approvals=${counts.pending_approvals || 0} · controls=${counts.control_events || 0}`,
+      `truth_rules completion_requires_final_evidence=${String(!!rules.completion_requires_final_evidence)} · matching_task_id=${String(!!rules.completion_requires_matching_task_id)} · heartbeat_is_completion=${String(!!rules.heartbeat_is_completion)} · ack_is_completion=${String(!!rules.ack_is_completion)} · stdout_is_completion=${String(!!rules.stdout_is_completion)} · cancelled_attempt_can_complete=${String(!!rules.cancelled_attempt_can_complete)}`
+    ].map(sanitizeDisplayText).join('\n');
+  }
+
   function evidenceAcceptanceSummary(records, contract) {
     const rows = Array.isArray(records) ? records : [];
     const item = contract || {};
@@ -5708,6 +5722,7 @@
       const controlActionSummary = payload.control_action_summary || {};
       const ownerActionTimeline = payload.owner_action_timeline || [];
       const completionContract = payload.completion_contract || {};
+      const ceoAcceptanceContract = payload.ceo_acceptance_contract || {};
       const supervisorState = payload.supervisor_state || {};
       const correctionSummary = payload.correction_summary || {};
       const attemptHistory = payload.attempt_history || {};
@@ -5734,6 +5749,7 @@
         ['Task Decision', taskDecisionSummary(task, latestAttempt, payload)],
         ['Task Operational Ledger', taskOperationalLedgerSummary(payload, taskTracePayload)],
         ['CEO Trace Brief', ceoTraceBriefSummary(taskTracePayload.ceo_trace_brief || {})],
+        ['CEO Acceptance Contract', ceoAcceptanceContractSummary(ceoAcceptanceContract)],
         ['Task Control Plane Timeline', taskControlPlaneTimelineSummary(controlPlaneTimeline)],
         ['Owner Action Timeline', ownerActionTimelineSummary(ownerActionTimeline)],
         ['Control Action Summary', controlActionSummaryDetail(controlActionSummary)],

@@ -2482,6 +2482,98 @@ def task_completion_contract(task: dict, evidence_records: list[dict]) -> dict:
     }
 
 
+def task_ceo_acceptance_contract(
+    *,
+    task: dict,
+    attempts: list[dict],
+    runtime_sessions: list[dict],
+    tool_calls: list[dict],
+    budget_events: list[dict],
+    evidence_records: list[dict],
+    completion_contract: dict,
+    approvals: list[dict],
+    events: list[dict],
+) -> dict:
+    latest_attempt = attempts[-1] if attempts else {}
+    if latest_attempt and not latest_attempt.get("long_task_state"):
+        latest_attempt = {**latest_attempt, **long_task_state_for_attempt(latest_attempt)}
+    metadata = parse_json_arg(task.get("metadata_json", "{}") or "{}", {})
+    if not isinstance(metadata, dict):
+        metadata = {}
+    latest_state = str(latest_attempt.get("long_task_state") or latest_attempt.get("status") or task.get("status") or "unknown")
+    done_like = bool(completion_contract.get("done_like"))
+    completion_valid = bool(completion_contract.get("valid"))
+    final_evidence_count = int(completion_contract.get("final_evidence_count") or 0)
+    pending_approvals = [item for item in approvals if str(item.get("status") or "") == "pending"]
+    failed_tools = [item for item in tool_calls if str(item.get("status") or "") in {"failed", "blocked", "cancelled"}]
+    blocking_reasons: list[str] = []
+    if done_like and not completion_valid:
+        blocking_reasons.append(str(completion_contract.get("reason") or "completion_invalid"))
+    if latest_state in {"blocked", "failed", "stale", "heartbeat_stale", "progress_stagnant", "cancelled"}:
+        blocking_reasons.append(latest_state)
+    if pending_approvals:
+        blocking_reasons.append("pending_owner_approval")
+    if failed_tools:
+        blocking_reasons.append("failed_or_blocked_tool_calls")
+    if task.get("id") and attempts and not runtime_sessions:
+        blocking_reasons.append("runtime_session_missing")
+    if attempts and not tool_calls and latest_state not in {"submitted", "queued", "claimed", "starting"}:
+        blocking_reasons.append("tool_call_ledger_missing")
+
+    status = "monitor"
+    owner_next_action = "monitor task heartbeat, progress, tool calls, budget, and evidence"
+    if done_like and completion_valid:
+        status = "ready_for_owner_acceptance"
+        owner_next_action = "review final evidence and accept delivery"
+    if latest_state in {"submitted", "queued", "claimed", "starting", "running", "correcting"}:
+        status = "needs_progress"
+        owner_next_action = "monitor progress; send probe or correction if it becomes stagnant"
+    if blocking_reasons:
+        status = "blocked"
+        owner_next_action = "resolve blocking reasons before accepting task"
+    if "missing_final_evidence" in blocking_reasons:
+        owner_next_action = "attach or promote task-bound final evidence before accepting completion"
+    elif "pending_owner_approval" in blocking_reasons:
+        owner_next_action = "review pending owner approvals before real execution"
+    elif latest_state in {"progress_stagnant", "heartbeat_stale"}:
+        owner_next_action = "send probe, inspect sanitized logs, or request Hermes correction"
+    elif latest_state in {"blocked", "failed", "stale"}:
+        owner_next_action = "review blocker, then retry, reassign, or request correction"
+    elif latest_state == "cancelled":
+        owner_next_action = "do not accept late evidence from cancelled attempt; retry or reassign if needed"
+
+    control_events = [item for item in events if CONTROL_EVENT_ACTIONS.get(str(item.get("event_type") or ""))]
+    return {
+        "task_id": task.get("id", ""),
+        "status": status,
+        "current_state": latest_state,
+        "current_attempt_id": latest_attempt.get("attempt_id", ""),
+        "trace_id": latest_attempt.get("trace_id", "") or metadata.get("trace_id", ""),
+        "ready_for_acceptance": status == "ready_for_owner_acceptance",
+        "blocking_reasons": list(dict.fromkeys(reason for reason in blocking_reasons if reason)),
+        "owner_next_action": owner_next_action,
+        "ledger_counts": {
+            "attempts": len(attempts),
+            "runtime_sessions": len(runtime_sessions),
+            "tool_calls": len(tool_calls),
+            "failed_tool_calls": len(failed_tools),
+            "budget_events": len(budget_events),
+            "evidence_records": len(evidence_records),
+            "final_evidence": final_evidence_count,
+            "pending_approvals": len(pending_approvals),
+            "control_events": len(control_events),
+        },
+        "truth_rules": {
+            "completion_requires_final_evidence": True,
+            "completion_requires_matching_task_id": True,
+            "heartbeat_is_completion": False,
+            "ack_is_completion": False,
+            "stdout_is_completion": False,
+            "cancelled_attempt_can_complete": False,
+        },
+    }
+
+
 def task_supervisor_state(attempts: list[dict]) -> tuple[dict, dict]:
     state = {
         "corrections_requested": 0,
@@ -9075,21 +9167,38 @@ def task_control_context_bundle(conn: sqlite3.Connection, task_id: str) -> dict:
         sanitized_audit.append({**item, "detail": sanitize_json_like(parsed)})
     attempts = task_attempts(conn, safe_task_id)
     trace_id = trace_id_for_task(conn, safe_task_id, "")
+    evidence_records = task_evidence_records(conn, safe_task_id)
+    completion_contract = task_completion_contract(task_payload, evidence_records)
+    runtime_sessions = list_runtime_sessions(conn, task_id=safe_task_id, limit=50)
+    tool_calls = list_tool_calls(conn, task_id=safe_task_id, limit=100)
+    budget_events = list_budget_events(conn, task_id=safe_task_id, trace_id=trace_id, limit=100)
+    approvals = task_approvals(conn, safe_task_id)
     return {
         "ok": True,
         "source": "task_control_context",
         "task": task_payload,
         "attempts": attempts,
         "attempt_history": task_attempt_history(attempts),
-        "runtime_sessions": list_runtime_sessions(conn, task_id=safe_task_id, limit=50),
-        "tool_calls": list_tool_calls(conn, task_id=safe_task_id, limit=100),
+        "runtime_sessions": runtime_sessions,
+        "tool_calls": tool_calls,
         "events": sanitized_events,
         "audit_logs": sanitized_audit,
         "budget_summary": budget_summary(conn, task_id=safe_task_id, trace_id=trace_id),
-        "budget_events": list_budget_events(conn, task_id=safe_task_id, trace_id=trace_id, limit=100),
-        "evidence_records": task_evidence_records(conn, safe_task_id),
-        "completion_contract": task_completion_contract(task_payload, task_evidence_records(conn, safe_task_id)),
-        "approvals": task_approvals(conn, safe_task_id),
+        "budget_events": budget_events,
+        "evidence_records": evidence_records,
+        "completion_contract": completion_contract,
+        "ceo_acceptance_contract": task_ceo_acceptance_contract(
+            task=task_payload,
+            attempts=attempts,
+            runtime_sessions=runtime_sessions,
+            tool_calls=tool_calls,
+            budget_events=budget_events,
+            evidence_records=evidence_records,
+            completion_contract=completion_contract,
+            approvals=approvals,
+            events=sanitized_events,
+        ),
+        "approvals": approvals,
         "redaction_policy": sanitized_log_policy(),
     }
 
@@ -9197,6 +9306,17 @@ def cmd_task_show(args: argparse.Namespace) -> int:
         )
     supervisor_state, correction_summary = task_supervisor_state(attempts)
     approvals = task_approvals(conn, task_id)
+    ceo_acceptance_contract = task_ceo_acceptance_contract(
+        task=task_obj,
+        attempts=attempts,
+        runtime_sessions=runtime_sessions,
+        tool_calls=tool_calls,
+        budget_events=budget_events,
+        evidence_records=evidence_records,
+        completion_contract=completion_contract,
+        approvals=approvals,
+        events=events,
+    )
     emit(
         {
             "ok": True,
@@ -9205,6 +9325,7 @@ def cmd_task_show(args: argparse.Namespace) -> int:
             "evidence": evidence,
             "evidence_records": evidence_records,
             "completion_contract": completion_contract,
+            "ceo_acceptance_contract": ceo_acceptance_contract,
             "completion_invalid": bool(completion_contract.get("done_like")) and not bool(completion_contract.get("valid")),
             "completion_invalid_reason": "" if bool(completion_contract.get("valid")) else str(completion_contract.get("reason", "")),
             "final_evidence_count": int(completion_contract.get("final_evidence_count") or 0),

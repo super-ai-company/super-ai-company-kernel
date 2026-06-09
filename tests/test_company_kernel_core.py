@@ -6707,6 +6707,12 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual({"USD": 0.25}, shown["projects"][0]["budget_by_currency"])
         self.assertEqual(1, shown["projects"][0]["budget_event_count"])
         self.assertEqual(trace_id, shown["runtime_sessions"][0]["trace_id"])
+        self.assertEqual("needs_progress", shown["ceo_acceptance_contract"]["status"])
+        self.assertEqual("running", shown["ceo_acceptance_contract"]["current_state"])
+        self.assertEqual(attempt_id, shown["ceo_acceptance_contract"]["current_attempt_id"])
+        self.assertEqual(1, shown["ceo_acceptance_contract"]["ledger_counts"]["tool_calls"])
+        self.assertEqual(1, shown["ceo_acceptance_contract"]["ledger_counts"]["budget_events"])
+        self.assertIn("monitor", shown["ceo_acceptance_contract"]["owner_next_action"])
 
         status, api_payload = api_gateway.route_get("/v1/tasks/task-detail-control-plane", {})
         self.assertEqual(HTTPStatus.OK, status, api_payload)
@@ -6737,6 +6743,7 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual("budget-task-detail-control-plane", next(item for item in timeline if item["kind"] == "budget_event")["budget_event_id"])
         self.assertTrue(all(item["timestamp"] for item in timeline))
         self.assertEqual(sorted(item["timestamp"] for item in timeline), [item["timestamp"] for item in timeline])
+        self.assertEqual(shown["ceo_acceptance_contract"], api_payload["ceo_acceptance_contract"])
 
     def test_task_detail_marks_completed_task_without_final_evidence_invalid(self) -> None:
         with sqlite3.connect(self.root / "company.sqlite") as conn:
@@ -6772,6 +6779,9 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertTrue(shown["completion_invalid"])
         self.assertEqual("missing_final_evidence", shown["completion_invalid_reason"])
         self.assertEqual(0, shown["final_evidence_count"])
+        self.assertEqual("blocked", shown["ceo_acceptance_contract"]["status"])
+        self.assertEqual("missing_final_evidence", shown["ceo_acceptance_contract"]["blocking_reasons"][0])
+        self.assertIn("final evidence", shown["ceo_acceptance_contract"]["owner_next_action"])
 
     def test_dashboard_task_detail_drawer_renders_control_plane_ledgers(self) -> None:
         template = Path(__file__).resolve().parents[1] / "dashboard_templates" / "gemini_dashboard.html"
@@ -6785,8 +6795,10 @@ class CompanyKernelCoreTest(unittest.TestCase):
             "const controlActionSummary = payload.control_action_summary || {};",
             "const ownerActionTimeline = payload.owner_action_timeline || [];",
             "const completionContract = payload.completion_contract || {};",
+            "const ceoAcceptanceContract = payload.ceo_acceptance_contract || {};",
             "['Task Operational Ledger', taskOperationalLedgerSummary(payload, taskTracePayload)]",
             "['CEO Trace Brief', ceoTraceBriefSummary(taskTracePayload.ceo_trace_brief || {})]",
+            "['CEO Acceptance Contract', ceoAcceptanceContractSummary(ceoAcceptanceContract)]",
             "['Task Control Plane Timeline', taskControlPlaneTimelineSummary(controlPlaneTimeline)]",
             "['Control Action Summary', controlActionSummaryDetail(controlActionSummary)]",
             "['Owner Action Timeline', ownerActionTimelineSummary(ownerActionTimeline)]",
@@ -6814,6 +6826,9 @@ class CompanyKernelCoreTest(unittest.TestCase):
             "function ownerActionTimelineSummary",
             "owner_action_timeline empty: no owner probe/correction/cancel/retry/reassign/approval actions yet.",
             "requires_owner_approval=${String(!!item.requires_owner_approval)}",
+            "function ceoAcceptanceContractSummary",
+            "ready_for_acceptance=",
+            "truth_rules completion_requires_final_evidence=",
             "pending_owner_approvals=",
             "executed_control_actions=",
             "owner_next_action=",
