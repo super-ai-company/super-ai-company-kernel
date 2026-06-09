@@ -393,6 +393,25 @@ def build_cockpit_summary(summary: dict) -> dict:
     active_attempts = summary.get("active_attempts", [])
     chat_counts = chat_classification_counts(summary.get("direct_messages_recent", []))
     tasks_by_id = {str(task.get("id", "")): task for task in summary.get("tasks", [])}
+
+    def risk_first_tool_calls(tool_calls: list[dict]) -> list[dict]:
+        def timestamp(item: dict) -> str:
+            return str(item.get("finished_at") or item.get("started_at") or "")
+
+        def priority(item: dict) -> int:
+            status = str(item.get("status", "") or "")
+            risk = str(item.get("risk_level", "") or "")
+            if status in {"failed", "blocked", "cancelled"}:
+                return 0
+            if status == "running":
+                return 1
+            if risk in {"high", "critical"}:
+                return 2
+            return 3
+
+        latest_first = sorted(tool_calls, key=timestamp, reverse=True)
+        return sorted(latest_first, key=priority)
+
     progress_by_task = {}
     for progress in companyctl.task_progress_events(summary.get("events", [])):
         task_id = str(progress.get("task_id", ""))
@@ -850,7 +869,7 @@ def build_cockpit_summary(summary: dict) -> dict:
         }
 
     def tool_summary_for_task(task_id: str) -> dict:
-        tool_calls = tool_calls_by_task.get(task_id, [])
+        tool_calls = risk_first_tool_calls(tool_calls_by_task.get(task_id, []))
         latest = tool_calls[0] if tool_calls else {}
         return {
             "tool_call_count": len(tool_calls),
@@ -1147,7 +1166,7 @@ def build_cockpit_summary(summary: dict) -> dict:
         "task_cards": task_cards[:30],
         "long_tasks": long_tasks,
         "runtime_sessions": summary.get("runtime_sessions", [])[:20],
-        "tool_calls": summary.get("tool_calls", [])[:30],
+        "tool_calls": risk_first_tool_calls(summary.get("tool_calls", []))[:30],
         "budget_events": summary.get("budget_events", [])[:50],
         "budget_summary": summary.get("budget_summary", {}),
         "supervisor_activity": supervisor_activity[:10],
