@@ -6326,6 +6326,17 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual(0.25, api_payload["budget_summary"]["total_amount"])
         self.assertEqual(["project-task-detail-cost"], [item["id"] for item in api_payload["projects"]])
         self.assertEqual({"USD": 0.25}, api_payload["projects"][0]["budget_by_currency"])
+        timeline = api_payload["control_plane_timeline"]
+        timeline_kinds = [item["kind"] for item in timeline]
+        self.assertIn("task_event", timeline_kinds)
+        self.assertIn("attempt", timeline_kinds)
+        self.assertIn("runtime_session", timeline_kinds)
+        self.assertIn("tool_call", timeline_kinds)
+        self.assertIn("budget_event", timeline_kinds)
+        self.assertEqual("tool-task-detail-control-plane", next(item for item in timeline if item["kind"] == "tool_call")["tool_call_id"])
+        self.assertEqual("budget-task-detail-control-plane", next(item for item in timeline if item["kind"] == "budget_event")["budget_event_id"])
+        self.assertTrue(all(item["timestamp"] for item in timeline))
+        self.assertEqual(sorted(item["timestamp"] for item in timeline), [item["timestamp"] for item in timeline])
 
     def test_task_detail_marks_completed_task_without_final_evidence_invalid(self) -> None:
         with sqlite3.connect(self.root / "company.sqlite") as conn:
@@ -6370,8 +6381,10 @@ class CompanyKernelCoreTest(unittest.TestCase):
             "const toolCalls = payload.tool_calls || [];",
             "const budgetSummary = payload.budget_summary || {};",
             "const budgetEvents = payload.budget_events || [];",
+            "const controlPlaneTimeline = payload.control_plane_timeline || [];",
             "const completionContract = payload.completion_contract || {};",
             "['Task Operational Ledger', taskOperationalLedgerSummary(payload, taskTracePayload)]",
+            "['Task Control Plane Timeline', taskControlPlaneTimelineSummary(controlPlaneTimeline)]",
             "['Runtime Sessions', runtimeSessionsSummary(runtimeSessions)]",
             "['Tool Calls', toolCallsSummary(toolCalls)]",
             "['Budget Summary', budgetSummaryDetail(budgetSummary)]",
@@ -6385,6 +6398,10 @@ class CompanyKernelCoreTest(unittest.TestCase):
             "timeline_events=${timeline.length}",
             "final_evidence=${completionContract.final_evidence_count || 0}",
             "owner_readable_next_action=",
+            "function taskControlPlaneTimelineSummary",
+            "control_plane_timeline empty: no task event/attempt/runtime/tool/budget/evidence rows yet.",
+            "item.kind || '-'",
+            "item.timestamp || '-'",
             "function runtimeSessionsSummary",
             "function toolCallsSummary",
             "const sanitized = item.sanitized === true;",
