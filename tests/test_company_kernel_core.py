@@ -2185,6 +2185,9 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual(0, code, blocked)
         code, submitted_done = run_cli("task", "submit", "--from", "main", "--to", "codex-cockpit", "--task-id", "task-cockpit-done", "--title", "Cockpit done task")
         self.assertEqual(0, code, submitted_done)
+        code, done_run = run_cli("task", "run", "--task-id", "task-cockpit-done", "--agent", "codex-cockpit", "--by", "main", "--adapter-type", "codex")
+        self.assertEqual(0, code, done_run)
+        done_attempt_id = done_run["attempt"]["attempt_id"]
         code, submitted_missing_evidence = run_cli("task", "submit", "--from", "main", "--to", "codex-cockpit", "--task-id", "task-cockpit-done-missing-evidence", "--title", "Cockpit missing evidence")
         self.assertEqual(0, code, submitted_missing_evidence)
         code, submitted_approval = run_cli("task", "submit", "--from", "main", "--to", "codex-cockpit", "--task-id", "task-cockpit-awaiting-approval", "--title", "Cockpit approval task")
@@ -2268,6 +2271,7 @@ class CompanyKernelCoreTest(unittest.TestCase):
                 by="codex-cockpit",
                 summary="promoted cockpit final evidence",
             )
+            conn.execute("UPDATE evidence SET attempt_id = ? WHERE evidence_id = ?", (done_attempt_id, promoted["evidence"]["evidence_id"]))
             conn.execute("UPDATE tasks SET evidence_path = ?, status = 'completed', claimed_by = 'codex-cockpit', summary = 'done', updated_at = ? WHERE id = ?", (str(done_evidence), companyctl.now(), "task-cockpit-done"))
             conn.execute("UPDATE tasks SET status = 'completed', claimed_by = 'codex-cockpit', summary = 'missing evidence', updated_at = ? WHERE id = ?", (companyctl.now(), "task-cockpit-done-missing-evidence"))
             conn.commit()
@@ -2501,6 +2505,18 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertTrue(recent_evidence["evidence"]["allowed"])
         self.assertFalse(recent_evidence["evidence"]["absolute_path_exposed"])
         self.assertIn("artifacts/done-final.md", recent_evidence["evidence"]["relative_path"])
+        self.assertEqual("pending", recent_evidence["acceptance_status"])
+        self.assertEqual("reviewable_final_evidence", recent_evidence["acceptance_state"])
+        self.assertEqual(["safe_preview", "accept_evidence", "reject_evidence", "view_trace"], [action["id"] for action in recent_evidence["actions"]])
+        self.assertEqual(1, cockpit["counts"]["pending_final_evidence"])
+        pending_evidence = next(item for item in cockpit["evidence_acceptance_queue"] if item["task_id"] == "task-cockpit-done")
+        self.assertEqual(promoted["evidence"]["evidence_id"], pending_evidence["evidence_id"])
+        self.assertEqual("pending", pending_evidence["acceptance_status"])
+        self.assertEqual("reviewable_final_evidence", pending_evidence["acceptance_state"])
+        self.assertEqual(["safe_preview", "accept_evidence", "reject_evidence", "view_trace"], [action["id"] for action in pending_evidence["actions"]])
+        evidence_attention = next(item for item in cockpit["owner_attention"] if item["task_id"] == "task-cockpit-done" and item["kind"] == "evidence")
+        self.assertEqual("pending_review", evidence_attention["state"])
+        self.assertEqual(["safe_preview", "accept_evidence", "reject_evidence", "view_trace"], [action["id"] for action in evidence_attention["actions"]])
         legacy_evidence = next(item for item in cockpit["legacy_task_evidence"] if item["task_id"] == "task-cockpit-long")
         self.assertTrue(legacy_evidence["evidence"]["allowed"])
         self.assertIn("evidence/result.md", legacy_evidence["evidence"]["relative_path"])
@@ -6595,6 +6611,9 @@ class CompanyKernelCoreTest(unittest.TestCase):
             "accepted_final_evidence_count",
             "rejected_final_evidence_count",
             "acceptance_status",
+            "evidence_acceptance_queue",
+            "pending_final_evidence",
+            "acceptance_status=${escapeHtml(item.acceptance_status || 'pending')}",
             "function evidenceDecisionRows",
             "acceptEvidenceFromDashboard",
             "rejectEvidenceFromDashboard",

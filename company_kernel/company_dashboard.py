@@ -482,22 +482,51 @@ def build_cockpit_summary(summary: dict) -> dict:
                     "evidence": evidence,
                 }
             )
+    def evidence_owner_actions(evidence_id: str, task_id: str) -> list[dict]:
+        def action(action_id: str, label: str, api: str, *, method: str = "GET", requires_owner_approval: bool = False, dangerous: bool = False) -> dict:
+            return {
+                "id": action_id,
+                "label": label,
+                "api": api,
+                "method": method,
+                "task_id": task_id,
+                "evidence_id": evidence_id,
+                "requires_owner_approval": requires_owner_approval,
+                "dry_run_default": False,
+                "dangerous": dangerous,
+            }
+        return [
+            action("safe_preview", "Safe preview", f"/v1/evidence/{evidence_id}/safe-preview"),
+            action("accept_evidence", "Accept evidence", f"/v1/evidence/{evidence_id}/accept", method="POST", requires_owner_approval=True),
+            action("reject_evidence", "Reject evidence", f"/v1/evidence/{evidence_id}/reject", method="POST", requires_owner_approval=True),
+            action("view_trace", "View trace", ""),
+        ]
+
     recent_evidence = []
     for item in summary.get("evidence_records", []):
         evidence = item.get("display") if isinstance(item.get("display"), dict) else companyctl.sanitize_evidence_path_for_display(str(item.get("path_or_url") or ""))
         if evidence.get("allowed") and item.get("is_final"):
+            decision = item.get("acceptance_decision", {}) if isinstance(item.get("acceptance_decision", {}), dict) else companyctl.evidence_acceptance_decision(item)
+            acceptance = companyctl.evidence_acceptance_context(item, evidence)
+            evidence_id = str(item.get("evidence_id", "") or "")
+            task_id = str(item.get("task_id", "") or "")
             recent_evidence.append(
                 {
-                    "evidence_id": item.get("evidence_id", ""),
-                    "task_id": item.get("task_id", ""),
-                    "title": tasks_by_id.get(str(item.get("task_id", "")), {}).get("title", ""),
-                    "status": tasks_by_id.get(str(item.get("task_id", "")), {}).get("status", ""),
+                    "evidence_id": evidence_id,
+                    "task_id": task_id,
+                    "title": tasks_by_id.get(task_id, {}).get("title", ""),
+                    "status": tasks_by_id.get(task_id, {}).get("status", ""),
                     "target_agent": item.get("employee_id", ""),
                     "updated_at": item.get("created_at", ""),
                     "summary": item.get("summary", ""),
                     "artifact_id": item.get("artifact_id", ""),
                     "attempt_id": item.get("attempt_id", ""),
                     "evidence": evidence,
+                    "acceptance_status": decision.get("status", "pending"),
+                    "acceptance_state": acceptance.get("state", ""),
+                    "acceptance_decision": decision,
+                    "acceptance": acceptance,
+                    "actions": evidence_owner_actions(evidence_id, task_id),
                 }
             )
     owner_attention = []
@@ -536,7 +565,9 @@ def build_cockpit_summary(summary: dict) -> dict:
             ]
         if kind == "evidence":
             return [
-                action("review_evidence", "Review evidence", f"/v1/tasks/{task_id}"),
+                action("safe_preview", "Safe preview", "", method="GET"),
+                action("accept_evidence", "Accept evidence", "", method="POST", requires_owner_approval=True),
+                action("reject_evidence", "Reject evidence", "", method="POST", requires_owner_approval=True),
                 action("view_trace", "View trace", ""),
             ]
         if kind == "evidence_issue":
@@ -717,24 +748,26 @@ def build_cockpit_summary(summary: dict) -> dict:
                 "actions": attention_actions("approval", task_id=task_id, approval_id=approval_id),
             }
         )
-    for item in recent_evidence[:10]:
+    evidence_acceptance_queue = [item for item in recent_evidence if str(item.get("acceptance_status") or "pending") == "pending"]
+    for item in evidence_acceptance_queue[:10]:
         task_id = str(item.get("task_id", ""))
         owner_attention.append(
             {
                 "kind": "evidence",
-                "state": "success",
+                "state": "pending_review",
                 "approval_id": "",
                 "task_id": task_id,
+                "evidence_id": item.get("evidence_id", ""),
                 "approval_action": "",
                 "risk": "",
                 "title": item.get("title", ""),
                 "target_agent": item.get("target_agent", ""),
-                "attempt_id": "",
+                "attempt_id": item.get("attempt_id", ""),
                 "trace_id": "",
-                "message": f"Final evidence 可验收：{item.get('evidence', {}).get('relative_path', '')}",
+                "message": f"Final evidence 待验收：{item.get('evidence', {}).get('relative_path', '')}",
                 "updated_at": item.get("updated_at", ""),
                 "evidence": item.get("evidence", {}),
-                "actions": attention_actions("evidence", task_id=task_id),
+                "actions": item.get("actions", attention_actions("evidence", task_id=task_id)),
             }
         )
     for tool_call in summary.get("tool_calls", [])[:10]:
@@ -1177,6 +1210,7 @@ def build_cockpit_summary(summary: dict) -> dict:
             ),
             "pending_approvals": len(pending_approvals),
             "recent_evidence": len(recent_evidence),
+            "pending_final_evidence": len(evidence_acceptance_queue),
             "legacy_task_evidence": len(legacy_task_evidence),
             "evidence_issues": len(evidence_issues),
             "completion_invalid_tasks": len(completion_invalid_tasks),
@@ -1201,6 +1235,7 @@ def build_cockpit_summary(summary: dict) -> dict:
         "owner_attention": owner_attention[:20],
         "pending_approvals": pending_approvals[:10],
         "recent_evidence": recent_evidence[:10],
+        "evidence_acceptance_queue": evidence_acceptance_queue[:10],
         "legacy_task_evidence": legacy_task_evidence[:10],
         "completion_invalid_tasks": completion_invalid_tasks[:10],
     }

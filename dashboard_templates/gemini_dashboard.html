@@ -3903,13 +3903,16 @@
     `).join('') : `<div class="cockpit-row"><div><strong>No owner attention needed</strong><span>Pending approvals and recent final evidence will appear here.</span></div><div class="long-task-state success">clear</div></div>`;
     renderSupervisorActivity(cockpit.supervisor_activity || []);
     renderAcceptanceSignals();
-    recentEvidence.innerHTML = evidence.length ? evidence.slice(0, 5).map(item => `
+    const evidenceAcceptanceQueue = (cockpit && cockpit.evidence_acceptance_queue) || [];
+    const evidenceRows = evidenceAcceptanceQueue.length ? evidenceAcceptanceQueue : evidence;
+    recentEvidence.innerHTML = evidenceRows.length ? evidenceRows.slice(0, 5).map(item => `
       <div class="cockpit-row" onclick="openTaskDetailDrawer('${escapeHtml(item.task_id || '')}')">
         <div>
           <strong>${escapeHtml(item.title || item.task_id || '-')}</strong>
           <span>${escapeHtml(item.target_agent || '-')} · ${escapeHtml((item.evidence && item.evidence.relative_path) || '')}</span>
+          <span>acceptance_status=${escapeHtml(item.acceptance_status || 'pending')} · acceptance_state=${escapeHtml(item.acceptance_state || '-')} · pending_final_evidence=${escapeHtml(((cockpit && cockpit.counts) || {}).pending_final_evidence || 0)}</span>
         </div>
-        <div class="long-task-state success">evidence</div>
+        <div class="long-task-state ${escapeHtml((item.acceptance_status || 'pending') === 'pending' ? 'progress_stagnant' : 'success')}">${escapeHtml(item.acceptance_status || 'evidence')}</div>
       </div>
     `).join('') : `<div class="cockpit-row"><div><strong>No recent evidence</strong><span>Final evidence from completed work will appear here.</span></div><div class="long-task-state running">empty</div></div>`;
     const sessions = (cockpit && cockpit.runtime_sessions) || [];
