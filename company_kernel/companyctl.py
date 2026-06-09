@@ -4855,6 +4855,35 @@ def employee_file_bundle(conn: sqlite3.Connection, employee_id: str) -> dict:
                 task_rollups[task_id]["has_final_evidence"] = True
 
     enriched_tasks = [{**dict(item), **task_rollups.get(str(item.get("id") or ""), {})} for item in task_rows]
+    status_counts: dict[str, int] = {}
+    def effective_task_status(task: dict) -> str:
+        attempt_status = str(task.get("latest_attempt_status") or "").lower()
+        if attempt_status in {"starting", "running", "correcting"}:
+            return "running"
+        if attempt_status in {"failed", "blocked", "stale", "cancelled", "success"}:
+            return "completed" if attempt_status == "success" else attempt_status
+        return str(task.get("status") or "unknown").lower() or "unknown"
+
+    for task in enriched_tasks:
+        status = effective_task_status(task)
+        status_counts[status] = status_counts.get(status, 0) + 1
+    attention_counts = {
+        "running_tasks": sum(1 for item in enriched_tasks if effective_task_status(item) in {"submitted", "claimed", "running", "retrying"}),
+        "blocked_tasks": sum(1 for item in enriched_tasks if effective_task_status(item) in {"blocked", "stale", "waiting_approval"}),
+        "failed_tasks": sum(1 for item in enriched_tasks if effective_task_status(item) in {"failed", "cancelled"}),
+        "failed_tool_calls": sum(int(item.get("failed_tool_call_count") or 0) for item in enriched_tasks),
+        "completion_invalid_tasks": sum(
+            1
+            for item in enriched_tasks
+            if effective_task_status(item) in {"completed", "done", "success"} and not bool(item.get("has_final_evidence"))
+        ),
+        "tasks_with_final_evidence": sum(1 for item in enriched_tasks if bool(item.get("has_final_evidence"))),
+    }
+    work_history_summary = (
+        f"{len(enriched_tasks)} tasks · {attention_counts['running_tasks']} running · "
+        f"{attention_counts['blocked_tasks']} blocked · {attention_counts['failed_tasks']} failed · "
+        f"{attention_counts['failed_tool_calls']} failed tool calls · {attention_counts['tasks_with_final_evidence']} final evidence"
+    )
     current_tasks = [dict(item) for item in enriched_tasks if str(item.get("status", "")).lower() in {"submitted", "claimed", "running", "waiting_approval", "blocked", "stale", "retrying"}][:10]
     recent_tasks = [dict(item) for item in enriched_tasks[:10]]
     active_attempt_statuses = {"starting", "running", "correcting"}
@@ -4954,6 +4983,9 @@ def employee_file_bundle(conn: sqlite3.Connection, employee_id: str) -> dict:
             "current_tasks": current_tasks,
             "recent_tasks": recent_tasks,
             "tasks": enriched_tasks,
+            "status_counts": status_counts,
+            "attention_counts": attention_counts,
+            "summary": work_history_summary,
             "counts": {
                 "tasks": len(task_rows),
                 "current_tasks": len(current_tasks),
