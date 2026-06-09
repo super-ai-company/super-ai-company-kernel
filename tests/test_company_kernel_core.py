@@ -5926,6 +5926,7 @@ class CompanyKernelCoreTest(unittest.TestCase):
             "['Budget Summary', budgetSummaryDetail(budgetSummary)]",
             "['Budget Events', budgetEventsSummary(budgetEvents)]",
             "['Completion Contract', completionContractSummary(completionContract)]",
+            "['Evidence Acceptance', evidenceAcceptanceSummary(evidenceRecords, completionContract)]",
             "function taskOperationalLedgerSummary",
             "tool_calls=${toolCalls.length}",
             "budget_events=${budgetEvents.length}",
@@ -5942,6 +5943,9 @@ class CompanyKernelCoreTest(unittest.TestCase):
             "budgetLimitStatusSummary",
             "function budgetEventsSummary",
             "function completionContractSummary",
+            "function evidenceAcceptanceSummary",
+            "preview_policy=safe-preview-only",
+            "owner_acceptance_action=",
         ]:
             self.assertIn(snippet, html)
 
