@@ -315,6 +315,27 @@
       border-color: rgba(34, 197, 94, 0.28);
     }
 
+    .ledger-gap-list {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      margin-top: 7px;
+    }
+
+    .ledger-gap-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      padding: 4px 7px;
+      border-radius: 999px;
+      color: #fbbf24;
+      background: rgba(245, 158, 11, 0.12);
+      border: 1px solid rgba(245, 158, 11, 0.28);
+      font-size: 10px;
+      font-weight: 800;
+      letter-spacing: 0.02em;
+    }
+
     .readiness-badge {
       display: inline-flex;
       align-items: center;
@@ -3821,6 +3842,16 @@
     `;
     const stagnantGuidance = stagnantTaskGuidance();
     const rows = (cockpit && (cockpit.task_cards || cockpit.long_tasks)) || [];
+    function renderLedgerGapBadges(item) {
+      const ledger_gaps = Array.isArray(item.ledger_gaps) ? item.ledger_gaps : [];
+      if (!ledger_gaps.length) return '';
+      const labels = {
+        tool_call_ledger_missing: 'Tool-call ledger missing',
+        budget_ledger_missing: 'Cost ledger missing'
+      };
+      const badges = ledger_gaps.map(gap => `<span class="ledger-gap-badge"><i class="fa-solid fa-triangle-exclamation"></i>${escapeHtml(labels[gap] || gap)}</span>`).join('');
+      return `<div class="ledger-gap-list" title="Control-plane ledger gaps">${badges}<span>Control-plane ledger gaps</span></div>`;
+    }
     longTasks.innerHTML = rows.length ? rows.slice(0, 8).map(item => `
       <div class="cockpit-row" onclick="openTaskDetailDrawer('${escapeHtml(item.task_id || '')}')">
         <div>
@@ -3842,6 +3873,7 @@
           ${item.completion_invalid ? `<span>Completion Invalid · ${escapeHtml(item.completion_invalid_reason || 'missing_final_evidence')}</span>` : ''}
           ${item.blocker ? `<span>Blocker · ${escapeHtml(item.blocker)}</span>` : ''}
           ${item.progress_state === 'stagnant' ? `<span>${escapeHtml(stagnantGuidance)}</span>` : ''}
+          ${renderLedgerGapBadges(item)}
         </div>
         <div class="long-task-state ${escapeHtml(item.state || item.long_task_state || 'running')}">${escapeHtml(item.state || item.long_task_state || 'running')}</div>
       </div>
@@ -3897,6 +3929,7 @@
           ${item.display_name && item.display_name !== item.title ? `<span>display=${escapeHtml(item.display_name)}</span>` : ''}
           <span>${escapeHtml([item.target_agent ? `target=${item.target_agent}` : '', item.task_id ? `task=${item.task_id}` : '', item.approval_id ? `approval=${item.approval_id}` : '', item.approval_action ? `action=${item.approval_action}` : '', item.risk ? `risk=${item.risk}` : ''].filter(Boolean).join(' · '))}</span>
           <span>${escapeHtml(item.message || item.meta || '')}</span>
+          ${renderLedgerGapBadges(item)}
           ${renderOwnerAttentionActions(item)}
         </div>
         <div class="long-task-state ${escapeHtml(item.state)}">${escapeHtml(item.state)}</div>

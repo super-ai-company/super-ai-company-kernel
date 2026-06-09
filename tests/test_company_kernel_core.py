@@ -4751,6 +4751,10 @@ class CompanyKernelCoreTest(unittest.TestCase):
             "Runtime · sessions=",
             "Tools · calls=",
             "Budget ·",
+            "ledger_gaps",
+            "Tool-call ledger missing",
+            "Cost ledger missing",
+            "Control-plane ledger gaps",
             "Evidence · final=",
         ]:
             self.assertIn(snippet, html)
