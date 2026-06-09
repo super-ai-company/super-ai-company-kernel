@@ -5816,6 +5816,107 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual(["session-control-plane-ledger"], [item["session_id"] for item in cockpit["runtime_sessions"]])
         self.assertEqual(["tool-call-control-plane-ledger"], [item["tool_call_id"] for item in cockpit["tool_calls"]])
 
+        code, older_failed_tool = run_cli(
+            "tool-call",
+            "start",
+            "--tool-call-id",
+            "tool-call-control-plane-ledger-failed",
+            "--trace-id",
+            trace_id,
+            "--task-id",
+            "task-control-plane-ledger",
+            "--attempt-id",
+            attempt_id,
+            "--employee",
+            "codex",
+            "--session-id",
+            "session-control-plane-ledger",
+            "--tool-name",
+            "shell",
+            "--tool-type",
+            "shell",
+            "--input-summary",
+            "run failed command",
+            "--risk-level",
+            "medium",
+        )
+        self.assertEqual(0, code, older_failed_tool)
+        code, finished_failed_tool = run_cli(
+            "tool-call",
+            "finish",
+            "--tool-call-id",
+            "tool-call-control-plane-ledger-failed",
+            "--status",
+            "failed",
+            "--output-summary",
+            "command failed",
+        )
+        self.assertEqual(0, code, finished_failed_tool)
+        with companyctl.connect() as conn:
+            conn.execute(
+                """
+                UPDATE agent_tool_calls
+                SET started_at = ?, finished_at = ?
+                WHERE tool_call_id = ?
+                """,
+                ("2026-06-09T01:00:00+07:00", "2026-06-09T01:01:00+07:00", "tool-call-control-plane-ledger-failed"),
+            )
+            conn.commit()
+
+        status, cockpit_with_failure = api_gateway.route_get("/v1/dashboard/cockpit", {})
+        self.assertEqual(HTTPStatus.OK, status, cockpit_with_failure)
+        self.assertEqual(
+            ["tool-call-control-plane-ledger-failed", "tool-call-control-plane-ledger"],
+            [item["tool_call_id"] for item in cockpit_with_failure["tool_calls"][:2]],
+        )
+        self.assertEqual(
+            "failed",
+            cockpit_with_failure["task_cards"][0]["tool_summary"]["latest_tool_status"],
+        )
+
+        code, newer_failed_tool = run_cli(
+            "tool-call",
+            "start",
+            "--tool-call-id",
+            "tool-call-control-plane-ledger-failed-newer",
+            "--trace-id",
+            trace_id,
+            "--task-id",
+            "task-control-plane-ledger",
+            "--attempt-id",
+            attempt_id,
+            "--employee",
+            "codex",
+            "--session-id",
+            "session-control-plane-ledger",
+            "--tool-name",
+            "browser",
+            "--tool-type",
+            "browser",
+            "--input-summary",
+            "newer failed browser action",
+            "--risk-level",
+            "medium",
+        )
+        self.assertEqual(0, code, newer_failed_tool)
+        code, finished_newer_failed_tool = run_cli(
+            "tool-call",
+            "finish",
+            "--tool-call-id",
+            "tool-call-control-plane-ledger-failed-newer",
+            "--status",
+            "failed",
+            "--output-summary",
+            "newer command failed",
+        )
+        self.assertEqual(0, code, finished_newer_failed_tool)
+        status, cockpit_with_newer_failure = api_gateway.route_get("/v1/dashboard/cockpit", {})
+        self.assertEqual(HTTPStatus.OK, status, cockpit_with_newer_failure)
+        self.assertEqual(
+            "tool-call-control-plane-ledger-failed-newer",
+            cockpit_with_newer_failure["tool_calls"][0]["tool_call_id"],
+        )
+
     def test_budget_center_records_costs_in_trace_and_cockpit(self) -> None:
         code, submitted = run_cli("task", "submit", "--from", "openclaw-main", "--to", "codex", "--task-id", "task-budget-ledger", "--title", "Budget ledger")
         self.assertEqual(0, code, submitted)
