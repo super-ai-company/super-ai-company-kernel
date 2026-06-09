@@ -6382,9 +6382,11 @@ class CompanyKernelCoreTest(unittest.TestCase):
             "const budgetSummary = payload.budget_summary || {};",
             "const budgetEvents = payload.budget_events || [];",
             "const controlPlaneTimeline = payload.control_plane_timeline || [];",
+            "const controlActionSummary = payload.control_action_summary || {};",
             "const completionContract = payload.completion_contract || {};",
             "['Task Operational Ledger', taskOperationalLedgerSummary(payload, taskTracePayload)]",
             "['Task Control Plane Timeline', taskControlPlaneTimelineSummary(controlPlaneTimeline)]",
+            "['Control Action Summary', controlActionSummaryDetail(controlActionSummary)]",
             "['Runtime Sessions', runtimeSessionsSummary(runtimeSessions)]",
             "['Tool Calls', toolCallsSummary(toolCalls)]",
             "['Budget Summary', budgetSummaryDetail(budgetSummary)]",
@@ -6402,6 +6404,10 @@ class CompanyKernelCoreTest(unittest.TestCase):
             "control_plane_timeline empty: no task event/attempt/runtime/tool/budget/evidence rows yet.",
             "item.kind || '-'",
             "item.timestamp || '-'",
+            "function controlActionSummaryDetail",
+            "pending_owner_approvals=",
+            "executed_control_actions=",
+            "owner_next_action=",
             "function runtimeSessionsSummary",
             "function toolCallsSummary",
             "const sanitized = item.sanitized === true;",
@@ -7425,12 +7431,22 @@ class CompanyKernelCoreTest(unittest.TestCase):
         status, shown_after_pending = api_gateway.route_get("/v1/tasks/task-control-approval", {})
         self.assertEqual(200, status, shown_after_pending)
         self.assertEqual("starting", shown_after_pending["attempts"][0]["status"])
+        self.assertEqual(2, shown_after_pending["control_action_summary"]["pending_owner_approvals"])
+        self.assertEqual(0, shown_after_pending["control_action_summary"]["executed_control_actions"])
+        self.assertEqual(["cancel", "correction"], sorted(shown_after_pending["control_action_summary"]["pending_actions"]))
+        self.assertEqual("review pending owner approvals before executing controls", shown_after_pending["control_action_summary"]["owner_next_action"])
 
         status, executed_cancel = api_gateway.route_post("/v1/tasks/task-control-approval/cancel", {"attempt_id": attempt_id, "by": "hermes", "reason": "owner approved execution", "execute": "true"})
         self.assertEqual(200, status, executed_cancel)
         self.assertTrue(executed_cancel["executed"])
         self.assertEqual("owner_approved_execute", executed_cancel["control_action"]["approval_mode"])
         self.assertEqual("cancelled", executed_cancel["attempt"]["status"])
+        status, shown_after_cancel = api_gateway.route_get("/v1/tasks/task-control-approval", {})
+        self.assertEqual(200, status, shown_after_cancel)
+        self.assertEqual(1, shown_after_cancel["control_action_summary"]["executed_control_actions"])
+        self.assertEqual("cancel", shown_after_cancel["control_action_summary"]["latest_executed_action"])
+        self.assertEqual("cancelled", shown_after_cancel["control_action_summary"]["latest_attempt_status"])
+        self.assertEqual("old attempt is cancelled; retry or reassign only after owner decision", shown_after_cancel["control_action_summary"]["owner_next_action"])
 
     def test_dashboard_employee_cards_include_managed_attempt_state(self) -> None:
         for employee_id, role in [("main", "operator"), ("hermes", "supervisor"), ("codex", "developer")]:

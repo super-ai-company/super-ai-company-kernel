@@ -2297,6 +2297,86 @@ def task_control_plane_timeline(
     return sorted(timeline, key=lambda item: (str(item.get("timestamp") or ""), str(item.get("kind") or ""), str(item.get("id") or "")))
 
 
+CONTROL_EVENT_ACTIONS = {
+    "supervisor.correction_requested": "correction",
+    "supervisor.cancel_requested": "cancel",
+    "task.retrying": "retry",
+    "task.reassigned": "reassign",
+    "task.reopened": "reopen",
+}
+
+
+def task_control_action_summary(*, approvals: list[dict], events: list[dict], attempts: list[dict]) -> dict:
+    pending_actions: set[str] = set()
+    pending_rows = []
+    for approval in approvals:
+        if str(approval.get("status") or "") != "pending":
+            continue
+        action = str(approval.get("action") or "")
+        normalized = action.removeprefix("task_control.").removeprefix("task.")
+        pending_actions.add(normalized)
+        detail = approval.get("detail", {}) if isinstance(approval.get("detail", {}), dict) else {}
+        metadata = detail.get("metadata", {}) if isinstance(detail.get("metadata", {}), dict) else {}
+        pending_rows.append(
+            {
+                "approval_id": approval.get("id", ""),
+                "action": normalized,
+                "raw_action": action,
+                "attempt_id": metadata.get("attempt_id", ""),
+                "risk": detail.get("risk", ""),
+                "reason": detail.get("request_reason") or detail.get("reason") or "",
+                "created_at": approval.get("created_at", ""),
+            }
+        )
+    executed_rows = []
+    for event in events:
+        event_type = str(event.get("event_type") or "")
+        action = CONTROL_EVENT_ACTIONS.get(event_type)
+        if not action:
+            continue
+        payload = parse_json_arg(event.get("payload_json", "{}") or "{}", {})
+        if not isinstance(payload, dict):
+            payload = {}
+        executed_rows.append(
+            {
+                "event_id": event.get("id", ""),
+                "event_type": event_type,
+                "action": action,
+                "attempt_id": payload.get("attempt_id", ""),
+                "by": event.get("source_agent", ""),
+                "reason": payload.get("reason") or payload.get("message") or "",
+                "created_at": event.get("created_at", ""),
+            }
+        )
+    executed_rows.sort(key=lambda item: str(item.get("created_at") or ""))
+    latest_executed = executed_rows[-1] if executed_rows else {}
+    latest_attempt = attempts[-1] if attempts else {}
+    latest_attempt_status = str(latest_attempt.get("status") or "")
+    owner_next_action = "monitor task progress and evidence"
+    if latest_executed.get("action") == "cancel" or latest_attempt_status == "cancelled":
+        owner_next_action = "old attempt is cancelled; retry or reassign only after owner decision"
+    elif pending_rows:
+        owner_next_action = "review pending owner approvals before executing controls"
+    elif latest_executed.get("action") == "correction":
+        owner_next_action = "wait for worker correction ack or fresh progress"
+    elif latest_executed.get("action") in {"retry", "reassign", "reopen"}:
+        owner_next_action = "monitor new attempt heartbeat, progress, and evidence"
+    return {
+        "pending_owner_approvals": len(pending_rows),
+        "pending_actions": sorted(pending_actions),
+        "pending": pending_rows,
+        "executed_control_actions": len(executed_rows),
+        "latest_executed_action": latest_executed.get("action", ""),
+        "latest_event_type": latest_executed.get("event_type", ""),
+        "latest_event_id": latest_executed.get("event_id", ""),
+        "latest_attempt_id": latest_attempt.get("attempt_id", ""),
+        "latest_attempt_status": latest_attempt_status,
+        "executed": executed_rows[-10:],
+        "owner_next_action": owner_next_action,
+        "summary": f"pending={len(pending_rows)} executed={len(executed_rows)} latest={latest_executed.get('action', '-') or '-'}",
+    }
+
+
 def task_completion_contract(task: dict, evidence_records: list[dict]) -> dict:
     status = str(task.get("status") or "").lower()
     done_like = status in {"completed", "done", "success"}
@@ -8748,6 +8828,7 @@ def cmd_task_show(args: argparse.Namespace) -> int:
             }
         )
     supervisor_state, correction_summary = task_supervisor_state(attempts)
+    approvals = task_approvals(conn, task_id)
     emit(
         {
             "ok": True,
@@ -8778,7 +8859,8 @@ def cmd_task_show(args: argparse.Namespace) -> int:
             "sanitized_logs": sanitized_logs,
             "supervisor_state": supervisor_state,
             "correction_summary": correction_summary,
-            "approvals": task_approvals(conn, task_id),
+            "approvals": approvals,
+            "control_action_summary": task_control_action_summary(approvals=approvals, events=events, attempts=attempts),
             "lock": dict(lock) if lock else {},
             "audit_logs": audit_rows,
         }

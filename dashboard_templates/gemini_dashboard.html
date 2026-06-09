@@ -4751,6 +4751,21 @@
     }).join('\n');
   }
 
+  function controlActionSummaryDetail(summary) {
+    const item = summary || {};
+    const pending = Array.isArray(item.pending) ? item.pending : [];
+    const executed = Array.isArray(item.executed) ? item.executed : [];
+    const pendingRows = pending.slice(0, 8).map(row => sanitizeDisplayText(`${row.created_at || '-'} · ${row.action || '-'} · approval=${row.approval_id || '-'} · attempt=${row.attempt_id || '-'} · ${row.reason || ''}`)).join('\n');
+    const executedRows = executed.slice(-8).map(row => sanitizeDisplayText(`${row.created_at || '-'} · ${row.action || '-'} · event=${row.event_id || '-'} · attempt=${row.attempt_id || '-'} · ${row.reason || ''}`)).join('\n');
+    return [
+      `pending_owner_approvals=${item.pending_owner_approvals || 0} · pending_actions=${(item.pending_actions || []).join(',') || '-'}`,
+      `executed_control_actions=${item.executed_control_actions || 0} · latest=${item.latest_executed_action || '-'} · latest_attempt=${item.latest_attempt_id || '-'} ${item.latest_attempt_status || ''}`,
+      `owner_next_action=${item.owner_next_action || 'monitor task progress and evidence'}`,
+      pendingRows ? `pending:\n${pendingRows}` : 'pending: none',
+      executedRows ? `executed:\n${executedRows}` : 'executed: none'
+    ].join('\n');
+  }
+
   function budgetBreakdownRows(label, values) {
     const rows = values && typeof values === 'object' && !Array.isArray(values) ? Object.entries(values) : [];
     if (!rows.length) return `${label}: none`;
@@ -5515,6 +5530,7 @@
       const budgetSummary = payload.budget_summary || {};
       const budgetEvents = payload.budget_events || [];
       const controlPlaneTimeline = payload.control_plane_timeline || [];
+      const controlActionSummary = payload.control_action_summary || {};
       const completionContract = payload.completion_contract || {};
       const supervisorState = payload.supervisor_state || {};
       const correctionSummary = payload.correction_summary || {};
@@ -5542,6 +5558,7 @@
         ['Task Decision', taskDecisionSummary(task, latestAttempt, payload)],
         ['Task Operational Ledger', taskOperationalLedgerSummary(payload, taskTracePayload)],
         ['Task Control Plane Timeline', taskControlPlaneTimelineSummary(controlPlaneTimeline)],
+        ['Control Action Summary', controlActionSummaryDetail(controlActionSummary)],
         ['Latest Attempt Summary', latestAttemptSummary(latestAttempt)],
         ['Attempt History Summary', attemptHistoryContractSummary(attemptHistory, attempts)],
         ['Runtime Sessions', runtimeSessionsSummary(runtimeSessions)],
