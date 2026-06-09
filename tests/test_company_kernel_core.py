@@ -8482,9 +8482,20 @@ class CompanyKernelCoreTest(unittest.TestCase):
         status, claimed = api_gateway.route_post("/v1/tasks/task-api-gateway/claim", {"agent": "codex", "lease_seconds": "60"})
         self.assertEqual(200, status, claimed)
         self.assertEqual("claimed", claimed["task"]["status"])
-        status, done = api_gateway.route_post("/v1/tasks/task-api-gateway/done", {"agent": "codex", "summary": "completed through REST", "evidence": str(evidence)})
+        status, done = api_gateway.route_post(
+            "/v1/tasks/task-api-gateway/done",
+            {"agent": "codex", "summary": f"completed through REST in {self.root}", "evidence": str(evidence)},
+        )
         self.assertEqual(200, status, done)
         self.assertEqual("completed", done["status"])
+        status, listed_after_done = api_gateway.route_get("/v1/tasks", {})
+        self.assertEqual(200, status, listed_after_done)
+        listed_done_task = next(item for item in listed_after_done["tasks"] if item["id"] == "task-api-gateway")
+        self.assertNotIn("evidence_path", listed_done_task)
+        self.assertIn("evidence", listed_done_task)
+        self.assertFalse(listed_done_task["evidence"]["absolute_path_exposed"])
+        self.assertIn("api-task-done.md", listed_done_task["evidence"]["basename"])
+        self.assertNotIn(str(self.root), json.dumps(listed_done_task, ensure_ascii=False))
 
         status, submitted_block = api_gateway.route_post(
             "/v1/tasks",
@@ -10252,7 +10263,20 @@ class CompanyKernelCoreTest(unittest.TestCase):
             str(self.root / "workspace" / "nestcar"),
         )
         self.assertEqual(0, code, created)
-        code, verified = run_cli("employee", "verify-direct", "--id", "nestcar", "--from", "openclaw-main", "--rounds", "2", "--activate")
+        def fake_run(cmd, cwd=None, text=None, capture_output=None, timeout=None):
+            expected = ""
+            if "--message" in cmd:
+                expected = cmd[cmd.index("--message") + 1].rsplit(" ", 1)[-1]
+
+            class Result:
+                returncode = 0
+                stdout = json.dumps({"result": {"payloads": [{"text": expected}]}})
+                stderr = ""
+
+            return Result()
+
+        with mock.patch.object(companyctl.subprocess, "run", side_effect=fake_run):
+            code, verified = run_cli("employee", "verify-direct", "--id", "nestcar", "--from", "openclaw-main", "--rounds", "2", "--activate")
         self.assertEqual(0, code, verified)
 
         code, matrix = run_cli("agent-matrix", "--agents", "car-rental")

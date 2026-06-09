@@ -4,6 +4,7 @@ import argparse
 import contextlib
 import io
 import json
+import re
 import time
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -15,6 +16,7 @@ from . import company_trace
 
 
 API_VERSION = "v1"
+ABSOLUTE_PATH_RE = re.compile(r"(?<![:\w.-])/[A-Za-z0-9_@%+=:,./~#-]+")
 API_CAPABILITIES = [
     "health",
     "doctor",
@@ -406,6 +408,29 @@ def sanitize_event_row(row: dict) -> dict:
     return event
 
 
+def sanitize_task_list_payload(payload: dict) -> dict:
+    result = dict(payload)
+    tasks = result.get("tasks", [])
+    if not isinstance(tasks, list):
+        return result
+    sanitized_tasks: list[dict] = []
+    for task in tasks:
+        if not isinstance(task, dict):
+            sanitized_tasks.append(task)
+            continue
+        item = dict(task)
+        raw_evidence_path = str(item.pop("evidence_path", "") or "")
+        item["evidence"] = companyctl.sanitize_evidence_path_for_display(raw_evidence_path)
+        for key in ("title", "description", "summary", "blocker"):
+            if key in item:
+                item[key] = ABSOLUTE_PATH_RE.sub("[REDACTED_PATH]", companyctl.sanitize_log_text(item.get(key, "")))
+        if isinstance(item.get("current_attempt"), dict):
+            item["current_attempt"] = companyctl.sanitize_json_like(item["current_attempt"])
+        sanitized_tasks.append(item)
+    result["tasks"] = sanitized_tasks
+    return result
+
+
 def recent_event_rows(*, limit: int = 20, after_created_at: str = "", after_id: str = "") -> list[dict]:
     conn = companyctl.connect_readonly()
     try:
@@ -519,6 +544,7 @@ def route_get(path: str, query: dict[str, list[str]]) -> tuple[int, dict]:
         if status:
             argv.extend(["--status", status])
         code, payload = run_companyctl(argv)
+        payload = sanitize_task_list_payload(payload)
         return (HTTPStatus.OK if code == 0 else HTTPStatus.BAD_REQUEST), {"exit_code": code, **payload}
     if path.startswith("/v1/tasks/") and path.endswith("/conversations"):
         task_id = path.removeprefix("/v1/tasks/").removesuffix("/conversations").strip("/")
