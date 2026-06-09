@@ -2720,6 +2720,8 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual("approval", budget_attention["kind"])
         self.assertEqual("budget_overrun", budget_attention["approval_action"])
         self.assertEqual("P0", budget_attention["risk"])
+        self.assertEqual("P0", budget_attention["priority_label"])
+        self.assertLess(budget_attention["priority_rank"], pending_evidence["priority_rank"])
         self.assertEqual("hard_exceeded", budget_attention["budget"]["limit_status"])
         self.assertEqual(1.2, budget_attention["budget"]["amount"])
         self.assertEqual("USD", budget_attention["budget"]["currency"])
@@ -2728,9 +2730,12 @@ class CompanyKernelCoreTest(unittest.TestCase):
         evidence_attention = next(item for item in cockpit["owner_attention"] if item["task_id"] == "task-cockpit-done-missing-evidence" and item["kind"] == "evidence_issue")
         self.assertEqual("evidence_issue", evidence_attention["kind"])
         self.assertEqual("blocked", evidence_attention["state"])
+        self.assertEqual("P0", evidence_attention["priority_label"])
         self.assertEqual("completed_without_evidence", evidence_attention["reason"])
         self.assertIn("done 但缺少 final evidence", evidence_attention["message"])
         self.assertEqual(["review_task", "view_trace"], [action["id"] for action in evidence_attention["actions"]])
+        priority_ranks = [item["priority_rank"] for item in cockpit["owner_attention"]]
+        self.assertEqual(sorted(priority_ranks), priority_ranks)
 
         status, shown = api_gateway.route_get("/v1/tasks/task-cockpit-long", {})
         self.assertEqual(200, status, shown)
@@ -6956,6 +6961,7 @@ class CompanyKernelCoreTest(unittest.TestCase):
             "function ownerActionTimelineSummary",
             "owner_action_timeline empty: no owner probe/correction/cancel/retry/reassign/approval actions yet.",
             "requires_owner_approval=${String(!!item.requires_owner_approval)}",
+            "priority=${item.priority_label}",
             "function ceoAcceptanceContractSummary",
             "ready_for_acceptance=",
             "truth_rules completion_requires_final_evidence=",

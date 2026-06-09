@@ -540,6 +540,36 @@ def build_cockpit_summary(summary: dict) -> dict:
         latest_first = sorted(tool_calls, key=timestamp, reverse=True)
         return sorted(latest_first, key=priority)
 
+    def owner_attention_priority(item: dict) -> tuple[int, str]:
+        kind = str(item.get("kind") or "")
+        state = str(item.get("state") or "")
+        risk = str(item.get("risk") or "")
+        action = str(item.get("approval_action") or "")
+        review_state = str(item.get("review_state") or "")
+        if risk == "P0" or action == "budget_overrun" or kind == "evidence_issue":
+            return 0, "P0"
+        if kind in {"blocked_task", "tool_call"} and state in {"blocked", "failed", "cancelled", "heartbeat_stale", "stale"}:
+            return 0, "P0"
+        if kind == "approval" or risk == "P1":
+            return 1, "P1"
+        if kind in {"stagnant_task", "ledger_gap"} or review_state == "pending_review_stale":
+            return 1, "P1"
+        if kind == "employee_readiness" and state in {"unsafe", "candidate_only", "online_only"}:
+            return 2, "P2"
+        if kind == "evidence":
+            return 2, "P2"
+        return 3, "P3"
+
+    def annotate_owner_attention(items: list[dict]) -> list[dict]:
+        annotated = []
+        for item in items:
+            rank, label = owner_attention_priority(item)
+            enriched = dict(item)
+            enriched["priority_rank"] = rank
+            enriched["priority_label"] = label
+            annotated.append(enriched)
+        return sorted(annotated, key=lambda item: (int(item.get("priority_rank", 3)), str(item.get("updated_at") or "")), reverse=False)
+
     progress_by_task = {}
     for progress in companyctl.task_progress_events(summary.get("events", [])):
         task_id = str(progress.get("task_id", ""))
@@ -658,6 +688,9 @@ def build_cockpit_summary(summary: dict) -> dict:
                 "actions": evidence_owner_actions(evidence_id, task_id),
             }
             evidence_item.update(evidence_review_context(evidence_item, generated_at))
+            evidence_rank, evidence_label = owner_attention_priority({"kind": "evidence", **evidence_item})
+            evidence_item["priority_rank"] = evidence_rank
+            evidence_item["priority_label"] = evidence_label
             recent_evidence.append(evidence_item)
     owner_attention = []
     def attention_actions(kind: str, *, task_id: str = "", attempt_id: str = "", approval_id: str = "") -> list[dict]:
@@ -1014,7 +1047,6 @@ def build_cockpit_summary(summary: dict) -> dict:
                 "actions": attention_actions("employee_readiness"),
             }
         )
-    owner_attention.sort(key=lambda item: item.get("updated_at") or "", reverse=True)
     runtime_sessions_by_task: dict[str, list[dict]] = {}
     for session in summary.get("runtime_sessions", []):
         task_id = str(session.get("task_id", "") or "")
@@ -1407,6 +1439,7 @@ def build_cockpit_summary(summary: dict) -> dict:
         "status": health_bar_status,
         "owner_next_action": health_owner_next_action,
     }
+    owner_attention = annotate_owner_attention(owner_attention)
     return {
         "ok": True,
         "generated_at": generated_at,
