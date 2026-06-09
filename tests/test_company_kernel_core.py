@@ -7630,6 +7630,13 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual(1, codex_model["evidence_summary"]["evidence_count"])
         self.assertEqual(1, codex_model["evidence_summary"]["final_evidence_count"])
         self.assertEqual(evidence["evidence"]["evidence_id"], codex_model["evidence_summary"]["latest_evidence_id"])
+        self.assertEqual("task-employee-card-rollup", codex_model["work_status_summary"]["current_task_id"])
+        self.assertEqual("running", codex_model["work_status_summary"]["current_state"])
+        self.assertEqual("Employee card rollup", codex_model["work_status_summary"]["current_task_title"])
+        self.assertEqual(1, codex_model["work_status_summary"]["tool_call_count"])
+        self.assertEqual(0.21, codex_model["work_status_summary"]["budget_total"])
+        self.assertEqual(1, codex_model["work_status_summary"]["final_evidence_count"])
+        self.assertIn("monitor current task", codex_model["work_status_summary"]["owner_next_action"])
         status, cockpit = api_gateway.route_get("/v1/dashboard/cockpit", {})
         self.assertEqual(HTTPStatus.OK, status, cockpit)
         api_codex = next(item for item in cockpit["employees"] if item["id"] == "codex")
@@ -7641,6 +7648,15 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual(0.21, api_codex["budget_summary"]["total_amount"])
         self.assertEqual(1, api_codex["evidence_summary"]["final_evidence_count"])
         self.assertEqual(evidence["evidence"]["evidence_id"], api_codex["evidence_summary"]["latest_evidence_id"])
+        self.assertEqual("task-employee-card-rollup", api_codex["work_status_summary"]["current_task_id"])
+        self.assertEqual("running", api_codex["work_status_summary"]["current_state"])
+        status, employees_payload = api_gateway.route_get("/v1/employees", {})
+        self.assertEqual(HTTPStatus.OK, status, employees_payload)
+        list_codex = next(item for item in employees_payload["employees"] if item["id"] == "codex")
+        self.assertEqual("task-employee-card-rollup", list_codex["work_status_summary"]["current_task_id"])
+        self.assertEqual("running", list_codex["work_status_summary"]["current_state"])
+        self.assertEqual(1, list_codex["work_status_summary"]["tool_call_count"])
+        self.assertEqual(0.21, list_codex["work_status_summary"]["budget_total"])
 
     def test_dashboard_employee_view_models_include_readiness_badges(self) -> None:
         for employee_id, role, runtime in [
@@ -7848,6 +7864,9 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertIn("Log Policy", html)
         self.assertIn("adapterRunLogPolicySummary", html)
         self.assertIn("readiness-badge", html)
+        self.assertIn("work_status_summary", html)
+        self.assertIn("Owner Next", html)
+        self.assertIn("Current Work", html)
 
     def test_agent_matrix_reports_employee_readiness_levels(self) -> None:
         for employee_id, role, runtime, status in [

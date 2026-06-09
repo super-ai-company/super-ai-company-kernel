@@ -1066,6 +1066,7 @@ def build_cockpit_summary(summary: dict) -> dict:
                 "tool_summary": employee.get("tool_summary", {}) if isinstance(employee.get("tool_summary", {}), dict) else {},
                 "budget_summary": employee.get("budget_summary", {}) if isinstance(employee.get("budget_summary", {}), dict) else {},
                 "evidence_summary": employee.get("evidence_summary", {}) if isinstance(employee.get("evidence_summary", {}), dict) else {},
+                "work_status_summary": employee.get("work_status_summary", {}) if isinstance(employee.get("work_status_summary", {}), dict) else {},
                 "last_seen_at": employee.get("last_seen_at", ""),
             }
         )
@@ -2335,6 +2336,50 @@ def employee_view_models(summary: dict) -> list[dict]:
             schedulable = readiness.get("level") == "active_ready"
             current_attempt = employee.get("current_attempt", {}) if isinstance(employee.get("current_attempt", {}), dict) else {}
             employee_id = str(employee["id"])
+            current_task_id = str(current_attempt.get("task_id", "") or "")
+            current_task_title = str(current_attempt.get("task_title", "") or "")
+            runtime_summary = employee_runtime_summary(employee_id)
+            tool_summary = employee_tool_summary(employee_id)
+            budget_rollup = employee_budget_rollup(employee_id)
+            evidence_summary = employee_evidence_summary(employee_id)
+            current_state = str(current_attempt.get("status") or "")
+            if current_state == "starting":
+                current_state = "running"
+            if not current_state:
+                current_state = "idle"
+            owner_next_action = "idle: assign a task when work is available"
+            if current_task_id:
+                owner_next_action = "monitor current task progress, tool calls, budget, and evidence"
+            if current_state in {"blocked", "failed", "stale", "cancelled"}:
+                owner_next_action = "review blocker, then correct, cancel, retry, or reassign"
+            work_status_summary = {
+                "employee_id": employee_id,
+                "current_task_id": current_task_id,
+                "current_task_title": current_task_title,
+                "current_attempt_id": str(current_attempt.get("attempt_id", "") or ""),
+                "current_trace_id": str(current_attempt.get("trace_id", "") or ""),
+                "current_state": current_state,
+                "readiness_level": readiness.get("level", ""),
+                "readiness_reason": readiness.get("reason", ""),
+                "active_session_count": runtime_summary.get("active_session_count", 0),
+                "latest_session_id": runtime_summary.get("latest_session_id", ""),
+                "latest_progress_at": runtime_summary.get("latest_progress_at", ""),
+                "tool_call_count": tool_summary.get("tool_call_count", 0),
+                "running_tool_call_count": tool_summary.get("running_tool_call_count", 0),
+                "failed_tool_call_count": tool_summary.get("failed_tool_call_count", 0),
+                "latest_tool_name": tool_summary.get("latest_tool_name", ""),
+                "latest_tool_status": tool_summary.get("latest_tool_status", ""),
+                "budget_event_count": budget_rollup.get("event_count", 0),
+                "budget_total": budget_rollup.get("total_amount", 0),
+                "budget_currency": budget_rollup.get("currency", "USD"),
+                "token_input": budget_rollup.get("token_input", 0),
+                "token_output": budget_rollup.get("token_output", 0),
+                "runtime_seconds": budget_rollup.get("runtime_seconds", 0),
+                "evidence_count": evidence_summary.get("evidence_count", 0),
+                "final_evidence_count": evidence_summary.get("final_evidence_count", 0),
+                "latest_evidence_id": evidence_summary.get("latest_evidence_id", ""),
+                "owner_next_action": owner_next_action,
+            }
             employees.append(
                 {
                     **employee,
@@ -2350,12 +2395,13 @@ def employee_view_models(summary: dict) -> list[dict]:
                     "communication_paused": bool(communication_profile.get("communication_paused")),
                     "communication_status": "paused" if communication_profile.get("communication_paused") else "enabled",
                     "backlog": f"{employee.get('submitted_tasks', 0)} submitted, {employee.get('claimed_tasks', 0)} claimed",
-                    "current_task_id": str(current_attempt.get("task_id", "") or ""),
-                    "current_task_title": str(current_attempt.get("task_title", "") or ""),
-                    "runtime_summary": employee_runtime_summary(employee_id),
-                    "tool_summary": employee_tool_summary(employee_id),
-                    "budget_summary": employee_budget_rollup(employee_id),
-                    "evidence_summary": employee_evidence_summary(employee_id),
+                    "current_task_id": current_task_id,
+                    "current_task_title": current_task_title,
+                    "runtime_summary": runtime_summary,
+                    "tool_summary": tool_summary,
+                    "budget_summary": budget_rollup,
+                    "evidence_summary": evidence_summary,
+                    "work_status_summary": work_status_summary,
                     "progress_layer": heartbeat_progress.get("layer", ""),
                     "progress_state": heartbeat_progress.get("state", ""),
                     "progress_label": heartbeat_progress.get("label", ""),
