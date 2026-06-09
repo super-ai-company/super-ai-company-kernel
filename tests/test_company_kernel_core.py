@@ -7658,6 +7658,56 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual(1, list_codex["work_status_summary"]["tool_call_count"])
         self.assertEqual(0.21, list_codex["work_status_summary"]["budget_total"])
 
+    def test_employee_work_status_summary_reports_stagnant_tasks_and_actions(self) -> None:
+        for employee_id, role in [("main", "operator"), ("codex", "developer")]:
+            code, created = run_cli("employee", "create", "--id", employee_id, "--name", employee_id, "--role", role, "--runtime", "local", "--workspace", str(self.root / "workspace" / employee_id))
+            self.assertEqual(code, 0, created)
+        self.mark_active("codex")
+        code, submitted = run_cli("task", "submit", "--from", "main", "--to", "codex", "--task-id", "task-employee-stagnant", "--title", "Employee stagnant work")
+        self.assertEqual(0, code, submitted)
+        code, run = run_cli("task", "run", "--task-id", "task-employee-stagnant", "--agent", "codex", "--by", "hermes", "--stale-after-seconds", "1")
+        self.assertEqual(0, code, run)
+        attempt_id = run["attempt"]["attempt_id"]
+        conn = companyctl.connect()
+        try:
+            conn.execute(
+                """
+                UPDATE execution_attempts
+                SET status = 'running',
+                    last_heartbeat_at = ?,
+                    last_progress_at = ?,
+                    runtime_policy_json = ?
+                WHERE attempt_id = ?
+                """,
+                (
+                    companyctl.now(),
+                    "2000-01-01T00:00:00+00:00",
+                    json.dumps({"heartbeat_interval_seconds": 3600, "stale_after_seconds": 1, "max_runtime_seconds": 36000}),
+                    attempt_id,
+                ),
+            )
+            conn.commit()
+            summary = company_dashboard.load_summary(conn)
+            models = company_dashboard.employee_view_models(summary)
+        finally:
+            conn.close()
+        codex_model = next(item for item in models if item["id"] == "codex")
+        work = codex_model["work_status_summary"]
+        self.assertEqual("task-employee-stagnant", work["current_task_id"])
+        self.assertEqual("progress_stagnant", work["current_state"])
+        self.assertEqual("fresh", work["heartbeat_state"])
+        self.assertEqual("stagnant", work["progress_state"])
+        self.assertTrue(work["progress_age_seconds"] >= 1)
+        self.assertIn("inspect logs", work["owner_next_action"])
+        self.assertIn("request correction", work["owner_next_action"])
+        self.assertEqual(["view_logs", "request_correction", "wait", "cancel"], [action["id"] for action in work["recommended_actions"]])
+
+        status, employees_payload = api_gateway.route_get("/v1/employees", {})
+        self.assertEqual(HTTPStatus.OK, status, employees_payload)
+        api_codex = next(item for item in employees_payload["employees"] if item["id"] == "codex")
+        self.assertEqual("progress_stagnant", api_codex["work_status_summary"]["current_state"])
+        self.assertEqual(["view_logs", "request_correction", "wait", "cancel"], [action["id"] for action in api_codex["work_status_summary"]["recommended_actions"]])
+
     def test_dashboard_employee_view_models_include_readiness_badges(self) -> None:
         for employee_id, role, runtime in [
             ("main", "operator", "openclaw"),
@@ -7867,6 +7917,8 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertIn("work_status_summary", html)
         self.assertIn("Owner Next", html)
         self.assertIn("Current Work", html)
+        self.assertIn("Long Task", html)
+        self.assertIn("Recommended Actions", html)
 
     def test_agent_matrix_reports_employee_readiness_levels(self) -> None:
         for employee_id, role, runtime, status in [

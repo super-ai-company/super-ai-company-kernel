@@ -4515,14 +4515,18 @@
     const evidence = emp.evidence_summary || {};
     const currency = budget.currency || 'USD';
     const total = budget.total_amount || 0;
+    const actions = Array.isArray(work.recommended_actions) ? work.recommended_actions : [];
+    const actionSummary = actions.length ? actions.map(action => action.label || action.id).join(' · ') : 'none';
     return `
       <div class="employee-meta employee-control-plane-summary" style="margin-top: 8px; font-size: 11px; border-top: 1px solid rgba(255,255,255,0.05); padding-top: 8px;">
         <div><strong>Current Work ·</strong> ${escapeHtml(work.current_task_title || emp.current_task_title || 'idle')} · task=${escapeHtml(work.current_task_id || emp.current_task_id || '-')} · state=${escapeHtml(work.current_state || emp.status || '-')}</div>
+        <div><strong>Long Task ·</strong> heartbeat=${escapeHtml(work.heartbeat_state || '-')} · progress=${escapeHtml(work.progress_state || '-')} · timeout_is_sync_wait_only=${escapeHtml(work.timeout_is_sync_wait_only === false ? 'false' : 'true')}</div>
         <div><strong>Runtime · sessions=</strong>${escapeHtml(runtime.session_count || 0)} · active=${escapeHtml(runtime.active_session_count || 0)} · latest=${escapeHtml(runtime.latest_runtime_type || '-')} ${escapeHtml(runtime.latest_status || '')}</div>
         <div><strong>Tools · calls=</strong>${escapeHtml(tools.tool_call_count || 0)} · failed=${escapeHtml(tools.failed_tool_call_count || 0)} · latest=${escapeHtml(tools.latest_tool_name || '-')} ${escapeHtml(tools.latest_tool_status || '')}</div>
         <div><strong>Budget ·</strong> ${escapeHtml(currency)} ${escapeHtml(total)} · input=${escapeHtml(budget.token_input || 0)} · output=${escapeHtml(budget.token_output || 0)} · runtime=${escapeHtml(budget.runtime_seconds || 0)}s</div>
         <div><strong>Evidence · final=</strong>${escapeHtml(evidence.final_evidence_count || 0)} · total=${escapeHtml(evidence.evidence_count || 0)} · latest=${escapeHtml(evidence.latest_evidence_id || '-')}</div>
         <div><strong>Owner Next ·</strong> ${escapeHtml(work.owner_next_action || 'inspect employee detail before assigning work')}</div>
+        <div><strong>Recommended Actions ·</strong> ${escapeHtml(actionSummary)}</div>
       </div>
     `;
   }
