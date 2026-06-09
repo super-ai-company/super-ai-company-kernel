@@ -4742,6 +4742,15 @@
     ].join('\n');
   }
 
+  function taskControlPlaneTimelineSummary(timeline) {
+    const rows = Array.isArray(timeline) ? timeline : [];
+    if (!rows.length) return 'control_plane_timeline empty: no task event/attempt/runtime/tool/budget/evidence rows yet.';
+    return rows.slice(0, 30).map(item => {
+      const id = item.tool_call_id || item.budget_event_id || item.evidence_id || item.session_id || item.attempt_id || item.event_id || item.id || '-';
+      return sanitizeDisplayText(`${item.timestamp || '-'} · ${item.kind || '-'} · ${item.status || '-'} · employee=${item.employee_id || '-'} · attempt=${item.attempt_id || '-'} · ${id} · ${item.summary || ''}`);
+    }).join('\n');
+  }
+
   function budgetBreakdownRows(label, values) {
     const rows = values && typeof values === 'object' && !Array.isArray(values) ? Object.entries(values) : [];
     if (!rows.length) return `${label}: none`;
@@ -5505,6 +5514,7 @@
       const toolCalls = payload.tool_calls || [];
       const budgetSummary = payload.budget_summary || {};
       const budgetEvents = payload.budget_events || [];
+      const controlPlaneTimeline = payload.control_plane_timeline || [];
       const completionContract = payload.completion_contract || {};
       const supervisorState = payload.supervisor_state || {};
       const correctionSummary = payload.correction_summary || {};
@@ -5531,6 +5541,7 @@
         ['Status Contract', longTaskStatusContractSummary(task, latestAttempt)],
         ['Task Decision', taskDecisionSummary(task, latestAttempt, payload)],
         ['Task Operational Ledger', taskOperationalLedgerSummary(payload, taskTracePayload)],
+        ['Task Control Plane Timeline', taskControlPlaneTimelineSummary(controlPlaneTimeline)],
         ['Latest Attempt Summary', latestAttemptSummary(latestAttempt)],
         ['Attempt History Summary', attemptHistoryContractSummary(attemptHistory, attempts)],
         ['Runtime Sessions', runtimeSessionsSummary(runtimeSessions)],

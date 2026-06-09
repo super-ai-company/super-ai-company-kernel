@@ -2168,6 +2168,135 @@ def task_evidence_records(conn: sqlite3.Connection, task_id: str) -> list[dict]:
     return records
 
 
+def task_control_plane_timeline(
+    *,
+    events: list[dict],
+    attempts: list[dict],
+    runtime_sessions: list[dict],
+    tool_calls: list[dict],
+    budget_events: list[dict],
+    evidence_records: list[dict],
+) -> list[dict]:
+    timeline: list[dict] = []
+
+    def add(item: dict) -> None:
+        timestamp = str(item.get("timestamp") or "")
+        if not timestamp:
+            return
+        timeline.append(item)
+
+    for event in events:
+        payload = parse_json_arg(event.get("payload_json", "{}") or "{}", {})
+        if not isinstance(payload, dict):
+            payload = {}
+        add(
+            {
+                "kind": "task_event",
+                "id": event.get("id", ""),
+                "event_id": event.get("id", ""),
+                "event_type": event.get("event_type", ""),
+                "task_id": event.get("task_id", ""),
+                "trace_id": event.get("trace_id", ""),
+                "employee_id": event.get("source_agent", ""),
+                "attempt_id": payload.get("attempt_id", ""),
+                "status": event.get("event_type", ""),
+                "timestamp": event.get("created_at", ""),
+                "summary": sanitize_log_text(str(payload.get("message") or payload.get("summary") or event.get("event_type") or "")),
+            }
+        )
+    for attempt in attempts:
+        add(
+            {
+                "kind": "attempt",
+                "id": attempt.get("attempt_id", ""),
+                "attempt_id": attempt.get("attempt_id", ""),
+                "task_id": attempt.get("task_id", ""),
+                "trace_id": attempt.get("trace_id", ""),
+                "employee_id": attempt.get("employee_id", ""),
+                "status": attempt.get("status", ""),
+                "timestamp": attempt.get("started_at", ""),
+                "summary": f"attempt {attempt.get('status', '')} via {attempt.get('adapter_type', '')}".strip(),
+            }
+        )
+        if attempt.get("finished_at"):
+            add(
+                {
+                    "kind": "attempt",
+                    "id": f"{attempt.get('attempt_id', '')}:finished",
+                    "attempt_id": attempt.get("attempt_id", ""),
+                    "task_id": attempt.get("task_id", ""),
+                    "trace_id": attempt.get("trace_id", ""),
+                    "employee_id": attempt.get("employee_id", ""),
+                    "status": attempt.get("status", ""),
+                    "timestamp": attempt.get("finished_at", ""),
+                    "summary": f"attempt finished: {attempt.get('status', '')}",
+                }
+            )
+    for session in runtime_sessions:
+        add(
+            {
+                "kind": "runtime_session",
+                "id": session.get("session_id", ""),
+                "session_id": session.get("session_id", ""),
+                "attempt_id": session.get("attempt_id", ""),
+                "task_id": session.get("task_id", ""),
+                "trace_id": session.get("trace_id", ""),
+                "employee_id": session.get("employee_id", ""),
+                "status": session.get("status", ""),
+                "timestamp": session.get("started_at", ""),
+                "summary": f"{session.get('runtime_type', '') or 'runtime'} session {session.get('status', '')}".strip(),
+            }
+        )
+    for tool_call in tool_calls:
+        add(
+            {
+                "kind": "tool_call",
+                "id": tool_call.get("tool_call_id", ""),
+                "tool_call_id": tool_call.get("tool_call_id", ""),
+                "attempt_id": tool_call.get("attempt_id", ""),
+                "session_id": tool_call.get("session_id", ""),
+                "task_id": tool_call.get("task_id", ""),
+                "trace_id": tool_call.get("trace_id", ""),
+                "employee_id": tool_call.get("employee_id", ""),
+                "status": tool_call.get("status", ""),
+                "timestamp": tool_call.get("started_at", ""),
+                "summary": sanitize_log_text(f"{tool_call.get('tool_name', '')}: {tool_call.get('output_summary') or tool_call.get('input_summary') or tool_call.get('error_message') or ''}"),
+            }
+        )
+    for item in budget_events:
+        add(
+            {
+                "kind": "budget_event",
+                "id": item.get("budget_event_id", ""),
+                "budget_event_id": item.get("budget_event_id", ""),
+                "attempt_id": item.get("attempt_id", ""),
+                "task_id": item.get("task_id", ""),
+                "trace_id": item.get("trace_id", ""),
+                "employee_id": item.get("employee_id", ""),
+                "status": item.get("cost_type", ""),
+                "timestamp": item.get("created_at", ""),
+                "summary": f"{item.get('amount', 0)} {item.get('currency', 'USD')} · input={item.get('token_input', 0)} output={item.get('token_output', 0)} · {item.get('summary', '')}".strip(),
+            }
+        )
+    for evidence in evidence_records:
+        display = evidence.get("display", {}) if isinstance(evidence.get("display"), dict) else {}
+        add(
+            {
+                "kind": "evidence",
+                "id": evidence.get("evidence_id", ""),
+                "evidence_id": evidence.get("evidence_id", ""),
+                "attempt_id": evidence.get("attempt_id", ""),
+                "task_id": evidence.get("task_id", ""),
+                "trace_id": evidence.get("trace_id", ""),
+                "employee_id": evidence.get("employee_id", ""),
+                "status": "final" if evidence.get("is_final") else "draft",
+                "timestamp": evidence.get("created_at", ""),
+                "summary": sanitize_log_text(str(evidence.get("summary") or display.get("relative_path") or evidence.get("evidence_id") or "")),
+            }
+        )
+    return sorted(timeline, key=lambda item: (str(item.get("timestamp") or ""), str(item.get("kind") or ""), str(item.get("id") or "")))
+
+
 def task_completion_contract(task: dict, evidence_records: list[dict]) -> dict:
     status = str(task.get("status") or "").lower()
     done_like = status in {"completed", "done", "success"}
@@ -8573,6 +8702,14 @@ def cmd_task_show(args: argparse.Namespace) -> int:
     tool_calls = list_tool_calls(conn, task_id=task_id, limit=100)
     budget_events = list_budget_events(conn, task_id=task_id, limit=100)
     task_budget_summary = budget_summary(conn, task_id=task_id)
+    control_plane_timeline = task_control_plane_timeline(
+        events=events,
+        attempts=attempts,
+        runtime_sessions=runtime_sessions,
+        tool_calls=tool_calls,
+        budget_events=budget_events,
+        evidence_records=evidence_records,
+    )
     projects = task_project_costs(conn, task_id)
     sanitized_logs = []
     log_policy = sanitized_log_policy()
@@ -8633,6 +8770,7 @@ def cmd_task_show(args: argparse.Namespace) -> int:
             "tool_calls": tool_calls,
             "budget_events": budget_events,
             "budget_summary": task_budget_summary,
+            "control_plane_timeline": control_plane_timeline,
             "projects": projects,
             "conversation_summary": task_conversation_summary(conn, metadata),
             "progress_events": task_progress_events(events),
