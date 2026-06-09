@@ -1988,6 +1988,7 @@ def employee_view_models(summary: dict) -> list[dict]:
     communication_config = companyctl.load_communication_config()
     communication_profiles = communication_config.get("employees", {})
     employee_ids = {str(employee.get("id", "")) for employee in summary["employees"]}
+    attendance_rows = companyctl.attendance_row_map(companyctl.load_latest_attendance())
     conn = companyctl.connect_readonly()
     try:
         for employee in summary["employees"]:
@@ -2031,7 +2032,7 @@ def employee_view_models(summary: dict) -> list[dict]:
             readiness = companyctl.classify_agent_matrix_row(
                 conn,
                 {"id": employee["id"], "name": employee.get("name", employee["id"]), "runtime": employee.get("runtime", ""), "status": employee_status},
-                {"status": "online" if kernel_state == "online" else "missing"},
+                attendance_rows.get(str(employee["id"]), {}),
             )
             schedulable = readiness.get("level") == "active_ready"
             current_attempt = employee.get("current_attempt", {}) if isinstance(employee.get("current_attempt", {}), dict) else {}
