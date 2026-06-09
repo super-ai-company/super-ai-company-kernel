@@ -6619,6 +6619,12 @@ class CompanyKernelCoreTest(unittest.TestCase):
             "rejectEvidenceFromDashboard",
             "/v1/evidence/${encodeURIComponent(evidenceId)}/accept",
             "/v1/evidence/${encodeURIComponent(evidenceId)}/reject",
+            "Trace ·",
+            "trace=${escapeHtml(work.current_trace_id || '-')}",
+            "attempt=${escapeHtml(work.current_attempt_id || '-')}",
+            "session=${escapeHtml(runtime.latest_session_id || '-')}",
+            "tool_call=${escapeHtml(tools.latest_tool_call_id || '-')}",
+            "budget_events=${escapeHtml(budget.event_count || 0)}",
         ]:
             self.assertIn(snippet, html)
 
