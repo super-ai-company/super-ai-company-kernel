@@ -4306,6 +4306,16 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertIn("pending_high_risk_actions", html)
         self.assertIn("real_execution_blockers", html)
         self.assertIn("realExecutionBlockerRows", html)
+
+    def test_dashboard_approval_rows_load_api_detail_bundle(self) -> None:
+        template = Path(__file__).resolve().parents[1] / "dashboard_templates" / "gemini_dashboard.html"
+        html = template.read_text(encoding="utf-8")
+        self.assertIn("showApprovalApiDetails", html)
+        self.assertIn("/v1/approvals/${encodeURIComponent(safeId)}", html)
+        self.assertIn("Approval API detail loaded", html)
+        self.assertIn("Bound Task", html)
+        self.assertIn("Related Events", html)
+        self.assertIn("Audit Logs", html)
         self.assertIn("pending_owner_action_count", html)
         self.assertIn("blocked_real_execution_count", html)
         self.assertIn("queue_health", html)
@@ -8197,6 +8207,43 @@ class CompanyKernelCoreTest(unittest.TestCase):
         status, shown_approval = api_gateway.route_get("/v1/approvals/approval-api-gateway", {})
         self.assertEqual(200, status, shown_approval)
         self.assertEqual("approved", shown_approval["approval"]["status"])
+
+        status, submitted_task = api_gateway.route_post(
+            "/v1/tasks",
+            {
+                "from": "hermes",
+                "to": "codex",
+                "task_id": "task-api-approval-detail",
+                "title": "Approval detail bound task",
+            },
+        )
+        self.assertEqual(201, status, submitted_task)
+        status, detail_approval = api_gateway.route_post(
+            "/v1/approvals",
+            {
+                "from": "hermes",
+                "action": "external_send",
+                "reason": "send customer report with token=SECRET and /Users/shift/.ssh/id_rsa",
+                "target": "nestcar",
+                "risk": "P1",
+                "approval_id": "approval-api-detail",
+                "task_id": "task-api-approval-detail",
+                "evidence": "/Users/shift/.ssh/id_rsa",
+            },
+        )
+        self.assertEqual(201, status, detail_approval)
+        status, detail = api_gateway.route_get("/v1/approvals/approval-api-detail", {})
+        self.assertEqual(200, status, detail)
+        self.assertEqual("approval-api-detail", detail["approval"]["id"])
+        self.assertEqual("task-api-approval-detail", detail["task"]["id"])
+        self.assertEqual("dry_run_until_owner_approval", detail["approval_control_summary"]["default_policy"])
+        self.assertTrue(detail["approval"]["safety"]["requires_owner_approval"])
+        self.assertIn("approval.requested", [event["event_type"] for event in detail["events"]])
+        self.assertIn("approval.request", [item["action"] for item in detail["audit_logs"]])
+        raw = json.dumps(detail, ensure_ascii=False)
+        self.assertNotIn("SECRET", raw)
+        self.assertNotIn("/Users/shift/.ssh/id_rsa", raw)
+        self.assertIn("sensitive_path_tokens_redacted", raw)
 
         status, mock_approval = api_gateway.route_post(
             "/v1/approvals",

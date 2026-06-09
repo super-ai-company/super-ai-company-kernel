@@ -821,8 +821,14 @@ def route_get(path: str, query: dict[str, list[str]]) -> tuple[int, dict]:
         return (HTTPStatus.OK if code == 0 else HTTPStatus.BAD_REQUEST), {"exit_code": code, **payload}
     if path.startswith("/v1/approvals/"):
         approval_id = path.removeprefix("/v1/approvals/").strip("/")
-        code, payload = run_companyctl(["approval", "show", "--approval-id", approval_id])
-        return (HTTPStatus.OK if code == 0 else HTTPStatus.BAD_REQUEST), {"exit_code": code, **payload}
+        conn = companyctl.connect()
+        try:
+            payload = companyctl.approval_detail_bundle(conn, approval_id)
+        finally:
+            conn.close()
+        if payload.get("error") == "approval not found":
+            return HTTPStatus.NOT_FOUND, payload
+        return (HTTPStatus.OK if payload.get("ok") else HTTPStatus.BAD_REQUEST), payload
     if path == "/v1/attendance/latest":
         latest_path = companyctl.STATE_DIR / "attendance" / "latest.json"
         if not latest_path.exists():

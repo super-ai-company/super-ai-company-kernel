@@ -7883,6 +7883,11 @@ def normalize_approval(row: sqlite3.Row | dict) -> dict:
     obj = dict(row)
     obj["detail"] = approval_detail(obj.pop("reason", ""))
     detail = obj["detail"] if isinstance(obj.get("detail"), dict) else {}
+    if detail.get("evidence"):
+        detail["evidence_display"] = sanitize_evidence_path_for_display(str(detail.get("evidence") or ""))
+        detail["evidence"] = sanitize_log_text(detail.get("evidence", ""))
+    if detail.get("request_reason"):
+        detail["request_reason"] = sanitize_log_text(detail.get("request_reason", ""))
     obj["safety"] = {
         "dry_run": bool(detail.get("dry_run", False)),
         "external_send_executed": bool(detail.get("external_send_executed", False)),
@@ -8246,14 +8251,81 @@ def cmd_approval_list(args: argparse.Namespace) -> int:
     return 0
 
 
+def approval_detail_bundle(conn: sqlite3.Connection, approval_id: str) -> dict:
+    safe_id = str(approval_id or "").strip()
+    if not safe_id or "/" in safe_id:
+        return {"ok": False, "error": "invalid approval_id", "approval_id": safe_id}
+    row = conn.execute("SELECT * FROM approvals WHERE id = ?", (safe_id,)).fetchone()
+    if not row:
+        return {"ok": False, "error": "approval not found", "approval_id": safe_id}
+    approval = normalize_approval(row)
+    detail = approval.get("detail", {}) if isinstance(approval.get("detail"), dict) else {}
+    metadata = detail.get("metadata", {}) if isinstance(detail.get("metadata"), dict) else {}
+    task_id = str(metadata.get("task_id") or "")
+    trace_id = str(metadata.get("trace_id") or "")
+    task_row = conn.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone() if task_id else None
+    task_payload = dict(task_row) if task_row else {}
+    if task_payload:
+        raw_evidence_path = task_payload.pop("evidence_path", "")
+        task_payload["evidence"] = sanitize_evidence_path_for_display(raw_evidence_path)
+        if not trace_id:
+            trace_id = trace_id_for_task(conn, task_id, "")
+    event_rows = rows(
+        conn,
+        """
+        SELECT id, trace_id, event_type, source_agent, task_id, payload_json, created_at, processed_at
+        FROM company_events
+        WHERE payload_json LIKE ? OR task_id = ?
+        ORDER BY created_at ASC
+        LIMIT 100
+        """,
+        (f"%{safe_id}%", task_id),
+    )
+    sanitized_events = []
+    for event in event_rows:
+        raw_payload = event.get("payload_json", "")
+        try:
+            payload = json.loads(raw_payload or "{}")
+        except json.JSONDecodeError:
+            payload = {"raw": sanitize_log_text(raw_payload)}
+        clean_payload = sanitize_json_like(payload)
+        sanitized_events.append(
+            {
+                **event,
+                "payload": clean_payload,
+                "payload_json": json.dumps(clean_payload, ensure_ascii=False, sort_keys=True),
+            }
+        )
+    audit_rows = rows(conn, "SELECT id, actor, action, target, detail_json, created_at FROM audit_logs WHERE target = ? ORDER BY created_at ASC LIMIT 100", (safe_id,))
+    sanitized_audit = []
+    for item in audit_rows:
+        raw_detail = item.pop("detail_json", "{}")
+        try:
+            parsed = json.loads(raw_detail or "{}")
+        except json.JSONDecodeError:
+            parsed = {"raw": sanitize_log_text(raw_detail)}
+        sanitized_audit.append({**item, "detail": sanitize_json_like(parsed)})
+    return {
+        "ok": True,
+        "source": "/v1/approvals/{approval_id}",
+        "approval": approval,
+        "task": task_payload,
+        "events": sanitized_events,
+        "audit_logs": sanitized_audit,
+        "approval_control_summary": approval_control_summary([approval]),
+        "evidence_records": task_evidence_records(conn, task_id) if task_id else [],
+        "budget_summary": budget_summary(conn, task_id=task_id, trace_id=trace_id),
+        "redaction_policy": sanitized_log_policy(),
+    }
+
+
 def cmd_approval_show(args: argparse.Namespace) -> int:
     conn = connect()
-    row = conn.execute("SELECT * FROM approvals WHERE id = ?", (args.approval_id,)).fetchone()
-    if not row:
-        emit({"ok": False, "error": "approval not found", "approval_id": args.approval_id})
+    payload = approval_detail_bundle(conn, args.approval_id)
+    if not payload.get("ok"):
+        emit(payload)
         return 1
-    approval = normalize_approval(row)
-    emit({"ok": True, "approval": approval})
+    emit(payload)
     return 0
 
 
