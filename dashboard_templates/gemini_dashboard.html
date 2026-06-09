@@ -3814,19 +3814,21 @@
       </div>
     `;
     const stagnantGuidance = stagnantTaskGuidance();
-    const rows = (cockpit && cockpit.long_tasks) || [];
+    const rows = (cockpit && (cockpit.task_cards || cockpit.long_tasks)) || [];
     longTasks.innerHTML = rows.length ? rows.slice(0, 8).map(item => `
       <div class="cockpit-row" onclick="openTaskDetailDrawer('${escapeHtml(item.task_id || '')}')">
         <div>
           <strong>${escapeHtml(item.title || item.task_id || '-')}</strong>
-          <span>${escapeHtml(item.target_agent || '-')} · attempt=${escapeHtml(item.attempt_id || '-')} · progress_age=${escapeHtml(item.progress_age_seconds ?? '-')}s</span>
+          <span>${escapeHtml(item.employee_id || item.target_agent || '-')} · attempt=${escapeHtml(item.attempt_id || '-')} · progress_age=${escapeHtml(item.progress_age_seconds ?? '-')}s</span>
           <span>heartbeat=${escapeHtml(item.heartbeat_state || '-')} · progress_state=${escapeHtml(item.progress_state || '-')}</span>
           ${hasLatestProgress(item) ? `<span>Latest Progress · ${latestProgressSummary(item.latest_progress)}</span>` : ''}
+          ${item.completion_invalid ? `<span>Completion Invalid · ${escapeHtml(item.completion_invalid_reason || 'missing_final_evidence')}</span>` : ''}
+          ${item.blocker ? `<span>Blocker · ${escapeHtml(item.blocker)}</span>` : ''}
           ${item.progress_state === 'stagnant' ? `<span>${escapeHtml(stagnantGuidance)}</span>` : ''}
         </div>
-        <div class="long-task-state ${escapeHtml(item.long_task_state || 'running')}">${escapeHtml(item.long_task_state || 'running')}</div>
+        <div class="long-task-state ${escapeHtml(item.state || item.long_task_state || 'running')}">${escapeHtml(item.state || item.long_task_state || 'running')}</div>
       </div>
-    `).join('') : `<div class="cockpit-row"><div><strong>No managed long-running attempts</strong><span>Start one with task run or an adapter managed attempt.</span></div><div class="long-task-state success">idle</div></div>`;
+    `).join('') : `<div class="cockpit-row"><div><strong>No task cards need owner attention</strong><span>Running, blocked, stagnant, and completion-invalid task cards will appear here.</span></div><div class="long-task-state success">idle</div></div>`;
     const pending = (cockpit && cockpit.pending_approvals) || [];
     const evidence = (cockpit && cockpit.recent_evidence) || [];
     const ownerAttention = (cockpit && cockpit.owner_attention) || [];
