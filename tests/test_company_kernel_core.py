@@ -1909,6 +1909,9 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertIn("counts.running_tasks", html)
         self.assertIn("cockpit.task_cards || cockpit.long_tasks", html)
         self.assertIn("Completion Invalid", html)
+        self.assertIn("Runtime · sessions=", html)
+        self.assertIn("Tools · calls=", html)
+        self.assertIn("Budget ·", html)
         self.assertIn("counts.done_tasks", html)
         self.assertIn("counts.evidence_issues", html)
         self.assertIn("counts.blocked_tasks", html)
@@ -2262,6 +2265,62 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual(0, code, progress)
         code, corrected = run_cli("task", "correct", "--task-id", "task-cockpit-long", "--attempt-id", attempt_id, "--by", "hermes", "--message", "请收口 evidence，不要继续扩散")
         self.assertEqual(0, code, corrected)
+        code, session = run_cli(
+            "runtime",
+            "session",
+            "start",
+            "--session-id",
+            "session-cockpit-long",
+            "--employee",
+            "codex-cockpit",
+            "--adapter-type",
+            "codex",
+            "--runtime-type",
+            "cli",
+            "--pid",
+            "9876",
+            "--session-key",
+            "codex-cockpit-session",
+            "--task-id",
+            "task-cockpit-long",
+            "--attempt-id",
+            attempt_id,
+        )
+        self.assertEqual(0, code, session)
+        code, tool = run_cli(
+            "tool-call",
+            "start",
+            "--tool-call-id",
+            "tool-cockpit-long-shell",
+            "--task-id",
+            "task-cockpit-long",
+            "--attempt-id",
+            attempt_id,
+            "--employee",
+            "codex-cockpit",
+            "--session-id",
+            "session-cockpit-long",
+            "--tool-name",
+            "shell",
+            "--tool-type",
+            "shell",
+            "--input-summary",
+            "run evidence packaging check",
+            "--risk-level",
+            "low",
+        )
+        self.assertEqual(0, code, tool)
+        code, finished_tool = run_cli(
+            "tool-call",
+            "finish",
+            "--tool-call-id",
+            "tool-cockpit-long-shell",
+            "--status",
+            "success",
+            "--output-summary",
+            "evidence packaging check passed",
+        )
+        self.assertEqual(0, code, finished_tool)
         code, budget = run_cli(
             "budget",
             "record",
@@ -2383,6 +2442,19 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual(42, long_card["latest_progress"]["progress"])
         self.assertTrue(long_card["evidence"]["allowed"])
         self.assertFalse(long_card["completion_invalid"])
+        self.assertEqual(1, long_card["runtime_summary"]["session_count"])
+        self.assertEqual(1, long_card["runtime_summary"]["active_session_count"])
+        self.assertEqual("session-cockpit-long", long_card["runtime_summary"]["latest_session_id"])
+        self.assertEqual("cli", long_card["runtime_summary"]["latest_runtime_type"])
+        self.assertEqual(1, long_card["tool_summary"]["tool_call_count"])
+        self.assertEqual(0, long_card["tool_summary"]["failed_tool_call_count"])
+        self.assertEqual("shell", long_card["tool_summary"]["latest_tool_name"])
+        self.assertEqual("success", long_card["tool_summary"]["latest_tool_status"])
+        self.assertEqual(1.2, long_card["budget_summary"]["total_amount"])
+        self.assertEqual("USD", long_card["budget_summary"]["currency"])
+        self.assertEqual(3000, long_card["budget_summary"]["token_input"])
+        self.assertEqual(700, long_card["budget_summary"]["token_output"])
+        self.assertEqual(120, long_card["budget_summary"]["runtime_seconds"])
         self.assertEqual(["send_correction", "view_logs", "wait", "cancel_attempt"], [action["id"] for action in long_card["actions"]])
         blocked_card = task_cards["task-cockpit-blocked"]
         self.assertEqual("blocked", blocked_card["state"])

@@ -822,6 +822,70 @@ def build_cockpit_summary(summary: dict) -> dict:
             }
         )
     owner_attention.sort(key=lambda item: item.get("updated_at") or "", reverse=True)
+    runtime_sessions_by_task: dict[str, list[dict]] = {}
+    for session in summary.get("runtime_sessions", []):
+        task_id = str(session.get("task_id", "") or "")
+        if task_id:
+            runtime_sessions_by_task.setdefault(task_id, []).append(session)
+    tool_calls_by_task: dict[str, list[dict]] = {}
+    for tool_call in summary.get("tool_calls", []):
+        task_id = str(tool_call.get("task_id", "") or "")
+        if task_id:
+            tool_calls_by_task.setdefault(task_id, []).append(tool_call)
+    budget_by_task = {}
+    budget_summary = summary.get("budget_summary", {}) if isinstance(summary.get("budget_summary"), dict) else {}
+    if isinstance(budget_summary.get("by_task"), dict):
+        budget_by_task = budget_summary.get("by_task", {})
+
+    def runtime_summary_for_task(task_id: str) -> dict:
+        sessions = runtime_sessions_by_task.get(task_id, [])
+        latest = sessions[0] if sessions else {}
+        return {
+            "session_count": len(sessions),
+            "active_session_count": sum(1 for item in sessions if str(item.get("status", "") or "") in {"active", "idle"}),
+            "latest_session_id": latest.get("session_id", ""),
+            "latest_runtime_type": latest.get("runtime_type", ""),
+            "latest_status": latest.get("status", ""),
+            "latest_heartbeat_at": latest.get("last_heartbeat_at", ""),
+        }
+
+    def tool_summary_for_task(task_id: str) -> dict:
+        tool_calls = tool_calls_by_task.get(task_id, [])
+        latest = tool_calls[0] if tool_calls else {}
+        return {
+            "tool_call_count": len(tool_calls),
+            "running_tool_call_count": sum(1 for item in tool_calls if str(item.get("status", "") or "") == "running"),
+            "failed_tool_call_count": sum(1 for item in tool_calls if str(item.get("status", "") or "") in {"failed", "blocked", "cancelled"}),
+            "latest_tool_call_id": latest.get("tool_call_id", ""),
+            "latest_tool_name": latest.get("tool_name", ""),
+            "latest_tool_type": latest.get("tool_type", ""),
+            "latest_tool_status": latest.get("status", ""),
+            "latest_risk_level": latest.get("risk_level", ""),
+        }
+
+    def budget_summary_for_task(task_id: str) -> dict:
+        amount = float((budget_by_task or {}).get(task_id, 0) or 0)
+        by_currency = {}
+        if isinstance(budget_summary.get("by_task_by_currency"), dict):
+            by_currency = budget_summary.get("by_task_by_currency", {}).get(task_id, {}) or {}
+        currencies = sorted(str(currency) for currency in by_currency.keys())
+        return {
+            "event_count": int((budget_summary.get("by_task_event_count", {}) or {}).get(task_id, 0)) if isinstance(budget_summary.get("by_task_event_count", {}), dict) else 0,
+            "total_amount": round(amount, 6),
+            "total_amounts_by_currency": by_currency,
+            "currency": currencies[0] if len(currencies) == 1 else ("mixed" if currencies else str(budget_summary.get("currency") or "USD")),
+            "token_input": int((budget_summary.get("by_task_token_input", {}) or {}).get(task_id, 0)) if isinstance(budget_summary.get("by_task_token_input", {}), dict) else 0,
+            "token_output": int((budget_summary.get("by_task_token_output", {}) or {}).get(task_id, 0)) if isinstance(budget_summary.get("by_task_token_output", {}), dict) else 0,
+            "runtime_seconds": int((budget_summary.get("by_task_runtime_seconds", {}) or {}).get(task_id, 0)) if isinstance(budget_summary.get("by_task_runtime_seconds", {}), dict) else 0,
+        }
+
+    def task_observability_summary(task_id: str) -> dict:
+        return {
+            "runtime_summary": runtime_summary_for_task(task_id),
+            "tool_summary": tool_summary_for_task(task_id),
+            "budget_summary": budget_summary_for_task(task_id),
+        }
+
     task_cards_by_id: dict[str, dict] = {}
 
     def upsert_task_card(card: dict) -> None:
@@ -829,6 +893,7 @@ def build_cockpit_summary(summary: dict) -> dict:
         if not task_id:
             return
         existing = task_cards_by_id.get(task_id, {})
+        card = {**task_observability_summary(task_id), **card}
         merged = {**existing, **card}
         if existing.get("actions") and not card.get("actions"):
             merged["actions"] = existing["actions"]
