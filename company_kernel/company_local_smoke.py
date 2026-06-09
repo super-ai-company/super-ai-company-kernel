@@ -12,6 +12,18 @@ ROOT = Path(__file__).resolve().parents[1]
 STATE_DIR = ROOT / "state" / "local-smoke"
 
 
+def persist_report(report: dict) -> dict:
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    smoke_id = str(report.get("smoke_id") or datetime.now().strftime("local-smoke-%Y%m%d-%H%M%S"))
+    report_path = STATE_DIR / f"{smoke_id}.json"
+    latest_path = STATE_DIR / "latest.json"
+    report["evidence"] = {"json": str(report_path), "latest": str(latest_path)}
+    payload = json.dumps(report, ensure_ascii=False, indent=2)
+    report_path.write_text(payload, encoding="utf-8")
+    latest_path.write_text(payload, encoding="utf-8")
+    return report
+
+
 def run_cmd(args: list[str], timeout: int = 180) -> dict:
     cp = subprocess.run(args, cwd=str(ROOT), text=True, capture_output=True, timeout=timeout)
     stdout = cp.stdout.strip()
@@ -102,12 +114,7 @@ def run_local_smoke(agents: str, source: str, direct_targets: str, reply_timeout
         "attendance": {"ok": attendance_ok, "result": attendance, "evidence": attendance_payload.get("evidence", {})},
         "direct_matrix": direct_matrix,
     }
-    report_path = STATE_DIR / f"{smoke_id}.json"
-    latest_path = STATE_DIR / "latest.json"
-    report["evidence"] = {"json": str(report_path), "latest": str(latest_path)}
-    report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
-    latest_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
-    return report
+    return persist_report(report)
 
 
 def run_skill_closed_loop_smoke(source: str, agent: str, package: str, timeout: int) -> dict:
@@ -316,6 +323,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.skill_closed_loop:
         report["skill_closed_loop"] = run_skill_closed_loop_smoke(args.source, args.skill_agent, args.skill_package, args.skill_timeout)
         report["ok"] = bool(report["ok"] and report["skill_closed_loop"].get("ok"))
+        persist_report(report)
     print(json.dumps(report, ensure_ascii=False, indent=None if args.json_only else 2))
     return 0 if report["ok"] else 1
 

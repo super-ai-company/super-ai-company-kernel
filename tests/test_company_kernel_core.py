@@ -8591,6 +8591,30 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertTrue(any("company-skill-package-worker" in cmd[0] for cmd in calls))
         self.assertTrue(any("task" in cmd and "evidence" in cmd and "accept" in cmd for cmd in calls))
 
+    def test_local_smoke_main_persists_skill_closed_loop_report(self) -> None:
+        def fake_run_local_smoke(agents, source, direct_targets, reply_timeout):
+            return company_local_smoke.persist_report({
+                "ok": True,
+                "smoke_id": "local-smoke-main-test",
+                "generated_at": "2026-06-09T10:00:00+07:00",
+                "service": {"ok": True},
+                "dashboard": {"ok": True},
+                "attendance": {"ok": True},
+                "direct_matrix": [{"direct_status": "ok"}],
+            })
+
+        with (
+            mock.patch.object(company_local_smoke, "run_local_smoke", side_effect=fake_run_local_smoke),
+            mock.patch.object(company_local_smoke, "run_skill_closed_loop_smoke", return_value={"ok": True, "task_id": "task-skill"}),
+            mock.patch("sys.stdout", new_callable=io.StringIO),
+        ):
+            exit_code = company_local_smoke.main(["--skill-closed-loop", "--json-only"])
+
+        self.assertEqual(0, exit_code)
+        latest = json.loads((self.root / "state" / "local-smoke" / "latest.json").read_text(encoding="utf-8"))
+        self.assertTrue(latest["ok"])
+        self.assertEqual({"ok": True, "task_id": "task-skill"}, latest["skill_closed_loop"])
+
     def test_api_gateway_exposes_health_tasks_messages_and_heartbeats(self) -> None:
         status, descriptor = api_gateway.route_get("/v1", {})
         self.assertEqual(200, status, descriptor)
