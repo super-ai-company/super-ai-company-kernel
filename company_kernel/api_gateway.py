@@ -245,6 +245,38 @@ def truthy(value: object) -> bool:
     return value is True or str(value).lower() in {"1", "true", "yes", "on"}
 
 
+def with_control_action(
+    payload: dict,
+    *,
+    action: str,
+    event_type: str,
+    requires_owner_approval: bool = True,
+    dangerous: bool = False,
+) -> dict:
+    event_id = str(payload.get("event_id", "") or "")
+    task_id = str(payload.get("task_id") or payload.get("task", {}).get("id") or "")
+    attempt_id = str(payload.get("attempt", {}).get("attempt_id") or "")
+    return {
+        **payload,
+        "control_action": {
+            "action": action,
+            "task_id": task_id,
+            "attempt_id": attempt_id,
+            "event_type": event_type,
+            "event_id": event_id,
+            "requires_owner_approval": requires_owner_approval,
+            "approval_required": requires_owner_approval,
+            "approval_mode": "owner_required_for_real_execution",
+            "dangerous": dangerous,
+            "audit": {
+                "recorded": bool(event_id),
+                "event_id": event_id,
+                "ledger": "company_events",
+            },
+        },
+    }
+
+
 PATH_LIKE_EVENT_KEYS = {
     "artifact",
     "artifact_path",
@@ -1140,7 +1172,15 @@ def route_post(path: str, body: dict) -> tuple[int, dict]:
         if truthy(body.get("ack")):
             argv.append("--ack")
         code, payload = run_companyctl(argv)
-        return (HTTPStatus.OK if code == 0 else HTTPStatus.BAD_REQUEST), {"exit_code": code, **payload}
+        response = {"exit_code": code, **payload}
+        if code == 0:
+            response = with_control_action(
+                response,
+                action="correction_ack" if truthy(body.get("ack")) else "correction",
+                event_type="supervisor.correction_acknowledged" if truthy(body.get("ack")) else "supervisor.correction_requested",
+                requires_owner_approval=not truthy(body.get("ack")),
+            )
+        return (HTTPStatus.OK if code == 0 else HTTPStatus.BAD_REQUEST), response
     if path.startswith("/v1/tasks/") and path.endswith("/progress"):
         task_id = path.removeprefix("/v1/tasks/").removesuffix("/progress").strip("/")
         argv = ["task", "progress", "--task-id", task_id, "--agent", str(body.get("agent", "")), "--message", str(body.get("message", ""))]
@@ -1155,7 +1195,10 @@ def route_post(path: str, body: dict) -> tuple[int, dict]:
     if path.startswith("/v1/tasks/") and path.endswith("/cancel"):
         task_id = path.removeprefix("/v1/tasks/").removesuffix("/cancel").strip("/")
         code, payload = run_companyctl(["task", "cancel", "--task-id", task_id, "--attempt-id", str(body.get("attempt_id", "")), "--by", str(body.get("by", "")), "--reason", str(body.get("reason", ""))])
-        return (HTTPStatus.OK if code == 0 else HTTPStatus.BAD_REQUEST), {"exit_code": code, **payload}
+        response = {"exit_code": code, **payload}
+        if code == 0:
+            response = with_control_action(response, action="cancel", event_type="supervisor.cancel_requested", dangerous=True)
+        return (HTTPStatus.OK if code == 0 else HTTPStatus.BAD_REQUEST), response
     if path.startswith("/v1/tasks/") and path.endswith("/claim"):
         task_id = path.removeprefix("/v1/tasks/").removesuffix("/claim").strip("/")
         argv = ["task", "claim", "--agent", str(body.get("agent", "")), "--task-id", task_id]
@@ -1181,11 +1224,17 @@ def route_post(path: str, body: dict) -> tuple[int, dict]:
     if path.startswith("/v1/tasks/") and path.endswith("/retry"):
         task_id = path.removeprefix("/v1/tasks/").removesuffix("/retry").strip("/")
         code, payload = run_companyctl(["task", "retry", "--task-id", task_id, "--by", str(body.get("by", "")), "--reason", str(body.get("reason", ""))])
-        return (HTTPStatus.OK if code == 0 else HTTPStatus.BAD_REQUEST), {"exit_code": code, **payload}
+        response = {"exit_code": code, **payload}
+        if code == 0:
+            response = with_control_action(response, action="retry", event_type="task.retrying")
+        return (HTTPStatus.OK if code == 0 else HTTPStatus.BAD_REQUEST), response
     if path.startswith("/v1/tasks/") and path.endswith("/reassign"):
         task_id = path.removeprefix("/v1/tasks/").removesuffix("/reassign").strip("/")
         code, payload = run_companyctl(["task", "reassign", "--task-id", task_id, "--by", str(body.get("by", "")), "--to", str(body.get("to", "")), "--reason", str(body.get("reason", ""))])
-        return (HTTPStatus.OK if code == 0 else HTTPStatus.BAD_REQUEST), {"exit_code": code, **payload}
+        response = {"exit_code": code, **payload}
+        if code == 0:
+            response = with_control_action(response, action="reassign", event_type="task.reassigned")
+        return (HTTPStatus.OK if code == 0 else HTTPStatus.BAD_REQUEST), response
     if path == "/v1/conversations":
         argv = [
             "conversation",
