@@ -1595,7 +1595,7 @@ def list_tool_calls(conn: sqlite3.Connection, *, employee_id: str = "", task_id:
             params.append(value)
     clause = f"WHERE {' AND '.join(where)}" if where else ""
     safe_limit = max(1, min(int(limit or 50), 200))
-    rows_out = rows(conn, f"SELECT * FROM agent_tool_calls {clause} ORDER BY started_at DESC LIMIT ?", tuple([*params, safe_limit]))
+    rows_out = rows(conn, f"SELECT * FROM agent_tool_calls {clause} ORDER BY started_at DESC, rowid DESC LIMIT ?", tuple([*params, safe_limit]))
     return [hydrate_tool_call(item) for item in rows_out]
 
 
@@ -4803,12 +4803,18 @@ def employee_file_bundle(conn: sqlite3.Connection, employee_id: str) -> dict:
             "latest_attempt_status": "",
             "runtime_session_count": 0,
             "tool_call_count": 0,
+            "failed_tool_call_count": 0,
+            "latest_tool_call_id": "",
+            "latest_tool_name": "",
+            "latest_tool_status": "",
             "budget_event_count": 0,
             "budget_total": 0.0,
             "budget_currency": "",
             "token_input": 0,
             "token_output": 0,
+            "runtime_seconds": 0,
             "evidence_count": 0,
+            "has_final_evidence": False,
         }
     for attempt in attempt_rows:
         task_id = str(attempt.get("task_id") or "")
@@ -4825,6 +4831,12 @@ def employee_file_bundle(conn: sqlite3.Connection, employee_id: str) -> dict:
         task_id = str(tool_call.get("task_id") or "")
         if task_id in task_rollups:
             task_rollups[task_id]["tool_call_count"] += 1
+            if str(tool_call.get("status") or "") in {"failed", "blocked", "cancelled"}:
+                task_rollups[task_id]["failed_tool_call_count"] += 1
+            if not task_rollups[task_id]["latest_tool_call_id"]:
+                task_rollups[task_id]["latest_tool_call_id"] = str(tool_call.get("tool_call_id") or "")
+                task_rollups[task_id]["latest_tool_name"] = str(tool_call.get("tool_name") or "")
+                task_rollups[task_id]["latest_tool_status"] = str(tool_call.get("status") or "")
     for budget_event in budget_events:
         task_id = str(budget_event.get("task_id") or "")
         if task_id in task_rollups:
@@ -4834,10 +4846,13 @@ def employee_file_bundle(conn: sqlite3.Connection, employee_id: str) -> dict:
             rollup["budget_currency"] = str(budget_event.get("currency") or rollup["budget_currency"] or "")
             rollup["token_input"] += int(budget_event.get("token_input") or 0)
             rollup["token_output"] += int(budget_event.get("token_output") or 0)
+            rollup["runtime_seconds"] += int(budget_event.get("runtime_seconds") or 0)
     for evidence in evidence_records:
         task_id = str(evidence.get("task_id") or "")
         if task_id in task_rollups:
             task_rollups[task_id]["evidence_count"] += 1
+            if bool(evidence.get("is_final")) or str(evidence.get("stage") or "") == "final":
+                task_rollups[task_id]["has_final_evidence"] = True
 
     enriched_tasks = [{**dict(item), **task_rollups.get(str(item.get("id") or ""), {})} for item in task_rows]
     current_tasks = [dict(item) for item in enriched_tasks if str(item.get("status", "")).lower() in {"submitted", "claimed", "running", "waiting_approval", "blocked", "stale", "retrying"}][:10]
