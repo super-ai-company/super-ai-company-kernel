@@ -560,6 +560,35 @@ def build_cockpit_summary(summary: dict) -> dict:
             return 2, "P2"
         return 3, "P3"
 
+    def owner_attention_next_action(item: dict) -> str:
+        existing = str(item.get("owner_next_action") or "").strip()
+        if existing:
+            return existing
+        kind = str(item.get("kind") or "")
+        state = str(item.get("state") or "")
+        action = str(item.get("approval_action") or "")
+        if kind == "approval":
+            return "review approval details, then approve, deny, or mock-resolve without bypassing owner policy"
+        if kind == "stagnant_task":
+            return "send progress probe, request Hermes correction, inspect logs, wait, or cancel the attempt"
+        if kind == "blocked_task":
+            if state == "heartbeat_stale":
+                return "inspect runtime logs and heartbeat, then correct, cancel, retry, or reassign"
+            return "review blocker, then correct, retry, reassign, or cancel"
+        if kind == "ledger_gap":
+            return "require missing tool-call or budget ledger before accepting this work"
+        if kind == "tool_call":
+            return "inspect sanitized tool-call detail and decide whether to correct, retry, or block"
+        if kind == "evidence_issue":
+            return "require valid final evidence before accepting task completion"
+        if kind == "evidence":
+            return "safe-preview final evidence, then accept, reject, or request rework"
+        if kind == "employee_readiness":
+            return "verify runtime evidence before assigning automatic work"
+        if action:
+            return f"review {action} and decide the owner-controlled next step"
+        return "inspect this owner attention item and choose the safest next control action"
+
     def annotate_owner_attention(items: list[dict]) -> list[dict]:
         annotated = []
         for item in items:
@@ -567,6 +596,7 @@ def build_cockpit_summary(summary: dict) -> dict:
             enriched = dict(item)
             enriched["priority_rank"] = rank
             enriched["priority_label"] = label
+            enriched["owner_next_action"] = owner_attention_next_action(enriched)
             annotated.append(enriched)
         return sorted(annotated, key=lambda item: (int(item.get("priority_rank", 3)), str(item.get("updated_at") or "")), reverse=False)
 
