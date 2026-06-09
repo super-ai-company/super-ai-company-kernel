@@ -3818,9 +3818,20 @@
     longTasks.innerHTML = rows.length ? rows.slice(0, 8).map(item => `
       <div class="cockpit-row" onclick="openTaskDetailDrawer('${escapeHtml(item.task_id || '')}')">
         <div>
+          ${(() => {
+            const runtime = item.runtime_summary || {};
+            const tools = item.tool_summary || {};
+            const budget = item.budget_summary || {};
+            const budgetCurrency = budget.currency || 'USD';
+            return `
           <strong>${escapeHtml(item.title || item.task_id || '-')}</strong>
           <span>${escapeHtml(item.employee_id || item.target_agent || '-')} · attempt=${escapeHtml(item.attempt_id || '-')} · progress_age=${escapeHtml(item.progress_age_seconds ?? '-')}s</span>
           <span>heartbeat=${escapeHtml(item.heartbeat_state || '-')} · progress_state=${escapeHtml(item.progress_state || '-')}</span>
+          <span>Runtime · sessions=${escapeHtml(runtime.session_count || 0)} · active=${escapeHtml(runtime.active_session_count || 0)} · latest=${escapeHtml(runtime.latest_runtime_type || '-')} ${escapeHtml(runtime.latest_status || '')}</span>
+          <span>Tools · calls=${escapeHtml(tools.tool_call_count || 0)} · failed=${escapeHtml(tools.failed_tool_call_count || 0)} · latest=${escapeHtml(tools.latest_tool_name || '-')} ${escapeHtml(tools.latest_tool_status || '')}</span>
+          <span>Budget · ${escapeHtml(budgetCurrency)} ${escapeHtml(budget.total_amount || 0)} · input=${escapeHtml(budget.token_input || 0)} · output=${escapeHtml(budget.token_output || 0)} · runtime=${escapeHtml(budget.runtime_seconds || 0)}s</span>
+            `;
+          })()}
           ${hasLatestProgress(item) ? `<span>Latest Progress · ${latestProgressSummary(item.latest_progress)}</span>` : ''}
           ${item.completion_invalid ? `<span>Completion Invalid · ${escapeHtml(item.completion_invalid_reason || 'missing_final_evidence')}</span>` : ''}
           ${item.blocker ? `<span>Blocker · ${escapeHtml(item.blocker)}</span>` : ''}

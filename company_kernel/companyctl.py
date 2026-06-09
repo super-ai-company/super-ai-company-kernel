@@ -1788,6 +1788,10 @@ def budget_summary(conn: sqlite3.Connection, *, task_id: str = "", employee_id: 
     by_currency: dict[str, float] = {}
     by_employee_by_currency: dict[str, dict[str, float]] = {}
     by_task_by_currency: dict[str, dict[str, float]] = {}
+    by_task_event_count: dict[str, int] = {}
+    by_task_token_input: dict[str, int] = {}
+    by_task_token_output: dict[str, int] = {}
+    by_task_runtime_seconds: dict[str, int] = {}
     by_project_by_currency: dict[str, dict[str, float]] = {}
     by_project_event_count: dict[str, int] = {}
     by_project_token_input: dict[str, int] = {}
@@ -1821,6 +1825,10 @@ def budget_summary(conn: sqlite3.Connection, *, task_id: str = "", employee_id: 
             by_task[task_key] = round(by_task.get(task_key, 0.0) + amount, 6)
             task_currency = by_task_by_currency.setdefault(task_key, {})
             task_currency[currency_key] = round(task_currency.get(currency_key, 0.0) + amount, 6)
+            by_task_event_count[task_key] = by_task_event_count.get(task_key, 0) + 1
+            by_task_token_input[task_key] = by_task_token_input.get(task_key, 0) + token_input
+            by_task_token_output[task_key] = by_task_token_output.get(task_key, 0) + token_output
+            by_task_runtime_seconds[task_key] = by_task_runtime_seconds.get(task_key, 0) + runtime_seconds
             for project_id in task_project_ids.get(task_key, []):
                 by_project[project_id] = round(by_project.get(project_id, 0.0) + amount, 6)
                 project_currency = by_project_by_currency.setdefault(project_id, {})
@@ -1853,6 +1861,10 @@ def budget_summary(conn: sqlite3.Connection, *, task_id: str = "", employee_id: 
         "by_employee_by_currency": by_employee_by_currency,
         "by_task": by_task,
         "by_task_by_currency": by_task_by_currency,
+        "by_task_event_count": by_task_event_count,
+        "by_task_token_input": by_task_token_input,
+        "by_task_token_output": by_task_token_output,
+        "by_task_runtime_seconds": by_task_runtime_seconds,
         "by_project": by_project,
         "by_project_by_currency": by_project_by_currency,
         "by_project_event_count": by_project_event_count,
