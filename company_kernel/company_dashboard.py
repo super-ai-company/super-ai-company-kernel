@@ -670,6 +670,12 @@ def build_cockpit_summary(summary: dict) -> dict:
                 action("review_task", "Review task", f"/v1/tasks/{task_id}"),
                 action("view_trace", "View trace", ""),
             ]
+        if kind == "ledger_gap":
+            return [
+                action("send_probe", "Send progress probe", f"/v1/tasks/{task_id}/progress", method="POST"),
+                action("view_logs", "View sanitized logs", f"/v1/tasks/{task_id}"),
+                action("send_correction", "Request Hermes correction", f"/v1/tasks/{task_id}/correct", method="POST", requires_owner_approval=True),
+            ]
         if kind == "employee_readiness":
             return [
                 action("verify_runtime", "Verify runtime evidence", "/v1/agent-matrix", method="GET"),
@@ -1026,6 +1032,21 @@ def build_cockpit_summary(summary: dict) -> dict:
             "runtime_seconds": int((budget_summary.get("by_task_runtime_seconds", {}) or {}).get(task_id, 0)) if isinstance(budget_summary.get("by_task_runtime_seconds", {}), dict) else 0,
         }
 
+    def ledger_gaps_for_card(card: dict) -> list[str]:
+        state = str(card.get("state", "") or "")
+        attempt_id = str(card.get("attempt_id", "") or "")
+        if not attempt_id or state in {"blocked", "failed", "stale", "completion_invalid"}:
+            return []
+        runtime = card.get("runtime_summary", {}) if isinstance(card.get("runtime_summary", {}), dict) else {}
+        tool = card.get("tool_summary", {}) if isinstance(card.get("tool_summary", {}), dict) else {}
+        budget = card.get("budget_summary", {}) if isinstance(card.get("budget_summary", {}), dict) else {}
+        gaps = []
+        if int(runtime.get("session_count") or 0) > 0 and int(tool.get("tool_call_count") or 0) == 0:
+            gaps.append("tool_call_ledger_missing")
+        if int(runtime.get("session_count") or 0) > 0 and int(budget.get("event_count") or 0) == 0:
+            gaps.append("budget_ledger_missing")
+        return gaps
+
     def task_observability_summary(task_id: str) -> dict:
         return {
             "runtime_summary": runtime_summary_for_task(task_id),
@@ -1040,8 +1061,13 @@ def build_cockpit_summary(summary: dict) -> dict:
         correction = card.get("correction", {}) if isinstance(card.get("correction", {}), dict) else {}
         tool_summary = card.get("tool_summary", {}) if isinstance(card.get("tool_summary", {}), dict) else {}
         budget = card.get("budget_summary", {}) if isinstance(card.get("budget_summary", {}), dict) else {}
+        ledger_gaps = card.get("ledger_gaps", []) if isinstance(card.get("ledger_gaps", []), list) else []
         if bool(card.get("completion_invalid")):
             return "review task and require valid final evidence before accepting completion"
+        if "tool_call_ledger_missing" in ledger_gaps:
+            return "tool-call ledger missing: inspect logs, send probe, or request Hermes correction before trusting progress"
+        if "budget_ledger_missing" in ledger_gaps:
+            return "cost ledger missing: inspect runtime session and require adapter budget_event before accepting work"
         if state == "correcting" or correction.get("needs_ack"):
             return "wait for correction ack or cancel/reassign if progress remains stagnant"
         if state in {"blocked", "failed", "stale"}:
@@ -1062,10 +1088,12 @@ def build_cockpit_summary(summary: dict) -> dict:
             return
         existing = task_cards_by_id.get(task_id, {})
         card = {**task_observability_summary(task_id), **card}
+        card["ledger_gaps"] = ledger_gaps_for_card(card)
         card["owner_next_action"] = task_owner_next_action(card)
         merged = {**existing, **card}
         if existing.get("actions") and not card.get("actions"):
             merged["actions"] = existing["actions"]
+        merged["ledger_gaps"] = ledger_gaps_for_card(merged)
         merged["owner_next_action"] = task_owner_next_action(merged)
         task_cards_by_id[task_id] = merged
 
@@ -1162,6 +1190,35 @@ def build_cockpit_summary(summary: dict) -> dict:
             str(item.get("updated_at", "")),
         ),
     )
+    for card in task_cards:
+        ledger_gaps = card.get("ledger_gaps", []) if isinstance(card.get("ledger_gaps", []), list) else []
+        if not ledger_gaps:
+            continue
+        task_id = str(card.get("task_id", "") or "")
+        attempt_id = str(card.get("attempt_id", "") or "")
+        readable = []
+        if "tool_call_ledger_missing" in ledger_gaps:
+            readable.append("Tool-call ledger missing")
+        if "budget_ledger_missing" in ledger_gaps:
+            readable.append("Cost ledger missing")
+        owner_attention.append(
+            {
+                "kind": "ledger_gap",
+                "state": "missing_observability",
+                "approval_id": "",
+                "task_id": task_id,
+                "approval_action": "",
+                "risk": "P1",
+                "title": card.get("title", task_id),
+                "target_agent": card.get("target_agent", ""),
+                "attempt_id": attempt_id,
+                "trace_id": card.get("trace_id", ""),
+                "ledger_gaps": ledger_gaps,
+                "message": "; ".join(readable) + ". Progress/runtime exists but backend control-plane evidence is incomplete.",
+                "updated_at": card.get("updated_at", ""),
+                "actions": attention_actions("ledger_gap", task_id=task_id, attempt_id=attempt_id),
+            }
+        )
     employee_states = []
     for employee in employees:
         status = str(employee.get("employee_status") or employee.get("status") or "")

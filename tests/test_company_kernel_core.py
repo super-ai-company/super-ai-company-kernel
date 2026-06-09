@@ -2233,6 +2233,8 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual(0, code, submitted_missing_evidence)
         code, submitted_approval = run_cli("task", "submit", "--from", "main", "--to", "codex-cockpit", "--task-id", "task-cockpit-awaiting-approval", "--title", "Cockpit approval task")
         self.assertEqual(0, code, submitted_approval)
+        code, submitted_ledger_gap = run_cli("task", "submit", "--from", "main", "--to", "codex-cockpit", "--task-id", "task-cockpit-ledger-gap", "--title", "Cockpit missing tool and cost")
+        self.assertEqual(0, code, submitted_ledger_gap)
         code, project = run_cli("project", "create", "--project-id", "project-cockpit-cost", "--title", "Cockpit Cost", "--goal", "Expose project spend in CEO cockpit", "--owner", "main")
         self.assertEqual(0, code, project)
         code, linked = run_cli("project", "link-task", "--project-id", "project-cockpit-cost", "--task-id", "task-cockpit-long")
@@ -2409,6 +2411,29 @@ class CompanyKernelCoreTest(unittest.TestCase):
             "cockpit project cost",
         )
         self.assertEqual(0, code, budget)
+        code, gap_run = run_cli("task", "run", "--task-id", "task-cockpit-ledger-gap", "--agent", "codex-cockpit", "--by", "main", "--stale-after-seconds", "900")
+        self.assertEqual(0, code, gap_run)
+        gap_attempt_id = gap_run["attempt"]["attempt_id"]
+        code, gap_progress = run_cli("task", "progress", "--task-id", "task-cockpit-ledger-gap", "--agent", "codex-cockpit", "--attempt-id", gap_attempt_id, "--state", "in_progress", "--message", "running without tool and cost ledger", "--progress", "30")
+        self.assertEqual(0, code, gap_progress)
+        code, gap_session = run_cli(
+            "runtime",
+            "session",
+            "start",
+            "--session-id",
+            "session-cockpit-ledger-gap",
+            "--employee",
+            "codex-cockpit",
+            "--adapter-type",
+            "codex",
+            "--runtime-type",
+            "cli",
+            "--task-id",
+            "task-cockpit-ledger-gap",
+            "--attempt-id",
+            gap_attempt_id,
+        )
+        self.assertEqual(0, code, gap_session)
         conn = companyctl.connect()
         try:
             current = datetime.now(timezone.utc).astimezone()
@@ -2560,6 +2585,11 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual("needs owner input", blocked_card["blocker"])
         self.assertEqual(["send_correction", "view_logs", "retry", "reassign"], [action["id"] for action in blocked_card["actions"]])
         self.assertIn("review blocker", blocked_card["owner_next_action"])
+        gap_card = task_cards["task-cockpit-ledger-gap"]
+        self.assertEqual("running", gap_card["state"])
+        self.assertEqual(gap_attempt_id, gap_card["attempt_id"])
+        self.assertEqual(["tool_call_ledger_missing", "budget_ledger_missing"], gap_card["ledger_gaps"])
+        self.assertIn("tool-call ledger missing", gap_card["owner_next_action"])
         invalid_card = task_cards["task-cockpit-done-missing-evidence"]
         self.assertEqual("completion_invalid", invalid_card["state"])
         self.assertTrue(invalid_card["completion_invalid"])
@@ -2641,6 +2671,12 @@ class CompanyKernelCoreTest(unittest.TestCase):
         blocked_attention = next(item for item in cockpit["owner_attention"] if item["task_id"] == "task-cockpit-blocked" and item["kind"] == "blocked_task")
         self.assertEqual(["send_correction", "view_logs", "retry", "reassign"], [action["id"] for action in blocked_attention["actions"]])
         self.assertTrue(all(action["task_id"] == "task-cockpit-blocked" for action in blocked_attention["actions"]))
+        ledger_gap_attention = next(item for item in cockpit["owner_attention"] if item["task_id"] == "task-cockpit-ledger-gap" and item["kind"] == "ledger_gap")
+        self.assertEqual("missing_observability", ledger_gap_attention["state"])
+        self.assertEqual(gap_attempt_id, ledger_gap_attention["attempt_id"])
+        self.assertEqual(["tool_call_ledger_missing", "budget_ledger_missing"], ledger_gap_attention["ledger_gaps"])
+        self.assertIn("Tool-call ledger missing", ledger_gap_attention["message"])
+        self.assertEqual(["send_probe", "view_logs", "send_correction"], [action["id"] for action in ledger_gap_attention["actions"]])
         approval_attention = next(item for item in cockpit["owner_attention"] if item["approval_id"] == "approval-cockpit-awaiting")
         self.assertEqual("approval", approval_attention["kind"])
         self.assertEqual("task-cockpit-awaiting-approval", approval_attention["task_id"])
