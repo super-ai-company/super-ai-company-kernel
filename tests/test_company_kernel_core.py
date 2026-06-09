@@ -5339,6 +5339,19 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertIn("artifact", timeline_kinds)
         self.assertIn("handoff", timeline_kinds)
         self.assertIn("evidence", timeline_kinds)
+        story = api_payload["trace_story"]
+        self.assertEqual(story["required_chain"], [item["stage"] for item in story["stage_status"]])
+        story_by_stage = {item["stage"]: item for item in story["stage_status"]}
+        self.assertTrue(story_by_stage["task.created"]["observed"])
+        self.assertTrue(story_by_stage["attempt.started"]["observed"])
+        self.assertTrue(story_by_stage["artifact.created"]["observed"])
+        self.assertTrue(story_by_stage["handoff.created"]["observed"])
+        self.assertTrue(story_by_stage["evidence.promoted"]["observed"])
+        self.assertFalse(story_by_stage["tool.call.started"]["observed"])
+        self.assertEqual("missing", story_by_stage["tool.call.started"]["status"])
+        self.assertEqual("task-trace-api", story_by_stage["artifact.created"]["task_id"])
+        self.assertEqual(artifact["artifact_id"], story_by_stage["artifact.created"]["ref_id"])
+        self.assertEqual("artifact", story_by_stage["artifact.created"]["kind"])
         correction_items = [item for item in api_payload["timeline"] if item.get("label") in {"supervisor.correction_requested", "supervisor.correction_acknowledged"}]
         self.assertEqual(2, len(correction_items))
         self.assertEqual(["correction_requested", "correction_acknowledged"], [item["action"] for item in correction_items])
