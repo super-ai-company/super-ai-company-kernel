@@ -2680,6 +2680,64 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertTrue(all(row["employee_id"] == "writer" for row in writer_evidence["evidence"]))
         self.assertEqual("writer", writer_evidence["filters"]["employee_id"])
 
+    def test_api_gateway_accepts_and_rejects_final_evidence_with_audit_trail(self) -> None:
+        code, created = run_cli("employee", "create", "--id", "main", "--name", "main", "--role", "operator", "--runtime", "openclaw", "--workspace", str(self.root / "workspace" / "main"))
+        self.assertEqual(0, code, created)
+        code, created = run_cli("employee", "create", "--id", "writer", "--name", "writer", "--role", "writer", "--runtime", "local", "--workspace", str(self.root / "workspace" / "writer"))
+        self.assertEqual(0, code, created)
+        self.mark_active("writer")
+        code, submitted = run_cli("task", "submit", "--from", "main", "--to", "writer", "--task-id", "task-evidence-decision", "--title", "Evidence decision")
+        self.assertEqual(0, code, submitted)
+        code, run = run_cli("task", "run", "--task-id", "task-evidence-decision", "--agent", "writer", "--by", "main")
+        self.assertEqual(0, code, run)
+        attempt_id = run["attempt"]["attempt_id"]
+        conn = companyctl.connect()
+        try:
+            workspace = companyctl.ensure_task_workspace(conn, "task-evidence-decision")
+            final_path = Path(workspace["path"]) / "final" / "delivery.md"
+            final_path.write_text("accepted delivery\n", encoding="utf-8")
+            artifact = companyctl.register_artifact_internal(
+                conn,
+                task_id="task-evidence-decision",
+                employee_id="writer",
+                artifact_type="text",
+                path=str(final_path),
+                summary="accepted delivery",
+                stage="final",
+                is_final=True,
+            )["artifact"]
+            promoted = companyctl.promote_artifact_to_evidence_internal(conn, artifact_id=artifact["artifact_id"], by="writer", summary="accepted final evidence", attempt_id=attempt_id)
+        finally:
+            conn.close()
+        evidence_id = promoted["evidence"]["evidence_id"]
+
+        status, accepted = api_gateway.route_post(f"/v1/evidence/{evidence_id}/accept", {"by": "main", "summary": "验收通过"})
+        self.assertEqual(HTTPStatus.OK, status, accepted)
+        self.assertEqual("accepted", accepted["evidence"]["acceptance_decision"]["status"])
+        self.assertEqual("main", accepted["evidence"]["acceptance_decision"]["by"])
+        self.assertEqual("evidence.accepted", accepted["event"]["event_type"])
+        self.assertEqual("task-evidence-decision", accepted["event"]["task_id"])
+        self.assertEqual("evidence.accept", accepted["audit"]["action"])
+
+        status, content = api_gateway.route_get(f"/v1/evidence/{evidence_id}/content", {})
+        self.assertEqual(HTTPStatus.OK, status, content)
+        self.assertEqual("accepted", content["acceptance"]["decision"]["status"])
+        self.assertTrue(content["acceptance"]["accepted"])
+
+        status, shown = api_gateway.route_get("/v1/tasks/task-evidence-decision", {})
+        self.assertEqual(HTTPStatus.OK, status, shown)
+        self.assertEqual("accepted", shown["evidence_records"][0]["acceptance_decision"]["status"])
+        self.assertEqual("accepted", shown["completion_contract"]["acceptance_status"])
+        self.assertIn("evidence.accepted", [item["event_type"] for item in shown["events"]])
+
+        status, rejected = api_gateway.route_post(f"/v1/evidence/{evidence_id}/reject", {"by": "main", "reason": "证据不匹配"})
+        self.assertEqual(HTTPStatus.OK, status, rejected)
+        self.assertEqual("rejected", rejected["evidence"]["acceptance_decision"]["status"])
+        self.assertEqual("evidence.rejected", rejected["event"]["event_type"])
+        status, shown_after_reject = api_gateway.route_get("/v1/tasks/task-evidence-decision", {})
+        self.assertEqual(HTTPStatus.OK, status, shown_after_reject)
+        self.assertEqual("rejected", shown_after_reject["completion_contract"]["acceptance_status"])
+
     def test_api_gateway_lists_sanitized_artifacts_and_handoffs(self) -> None:
         for employee_id, role in [("main", "operator"), ("writer", "writer"), ("qa", "qa")]:
             code, created = run_cli("employee", "create", "--id", employee_id, "--name", employee_id, "--role", role, "--runtime", "local", "--workspace", str(self.root / "workspace" / employee_id))
@@ -6420,6 +6478,14 @@ class CompanyKernelCoreTest(unittest.TestCase):
             "function evidenceAcceptanceSummary",
             "preview_policy=safe-preview-only",
             "owner_acceptance_action=",
+            "accepted_final_evidence_count",
+            "rejected_final_evidence_count",
+            "acceptance_status",
+            "function evidenceDecisionRows",
+            "acceptEvidenceFromDashboard",
+            "rejectEvidenceFromDashboard",
+            "/v1/evidence/${encodeURIComponent(evidenceId)}/accept",
+            "/v1/evidence/${encodeURIComponent(evidenceId)}/reject",
         ]:
             self.assertIn(snippet, html)
 
@@ -8143,6 +8209,8 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertIn("employee_id", evidence_query_names)
         self.assertIn("/v1/evidence/{evidence_id}/content", openapi["paths"])
         self.assertIn("/v1/evidence/{evidence_id}/safe-preview", openapi["paths"])
+        self.assertIn("/v1/evidence/{evidence_id}/accept", openapi["paths"])
+        self.assertIn("/v1/evidence/{evidence_id}/reject", openapi["paths"])
         self.assertIn("/v1/artifacts", openapi["paths"])
         self.assertIn("/v1/handoffs", openapi["paths"])
         self.assertIn("/v1/failures", openapi["paths"])

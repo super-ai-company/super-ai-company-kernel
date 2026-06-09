@@ -4146,6 +4146,8 @@
       const evidence = payload.evidence || {};
       const display = payload.display || {};
       const content = payload.content || {};
+      const acceptance = payload.acceptance || {};
+      const decision = acceptance.decision || {};
       const location = display.relative_path || display.basename || '-';
       const text = content.text ? ` · preview=${shortText(content.text, 320)}` : '';
       const policy = display.policy || {};
@@ -4156,6 +4158,7 @@
         ['Employee', evidence.employee_id || '-'],
         ['Artifact ID', evidence.artifact_id || '-'],
         ['Final Evidence', String(!!evidence.is_final)],
+        ['Acceptance Decision', `${decision.status || 'pending'} · by=${decision.by || '-'} · at=${decision.decided_at || '-'}`],
         ['Relative Path', location],
         ['Exists', String(!!display.exists)],
         ['Allowed', String(!!display.allowed)],
@@ -4171,6 +4174,7 @@
         evidence,
         display,
         content: Object.assign({}, content, {text: content.text || ''}),
+        acceptance,
       });
       companyApiLog('EVIDENCE', `${evidenceId} · ${location} · bytes=${content.bytes || 0} · absolute_path_exposed=${display.absolute_path_exposed ? 'yes' : 'no'}${text}`, 'success');
     } catch (err) {
@@ -4185,6 +4189,34 @@
     }
   }
   window.viewEvidenceContent = viewEvidenceContent;
+
+  async function acceptEvidenceFromDashboard(evidenceId, taskId) {
+    if (!evidenceId) return;
+    const summary = prompt('Accept final evidence summary', 'owner accepted final evidence from dashboard') || 'owner accepted final evidence from dashboard';
+    try {
+      const result = await companyApiPost(`/v1/evidence/${encodeURIComponent(evidenceId)}/accept`, {by: HUMAN_OWNER_ID || 'main', summary});
+      companyApiLog('EVIDENCE', `Accepted evidence ${evidenceId}; event=${result.event && result.event.id || '-'}`, 'success');
+      if (taskId) openTaskDetailDrawer(taskId);
+      refreshLiveDashboardFromApi();
+    } catch (err) {
+      companyApiLog('ERROR', `Accept evidence failed for ${evidenceId}: ${err.message}`, 'error');
+    }
+  }
+  window.acceptEvidenceFromDashboard = acceptEvidenceFromDashboard;
+
+  async function rejectEvidenceFromDashboard(evidenceId, taskId) {
+    if (!evidenceId) return;
+    const reason = prompt('Reject final evidence reason', 'evidence does not match task acceptance criteria') || 'evidence does not match task acceptance criteria';
+    try {
+      const result = await companyApiPost(`/v1/evidence/${encodeURIComponent(evidenceId)}/reject`, {by: HUMAN_OWNER_ID || 'main', reason});
+      companyApiLog('EVIDENCE', `Rejected evidence ${evidenceId}; event=${result.event && result.event.id || '-'}`, 'warn');
+      if (taskId) openTaskDetailDrawer(taskId);
+      refreshLiveDashboardFromApi();
+    } catch (err) {
+      companyApiLog('ERROR', `Reject evidence failed for ${evidenceId}: ${err.message}`, 'error');
+    }
+  }
+  window.rejectEvidenceFromDashboard = rejectEvidenceFromDashboard;
 
   function recordWaitDecision(taskId, attemptId) {
     companyApiLog('SYSTEM', `Waiting is recorded locally only; no external send is triggered. task=${taskId || '-'} attempt=${attemptId || '-'}`, 'normal');
@@ -4963,16 +4995,34 @@
       const display = row.display || {};
       return display.exists === false || row.missing === true;
     });
+    const acceptedRows = rows.filter(row => (row.acceptance_decision || {}).status === 'accepted');
+    const rejectedRows = rows.filter(row => (row.acceptance_decision || {}).status === 'rejected');
     let action = 'wait for task-bound final evidence';
     if (item.valid === false) action = 'block completion until safe final evidence is attached';
     if (item.valid !== false && (item.final_evidence_count || finalRows.length)) action = 'review safe final evidence and accept delivery';
     if (unsafeRows.length || missingRows.length) action = 'reject unsafe or missing evidence, then reopen or request corrected evidence';
+    if (acceptedRows.length) action = 'final evidence accepted; delivery can be closed if task output matches';
+    if (rejectedRows.length && !acceptedRows.length) action = 'final evidence rejected; reopen, retry, or request corrected evidence';
     return [
-      `records=${rows.length} · final_evidence=${item.final_evidence_count || finalRows.length || 0} · safe_records=${safeRows.length} · previewable=${previewableRows.length}`,
-      `completion_valid=${String(item.valid !== false)} · reason=${item.reason || '-'} · safe_final=${item.safe_final_evidence_count || 0}`,
+      `records=${rows.length} · final_evidence=${item.final_evidence_count || finalRows.length || 0} · safe_records=${safeRows.length} · previewable=${previewableRows.length} · acceptance_status=${item.acceptance_status || 'pending'}`,
+      `completion_valid=${String(item.valid !== false)} · reason=${item.reason || '-'} · safe_final=${item.safe_final_evidence_count || 0} · accepted_final_evidence_count=${item.accepted_final_evidence_count || acceptedRows.length || 0} · rejected_final_evidence_count=${item.rejected_final_evidence_count || rejectedRows.length || 0}`,
       `unsafe=${unsafeRows.length} · missing=${missingRows.length} · preview_policy=safe-preview-only`,
-      `owner_acceptance_action=${action}`
+      `owner_acceptance_action=${action}`,
+      evidenceDecisionRows(rows)
     ].join('\n');
+  }
+
+  function evidenceDecisionRows(records) {
+    const rows = Array.isArray(records) ? records : [];
+    if (!rows.length) return 'evidence_decisions: none';
+    return rows.slice(0, 12).map(row => {
+      const decision = row.acceptance_decision || {};
+      const evidenceId = row.evidence_id || '-';
+      const taskId = row.task_id || '-';
+      const status = decision.status || 'pending';
+      const actions = row.is_final ? `actions=acceptEvidenceFromDashboard('${escapeHtml(evidenceId)}','${escapeHtml(taskId)}') / rejectEvidenceFromDashboard('${escapeHtml(evidenceId)}','${escapeHtml(taskId)}')` : 'actions=preview_only';
+      return sanitizeDisplayText(`${evidenceId} · final=${String(!!row.is_final)} · decision=${status} · by=${decision.by || '-'} · ${actions}`);
+    }).join('\n');
   }
 
   function currentTaskAttempt(task) {

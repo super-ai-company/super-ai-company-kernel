@@ -2165,6 +2165,9 @@ def task_evidence_records(conn: sqlite3.Connection, task_id: str) -> list[dict]:
     for record in records:
         raw_path = record.pop("path_or_url", "")
         record["display"] = sanitize_evidence_path_for_display(raw_path)
+        metadata = parse_json_arg(record.get("metadata_json", "{}") or "{}", {})
+        record["metadata"] = metadata if isinstance(metadata, dict) else {}
+        record["acceptance_decision"] = evidence_acceptance_decision(record)
     return records
 
 
@@ -2382,6 +2385,8 @@ def task_completion_contract(task: dict, evidence_records: list[dict]) -> dict:
     done_like = status in {"completed", "done", "success"}
     final_records = [record for record in evidence_records if bool(record.get("is_final"))]
     safe_final_records = [record for record in final_records if bool((record.get("display") or {}).get("allowed"))]
+    accepted_final_records = [record for record in safe_final_records if (record.get("acceptance_decision") or {}).get("status") == "accepted"]
+    rejected_final_records = [record for record in final_records if (record.get("acceptance_decision") or {}).get("status") == "rejected"]
     legacy_evidence_path_present = bool(str(task.get("evidence_path") or "").strip())
     if not done_like:
         reason = "not_done"
@@ -2401,6 +2406,9 @@ def task_completion_contract(task: dict, evidence_records: list[dict]) -> dict:
         "reason": reason,
         "final_evidence_count": len(final_records),
         "safe_final_evidence_count": len(safe_final_records),
+        "accepted_final_evidence_count": len(accepted_final_records),
+        "rejected_final_evidence_count": len(rejected_final_records),
+        "acceptance_status": "accepted" if accepted_final_records else ("rejected" if rejected_final_records and not accepted_final_records else "pending"),
         "legacy_evidence_path_present": legacy_evidence_path_present,
         "summary": summary,
     }
@@ -4326,7 +4334,26 @@ def audit_evidence_records(conn: sqlite3.Connection, *, task_id: str = "", emplo
         raw_path = item.pop("path_or_url", "")
         item["display"] = sanitize_evidence_path_for_display(raw_path)
         item["is_final"] = bool(item.get("is_final"))
+        metadata = parse_json_arg(item.get("metadata_json", "{}") or "{}", {})
+        item["metadata"] = metadata if isinstance(metadata, dict) else {}
+        item["acceptance_decision"] = evidence_acceptance_decision(item)
     return evidence
+
+
+def evidence_acceptance_decision(item: dict) -> dict:
+    metadata = item.get("metadata", {}) if isinstance(item.get("metadata", {}), dict) else parse_json_arg(str(item.get("metadata_json", "{}") or "{}"), {})
+    if not isinstance(metadata, dict):
+        metadata = {}
+    decision = metadata.get("acceptance", {}) if isinstance(metadata.get("acceptance", {}), dict) else {}
+    status = str(decision.get("status") or "pending")
+    return {
+        "status": status,
+        "by": str(decision.get("by") or ""),
+        "summary": sanitize_log_text(str(decision.get("summary") or "")),
+        "reason": sanitize_log_text(str(decision.get("reason") or "")),
+        "decided_at": str(decision.get("decided_at") or ""),
+        "event_id": str(decision.get("event_id") or ""),
+    }
 
 
 def evidence_acceptance_context(item: dict, display: dict) -> dict:
@@ -4338,6 +4365,7 @@ def evidence_acceptance_context(item: dict, display: dict) -> dict:
     task_bound = bool(task_id)
     attempt_bound = bool(attempt_id)
     can_accept = preview_allowed and task_bound and attempt_bound and is_final
+    decision = evidence_acceptance_decision(item)
     if not preview_allowed:
         state = "blocked_by_preview_policy"
     elif not task_bound or not attempt_bound:
@@ -4360,8 +4388,61 @@ def evidence_acceptance_context(item: dict, display: dict) -> dict:
         "checksum_status": "recorded" if checksum else "missing",
         "can_accept": can_accept,
         "state": state,
+        "decision": decision,
+        "accepted": decision.get("status") == "accepted",
+        "rejected": decision.get("status") == "rejected",
         "summary": sanitize_log_text(str(item.get("summary") or "")),
     }
+
+
+def decide_evidence_internal(conn: sqlite3.Connection, *, evidence_id: str, by: str, status: str, summary: str = "", reason: str = "") -> dict:
+    actor = resolve_employee_alias(by)
+    require_employee(conn, actor)
+    if status not in {"accepted", "rejected"}:
+        raise SystemExit("status must be accepted or rejected")
+    evidence = row_by_id(conn, "evidence", "evidence_id", evidence_id)
+    display = sanitize_evidence_path_for_display(str(evidence.get("path_or_url") or ""))
+    acceptance = evidence_acceptance_context(evidence, display)
+    if status == "accepted" and not acceptance.get("can_accept"):
+        return {"ok": False, "error": "evidence is not acceptable", "acceptance": acceptance, "evidence_id": evidence_id}
+    metadata = parse_json_arg(evidence.get("metadata_json", "{}") or "{}", {})
+    if not isinstance(metadata, dict):
+        metadata = {}
+    event_type = "evidence.accepted" if status == "accepted" else "evidence.rejected"
+    ts = now()
+    decision = {
+        "status": status,
+        "by": actor,
+        "summary": summary,
+        "reason": reason,
+        "decided_at": ts,
+    }
+    metadata["acceptance"] = decision
+    conn.execute("UPDATE evidence SET metadata_json = ? WHERE evidence_id = ?", (json.dumps(metadata, ensure_ascii=False), evidence_id))
+    conn.commit()
+    event = record_event(
+        conn,
+        event_type,
+        actor,
+        task_id=str(evidence.get("task_id") or ""),
+        trace_id=str(evidence.get("trace_id") or ""),
+        payload={"evidence_id": evidence_id, "attempt_id": evidence.get("attempt_id", ""), "summary": summary, "reason": reason},
+    )
+    decision["event_id"] = event["id"]
+    metadata["acceptance"] = decision
+    conn.execute("UPDATE evidence SET metadata_json = ? WHERE evidence_id = ?", (json.dumps(metadata, ensure_ascii=False), evidence_id))
+    audit(conn, actor, "evidence.accept" if status == "accepted" else "evidence.reject", evidence_id, {"task_id": evidence.get("task_id", ""), "attempt_id": evidence.get("attempt_id", ""), "event_id": event["id"], "summary": summary, "reason": reason})
+    audit_row = conn.execute("SELECT id, actor, action, target, detail_json, created_at FROM audit_logs WHERE target = ? ORDER BY id DESC LIMIT 1", (evidence_id,)).fetchone()
+    updated = row_by_id(conn, "evidence", "evidence_id", evidence_id)
+    raw_path = updated.pop("path_or_url", "")
+    updated["display"] = sanitize_evidence_path_for_display(raw_path)
+    updated["is_final"] = bool(updated.get("is_final"))
+    updated["metadata"] = metadata
+    updated["acceptance_decision"] = evidence_acceptance_decision(updated)
+    audit_payload = dict(audit_row) if audit_row else {}
+    if audit_payload:
+        audit_payload["detail"] = parse_json_arg(audit_payload.pop("detail_json", "{}") or "{}", {})
+    return {"ok": True, "evidence": updated, "event": event, "audit": audit_payload}
 
 
 def safe_evidence_content(conn: sqlite3.Connection, evidence_id: str, *, max_bytes: int = 65536) -> dict:
@@ -4383,6 +4464,8 @@ def safe_evidence_content(conn: sqlite3.Connection, evidence_id: str, *, max_byt
         return {"ok": False, "error": "evidence not found", "evidence_id": safe_id, "display": display, "acceptance": evidence_acceptance_context({"evidence_id": safe_id}, display), "content": {"text": ""}}
     item = dict(record)
     raw_path = item.pop("path_or_url", "")
+    metadata = parse_json_arg(item.get("metadata_json", "{}") or "{}", {})
+    item["metadata"] = metadata if isinstance(metadata, dict) else {}
     display = sanitize_evidence_path_for_display(raw_path)
     payload = {
         "ok": bool(display.get("allowed")),

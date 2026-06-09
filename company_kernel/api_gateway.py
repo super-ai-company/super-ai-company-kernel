@@ -98,6 +98,8 @@ API_ENDPOINTS = [
     {"method": "GET", "path": "/v1/evidence", "summary": "List sanitized evidence records for Audit Hub", "query": {"task_id": "task id optional", "employee_id": "employee id optional", "limit": "integer optional"}},
     {"method": "GET", "path": "/v1/evidence/{evidence_id}/content", "summary": "Read safe text preview for a whitelisted evidence record without exposing absolute paths"},
     {"method": "GET", "path": "/v1/evidence/{evidence_id}/safe-preview", "summary": "Alias for safe evidence text preview; enforces the same whitelist and secret-path policy"},
+    {"method": "POST", "path": "/v1/evidence/{evidence_id}/accept", "summary": "Owner accepts task-bound final evidence after safe preview", "body": {"by": "employee id", "summary": "acceptance summary optional"}},
+    {"method": "POST", "path": "/v1/evidence/{evidence_id}/reject", "summary": "Owner rejects task-bound final evidence and records reason", "body": {"by": "employee id", "reason": "rejection reason"}},
     {"method": "GET", "path": "/v1/artifacts", "summary": "List sanitized artifact records for Audit Hub", "query": {"task_id": "task id optional", "limit": "integer optional"}},
     {"method": "GET", "path": "/v1/handoffs", "summary": "List handoff contracts for Audit Hub", "query": {"task_id": "from or to task id optional", "limit": "integer optional"}},
     {"method": "GET", "path": "/v1/failures", "summary": "List sanitized task, attempt, and adapter failure records for Audit Hub", "query": {"task_id": "task id optional", "limit": "integer optional"}},
@@ -967,6 +969,23 @@ def route_post(path: str, body: dict) -> tuple[int, dict]:
             account_id=str(body.get("account", "") or ""),
             dry_run=truthy(body.get("dry_run")),
         )
+        return (HTTPStatus.OK if result.get("ok") else HTTPStatus.BAD_REQUEST), result
+    if path.startswith("/v1/evidence/") and (path.endswith("/accept") or path.endswith("/reject")):
+        status_value = "accepted" if path.endswith("/accept") else "rejected"
+        suffix = "/accept" if status_value == "accepted" else "/reject"
+        evidence_id = path.removeprefix("/v1/evidence/").removesuffix(suffix).strip("/")
+        conn = companyctl.connect()
+        try:
+            result = companyctl.decide_evidence_internal(
+                conn,
+                evidence_id=evidence_id,
+                by=str(body.get("by", "")),
+                status=status_value,
+                summary=str(body.get("summary", "")),
+                reason=str(body.get("reason", "")),
+            )
+        finally:
+            conn.close()
         return (HTTPStatus.OK if result.get("ok") else HTTPStatus.BAD_REQUEST), result
     if path == "/v1/policy-blocks/report":
         argv = [
