@@ -2324,7 +2324,10 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertGreaterEqual(cockpit["counts"]["employee_status_counts"]["active"], 1)
         self.assertGreaterEqual(cockpit["counts"]["employee_status_counts"]["abnormal"], 1)
         self.assertEqual(1, cockpit["counts"]["readiness_counts"]["active_ready"])
-        self.assertGreaterEqual(cockpit["counts"]["readiness_counts"]["online_only"], 1)
+        self.assertGreaterEqual(
+            sum(cockpit["counts"]["readiness_counts"].get(level, 0) for level in ["active_limited", "online_only", "candidate_only"]),
+            1,
+        )
         self.assertEqual(2, cockpit["counts"]["done_tasks"])
         self.assertEqual(1, cockpit["counts"]["evidence_issues"])
         self.assertEqual(2, cockpit["counts"]["awaiting_approval_tasks"])
@@ -6809,6 +6812,27 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertIn("Not schedulable", html)
         self.assertIn("reason=${escapeHtml(shortText(reason, 90))}", html)
 
+    def test_dashboard_readiness_does_not_treat_heartbeat_as_direct_attendance(self) -> None:
+        code, created = run_cli("employee", "create", "--id", "claude-code", "--name", "Claude Code", "--role", "runtime-agent", "--runtime", "claude", "--workspace", str(self.root / "workspace" / "claude-code"))
+        self.assertEqual(0, code, created)
+        self.mark_active("claude-code")
+        code, heartbeat = run_cli("heartbeat", "--agent", "claude-code")
+        self.assertEqual(0, code, heartbeat)
+        verification_dir = self.root / "state" / "employee-verification" / "claude-code"
+        verification_dir.mkdir(parents=True)
+        (verification_dir / "latest-runtime.json").write_text(json.dumps({"ok": True, "activation_allowed": True}, ensure_ascii=False), encoding="utf-8")
+        attendance_dir = self.root / "state" / "attendance"
+        attendance_dir.mkdir(parents=True)
+        (attendance_dir / "latest.json").write_text(json.dumps({"ok": True, "employees": []}, ensure_ascii=False), encoding="utf-8")
+
+        with companyctl.connect() as conn:
+            summary = company_dashboard.load_summary(conn)
+            models = company_dashboard.employee_view_models(summary)
+        row = next(item for item in models if item["id"] == "claude-code")
+        self.assertEqual("active_limited", row["readiness_level"])
+        self.assertEqual("runtime_evidence_without_live_task_or_direct_attendance", row["readiness_reason"])
+        self.assertFalse(row["schedulable"])
+
     def test_skill_registry_lists_packages_in_cli_api_and_dashboard(self) -> None:
         manifest_path = self.write_skill_manifest()
         code, listed = run_cli("skill", "list")
@@ -7086,6 +7110,43 @@ class CompanyKernelCoreTest(unittest.TestCase):
         row = matrix["employees"][0]
         self.assertEqual("active_ready", row["level"])
         self.assertEqual("runtime_evidence", row["checks"]["evidence"])
+
+    def test_agent_matrix_does_not_mark_adapter_ready_from_verification_and_heartbeat_only(self) -> None:
+        code, employee = run_cli(
+            "employee",
+            "create",
+            "--id",
+            "claude-code",
+            "--name",
+            "Claude Code",
+            "--role",
+            "runtime-agent",
+            "--runtime",
+            "claude",
+            "--workspace",
+            str(self.root / "workspace" / "claude-code"),
+        )
+        self.assertEqual(0, code, employee)
+        self.mark_active("claude-code")
+        verification_dir = self.root / "state" / "employee-verification" / "claude-code"
+        verification_dir.mkdir(parents=True)
+        (verification_dir / "latest-runtime.json").write_text(
+            json.dumps({"ok": True, "activation_allowed": True}, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        attendance_dir = self.root / "state" / "attendance"
+        attendance_dir.mkdir(parents=True)
+        (attendance_dir / "latest.json").write_text(json.dumps({"ok": True, "employees": []}, ensure_ascii=False), encoding="utf-8")
+        with companyctl.connect() as conn:
+            companyctl.heartbeat_internal(conn, "claude-code", {"source": "adapter-heartbeat-only"})
+
+        code, matrix = run_cli("agent-matrix", "--agents", "claude-code")
+        self.assertEqual(0, code, matrix)
+        row = matrix["employees"][0]
+        self.assertEqual("active_limited", row["level"])
+        self.assertEqual("runtime_evidence_without_live_task_or_direct_attendance", row["reason"])
+        self.assertEqual("verified_limited", row["checks"]["runtime"])
+        self.assertEqual("fresh", row["checks"]["heartbeat"])
 
     def test_agent_matrix_marks_skill_ready_from_runtime_evidence_without_direct_chat(self) -> None:
         code, runtime = run_cli("runtime", "register", "--runtime", "skill", "--command", "company-skill-package-worker", "--notes", "Skill Package runtime")
@@ -9005,15 +9066,13 @@ class CompanyKernelCoreTest(unittest.TestCase):
             if cmd[1:3] == ["scheduler", "run"]:
                 return subprocess.CompletedProcess(cmd, 0, stdout=json.dumps({"ok": True, "events": []}, ensure_ascii=False), stderr="")
             task_id = "task-runtime-candidate-claude-claude-code"
-            report = self.root / "employees" / "claude-code" / "reports" / task_id / "claude-adapter-report.md"
+            with companyctl.connect() as conn:
+                workspace = companyctl.ensure_task_workspace(conn, task_id, companyctl.trace_id_for_task(conn, task_id))
+            report = Path(workspace["path"]) / "final" / "claude-adapter-report.md"
             report.parent.mkdir(parents=True, exist_ok=True)
             report.write_text("claude candidate adapter evidence\n", encoding="utf-8")
             with companyctl.connect() as conn:
-                conn.execute(
-                    "UPDATE tasks SET status = 'completed', evidence_path = ?, summary = 'claude adapter evidence', updated_at = ? WHERE id = ?",
-                    (str(report), companyctl.now(), task_id),
-                )
-                conn.commit()
+                companyctl.complete_task_internal(conn, agent="claude-code", task_id=task_id, summary="claude adapter evidence", evidence=str(report))
                 companyctl.heartbeat_internal(conn, "claude-code", {"source": "candidate-adapter-test"})
             return subprocess.CompletedProcess(cmd, 0, stdout=json.dumps({"ok": True, "processed": 1, "task_id": task_id, "report": str(report)}, ensure_ascii=False), stderr="")
 
@@ -9023,6 +9082,7 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertTrue(verified["ok"], verified)
         self.assertTrue(verified["results"][0]["candidate_verification"])
         self.assertTrue(verified["results"][0]["evidence_exists"])
+        self.assertTrue(verified["results"][0]["final_evidence"])
         code, still_blocked = run_cli("task", "submit", "--from", "openclaw-main", "--to", "claude-code", "--task-id", "task-candidate-normal-submit-2", "--title", "normal submit still blocked")
         self.assertEqual(2, code, still_blocked)
         code, activated = run_cli("employee", "update", "--id", "claude-code", "--status", "active")

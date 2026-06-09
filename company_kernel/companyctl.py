@@ -2528,6 +2528,39 @@ def auto_promote_workspace_evidence(conn: sqlite3.Connection, *, task_id: str, a
     return promoted["evidence"]
 
 
+def ensure_final_evidence_for_existing_path(conn: sqlite3.Connection, *, task_id: str, agent: str, evidence_path: str, summary: str) -> dict | None:
+    path = Path(evidence_path)
+    if not evidence_path or not path.exists() or not path.is_file():
+        return None
+    existing = final_evidence_for_path(conn, task_id, str(path))
+    if existing:
+        return existing
+    promoted = auto_promote_workspace_evidence(conn, task_id=task_id, agent=agent, evidence_path=str(path), summary=summary)
+    if promoted:
+        return promoted
+    workspace_root = Path(task_workspace(conn, task_id)["path"]).resolve()
+    safe_name = safe_path_token(path.name or "runtime-verification-evidence.txt")
+    copied_path = workspace_root / "evidence" / safe_name
+    copied_path.parent.mkdir(parents=True, exist_ok=True)
+    if copied_path.resolve() != path.resolve():
+        copied_path.write_bytes(path.read_bytes())
+    path = copied_path
+    artifact = register_artifact_internal(
+        conn,
+        task_id=task_id,
+        employee_id=agent,
+        path=str(path),
+        artifact_type=path.suffix.lstrip(".") or "file",
+        name=path.name,
+        stage="final",
+        summary=summary or "runtime verification evidence",
+        is_final=True,
+        metadata={"registered_by": "runtime.verify_adapters.legacy_path", "original_path": str(Path(evidence_path))},
+    )
+    promoted = promote_artifact_to_evidence_internal(conn, artifact_id=artifact["artifact"]["artifact_id"], by=agent, summary=summary or "runtime verification evidence")
+    return promoted["evidence"]
+
+
 def ensure_runtime(conn: sqlite3.Connection, runtime: str) -> None:
     ts = now()
     conn.execute(
@@ -3645,6 +3678,13 @@ def latest_attempt_for_employee(conn: sqlite3.Connection, employee_id: str) -> d
     return dict(row) if row else {}
 
 
+def employee_has_fresh_heartbeat(conn: sqlite3.Connection, employee_id: str, *, stale_minutes: int = 15) -> bool:
+    row = conn.execute("SELECT last_seen_at FROM heartbeats WHERE agent_id = ?", (employee_id,)).fetchone()
+    if not row:
+        return False
+    return parse_time(row["last_seen_at"]) >= datetime.now(timezone.utc) - timedelta(minutes=stale_minutes)
+
+
 def classify_agent_matrix_row(conn: sqlite3.Connection, employee: dict, attendance: dict) -> dict:
     employee_id = employee["id"]
     runtime = str(employee.get("runtime") or "")
@@ -3652,6 +3692,10 @@ def classify_agent_matrix_row(conn: sqlite3.Connection, employee: dict, attendan
     runtime_ok = employee_has_runtime_evidence(employee_id, conn)
     direct_ok = employee_has_verified_direct_evidence(employee_id)
     latest_attempt = latest_attempt_for_employee(conn, employee_id)
+    has_task_attempt = bool(latest_attempt)
+    has_live_heartbeat = employee_has_fresh_heartbeat(conn, employee_id)
+    has_live_attendance = attendance_status == "online"
+    has_live_or_task_evidence = has_live_attendance or has_task_attempt
     employee_status = str(employee.get("status") or "")
     if employee_status == "missing":
         level = "no_reply"
@@ -3662,9 +3706,12 @@ def classify_agent_matrix_row(conn: sqlite3.Connection, employee: dict, attendan
     elif runtime == "skill" and employee_status == "active" and runtime_ok:
         level = "active_ready"
         reason = "skill_runtime_evidence_no_direct_chat_required"
-    elif runtime != "openclaw" and employee_status == "active" and runtime_ok:
+    elif runtime != "openclaw" and employee_status == "active" and runtime_ok and has_live_or_task_evidence:
         level = "active_ready"
         reason = "adapter_runtime_evidence_no_openclaw_session_required"
+    elif runtime != "openclaw" and employee_status == "active" and runtime_ok:
+        level = "active_limited"
+        reason = "runtime_evidence_without_live_task_or_direct_attendance"
     elif runtime == "openclaw" and employee_status == "active" and (runtime_ok or direct_ok):
         level = "active_ready"
         reason = "openclaw_direct_or_runtime_evidence_verified"
@@ -3692,8 +3739,9 @@ def classify_agent_matrix_row(conn: sqlite3.Connection, employee: dict, attendan
         "reason": reason,
         "checks": {
             "attendance": attendance_status,
+            "heartbeat": "fresh" if has_live_heartbeat else "missing_or_stale",
             "direct": "verified" if direct_ok else "not_verified",
-            "runtime": "verified" if runtime_ok else "missing",
+            "runtime": "verified" if runtime_ok and (runtime == "skill" or runtime == "openclaw" or has_live_or_task_evidence) else ("verified_limited" if runtime_ok else "missing"),
             "task": "supported" if employee_status == "active" else "not_active",
             "progress": "observable" if latest_attempt else "not_checked",
             "evidence": "runtime_evidence" if runtime_ok else "missing",
@@ -9702,10 +9750,32 @@ def cmd_runtime_verify_adapters(args: argparse.Namespace) -> int:
             cmd.extend(["--package", package])
         if args.execute:
             cmd.append("--execute")
+        active_attempt = conn.execute(
+            """
+            SELECT * FROM execution_attempts
+            WHERE task_id = ?
+              AND employee_id = ?
+              AND status IN ('starting', 'running', 'correcting')
+            ORDER BY started_at DESC
+            LIMIT 1
+            """,
+            (task_id, emp["id"]),
+        ).fetchone()
+        if not active_attempt:
+            active_attempt = start_execution_attempt_internal(
+                conn,
+                task_id=task_id,
+                employee_id=emp["id"],
+                adapter_type="runtime-verify",
+                metadata={"runtime_verify": True, "command": command},
+                status="running",
+            )["attempt"]
         cp = subprocess.run(cmd, cwd=str(ROOT), text=True, capture_output=True)
         current = conn.execute("SELECT status, evidence_path, blocker FROM tasks WHERE id = ?", (task_id,)).fetchone()
         hb = conn.execute("SELECT last_seen_at FROM heartbeats WHERE agent_id = ?", (emp["id"],)).fetchone()
         evidence = current["evidence_path"] if current else ""
+        final_evidence_record = ensure_final_evidence_for_existing_path(conn, task_id=task_id, agent=emp["id"], evidence_path=evidence, summary="runtime verification evidence") if current and evidence else None
+        final_evidence = bool(final_evidence_record)
         result.update(
             {
                 "exit_code": cp.returncode,
@@ -9714,11 +9784,13 @@ def cmd_runtime_verify_adapters(args: argparse.Namespace) -> int:
                 "task_status": current["status"] if current else "",
                 "evidence": evidence,
                 "evidence_exists": bool(evidence and Path(evidence).exists()),
+                "final_evidence": final_evidence,
+                "final_evidence_id": final_evidence_record.get("evidence_id", "") if isinstance(final_evidence_record, dict) else "",
                 "blocker": current["blocker"] if current else "",
                 "heartbeat": hb["last_seen_at"] if hb else "",
             }
         )
-        result["ok"] = cp.returncode == 0 and result["task_status"] == "completed" and result["evidence_exists"] and bool(result["heartbeat"])
+        result["ok"] = cp.returncode == 0 and result["task_status"] == "completed" and result["evidence_exists"] and final_evidence and bool(result["heartbeat"])
         results.append(result)
     scheduler_result = {}
     if args.run_scheduler:
