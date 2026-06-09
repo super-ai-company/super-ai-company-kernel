@@ -452,6 +452,8 @@ def sanitize_api_display_value(value: object, *, key: str = "") -> object:
     if key_lower in {"payload_json", "detail_json", "result_json", "metadata_json"}:
         return None
     if isinstance(value, dict):
+        if value.get("absolute_path_exposed") is False and {"path", "relative_path", "basename", "allowed", "reason"}.issubset(value.keys()):
+            return value
         sanitized = {}
         for item_key, item_value in value.items():
             clean_value = sanitize_api_display_value(item_value, key=str(item_key))
