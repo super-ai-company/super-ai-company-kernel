@@ -4912,6 +4912,37 @@ def employee_file_bundle(conn: sqlite3.Connection, employee_id: str) -> dict:
     }
     if current_attempt:
         current_activity.update(long_task_state_for_attempt(current_attempt))
+    failed_tool_call_count = sum(1 for item in tool_calls if str(item.get("status") or "") in {"failed", "blocked", "cancelled"})
+    final_evidence_count = sum(1 for item in evidence_records if bool(item.get("is_final")) or str(item.get("stage") or "") == "final")
+    owner_next_action = "idle: assign a task when work is available"
+    if current_task_id:
+        owner_next_action = "monitor current task progress, tool calls, budget, and evidence"
+    current_state = str(current_activity.get("long_task_state") or current_activity.get("task_status") or current_activity.get("attempt_status") or "")
+    if current_state in {"blocked", "failed", "stale", "heartbeat_stale", "progress_stagnant"}:
+        owner_next_action = "review blocker, then correct, cancel, retry, or reassign"
+    operational_summary = {
+        "employee_id": employee_id,
+        "current_task_id": current_task_id,
+        "current_task_title": current_activity.get("task_title", ""),
+        "current_attempt_id": str(current_attempt.get("attempt_id") or ""),
+        "current_trace_id": current_trace_id,
+        "current_state": current_state or "idle",
+        "task_count": len(task_rows),
+        "current_task_count": len(current_tasks),
+        "attempt_count": len(attempt_rows),
+        "runtime_session_count": len(runtime_sessions),
+        "tool_call_count": len(tool_calls),
+        "failed_tool_call_count": failed_tool_call_count,
+        "budget_event_count": len(budget_events),
+        "budget_total": employee_budget_summary.get("total_amount", 0),
+        "budget_currency": employee_budget_summary.get("currency", "USD"),
+        "token_input": employee_budget_summary.get("token_input", 0),
+        "token_output": employee_budget_summary.get("token_output", 0),
+        "runtime_seconds": employee_budget_summary.get("runtime_seconds", 0),
+        "evidence_count": len(evidence_records),
+        "final_evidence_count": final_evidence_count,
+        "owner_next_action": owner_next_action,
+    }
     return {
         "employee": profile,
         "profile": file_profile,
@@ -4935,6 +4966,7 @@ def employee_file_bundle(conn: sqlite3.Connection, employee_id: str) -> dict:
         },
         "attempts": attempt_rows,
         "current_activity": current_activity,
+        "operational_summary": operational_summary,
         "runtime_sessions": runtime_sessions,
         "tool_calls": tool_calls,
         "budget_events": budget_events,

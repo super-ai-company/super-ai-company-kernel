@@ -4640,6 +4640,16 @@
     ].join('\n');
   }
 
+  function employeeOperationalSummary(summary) {
+    const item = summary || {};
+    return [
+      `employee=${item.employee_id || '-'} · current_task=${item.current_task_id || '-'} · attempt=${item.current_attempt_id || '-'} · state=${item.current_state || '-'}`,
+      `tasks=${item.task_count || 0} · current=${item.current_task_count || 0} · attempts=${item.attempt_count || 0} · runtime_sessions=${item.runtime_session_count || 0}`,
+      `tool_calls=${item.tool_call_count || 0} · failed_tool_calls=${item.failed_tool_call_count || 0} · budget=${item.budget_currency || 'USD'} ${item.budget_total || 0} · tokens=${item.token_input || 0}/${item.token_output || 0}`,
+      `evidence=${item.evidence_count || 0} · final_evidence=${item.final_evidence_count || 0} · owner_next_action=${item.owner_next_action || 'inspect employee work history'}`
+    ].join('\n');
+  }
+
   function employeeCurrentActivitySummary(currentActivity) {
     const item = currentActivity || {};
     const latest = item.latest_progress || {};
@@ -5375,11 +5385,13 @@
       const budgetSummary = payload.budget_summary || {};
       const budgetEvents = payload.budget_events || [];
       const evidenceRecords = payload.evidence_records || [];
+      const operationalSummary = payload.operational_summary || {};
       renderDetails(`Employee Detail: ${employeeId}`, [
         ['Status', employee.status || profile.status || '-'],
         ['Runtime', employee.runtime || profile.runtime || '-'],
         ['Role', employee.role || profile.role || '-'],
         ['Heartbeat', heartbeat.status || heartbeat.state || heartbeat.last_seen_at || '-'],
+        ['Operational Summary', employeeOperationalSummary(operationalSummary)],
         ['Current Activity', employeeCurrentActivitySummary(currentActivity)],
         ['Work History', employeeWorkHistorySummary(workHistory)],
         ['Runtime Sessions', runtimeSessionsSummary(runtimeSessions)],
