@@ -487,30 +487,59 @@ def trace_stage_story(timeline: list[dict], trace: dict) -> dict:
         "task.done",
     ]
     observed: set[str] = set()
+    stage_status = {
+        stage: {"stage": stage, "observed": False, "status": "missing", "at": "", "kind": "", "task_id": "", "ref_id": ""}
+        for stage in required_chain
+    }
+
+    def mark_stage(stage: str, item: dict, ref_id: str = "") -> None:
+        if stage not in stage_status:
+            return
+        observed.add(stage)
+        current = stage_status[stage]
+        if (
+            current["observed"]
+            and current.get("at")
+            and item.get("at")
+            and str(current["at"]) <= str(item.get("at"))
+            and (current.get("ref_id") or not ref_id)
+        ):
+            return
+        current.update(
+            {
+                "observed": True,
+                "status": "observed",
+                "at": item.get("at", ""),
+                "kind": item.get("kind", ""),
+                "task_id": item.get("task_id", ""),
+                "ref_id": ref_id,
+            }
+        )
+
     for item in timeline:
         kind = item.get("kind", "")
         label = item.get("label", "")
         status = str(item.get("status", "")).lower()
         if kind == "task":
-            observed.add("task.created")
+            mark_stage("task.created", item, str(item.get("task_id", "") or ""))
             if status in {"claimed", "running", "completed", "done", "success"}:
-                observed.add("task.claimed")
+                mark_stage("task.claimed", item, str(item.get("task_id", "") or ""))
             if status in {"completed", "done", "success"}:
-                observed.add("task.done")
+                mark_stage("task.done", item, str(item.get("task_id", "") or ""))
         if kind == "attempt" or label == "task.attempt.started":
-            observed.add("attempt.started")
+            mark_stage("attempt.started", item, str(item.get("attempt_id", "") or ""))
         if kind == "tool_call" or str(label).startswith("tool.call."):
-            observed.add("tool.call.started")
+            mark_stage("tool.call.started", item, str(item.get("tool_call_id", "") or ""))
         if label.startswith("task.progress") or label in {"runtime.session.progress"}:
-            observed.add("task.progress")
+            mark_stage("task.progress", item, str(item.get("event_id", "") or ""))
         if kind == "artifact" or label == "artifact.created":
-            observed.add("artifact.created")
+            mark_stage("artifact.created", item, str(item.get("artifact_id", "") or ""))
         if kind == "handoff" or label == "handoff.created":
-            observed.add("handoff.created")
+            mark_stage("handoff.created", item, str(item.get("handoff_id", "") or ""))
         if kind == "evidence" or label == "artifact.promoted_to_evidence":
-            observed.add("evidence.promoted")
+            mark_stage("evidence.promoted", item, str(item.get("evidence_id", "") or item.get("event_id", "") or ""))
         if label in {"task.done", "task.completed", "task.output_submitted"}:
-            observed.add("task.done")
+            mark_stage("task.done", item, str(item.get("event_id", "") or ""))
     has_failure_or_recovery = any(
         str(item.get("status", "")).lower() in {"failed", "blocked", "stale", "cancelled", "retrying"}
         or str(item.get("label", "")).startswith(("task.retry", "task.reassign"))
@@ -522,6 +551,7 @@ def trace_stage_story(timeline: list[dict], trace: dict) -> dict:
     return {
         "state": "complete" if done_complete else "incomplete",
         "required_chain": required_chain,
+        "stage_status": [stage_status[stage] for stage in required_chain],
         "observed_stages": sorted(observed),
         "missing_required": missing_required,
         "has_failure_or_recovery": has_failure_or_recovery,
