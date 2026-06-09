@@ -41,6 +41,7 @@ Existing or planned APIs must be labeled honestly. If an API is not implemented,
 | Doctor status | `GET /v1/doctor` | required |
 | Employees | `GET /v1/employees` | required |
 | Employee detail | `GET /v1/employees/{employee_id}` | required |
+| Running task list | `GET /v1/dashboard/cockpit` `task_cards` / `long_tasks`; fallback `GET /v1/tasks?limit=50` client-filtered to running/stagnant/blocked | required |
 | Task detail drawer | `GET /v1/tasks/{task_id}` | required |
 | Runtime sessions | `GET /v1/runtime-sessions?employee_id=&task_id=&trace_id=&limit=` | required |
 | Tool calls | `GET /v1/tool-calls?employee_id=&task_id=&trace_id=&attempt_id=&session_id=&limit=200` | required |
@@ -207,6 +208,7 @@ Click actions:
 - Correct: `POST /v1/tasks/{task_id}/correct`.
 - Cancel: `POST /v1/tasks/{task_id}/cancel`.
 - Retry/Reassign/Reject/Reopen: visible but disabled with `Backend API pending (API Gap)` if backend does not support the endpoint.
+- Any write action immediately disables its button, shows `Submitting...`, and keeps that disabled/loading state until the API responds or the request times out. Duplicate owner clicks must not create duplicate correction, cancel, retry, reassign, or approval requests.
 
 ## 5. Tool Calls Panel
 
@@ -372,6 +374,7 @@ Abnormal states:
 Control rules:
 
 - Disable and show loading state during POST.
+- The clicked write button must enter disabled/loading state before the network request is sent, and must remain disabled until success, error, or timeout is rendered. The drawer must not allow repeated owner clicks to enqueue duplicate control requests.
 - Correction message max display contract is 1,000 characters; backend may enforce stricter validation.
 - Retry/Reassign/Reopen may be shown disabled when backend endpoints are missing.
 - No kill-session button in MVP; use task/attempt cancel.
@@ -463,3 +466,5 @@ Round 2:
 - Runtime Session visibility comes before Tool Calls; Tool Calls before Budget; Budget before Evidence preview.
 - All unimplemented APIs must be labeled `[API Gap - Mocking Prohibited]`.
 - Hide all Chat/Direct entry points in this MVP so the cockpit remains task, tool, budget, and evidence driven.
+- Clarify that Running Task Cards are sourced from `/v1/dashboard/cockpit` `task_cards` / `long_tasks`, with `/v1/tasks?limit=50` only as a fallback list source.
+- Explicitly require write-action loading/disabled states to prevent duplicate owner correction/cancel/retry/reassign/approval requests.
