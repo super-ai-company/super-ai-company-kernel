@@ -2622,8 +2622,10 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual("missing_final_evidence", invalid_task["completion_invalid_reason"])
         self.assertEqual(0, invalid_task["final_evidence_count"])
         self.assertEqual(["review_task", "view_trace"], [action["id"] for action in invalid_task["actions"]])
+        expected_evidence_trace_id = promoted["evidence"]["trace_id"]
         recent_evidence = next(item for item in cockpit["recent_evidence"] if item["task_id"] == "task-cockpit-done")
         self.assertEqual(promoted["evidence"]["evidence_id"], recent_evidence["evidence_id"])
+        self.assertEqual(expected_evidence_trace_id, recent_evidence["trace_id"])
         self.assertTrue(recent_evidence["evidence"]["allowed"])
         self.assertFalse(recent_evidence["evidence"]["absolute_path_exposed"])
         self.assertIn("artifacts/done-final.md", recent_evidence["evidence"]["relative_path"])
@@ -2636,6 +2638,7 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual(1, cockpit["counts"]["pending_final_evidence"])
         pending_evidence = next(item for item in cockpit["evidence_acceptance_queue"] if item["task_id"] == "task-cockpit-done")
         self.assertEqual(promoted["evidence"]["evidence_id"], pending_evidence["evidence_id"])
+        self.assertEqual(expected_evidence_trace_id, pending_evidence["trace_id"])
         self.assertEqual("pending", pending_evidence["acceptance_status"])
         self.assertEqual("reviewable_final_evidence", pending_evidence["acceptance_state"])
         self.assertEqual("pending_review_fresh", pending_evidence["review_state"])
@@ -2655,6 +2658,7 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertIn("review pending high-risk approvals", approval_center["owner_next_action"])
         evidence_attention = next(item for item in cockpit["owner_attention"] if item["task_id"] == "task-cockpit-done" and item["kind"] == "evidence")
         self.assertEqual("pending_review", evidence_attention["state"])
+        self.assertEqual(expected_evidence_trace_id, evidence_attention["trace_id"])
         self.assertEqual("pending_review_fresh", evidence_attention["review_state"])
         self.assertEqual(0, evidence_attention["pending_age_minutes"])
         self.assertIn("accept or reject final evidence", evidence_attention["message"])
@@ -6989,6 +6993,7 @@ class CompanyKernelCoreTest(unittest.TestCase):
             "review_state=${escapeHtml(item.review_state || '-')}",
             "pending_age_minutes=${escapeHtml(item.pending_age_minutes ?? '-')}",
             "owner_next_action=${escapeHtml(item.owner_next_action || 'Review final evidence.')}",
+            "trace=${escapeHtml(item.trace_id || '-')}",
             "function evidenceDecisionRows",
             "acceptEvidenceFromDashboard",
             "rejectEvidenceFromDashboard",

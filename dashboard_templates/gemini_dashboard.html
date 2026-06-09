@@ -3943,7 +3943,7 @@
       <div class="cockpit-row" onclick="openTaskDetailDrawer('${escapeHtml(item.task_id || '')}')">
         <div>
           <strong>${escapeHtml(item.title || item.task_id || '-')}</strong>
-          <span>${escapeHtml(item.target_agent || '-')} · ${escapeHtml((item.evidence && item.evidence.relative_path) || '')}</span>
+          <span>${escapeHtml(item.target_agent || '-')} · trace=${escapeHtml(item.trace_id || '-')} · ${escapeHtml((item.evidence && item.evidence.relative_path) || '')}</span>
           <span>acceptance_status=${escapeHtml(item.acceptance_status || 'pending')} · acceptance_state=${escapeHtml(item.acceptance_state || '-')} · pending_final_evidence=${escapeHtml(((cockpit && cockpit.counts) || {}).pending_final_evidence || 0)}</span>
           <span>review_state=${escapeHtml(item.review_state || '-')} · pending_age_minutes=${escapeHtml(item.pending_age_minutes ?? '-')} · review_sla_minutes=${escapeHtml(item.review_sla_minutes ?? '-')}</span>
           <span>owner_next_action=${escapeHtml(item.owner_next_action || 'Review final evidence.')}</span>

@@ -673,6 +673,7 @@ def build_cockpit_summary(summary: dict) -> dict:
             evidence_item = {
                 "evidence_id": evidence_id,
                 "task_id": task_id,
+                "trace_id": item.get("trace_id", ""),
                 "title": tasks_by_id.get(task_id, {}).get("title", ""),
                 "status": tasks_by_id.get(task_id, {}).get("status", ""),
                 "target_agent": item.get("employee_id", ""),
@@ -934,7 +935,7 @@ def build_cockpit_summary(summary: dict) -> dict:
                 "title": item.get("title", ""),
                 "target_agent": item.get("target_agent", ""),
                 "attempt_id": item.get("attempt_id", ""),
-                "trace_id": "",
+                "trace_id": item.get("trace_id", ""),
                 "message": f"{item.get('owner_next_action', 'Review final evidence.')} path={item.get('evidence', {}).get('relative_path', '')}",
                 "updated_at": item.get("updated_at", ""),
                 "pending_age_minutes": item.get("pending_age_minutes"),
