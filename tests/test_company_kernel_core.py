@@ -2509,14 +2509,17 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual("active", employee["status"])
         self.assertEqual({}, employee["current_attempt"])
 
-    def test_api_gateway_lists_sanitized_evidence_records(self) -> None:
+    def test_api_gateway_lists_sanitized_evidence_records_and_filters_by_employee(self) -> None:
         code, created = run_cli("employee", "create", "--id", "main", "--name", "main", "--role", "operator", "--runtime", "openclaw", "--workspace", str(self.root / "workspace" / "main"))
         self.assertEqual(0, code, created)
-        code, created = run_cli("employee", "create", "--id", "writer", "--name", "writer", "--role", "writer", "--runtime", "local", "--workspace", str(self.root / "workspace" / "writer"))
-        self.assertEqual(0, code, created)
-        self.mark_active("writer")
+        for employee_id in ("writer", "qa"):
+            code, created = run_cli("employee", "create", "--id", employee_id, "--name", employee_id, "--role", employee_id, "--runtime", "local", "--workspace", str(self.root / "workspace" / employee_id))
+            self.assertEqual(0, code, created)
+            self.mark_active(employee_id)
         code, submitted = run_cli("task", "submit", "--from", "main", "--to", "writer", "--task-id", "task-api-evidence-list", "--title", "Evidence list")
         self.assertEqual(0, code, submitted)
+        code, qa_submitted = run_cli("task", "submit", "--from", "main", "--to", "qa", "--task-id", "task-api-evidence-list-qa", "--title", "Evidence list QA")
+        self.assertEqual(0, code, qa_submitted)
         conn = companyctl.connect()
         try:
             workspace = companyctl.ensure_task_workspace(conn, "task-api-evidence-list")
@@ -2533,6 +2536,20 @@ class CompanyKernelCoreTest(unittest.TestCase):
                 is_final=True,
             )["artifact"]
             promoted = companyctl.promote_artifact_to_evidence_internal(conn, artifact_id=artifact["artifact_id"], by="writer", summary="safe final evidence")
+            qa_workspace = companyctl.ensure_task_workspace(conn, "task-api-evidence-list-qa")
+            qa_path = Path(qa_workspace["path"]) / "final" / "qa-delivery.md"
+            qa_path.write_text("qa delivery\n", encoding="utf-8")
+            qa_artifact = companyctl.register_artifact_internal(
+                conn,
+                task_id="task-api-evidence-list-qa",
+                employee_id="qa",
+                artifact_type="text",
+                path=str(qa_path),
+                summary="qa final delivery",
+                stage="final",
+                is_final=True,
+            )["artifact"]
+            qa_promoted = companyctl.promote_artifact_to_evidence_internal(conn, artifact_id=qa_artifact["artifact_id"], by="qa", summary="qa safe final evidence")
             conn.commit()
         finally:
             conn.close()
@@ -2554,6 +2571,15 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertIn("v1-delivery.md", payload_json)
         self.assertNotIn(str(self.root), payload_json)
         self.assertNotIn("path_or_url", payload_json)
+
+        status, writer_evidence = api_gateway.route_get("/v1/evidence", {"employee_id": ["writer"], "limit": ["10"]})
+        self.assertEqual(200, status, writer_evidence)
+        self.assertTrue(writer_evidence["ok"])
+        writer_ids = [row["evidence_id"] for row in writer_evidence["evidence"]]
+        self.assertIn(promoted["evidence"]["evidence_id"], writer_ids)
+        self.assertNotIn(qa_promoted["evidence"]["evidence_id"], writer_ids)
+        self.assertTrue(all(row["employee_id"] == "writer" for row in writer_evidence["evidence"]))
+        self.assertEqual("writer", writer_evidence["filters"]["employee_id"])
 
     def test_api_gateway_lists_sanitized_artifacts_and_handoffs(self) -> None:
         for employee_id, role in [("main", "operator"), ("writer", "writer"), ("qa", "qa")]:
@@ -3947,7 +3973,8 @@ class CompanyKernelCoreTest(unittest.TestCase):
             "showHydratedToolCallDetails",
             "No /v1/tool-calls/{tool_call_id} detail endpoint in MVP",
             "employeeEvidenceClientSideFilter",
-            "Evidence employee filters use hydrated rows; /v1/evidence supports task_id only.",
+            "Employee evidence history is backend-filtered by /v1/evidence?employee_id= when available.",
+            "backend evidence filter supports employee_id",
             "item.by_currency || item.total_amounts_by_currency || item.currency_totals",
             "No kill or archive session action in MVP",
             "POST /v1/tasks/{task_id}/reopen",
@@ -7362,6 +7389,11 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertIn("/v1/approvals/{approval_id}/approve", openapi["paths"])
         self.assertIn("/v1/approvals/{approval_id}/resolve", openapi["paths"])
         self.assertIn("/v1/evidence", openapi["paths"])
+        evidence_query_names = {
+            parameter["name"]
+            for parameter in openapi["paths"]["/v1/evidence"]["get"]["parameters"]
+        }
+        self.assertIn("employee_id", evidence_query_names)
         self.assertIn("/v1/evidence/{evidence_id}/content", openapi["paths"])
         self.assertIn("/v1/evidence/{evidence_id}/safe-preview", openapi["paths"])
         self.assertIn("/v1/artifacts", openapi["paths"])

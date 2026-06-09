@@ -93,7 +93,7 @@ API_ENDPOINTS = [
     {"method": "GET", "path": "/v1/messages/recent-direct", "summary": "Dashboard-ready recent direct messages feed", "query": {"limit": "integer optional"}},
     {"method": "GET", "path": "/v1/events", "summary": "List Company Kernel event ledger entries", "query": {"pending_only": "bool optional", "limit": "integer optional"}},
     {"method": "GET", "path": "/v1/events/stream", "summary": "Server-Sent Events stream for recent Company Kernel event ledger entries", "query": {"limit": "integer optional", "poll_seconds": "integer optional", "max_cycles": "integer optional"}},
-    {"method": "GET", "path": "/v1/evidence", "summary": "List sanitized evidence records for Audit Hub", "query": {"task_id": "task id optional", "limit": "integer optional"}},
+    {"method": "GET", "path": "/v1/evidence", "summary": "List sanitized evidence records for Audit Hub", "query": {"task_id": "task id optional", "employee_id": "employee id optional", "limit": "integer optional"}},
     {"method": "GET", "path": "/v1/evidence/{evidence_id}/content", "summary": "Read safe text preview for a whitelisted evidence record without exposing absolute paths"},
     {"method": "GET", "path": "/v1/evidence/{evidence_id}/safe-preview", "summary": "Alias for safe evidence text preview; enforces the same whitelist and secret-path policy"},
     {"method": "GET", "path": "/v1/artifacts", "summary": "List sanitized artifact records for Audit Hub", "query": {"task_id": "task id optional", "limit": "integer optional"}},
@@ -441,10 +441,12 @@ def route_get(path: str, query: dict[str, list[str]]) -> tuple[int, dict]:
     if path == "/v1/evidence":
         conn = companyctl.connect_readonly()
         try:
-            evidence = companyctl.audit_evidence_records(conn, task_id=query_value(query, "task_id"), limit=query_value(query, "limit", "50"))
+            task_id = query_value(query, "task_id")
+            employee_id = query_value(query, "employee_id") or query_value(query, "employee")
+            evidence = companyctl.audit_evidence_records(conn, task_id=task_id, employee_id=employee_id, limit=query_value(query, "limit", "50"))
         finally:
             conn.close()
-        return HTTPStatus.OK, {"ok": True, "source": "/v1/evidence", "evidence": evidence}
+        return HTTPStatus.OK, {"ok": True, "source": "/v1/evidence", "filters": {"task_id": task_id, "employee_id": employee_id}, "evidence": evidence}
     if path.startswith("/v1/evidence/") and (path.endswith("/content") or path.endswith("/safe-preview")):
         suffix = "/safe-preview" if path.endswith("/safe-preview") else "/content"
         evidence_id = path.removeprefix("/v1/evidence/").removesuffix(suffix).strip("/")

@@ -3953,16 +3953,22 @@ def clamp_audit_limit(limit: int | str | None) -> int:
     return max(1, min(value, 200))
 
 
-def audit_evidence_records(conn: sqlite3.Connection, *, task_id: str = "", limit: int | str | None = 50) -> list[dict]:
+def audit_evidence_records(conn: sqlite3.Connection, *, task_id: str = "", employee_id: str = "", limit: int | str | None = 50) -> list[dict]:
     sql = """
         SELECT evidence_id, trace_id, task_id, attempt_id, employee_id, artifact_id,
                type, path_or_url, summary, checksum, is_final, metadata_json, created_at
         FROM evidence
     """
     params: list[object] = []
+    conditions = []
     if task_id:
-        sql += " WHERE task_id = ?"
+        conditions.append("task_id = ?")
         params.append(task_id)
+    if employee_id:
+        conditions.append("employee_id = ?")
+        params.append(employee_id)
+    if conditions:
+        sql += " WHERE " + " AND ".join(conditions)
     sql += " ORDER BY created_at DESC LIMIT ?"
     params.append(clamp_audit_limit(limit))
     evidence = rows(conn, sql, tuple(params))
@@ -4324,7 +4330,7 @@ def audit_failure_records(conn: sqlite3.Connection, *, task_id: str = "", limit:
 def cmd_audit_evidence(args: argparse.Namespace) -> int:
     conn = connect_readonly()
     try:
-        evidence = audit_evidence_records(conn, task_id=args.task_id, limit=args.limit)
+        evidence = audit_evidence_records(conn, task_id=args.task_id, employee_id=args.employee_id, limit=args.limit)
     finally:
         conn.close()
     emit({"ok": True, "source": "companyctl audit evidence", "evidence": evidence})
@@ -10678,6 +10684,7 @@ def build_parser() -> argparse.ArgumentParser:
     audit_sub = audit_parser.add_subparsers(dest="audit_cmd", required=True)
     audit_evidence = audit_sub.add_parser("evidence")
     audit_evidence.add_argument("--task-id", default="")
+    audit_evidence.add_argument("--employee-id", "--employee", default="")
     audit_evidence.add_argument("--limit", type=int, default=50)
     audit_evidence.set_defaults(func=cmd_audit_evidence)
     audit_artifacts = audit_sub.add_parser("artifacts")

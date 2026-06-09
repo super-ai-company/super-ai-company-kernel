@@ -49,7 +49,7 @@ Use existing backend surfaces first. Do not invent new endpoints unless implemen
 | Tool calls | `GET /v1/tool-calls?employee_id=&task_id=&trace_id=&attempt_id=&session_id=&limit=200` | Max list cap is 200. Render only sanitized summaries capped to 500 characters per summary field. |
 | Budget summary | `GET /v1/budget-summary?employee_id=&task_id=&trace_id=&attempt_id=` | Frontend displays ledger values only; no currency conversion. |
 | Budget events | `GET /v1/budget-events?...` | Recent spend rows. |
-| Evidence list | `GET /v1/evidence?task_id=&limit=` | Evidence panel. |
+| Evidence list | `GET /v1/evidence?task_id=&employee_id=&limit=` | Evidence panel and employee-bound evidence history. |
 | Evidence preview | `GET /v1/evidence/{evidence_id}/safe-preview` | Only safe content preview. No direct file path reads. `/content` remains compatibility-only. |
 | Correction | `POST /v1/tasks/{task_id}/correct` | Body: `attempt_id`, `by="owner-shift"`, `message`. |
 | Cancel | `POST /v1/tasks/{task_id}/cancel` | Body: `attempt_id`, `by="owner-shift"`, `reason`. No kill-session button in MVP. |
@@ -67,7 +67,7 @@ These are not frontend workarounds. They are backend/API requirements that must 
 | Doctor health in cockpit | `/v1/dashboard/cockpit` should include `doctor.ok`, `doctor.issue_count`, `doctor.exit_code`, and `doctor.generated_at` to avoid double polling during the 8-second refresh loop. | Poll `/v1/doctor` separately and show a slower diagnostics banner. |
 | Completion invalid marker | `long_tasks[]`, task cards, and `GET /v1/tasks/{task_id}` should include `completion_invalid: true/false` and `completion_invalid_reason`. | Show invalid count if present, but do not guess which task is invalid from unrelated evidence counts. |
 | Tool-call detail payload size | `/v1/tool-calls?limit=200` must return only summarized and sanitized fields. `input_summary`, `output_summary`, and `error_message` must each be capped to 500 display characters. | Row click opens only the hydrated sanitized summary row; no invented detail endpoint and no raw stdout/stderr. |
-| Employee evidence filter | `/v1/evidence` should eventually support `employee_id`. MVP may only filter evidence by employee across already-hydrated rows and must label this as a local filter. | Do not claim full employee evidence history unless the backend supports `employee_id`. |
+| Employee evidence filter | `/v1/evidence` supports `employee_id`; employee evidence panels must use the backend filter instead of local hydrated-row guessing. | If the API is unavailable, show an explicit API gap message and do not claim full employee evidence history. |
 | Direct message action | Direct message is not part of the 3-day UI MVP. | Hide all direct message/chat controls. Never use DM success as readiness or evidence. |
 | Employee current task title | `GET /v1/employees` should include `current_task_title` or the cockpit aggregate should hydrate it from the active task card. | If absent, show task id plus `Title unavailable from API`; do not invent titles. |
 | Active-limited reason | `GET /v1/dashboard/cockpit` should include `active_limited_reasons` keyed by employee id. | If absent, show `Limited reason unavailable from API`. |
@@ -191,7 +191,7 @@ Click actions:
 - Click card: open Employee Detail drawer or panel using `GET /v1/employees/{employee_id}`.
 - `View Task`: open current task drawer.
 - `Filter Logs`: apply employee filter to Tool Calls/Budget panels, and apply local evidence filtering only across hydrated evidence rows unless `/v1/evidence?employee_id=` exists.
-- `Filter Evidence`: if backend lacks `/v1/evidence?employee_id=`, show only the latest hydrated evidence rows and label it `Local view only: latest loaded evidence rows, not full employee history.`
+- `Filter Evidence`: call `/v1/evidence?employee_id={employee_id}` and show only backend-filtered evidence rows.
 - `Verify Runtime Evidence`: call `GET /v1/agent-matrix?agents={employee_id}` and show only readiness badge plus one short backend reason. Do not render attendance/direct/runtime/task/progress/evidence/stale as a checklist or matrix table.
 
 API:
@@ -360,7 +360,7 @@ API:
 - `GET /v1/evidence/{evidence_id}/safe-preview`
 
 Filtering rule:
-- `/v1/evidence` currently supports `task_id` and `limit`; employee-card evidence filtering must be client-side over hydrated rows unless the backend later adds `employee_id`.
+- `/v1/evidence` supports `task_id`, `employee_id`, and `limit`; employee-card evidence filtering must use the backend `employee_id` filter.
 
 Security rules:
 - Preview only through safe content API.
@@ -447,9 +447,9 @@ MVP actor rule: `by: "owner-shift"` is a local single-owner default. Do not buil
 These guardrails prevent a beautiful but misleading cockpit. If a trusted backend field is missing, the UI must show a gap or a bounded empty state instead of guessing.
 
 1. Employee evidence filtering:
-   - Risk: `/v1/evidence` may only return the latest limited rows and may not support `employee_id`.
-   - UI rule: employee evidence count is trusted only when returned by the backend or when filtered from a task-bound drawer payload. If using hydrated global rows, label it `local view only`.
-   - Copy: `Employee evidence history unavailable from API; showing currently loaded rows only.`
+   - Risk: the evidence API may be offline or return a backend error.
+   - UI rule: employee evidence count is trusted only when returned by `/v1/evidence?employee_id={employee_id}` or from a task-bound drawer payload. Do not fall back to local global-row guessing.
+   - Copy: `Employee evidence history unavailable from API.`
 2. Current task title:
    - Risk: employee cards may have `task_id` but no title.
    - UI rule: show the task id and `Title unavailable from API`; do not infer from old messages or inbox files.
