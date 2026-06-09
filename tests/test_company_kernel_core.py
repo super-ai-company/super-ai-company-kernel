@@ -10883,6 +10883,92 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual("working", pm_result["progress_layer"])
         self.assertEqual("in_progress", pm_result["progress_state"])
 
+    def test_hermes_adapter_execute_success_writes_control_plane_ledgers(self) -> None:
+        task_id = "task-hermes-execute-ok"
+        code, submitted = run_cli(
+            "task",
+            "submit",
+            "--from",
+            "openclaw-main",
+            "--to",
+            "hermes",
+            "--task-id",
+            task_id,
+            "--title",
+            "监督 Codex 执行",
+            "--description",
+            "mock Hermes 成功路径",
+        )
+        self.assertEqual(0, code, submitted)
+
+        def fake_run_hermes(prompt: Path, output: Path, workspace: Path, model: str, provider: str, isolation: str, sandbox_profile: str) -> tuple[int, str]:
+            output.write_text("Hermes reviewed Codex progress and approved evidence.\n", encoding="utf-8")
+            return 0, "hermes -z <prompt>"
+
+        with mock.patch.object(hermes_adapter.shutil, "which", lambda name: "/usr/local/bin/hermes"), mock.patch.object(hermes_adapter, "run_codex_pm_supervisor", return_value=(0, json.dumps({"ok": True, "status": "idle"}, ensure_ascii=False), "")), mock.patch.object(hermes_adapter, "run_hermes", fake_run_hermes), contextlib.redirect_stdout(io.StringIO()) as captured:
+            code = hermes_adapter.main(["--agent", "hermes", "--execute", "--model", "hermes-test", "--provider", "local"])
+        result = json.loads(captured.getvalue())
+        self.assertEqual(0, code, result)
+        self.assertTrue(result["ok"], result)
+        self.assertTrue(result["attempt"]["attempt_id"])
+        self.assertEqual("success", result["attempt"]["status"])
+        self.assertEqual("stopped", result["runtime_session"]["status"])
+        self.assertEqual("success", result["tool_call"]["status"])
+        self.assertEqual("hermes.oneshot", result["tool_call"]["tool_name"])
+        self.assertEqual("hermes_runtime", result["budget_event"]["cost_type"])
+        self.assertEqual("hermes-test", result["budget_event"]["model_name"])
+
+        code, task = run_cli("task", "show", "--task-id", task_id)
+        self.assertEqual(0, code, task)
+        self.assertEqual("completed", task["task"]["status"])
+        self.assertNotEqual(result["report"], task["task"]["evidence_path"])
+        self.assertIn("/evidence/", task["task"]["evidence_path"])
+        self.assertEqual([result["runtime_session"]["session_id"]], [item["session_id"] for item in task["runtime_sessions"]])
+        self.assertEqual([result["tool_call"]["tool_call_id"]], [item["tool_call_id"] for item in task["tool_calls"]])
+        self.assertEqual([result["budget_event"]["budget_event_id"]], [item["budget_event_id"] for item in task["budget_events"]])
+        self.assertEqual(1, task["ceo_acceptance_contract"]["ledger_counts"]["tool_calls"])
+        self.assertEqual(1, task["ceo_acceptance_contract"]["ledger_counts"]["budget_events"])
+
+    def test_hermes_adapter_execute_failure_blocks_with_control_plane_ledgers(self) -> None:
+        task_id = "task-hermes-execute-fail"
+        code, submitted = run_cli(
+            "task",
+            "submit",
+            "--from",
+            "openclaw-main",
+            "--to",
+            "hermes",
+            "--task-id",
+            task_id,
+            "--title",
+            "监督失败",
+            "--description",
+            "mock Hermes 失败路径",
+        )
+        self.assertEqual(0, code, submitted)
+
+        def fake_run_hermes(prompt: Path, output: Path, workspace: Path, model: str, provider: str, isolation: str, sandbox_profile: str) -> tuple[int, str]:
+            output.write_text("Hermes failed: Codex evidence missing.\n", encoding="utf-8")
+            return 9, "hermes -z <prompt>"
+
+        with mock.patch.object(hermes_adapter.shutil, "which", lambda name: "/usr/local/bin/hermes"), mock.patch.object(hermes_adapter, "run_codex_pm_supervisor", return_value=(0, json.dumps({"ok": True, "status": "idle"}, ensure_ascii=False), "")), mock.patch.object(hermes_adapter, "run_hermes", fake_run_hermes), contextlib.redirect_stdout(io.StringIO()) as captured:
+            code = hermes_adapter.main(["--agent", "hermes", "--execute"])
+        result = json.loads(captured.getvalue())
+        self.assertEqual(9, code, result)
+        self.assertFalse(result["ok"], result)
+        self.assertEqual("failed", result["attempt"]["status"])
+        self.assertEqual("failed", result["runtime_session"]["status"])
+        self.assertEqual("failed", result["tool_call"]["status"])
+        self.assertEqual("hermes_runtime", result["budget_event"]["cost_type"])
+
+        code, task = run_cli("task", "show", "--task-id", task_id)
+        self.assertEqual(0, code, task)
+        self.assertEqual("blocked", task["task"]["status"])
+        self.assertIn("Hermes failed", task["task"]["blocker"])
+        self.assertEqual([result["runtime_session"]["session_id"]], [item["session_id"] for item in task["runtime_sessions"]])
+        self.assertEqual([result["tool_call"]["tool_call_id"]], [item["tool_call_id"] for item in task["tool_calls"]])
+        self.assertEqual([result["budget_event"]["budget_event_id"]], [item["budget_event_id"] for item in task["budget_events"]])
+
     def test_openclaw_adapter_dry_run_writes_payload_and_evidence(self) -> None:
         code, submitted = run_cli(
             "task",
