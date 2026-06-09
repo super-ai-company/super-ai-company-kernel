@@ -1281,10 +1281,39 @@ def build_cockpit_summary(summary: dict) -> dict:
         }
         projects.append({**project, **project_cost})
     verification_summary = latest_verification_summary()
+    refresh_contract = {"mode": "rest_polling", "interval_seconds": 10, "sse_reserved": True, "websocket": False}
+    doctor_issues = doctor.get("issues", []) if isinstance(doctor.get("issues", []), list) else []
+    doctor_issue_count = int(doctor.get("issue_count") or len(doctor_issues))
+    health_bar_status = "ok"
+    health_owner_next_action = "system healthy; continue monitoring employee work, costs, and evidence"
+    if doctor_issue_count:
+        health_bar_status = "warn"
+        health_owner_next_action = "doctor unhealthy: inspect /v1/doctor issues before trusting new long-running work"
+    if not verification_summary.get("ok"):
+        health_bar_status = "warn"
+        health_owner_next_action = str(verification_summary.get("owner_next_action") or health_owner_next_action)
+    health_bar = {
+        "api_ok": True,
+        "api_status": "online",
+        "doctor_ok": bool(doctor.get("ok")) if doctor else False,
+        "doctor_exit_code": int(doctor.get("exit_code") or 0) if doctor else 1,
+        "doctor_issue_count": doctor_issue_count,
+        "doctor_issues": doctor_issues,
+        "poll_mode": refresh_contract["mode"],
+        "poll_interval_seconds": refresh_contract["interval_seconds"],
+        "sse_reserved": refresh_contract["sse_reserved"],
+        "websocket": refresh_contract["websocket"],
+        "last_successful_sync_at": generated_at,
+        "last_data_at": generated_at,
+        "data_age_seconds": 0,
+        "status": health_bar_status,
+        "owner_next_action": health_owner_next_action,
+    }
     return {
         "ok": True,
         "generated_at": generated_at,
-        "refresh": {"mode": "rest_polling", "interval_seconds": 10, "sse_reserved": True, "websocket": False},
+        "refresh": refresh_contract,
+        "health_bar": health_bar,
         "ledger_consistency": {
             "source": "single_company_kernel_ledger",
             "surfaces": ["api", "cli", "dashboard"],

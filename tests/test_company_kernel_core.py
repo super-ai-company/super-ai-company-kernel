@@ -2424,6 +2424,16 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual(len(cockpit["doctor"]["issues"]), cockpit["doctor"]["issue_count"])
         self.assertIn("task_evidence_issues", cockpit["doctor"]["issues"])
         self.assertIn("generated_at", cockpit["doctor"])
+        self.assertEqual("rest_polling", cockpit["health_bar"]["poll_mode"])
+        self.assertEqual(10, cockpit["health_bar"]["poll_interval_seconds"])
+        self.assertEqual(cockpit["generated_at"], cockpit["health_bar"]["last_successful_sync_at"])
+        self.assertEqual(0, cockpit["health_bar"]["data_age_seconds"])
+        self.assertFalse(cockpit["health_bar"]["doctor_ok"])
+        self.assertEqual(1, cockpit["health_bar"]["doctor_exit_code"])
+        self.assertEqual(len(cockpit["health_bar"]["doctor_issues"]), cockpit["health_bar"]["doctor_issue_count"])
+        self.assertIn("task_evidence_issues", cockpit["health_bar"]["doctor_issues"])
+        self.assertIn("doctor unhealthy", cockpit["health_bar"]["owner_next_action"])
+        self.assertEqual("warn", cockpit["health_bar"]["status"])
         conn = companyctl.connect()
         try:
             employee_total = conn.execute("SELECT COUNT(*) AS count FROM employees").fetchone()["count"]
@@ -6798,6 +6808,11 @@ class CompanyKernelCoreTest(unittest.TestCase):
             "session=${escapeHtml(runtime.latest_session_id || '-')}",
             "tool_call=${escapeHtml(tools.latest_tool_call_id || '-')}",
             "budget_events=${escapeHtml(budget.event_count || 0)}",
+            "const healthBar = (cockpit && cockpit.health_bar) || {};",
+            "Health Bar",
+            "poll=${escapeHtml(healthBar.poll_mode || '-')}",
+            "data_age=${escapeHtml(healthBar.data_age_seconds ?? '-')}",
+            "owner_next_action=${escapeHtml(healthBar.owner_next_action || '-')}",
         ]:
             self.assertIn(snippet, html)
 
