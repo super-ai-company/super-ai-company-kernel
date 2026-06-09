@@ -430,6 +430,7 @@ def safe_trace_payload(trace: dict) -> dict:
         )
     trace_story = trace_stage_story(timeline, trace)
     ceo_timeline = ceo_timeline_items(timeline)
+    ceo_stage_summary = ceo_stage_summary_items(trace_story, ceo_timeline)
     return {
         "ok": True,
         "source": "trace.timeline",
@@ -469,6 +470,7 @@ def safe_trace_payload(trace: dict) -> dict:
         "budget_events": sanitized_budget_events,
         "supervision_chain": supervision_chain,
         "trace_story": trace_story,
+        "ceo_stage_summary": ceo_stage_summary,
         "ceo_timeline": ceo_timeline,
         "timeline": timeline,
     }
@@ -565,6 +567,66 @@ def trace_stage_story(timeline: list[dict], trace: dict) -> dict:
             "evidence": len(trace.get("evidence", [])),
             "budget_events": len(trace.get("budget_events", [])),
         },
+    }
+
+
+def ceo_stage_summary_items(trace_story: dict, ceo_timeline: list[dict]) -> dict:
+    missing_required = list(trace_story.get("missing_required", []) or [])
+    observed_stages = list(trace_story.get("observed_stages", []) or [])
+    has_failure_or_recovery = bool(trace_story.get("has_failure_or_recovery"))
+    critical_items = [item for item in ceo_timeline if item.get("severity") == "critical"]
+    attention_items = [item for item in ceo_timeline if item.get("severity") == "attention"]
+
+    def stage_action(stage: str, observed: bool) -> str:
+        if observed:
+            return "verify downstream handoff/evidence"
+        if stage == "tool.call.started":
+            return "confirm worker is recording tool calls, not only stdout/chat"
+        if stage == "task.progress":
+            return "request progress update or Hermes correction"
+        if stage == "task.done":
+            return "wait for final evidence or reopen/reassign if completion is invalid"
+        return "inspect trace and assign next recovery action"
+
+    stages = []
+    for raw in trace_story.get("stage_status", []) or []:
+        observed = bool(raw.get("observed"))
+        stage = str(raw.get("stage") or "")
+        severity = "success" if observed else ("critical" if stage in missing_required else "attention")
+        stages.append(
+            {
+                "stage": stage,
+                "status": "observed" if observed else "missing",
+                "observed": observed,
+                "severity": severity,
+                "at": raw.get("at", ""),
+                "kind": raw.get("kind", ""),
+                "task_id": raw.get("task_id", ""),
+                "ref_id": raw.get("ref_id", ""),
+                "recommended_owner_action": stage_action(stage, observed),
+            }
+        )
+    if critical_items:
+        severity = "critical"
+        recommended_owner_action = "review failed/recovery items, then retry, reassign, cancel, or request approval"
+    elif missing_required:
+        severity = "attention"
+        recommended_owner_action = "complete missing stages before accepting task output"
+    else:
+        severity = "success"
+        recommended_owner_action = "review final evidence and accept if it matches the task"
+    return {
+        "chain_state": trace_story.get("state", "incomplete"),
+        "severity": severity,
+        "required_chain": trace_story.get("required_chain", []),
+        "observed_stages": observed_stages,
+        "missing_required": missing_required,
+        "has_failure_or_recovery": has_failure_or_recovery,
+        "critical_count": len(critical_items),
+        "attention_count": len(attention_items),
+        "stages": stages,
+        "recommended_owner_action": recommended_owner_action,
+        "summary": companyctl.sanitize_log_text(trace_story.get("summary", "")),
     }
 
 
