@@ -6167,6 +6167,15 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual(shown["correction_summary"], api_shown["correction_summary"])
         self.assertEqual(shown["correction_events"], api_shown["correction_events"])
 
+        code, trace = run_cli("trace", "timeline", "--task-id", "task-long-managed")
+        self.assertEqual(0, code, trace)
+        cancel_item = next(item for item in trace["timeline"] if item["kind"] == "event" and item["label"] == "supervisor.cancel_requested")
+        self.assertEqual(attempt_id, cancel_item["attempt_id"])
+        self.assertEqual("用户停止", cancel_item["reason"])
+        ceo_cancel_item = next(item for item in trace["ceo_timeline"] if item["stage"] == "supervisor.cancel_requested")
+        self.assertEqual(attempt_id, ceo_cancel_item["attempt_id"])
+        self.assertIn("用户停止", ceo_cancel_item["summary"])
+
     def test_task_reassign_writes_event_attempt_audit_and_trace(self) -> None:
         for employee_id, role in [("main", "operator"), ("hermes", "supervisor"), ("codex", "developer"), ("backup", "developer")]:
             code, created = run_cli("employee", "create", "--id", employee_id, "--name", employee_id, "--role", role, "--runtime", "local", "--workspace", str(self.root / "workspace" / employee_id))
@@ -6214,10 +6223,16 @@ class CompanyKernelCoreTest(unittest.TestCase):
 
         code, trace = run_cli("trace", "timeline", "--trace-id", trace_id)
         self.assertEqual(0, code, trace)
-        self.assertTrue(
-            any(item["kind"] == "event" and item["label"] == "task.reassigned" and item["task_id"] == "task-reassign-ledger" for item in trace["timeline"]),
-            trace["timeline"],
-        )
+        trace_event = next(item for item in trace["timeline"] if item["kind"] == "event" and item["label"] == "task.reassigned" and item["task_id"] == "task-reassign-ledger")
+        self.assertEqual(reassigned["attempt"]["attempt_id"], trace_event["attempt_id"])
+        self.assertEqual(run["attempt"]["attempt_id"], trace_event["previous_attempt_id"])
+        self.assertEqual("codex", trace_event["from_employee"])
+        self.assertEqual("backup", trace_event["to_employee"])
+        self.assertEqual("codex is blocked", trace_event["reason"])
+        ceo_event = next(item for item in trace["ceo_timeline"] if item["stage"] == "task.reassigned")
+        self.assertEqual(reassigned["attempt"]["attempt_id"], ceo_event["attempt_id"])
+        self.assertEqual(run["attempt"]["attempt_id"], ceo_event["previous_attempt_id"])
+        self.assertIn("codex -> backup", ceo_event["summary"])
 
     def test_managed_attempt_done_requires_promoted_final_evidence(self) -> None:
         for employee_id, role in [("main", "operator"), ("codex", "developer")]:
@@ -6380,6 +6395,16 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual(original_attempt_id, retry_span["previous_attempt_id"])
         self.assertEqual([original_attempt_id, retry_attempt["attempt_id"]], retry_span["attempt_chain"])
         self.assertEqual("retry", retry_span["adapter_type"])
+        code, trace_payload = run_cli("trace", "timeline", "--trace-id", trace_id)
+        self.assertEqual(0, code, trace_payload)
+        retry_item = next(item for item in trace_payload["timeline"] if item["kind"] == "event" and item["label"] == "task.retrying")
+        self.assertEqual(retry_attempt["attempt_id"], retry_item["attempt_id"])
+        self.assertEqual(original_attempt_id, retry_item["previous_attempt_id"])
+        self.assertEqual("resume after stale", retry_item["reason"])
+        ceo_retry_item = next(item for item in trace_payload["ceo_timeline"] if item["stage"] == "task.retrying")
+        self.assertEqual(retry_attempt["attempt_id"], ceo_retry_item["attempt_id"])
+        self.assertEqual(original_attempt_id, ceo_retry_item["previous_attempt_id"])
+        self.assertIn("resume after stale", ceo_retry_item["summary"])
 
     def test_supervisor_scan_warns_on_missing_heartbeat_without_marking_progress_stale(self) -> None:
         for employee_id, role in [("main", "operator"), ("hermes", "supervisor"), ("codex", "developer")]:

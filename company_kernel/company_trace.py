@@ -50,6 +50,49 @@ def resolve_trace_id(conn: sqlite3.Connection, trace_id: str = "", task_id: str 
     return trace
 
 
+def event_payload(event: dict) -> dict:
+    try:
+        payload = json.loads(event.get("payload_json", "{}") or "{}")
+    except json.JSONDecodeError:
+        payload = {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def first_payload_value(payload: dict, *keys: str) -> str:
+    for key in keys:
+        value = payload.get(key)
+        if value not in {None, ""}:
+            return str(value)
+    return ""
+
+
+def enrich_recovery_event(timeline_item: dict, event_type: str, payload: dict) -> None:
+    if event_type in {"task.retrying", "task.reassigned", "task.blocked", "task.failed", "task.stale", "task.progress", "supervisor.cancel_requested", "task.cancelled", "task.done"}:
+        for key in ("attempt_id", "previous_attempt_id", "reason", "message"):
+            value = first_payload_value(payload, key)
+            if value:
+                timeline_item[key] = value
+    if event_type == "task.reassigned":
+        from_employee = first_payload_value(payload, "from", "from_employee", "old_employee")
+        to_employee = first_payload_value(payload, "to", "to_employee", "new_employee")
+        if from_employee:
+            timeline_item["from_employee"] = from_employee
+        if to_employee:
+            timeline_item["to_employee"] = to_employee
+            timeline_item["target"] = to_employee
+    if event_type in {"task.blocked", "task.failed", "task.stale"}:
+        blocker = first_payload_value(payload, "blocker", "error", "reason", "message")
+        if blocker:
+            timeline_item["blocker"] = blocker
+    if event_type == "task.progress":
+        progress_state = first_payload_value(payload, "progress_state", "state", "progress_layer")
+        progress = first_payload_value(payload, "progress")
+        if progress_state:
+            timeline_item["progress_state"] = progress_state
+        if progress:
+            timeline_item["progress"] = progress
+
+
 def load_trace(conn: sqlite3.Connection, trace_id: str) -> dict:
     task_ids = set()
     for row in rows(conn, "SELECT task_id, metadata_json FROM task_metadata"):
@@ -89,11 +132,8 @@ def load_trace(conn: sqlite3.Connection, trace_id: str) -> dict:
             timeline.append({"kind": "task", "at": task["updated_at"], "label": f"task {task['id']} {task['status']}", "status": task["status"], "task_id": task["id"]})
     for event in events:
         timeline_item = {"kind": "event", "at": event["created_at"], "label": event["event_type"], "status": "processed" if event.get("processed_at") else "pending", "event_id": event["id"], "task_id": event.get("task_id", ""), "actor": event.get("source_agent", "")}
+        payload = event_payload(event)
         if event["event_type"] in {"supervisor.correction_requested", "supervisor.correction_acknowledged"}:
-            try:
-                payload = json.loads(event.get("payload_json", "{}") or "{}")
-            except json.JSONDecodeError:
-                payload = {}
             action = "correction_acknowledged" if event["event_type"] == "supervisor.correction_acknowledged" else "correction_requested"
             timeline_item.update(
                 {
@@ -104,10 +144,6 @@ def load_trace(conn: sqlite3.Connection, trace_id: str) -> dict:
                 }
             )
         elif event["event_type"] == "approval.requested":
-            try:
-                payload = json.loads(event.get("payload_json", "{}") or "{}")
-            except json.JSONDecodeError:
-                payload = {}
             timeline_item.update(
                 {
                     "approval_id": str(payload.get("approval_id", "") or ""),
@@ -116,6 +152,7 @@ def load_trace(conn: sqlite3.Connection, trace_id: str) -> dict:
                     "target": str(payload.get("target", "") or ""),
                 }
             )
+        enrich_recovery_event(timeline_item, event["event_type"], payload)
         timeline.append(timeline_item)
     for run in adapter_runs:
         timeline.append({"kind": "adapter", "at": run["created_at"], "label": f"{run['agent_id']} {run['command']}", "status": "ok" if run.get("ok") else "failed", "run_id": run["id"], "task_id": run.get("task_id", ""), "attempt": run.get("attempt", 1)})
@@ -172,9 +209,35 @@ def safe_trace_payload(trace: dict) -> dict:
             "label": companyctl.sanitize_log_text(raw_item.get("label", "")),
             "task_id": raw_item.get("task_id", ""),
         }
-        for key in ("event_id", "run_id", "artifact_id", "evidence_id", "handoff_id", "attempt_id", "attempt", "actor", "target", "action", "session_id", "tool_call_id", "budget_event_id", "approval_id", "approval_action", "risk"):
+        safe_text_keys = {"reason", "message", "blocker", "progress_state", "progress"}
+        for key in (
+            "event_id",
+            "run_id",
+            "artifact_id",
+            "evidence_id",
+            "handoff_id",
+            "attempt_id",
+            "previous_attempt_id",
+            "attempt",
+            "actor",
+            "target",
+            "from_employee",
+            "to_employee",
+            "action",
+            "session_id",
+            "tool_call_id",
+            "budget_event_id",
+            "approval_id",
+            "approval_action",
+            "risk",
+            "reason",
+            "message",
+            "blocker",
+            "progress_state",
+            "progress",
+        ):
             if raw_item.get(key) not in {None, ""}:
-                item[key] = raw_item[key]
+                item[key] = companyctl.sanitize_log_text(raw_item[key]) if key in safe_text_keys else raw_item[key]
         if item.get("action") in {"correction_requested", "correction_acknowledged"}:
             if not item.get("target"):
                 item["target"] = task_target_by_id.get(item.get("task_id", ""), "")
@@ -501,8 +564,23 @@ def ceo_timeline_items(timeline: list[dict]) -> list[dict]:
         elif label == "approval.requested":
             recommended_action = "owner approval required"
             severity = "critical" if str(item.get("approval_action", "")) in {"budget_overrun", "budget.overrun", "external_send", "telegram_send", "openclaw_send", "rule_change", "delete_file", "sensitive_file", "publish", "payment", "compensation", "salary", "penalty"} else "attention"
+        elif label in {"task.retrying", "task.reassigned"}:
+            recommended_action = "monitor recovery attempt and verify new progress"
+            severity = "attention"
+        elif label in {"supervisor.cancel_requested", "task.cancelled"}:
+            recommended_action = "verify process stopped and ignore late evidence"
+            severity = "critical"
         if kind == "adapter" and status.lower() == "failed":
             title = f"adapter failed: {label}"
+        summary = item.get("sanitized_log") or item.get("message") or label
+        if label == "task.retrying" and item.get("reason"):
+            summary = f"retry {item.get('previous_attempt_id', '-') or '-'} -> {item.get('attempt_id', '-') or '-'} · {item.get('reason', '')}"
+        elif label == "task.reassigned":
+            summary = f"reassign {item.get('from_employee', '-') or '-'} -> {item.get('to_employee', '-') or '-'} · {item.get('reason', '')}"
+        elif label in {"supervisor.cancel_requested", "task.cancelled"} and item.get("reason"):
+            summary = f"cancel {item.get('attempt_id', '-') or '-'} · {item.get('reason', '')}"
+        elif label in {"task.blocked", "task.failed", "task.stale"} and (item.get("blocker") or item.get("reason")):
+            summary = item.get("blocker") or item.get("reason") or label
         ceo_item = {
             "at": item.get("at", ""),
             "kind": kind,
@@ -510,13 +588,14 @@ def ceo_timeline_items(timeline: list[dict]) -> list[dict]:
             "status": status,
             "task_id": item.get("task_id", ""),
             "attempt_id": item.get("attempt_id", ""),
+            "previous_attempt_id": item.get("previous_attempt_id", ""),
             "actor": item.get("actor", ""),
             "title": companyctl.sanitize_log_text(title),
-            "summary": companyctl.sanitize_log_text(item.get("sanitized_log") or item.get("message") or label),
+            "summary": companyctl.sanitize_log_text(summary),
             "severity": severity,
             "recommended_action": recommended_action,
         }
-        for key in ("approval_id", "approval_action", "risk"):
+        for key in ("approval_id", "approval_action", "risk", "from_employee", "to_employee", "reason", "blocker", "progress_state", "progress"):
             if item.get(key):
                 ceo_item[key] = item[key]
         if label == "approval.requested" and item.get("approval_action"):
