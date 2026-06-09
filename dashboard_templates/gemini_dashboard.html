@@ -3745,6 +3745,7 @@
     const excludedHumanOwners = registryReconciliation.excluded_human_owners ?? counts.excluded_human_owners ?? 0;
     const ledgerConsistency = ledgerConsistencySummary(cockpit && cockpit.ledger_consistency);
     const doctor = (cockpit && cockpit.doctor) || {};
+    const healthBar = (cockpit && cockpit.health_bar) || {};
     const doctorIssues = doctor.issue_count ?? counts.doctor_issues ?? (Array.isArray(doctor.issues) ? doctor.issues.length : 0);
     const cockpitBudget = (cockpit && cockpit.budget_summary) || {};
     const cockpitBudgetCurrency = cockpitBudget.currency || 'USD';
@@ -3758,9 +3759,9 @@
         <div class="cockpit-subtext">${escapeHtml(ledgerConsistency)}</div>
       </div>
       <div class="cockpit-card">
-        <h3>Doctor Health</h3>
-        <div class="cockpit-value" style="color:${Number(doctorIssues || 0) ? 'var(--color-amber)' : 'var(--color-green)'}">${escapeHtml(doctorIssues || 0)}</div>
-        <div class="cockpit-subtext">doctor.ok=${escapeHtml(String(doctor.ok !== false))} · exit=${escapeHtml(doctor.exit_code ?? 0)} · generated=${escapeHtml(doctor.generated_at || '-')}</div>
+        <h3>Health Bar</h3>
+        <div class="cockpit-value" style="color:${Number(healthBar.doctor_issue_count ?? doctorIssues || 0) ? 'var(--color-amber)' : 'var(--color-green)'}">${escapeHtml(healthBar.doctor_issue_count ?? doctorIssues ?? 0)}</div>
+        <div class="cockpit-subtext">api=${escapeHtml(healthBar.api_status || 'online')} · doctor.ok=${escapeHtml(String(healthBar.doctor_ok ?? (doctor.ok !== false)))} · exit=${escapeHtml(healthBar.doctor_exit_code ?? doctor.exit_code ?? 0)} · poll=${escapeHtml(healthBar.poll_mode || '-')} ${escapeHtml(healthBar.poll_interval_seconds ?? '-')}s · data_age=${escapeHtml(healthBar.data_age_seconds ?? '-')}s · owner_next_action=${escapeHtml(healthBar.owner_next_action || '-')}</div>
       </div>
       <div class="cockpit-card">
         <h3>Employees Online</h3>
