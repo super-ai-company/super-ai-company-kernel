@@ -2412,6 +2412,15 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual(2, cockpit["counts"]["done_tasks"])
         self.assertEqual(1, cockpit["counts"]["evidence_issues"])
         self.assertEqual(2, cockpit["counts"]["awaiting_approval_tasks"])
+        matrix_summary = cockpit["agent_matrix_summary"]
+        self.assertEqual(cockpit["counts"]["readiness_counts"], matrix_summary["counts"])
+        self.assertEqual(1, matrix_summary["active_ready"])
+        self.assertGreaterEqual(matrix_summary["owner_attention_required"], 1)
+        self.assertIn("candidate_only", matrix_summary["attention_levels"])
+        self.assertIn("no_reply", matrix_summary["attention_levels"])
+        self.assertIn("active_ready", matrix_summary["summary"])
+        self.assertIn("candidate_only", matrix_summary["summary"])
+        self.assertIn("review employee_readiness rows", matrix_summary["owner_next_action"])
         self.assertEqual("single_company_kernel_ledger", cockpit["ledger_consistency"]["source"])
         self.assertEqual(["api", "cli", "dashboard"], cockpit["ledger_consistency"]["surfaces"])
         self.assertEqual("API / CLI / Dashboard read the same Company Kernel ledger", cockpit["ledger_consistency"]["summary"])
@@ -4559,6 +4568,9 @@ class CompanyKernelCoreTest(unittest.TestCase):
             "No kill or archive session action in MVP",
             "POST /v1/tasks/{task_id}/reopen",
             "completion_invalid_tasks",
+            "Agent readiness matrix",
+            "cockpit.agent_matrix_summary",
+            "owner_attention_required=${agentMatrix.owner_attention_required || 0}",
         ]:
             self.assertIn(snippet, html)
 

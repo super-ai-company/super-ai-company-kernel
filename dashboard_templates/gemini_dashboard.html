@@ -3981,6 +3981,7 @@
     const counts = cockpit.counts || summary.counts || {};
     const approvals = summary.approvals || [];
     const approvalCenter = cockpit.approval_center_summary || summary.approval_control_summary || {};
+    const agentMatrix = cockpit.agent_matrix_summary || {};
     const traces = summary.traces || [];
     const attempts = attemptHistoryRows(summary);
     const evidence = summary.evidence_records || [];
@@ -3994,6 +3995,12 @@
         state: 'ok',
         message: `API/CLI/Dashboard share one ledger · tasks=${summary.tasks ? summary.tasks.length : 0} · employees=${counts.employees || 0}`,
         tab: 'tasks'
+      },
+      {
+        label: 'Agent readiness matrix',
+        state: Number(agentMatrix.owner_attention_required || 0) ? 'blocked' : 'ok',
+        message: `${agentMatrix.summary || 'readiness counts unavailable'} · owner_attention_required=${agentMatrix.owner_attention_required || 0} · ${agentMatrix.owner_next_action || 'review employee cards before assigning work'}`,
+        tab: 'employees'
       },
       {
         label: 'Approvals safe',
