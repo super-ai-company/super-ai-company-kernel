@@ -2742,6 +2742,7 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual(["review_task", "view_trace"], [action["id"] for action in evidence_attention["actions"]])
         priority_ranks = [item["priority_rank"] for item in cockpit["owner_attention"]]
         self.assertEqual(sorted(priority_ranks), priority_ranks)
+        self.assertTrue(all(item.get("owner_next_action") for item in cockpit["owner_attention"]))
 
         status, shown = api_gateway.route_get("/v1/tasks/task-cockpit-long", {})
         self.assertEqual(200, status, shown)
