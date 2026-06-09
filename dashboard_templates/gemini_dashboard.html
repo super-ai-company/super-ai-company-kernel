@@ -4777,6 +4777,38 @@
     ].join('\n');
   }
 
+  function evidenceAcceptanceSummary(records, contract) {
+    const rows = Array.isArray(records) ? records : [];
+    const item = contract || {};
+    const safeRows = rows.filter(row => {
+      const display = row.display || {};
+      return display.allowed === true && display.absolute_path_exposed !== true;
+    });
+    const finalRows = rows.filter(row => row.is_final === true || row.is_final === 1 || row.is_final === '1');
+    const previewableRows = safeRows.filter(row => {
+      const display = row.display || {};
+      return display.preview_allowed !== false && display.allowed === true;
+    });
+    const unsafeRows = rows.filter(row => {
+      const display = row.display || {};
+      return display.allowed === false || display.absolute_path_exposed === true || display.unsafe === true;
+    });
+    const missingRows = rows.filter(row => {
+      const display = row.display || {};
+      return display.exists === false || row.missing === true;
+    });
+    let action = 'wait for task-bound final evidence';
+    if (item.valid === false) action = 'block completion until safe final evidence is attached';
+    if (item.valid !== false && (item.final_evidence_count || finalRows.length)) action = 'review safe final evidence and accept delivery';
+    if (unsafeRows.length || missingRows.length) action = 'reject unsafe or missing evidence, then reopen or request corrected evidence';
+    return [
+      `records=${rows.length} · final_evidence=${item.final_evidence_count || finalRows.length || 0} · safe_records=${safeRows.length} · previewable=${previewableRows.length}`,
+      `completion_valid=${String(item.valid !== false)} · reason=${item.reason || '-'} · safe_final=${item.safe_final_evidence_count || 0}`,
+      `unsafe=${unsafeRows.length} · missing=${missingRows.length} · preview_policy=safe-preview-only`,
+      `owner_acceptance_action=${action}`
+    ].join('\n');
+  }
+
   function currentTaskAttempt(task) {
     if (!task || typeof task !== 'object') return {};
     if (task.current_attempt && typeof task.current_attempt === 'object') return task.current_attempt;
@@ -5291,6 +5323,7 @@
         ['Budget Events', budgetEventsSummary(budgetEvents)],
         ['Completion Contract', completionContractSummary(completionContract)],
         ['Owner Control Contract', 'Correction: POST /v1/tasks/{task_id}/correct · Cancel: POST /v1/tasks/{task_id}/cancel · Retry: POST /v1/tasks/{task_id}/retry · Reassign: POST /v1/tasks/{task_id}/reassign · Reject/Reopen: POST /v1/tasks/{task_id}/reopen with by=owner and status=submitted.'],
+        ['Evidence Acceptance', evidenceAcceptanceSummary(evidenceRecords, completionContract)],
         ['Evidence Records Summary', evidenceRecordsSummary(evidenceRecords)],
         ['Sanitized Logs Summary', sanitizedLogsSummary(sanitizedLogs)],
         ['Heartbeat State', task.heartbeat_state || latestAttempt.heartbeat_state || '-'],
