@@ -5834,6 +5834,19 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual("observed", stage_rows["artifact.created"]["status"])
         self.assertEqual("missing", stage_rows["tool.call.started"]["status"])
         self.assertEqual("critical", stage_rows["tool.call.started"]["severity"])
+        self.assertIn("ceo_trace_brief", api_payload)
+        brief = api_payload["ceo_trace_brief"]
+        self.assertEqual("critical", brief["severity"])
+        self.assertEqual("incomplete", brief["chain_state"])
+        self.assertIn("review failed/recovery items", brief["owner_next_action"])
+        self.assertEqual(1, brief["critical_count"])
+        self.assertEqual(2, brief["correction_count"])
+        self.assertEqual(0, brief["tool_call_count"])
+        self.assertEqual(1, brief["final_evidence_count"])
+        self.assertEqual(0, brief["budget_event_count"])
+        self.assertEqual(0, brief["estimated_cost"])
+        self.assertIn("Trace incomplete", brief["headline"])
+        self.assertIn("tool.call.started", brief["missing_required"])
         self.assertTrue(api_payload["ceo_timeline"])
         ceo_text = json.dumps(api_payload["ceo_timeline"], ensure_ascii=False)
         self.assertIn("supervisor.correction_requested", ceo_text)
@@ -6573,6 +6586,7 @@ class CompanyKernelCoreTest(unittest.TestCase):
             "const controlActionSummary = payload.control_action_summary || {};",
             "const completionContract = payload.completion_contract || {};",
             "['Task Operational Ledger', taskOperationalLedgerSummary(payload, taskTracePayload)]",
+            "['CEO Trace Brief', ceoTraceBriefSummary(taskTracePayload.ceo_trace_brief || {})]",
             "['Task Control Plane Timeline', taskControlPlaneTimelineSummary(controlPlaneTimeline)]",
             "['Control Action Summary', controlActionSummaryDetail(controlActionSummary)]",
             "['Runtime Sessions', runtimeSessionsSummary(runtimeSessions)]",
@@ -6582,6 +6596,9 @@ class CompanyKernelCoreTest(unittest.TestCase):
             "['Completion Contract', completionContractSummary(completionContract)]",
             "['Evidence Acceptance', evidenceAcceptanceSummary(evidenceRecords, completionContract)]",
             "function taskOperationalLedgerSummary",
+            "function ceoTraceBriefSummary",
+            "trace_headline=",
+            "owner_next_action=${item.owner_next_action || '-'}",
             "tool_calls=${toolCalls.length}",
             "budget_events=${budgetEvents.length}",
             "evidence=${evidenceRecords.length}",

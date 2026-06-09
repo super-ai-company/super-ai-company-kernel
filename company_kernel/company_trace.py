@@ -431,6 +431,7 @@ def safe_trace_payload(trace: dict) -> dict:
     trace_story = trace_stage_story(timeline, trace)
     ceo_timeline = ceo_timeline_items(timeline)
     ceo_stage_summary = ceo_stage_summary_items(trace_story, ceo_timeline)
+    trace_brief = ceo_trace_brief(trace_story, ceo_stage_summary, ceo_timeline, trace)
     return {
         "ok": True,
         "source": "trace.timeline",
@@ -471,6 +472,7 @@ def safe_trace_payload(trace: dict) -> dict:
         "supervision_chain": supervision_chain,
         "trace_story": trace_story,
         "ceo_stage_summary": ceo_stage_summary,
+        "ceo_trace_brief": trace_brief,
         "ceo_timeline": ceo_timeline,
         "timeline": timeline,
     }
@@ -627,6 +629,58 @@ def ceo_stage_summary_items(trace_story: dict, ceo_timeline: list[dict]) -> dict
         "stages": stages,
         "recommended_owner_action": recommended_owner_action,
         "summary": companyctl.sanitize_log_text(trace_story.get("summary", "")),
+    }
+
+
+def ceo_trace_brief(trace_story: dict, ceo_stage_summary: dict, ceo_timeline: list[dict], trace: dict) -> dict:
+    critical_count = int(ceo_stage_summary.get("critical_count") or 0)
+    attention_count = int(ceo_stage_summary.get("attention_count") or 0)
+    missing_required = [str(item) for item in ceo_stage_summary.get("missing_required", []) or []]
+    final_evidence_count = sum(1 for item in trace.get("evidence", []) if bool(item.get("is_final")))
+    estimated_cost = round(sum(float(item.get("amount") or 0) for item in trace.get("budget_events", [])), 10)
+    currencies = sorted({str(item.get("currency") or "") for item in trace.get("budget_events", []) if str(item.get("currency") or "")})
+    correction_count = sum(
+        1
+        for item in ceo_timeline
+        if str(item.get("stage") or "") in {"supervisor.correction_requested", "supervisor.correction_acknowledged"}
+    )
+    approval_count = sum(1 for item in ceo_timeline if str(item.get("stage") or "") == "approval.requested")
+    failure_count = sum(1 for item in ceo_timeline if str(item.get("severity") or "") == "critical")
+    severity = str(ceo_stage_summary.get("severity") or "info")
+    chain_state = str(ceo_stage_summary.get("chain_state") or trace_story.get("state") or "incomplete")
+    owner_next_action = companyctl.sanitize_log_text(
+        str(ceo_stage_summary.get("recommended_owner_action") or "inspect trace before accepting work")
+    )
+    if chain_state == "complete" and final_evidence_count:
+        headline = "Trace complete: final evidence is ready for owner review."
+    elif missing_required:
+        headline = f"Trace incomplete: missing {len(missing_required)} stage(s): {', '.join(missing_required[:4])}."
+    elif failure_count:
+        headline = "Trace needs attention: failure or approval item present."
+    else:
+        headline = "Trace is observable; continue monitoring until final evidence is accepted."
+    return {
+        "headline": companyctl.sanitize_log_text(headline),
+        "chain_state": chain_state,
+        "severity": severity,
+        "owner_next_action": owner_next_action,
+        "missing_required": missing_required,
+        "critical_count": critical_count,
+        "attention_count": attention_count,
+        "correction_count": correction_count,
+        "approval_count": approval_count,
+        "failure_count": failure_count,
+        "task_count": len(trace.get("tasks", [])),
+        "attempt_count": len(trace.get("execution_attempts", [])),
+        "runtime_session_count": len(trace.get("runtime_sessions", [])),
+        "tool_call_count": len(trace.get("tool_calls", [])),
+        "artifact_count": len(trace.get("artifacts", [])),
+        "handoff_count": len(trace.get("handoffs", [])),
+        "evidence_count": len(trace.get("evidence", [])),
+        "final_evidence_count": final_evidence_count,
+        "budget_event_count": len(trace.get("budget_events", [])),
+        "estimated_cost": estimated_cost,
+        "currency": currencies[0] if len(currencies) == 1 else ("mixed" if currencies else "USD"),
     }
 
 

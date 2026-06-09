@@ -4828,6 +4828,18 @@
     ].join('\n');
   }
 
+  function ceoTraceBriefSummary(brief) {
+    const item = brief || {};
+    return [
+      `trace_headline=${item.headline || 'Trace brief unavailable.'}`,
+      `chain_state=${item.chain_state || '-'} · severity=${item.severity || '-'} · owner_next_action=${item.owner_next_action || '-'}`,
+      `missing=${(item.missing_required || []).join(' -> ') || '-'}`,
+      `tasks=${item.task_count || 0} · attempts=${item.attempt_count || 0} · sessions=${item.runtime_session_count || 0} · tools=${item.tool_call_count || 0}`,
+      `artifacts=${item.artifact_count || 0} · handoffs=${item.handoff_count || 0} · evidence=${item.evidence_count || 0} · final_evidence=${item.final_evidence_count || 0}`,
+      `budget_events=${item.budget_event_count || 0} · cost=${item.currency || 'USD'} ${item.estimated_cost || 0} · corrections=${item.correction_count || 0} · approvals=${item.approval_count || 0}`
+    ].join('\n');
+  }
+
   function taskControlPlaneTimelineSummary(timeline) {
     const rows = Array.isArray(timeline) ? timeline : [];
     if (!rows.length) return 'control_plane_timeline empty: no task event/attempt/runtime/tool/budget/evidence rows yet.';
@@ -5665,6 +5677,7 @@
         ['Status Contract', longTaskStatusContractSummary(task, latestAttempt)],
         ['Task Decision', taskDecisionSummary(task, latestAttempt, payload)],
         ['Task Operational Ledger', taskOperationalLedgerSummary(payload, taskTracePayload)],
+        ['CEO Trace Brief', ceoTraceBriefSummary(taskTracePayload.ceo_trace_brief || {})],
         ['Task Control Plane Timeline', taskControlPlaneTimelineSummary(controlPlaneTimeline)],
         ['Control Action Summary', controlActionSummaryDetail(controlActionSummary)],
         ['Latest Attempt Summary', latestAttemptSummary(latestAttempt)],
