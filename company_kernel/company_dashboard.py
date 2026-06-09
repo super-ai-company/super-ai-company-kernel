@@ -1062,6 +1062,10 @@ def build_cockpit_summary(summary: dict) -> dict:
                 "current_attempt": employee.get("current_attempt", {}),
                 "current_task_id": employee.get("current_task_id", ""),
                 "current_task_title": employee.get("current_task_title", ""),
+                "runtime_summary": employee.get("runtime_summary", {}) if isinstance(employee.get("runtime_summary", {}), dict) else {},
+                "tool_summary": employee.get("tool_summary", {}) if isinstance(employee.get("tool_summary", {}), dict) else {},
+                "budget_summary": employee.get("budget_summary", {}) if isinstance(employee.get("budget_summary", {}), dict) else {},
+                "evidence_summary": employee.get("evidence_summary", {}) if isinstance(employee.get("evidence_summary", {}), dict) else {},
                 "last_seen_at": employee.get("last_seen_at", ""),
             }
         )
@@ -2202,6 +2206,87 @@ def employee_view_models(summary: dict) -> list[dict]:
     communication_profiles = communication_config.get("employees", {})
     employee_ids = {str(employee.get("id", "")) for employee in summary["employees"]}
     attendance_rows = companyctl.attendance_row_map(companyctl.load_latest_attendance())
+    runtime_sessions_by_employee: dict[str, list[dict]] = {}
+    for session in summary.get("runtime_sessions", []):
+        employee_id = str(session.get("employee_id", "") or "")
+        if employee_id:
+            runtime_sessions_by_employee.setdefault(employee_id, []).append(session)
+    tool_calls_by_employee: dict[str, list[dict]] = {}
+    for tool_call in summary.get("tool_calls", []):
+        employee_id = str(tool_call.get("employee_id", "") or "")
+        if employee_id:
+            tool_calls_by_employee.setdefault(employee_id, []).append(tool_call)
+    evidence_by_employee: dict[str, list[dict]] = {}
+    for evidence in summary.get("evidence_records", []):
+        employee_id = str(evidence.get("employee_id", "") or "")
+        if employee_id:
+            evidence_by_employee.setdefault(employee_id, []).append(evidence)
+    budget_summary = summary.get("budget_summary", {}) if isinstance(summary.get("budget_summary"), dict) else {}
+
+    def employee_runtime_summary(employee_id: str) -> dict:
+        sessions = runtime_sessions_by_employee.get(employee_id, [])
+        latest = sessions[0] if sessions else {}
+        return {
+            "session_count": len(sessions),
+            "active_session_count": sum(1 for item in sessions if str(item.get("status", "") or "") in {"active", "idle"}),
+            "latest_session_id": latest.get("session_id", ""),
+            "latest_runtime_type": latest.get("runtime_type", ""),
+            "latest_status": latest.get("status", ""),
+            "latest_task_id": latest.get("task_id", ""),
+            "latest_attempt_id": latest.get("attempt_id", ""),
+            "latest_heartbeat_at": latest.get("last_heartbeat_at", ""),
+            "latest_progress_at": latest.get("last_progress_at", ""),
+        }
+
+    def employee_tool_summary(employee_id: str) -> dict:
+        calls = sorted(
+            tool_calls_by_employee.get(employee_id, []),
+            key=lambda item: str(item.get("finished_at") or item.get("started_at") or ""),
+            reverse=True,
+        )
+        latest = calls[0] if calls else {}
+        return {
+            "tool_call_count": len(calls),
+            "running_tool_call_count": sum(1 for item in calls if str(item.get("status", "") or "") == "running"),
+            "failed_tool_call_count": sum(1 for item in calls if str(item.get("status", "") or "") in {"failed", "blocked", "cancelled"}),
+            "latest_tool_call_id": latest.get("tool_call_id", ""),
+            "latest_tool_name": latest.get("tool_name", ""),
+            "latest_tool_type": latest.get("tool_type", ""),
+            "latest_tool_status": latest.get("status", ""),
+            "latest_task_id": latest.get("task_id", ""),
+            "latest_attempt_id": latest.get("attempt_id", ""),
+            "latest_risk_level": latest.get("risk_level", ""),
+        }
+
+    def employee_budget_rollup(employee_id: str) -> dict:
+        by_currency = {}
+        if isinstance(budget_summary.get("by_employee_by_currency"), dict):
+            by_currency = budget_summary.get("by_employee_by_currency", {}).get(employee_id, {}) or {}
+        currencies = sorted(str(currency) for currency in by_currency.keys())
+        return {
+            "event_count": sum(1 for item in summary.get("budget_events", []) if str(item.get("employee_id", "") or "") == employee_id),
+            "total_amount": round(float((budget_summary.get("by_employee", {}) or {}).get(employee_id, 0) or 0), 6) if isinstance(budget_summary.get("by_employee", {}), dict) else 0,
+            "total_amounts_by_currency": by_currency,
+            "currency": currencies[0] if len(currencies) == 1 else ("mixed" if currencies else str(budget_summary.get("currency") or "USD")),
+            "token_input": sum(int(item.get("token_input") or 0) for item in summary.get("budget_events", []) if str(item.get("employee_id", "") or "") == employee_id),
+            "token_output": sum(int(item.get("token_output") or 0) for item in summary.get("budget_events", []) if str(item.get("employee_id", "") or "") == employee_id),
+            "runtime_seconds": sum(int(item.get("runtime_seconds") or 0) for item in summary.get("budget_events", []) if str(item.get("employee_id", "") or "") == employee_id),
+        }
+
+    def employee_evidence_summary(employee_id: str) -> dict:
+        records = sorted(evidence_by_employee.get(employee_id, []), key=lambda item: str(item.get("created_at") or ""), reverse=True)
+        latest = records[0] if records else {}
+        return {
+            "evidence_count": len(records),
+            "final_evidence_count": sum(1 for item in records if bool(item.get("is_final"))),
+            "latest_evidence_id": latest.get("evidence_id", ""),
+            "latest_task_id": latest.get("task_id", ""),
+            "latest_attempt_id": latest.get("attempt_id", ""),
+            "latest_summary": latest.get("summary", ""),
+            "latest_is_final": bool(latest.get("is_final")) if latest else False,
+            "latest_display": latest.get("display", {}) if isinstance(latest.get("display", {}), dict) else {},
+        }
+
     conn = companyctl.connect_readonly()
     try:
         for employee in summary["employees"]:
@@ -2249,6 +2334,7 @@ def employee_view_models(summary: dict) -> list[dict]:
             )
             schedulable = readiness.get("level") == "active_ready"
             current_attempt = employee.get("current_attempt", {}) if isinstance(employee.get("current_attempt", {}), dict) else {}
+            employee_id = str(employee["id"])
             employees.append(
                 {
                     **employee,
@@ -2266,6 +2352,10 @@ def employee_view_models(summary: dict) -> list[dict]:
                     "backlog": f"{employee.get('submitted_tasks', 0)} submitted, {employee.get('claimed_tasks', 0)} claimed",
                     "current_task_id": str(current_attempt.get("task_id", "") or ""),
                     "current_task_title": str(current_attempt.get("task_title", "") or ""),
+                    "runtime_summary": employee_runtime_summary(employee_id),
+                    "tool_summary": employee_tool_summary(employee_id),
+                    "budget_summary": employee_budget_rollup(employee_id),
+                    "evidence_summary": employee_evidence_summary(employee_id),
                     "progress_layer": heartbeat_progress.get("layer", ""),
                     "progress_state": heartbeat_progress.get("state", ""),
                     "progress_label": heartbeat_progress.get("label", ""),

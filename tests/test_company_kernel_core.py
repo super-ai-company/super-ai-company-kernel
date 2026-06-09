@@ -7430,6 +7430,60 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual("Long dashboard task", codex_model["current_task_title"])
         self.assertEqual("task-long-dashboard", codex_model["current_task_id"])
 
+    def test_dashboard_employee_cards_include_control_plane_rollups(self) -> None:
+        for employee_id, role in [("main", "operator"), ("codex", "developer")]:
+            code, created = run_cli("employee", "create", "--id", employee_id, "--name", employee_id, "--role", role, "--runtime", "local", "--workspace", str(self.root / "workspace" / employee_id))
+            self.assertEqual(code, 0, created)
+        self.mark_active("codex")
+        code, submitted = run_cli("task", "submit", "--from", "main", "--to", "codex", "--task-id", "task-employee-card-rollup", "--title", "Employee card rollup")
+        self.assertEqual(0, code, submitted)
+        code, run = run_cli("task", "run", "--task-id", "task-employee-card-rollup", "--agent", "codex", "--by", "hermes", "--adapter-type", "codex")
+        self.assertEqual(0, code, run)
+        attempt_id = run["attempt"]["attempt_id"]
+        code, session = run_cli("runtime", "session", "start", "--session-id", "session-employee-card-rollup", "--task-id", "task-employee-card-rollup", "--attempt-id", attempt_id, "--employee", "codex", "--adapter-type", "codex", "--runtime-type", "cli")
+        self.assertEqual(0, code, session)
+        code, tool = run_cli("tool-call", "start", "--tool-call-id", "tool-employee-card-rollup", "--task-id", "task-employee-card-rollup", "--attempt-id", attempt_id, "--employee", "codex", "--session-id", "session-employee-card-rollup", "--tool-name", "shell", "--tool-type", "shell", "--input-summary", "card rollup command")
+        self.assertEqual(0, code, tool)
+        code, finished_tool = run_cli("tool-call", "finish", "--tool-call-id", "tool-employee-card-rollup", "--status", "success", "--output-summary", "card rollup command completed")
+        self.assertEqual(0, code, finished_tool)
+        code, budget = run_cli("budget", "record", "--budget-event-id", "budget-employee-card-rollup", "--task-id", "task-employee-card-rollup", "--attempt-id", attempt_id, "--employee", "codex", "--cost-type", "model_api", "--amount", "0.21", "--currency", "USD", "--token-input", "70", "--token-output", "30", "--runtime-seconds", "9", "--summary", "employee card cost")
+        self.assertEqual(0, code, budget)
+        evidence_file = Path(submitted["task"]["workspace"]["path"]) / "final" / "employee-card-evidence.md"
+        evidence_file.parent.mkdir(parents=True, exist_ok=True)
+        evidence_file.write_text("employee card final evidence\n", encoding="utf-8")
+        code, artifact = run_cli("task", "artifact", "register", "--task-id", "task-employee-card-rollup", "--employee", "codex", "--path", str(evidence_file), "--type", "markdown", "--stage", "final", "--summary", "employee card artifact")
+        self.assertEqual(0, code, artifact)
+        code, evidence = run_cli("task", "evidence", "promote", "--artifact-id", artifact["artifact"]["artifact_id"], "--employee", "codex", "--summary", "employee card final evidence")
+        self.assertEqual(0, code, evidence)
+
+        with companyctl.connect() as conn:
+            summary = company_dashboard.load_summary(conn)
+            models = company_dashboard.employee_view_models(summary)
+        codex_model = next(item for item in models if item["id"] == "codex")
+        self.assertEqual(1, codex_model["runtime_summary"]["session_count"])
+        self.assertEqual("session-employee-card-rollup", codex_model["runtime_summary"]["latest_session_id"])
+        self.assertEqual(1, codex_model["tool_summary"]["tool_call_count"])
+        self.assertEqual("tool-employee-card-rollup", codex_model["tool_summary"]["latest_tool_call_id"])
+        self.assertEqual(1, codex_model["budget_summary"]["event_count"])
+        self.assertEqual(0.21, codex_model["budget_summary"]["total_amount"])
+        self.assertEqual(70, codex_model["budget_summary"]["token_input"])
+        self.assertEqual(30, codex_model["budget_summary"]["token_output"])
+        self.assertEqual(9, codex_model["budget_summary"]["runtime_seconds"])
+        self.assertEqual(1, codex_model["evidence_summary"]["evidence_count"])
+        self.assertEqual(1, codex_model["evidence_summary"]["final_evidence_count"])
+        self.assertEqual(evidence["evidence"]["evidence_id"], codex_model["evidence_summary"]["latest_evidence_id"])
+        status, cockpit = api_gateway.route_get("/v1/dashboard/cockpit", {})
+        self.assertEqual(HTTPStatus.OK, status, cockpit)
+        api_codex = next(item for item in cockpit["employees"] if item["id"] == "codex")
+        self.assertEqual(1, api_codex["runtime_summary"]["session_count"])
+        self.assertEqual("session-employee-card-rollup", api_codex["runtime_summary"]["latest_session_id"])
+        self.assertEqual(1, api_codex["tool_summary"]["tool_call_count"])
+        self.assertEqual("tool-employee-card-rollup", api_codex["tool_summary"]["latest_tool_call_id"])
+        self.assertEqual(1, api_codex["budget_summary"]["event_count"])
+        self.assertEqual(0.21, api_codex["budget_summary"]["total_amount"])
+        self.assertEqual(1, api_codex["evidence_summary"]["final_evidence_count"])
+        self.assertEqual(evidence["evidence"]["evidence_id"], api_codex["evidence_summary"]["latest_evidence_id"])
+
     def test_dashboard_employee_view_models_include_readiness_badges(self) -> None:
         for employee_id, role, runtime in [
             ("main", "operator", "openclaw"),
