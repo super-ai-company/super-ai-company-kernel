@@ -277,6 +277,66 @@ def with_control_action(
     }
 
 
+def control_action_approval_response(
+    *,
+    task_id: str,
+    action: str,
+    by: str,
+    reason: str,
+    attempt_id: str = "",
+    target: str = "",
+    risk: str = "P1",
+    dangerous: bool = False,
+) -> tuple[int, dict]:
+    approval_action = f"task_control.{action}"
+    approval_id = f"approval-{approval_action.replace('.', '-')}-{task_id}"
+    metadata = {
+        "task_id": task_id,
+        "attempt_id": attempt_id,
+        "control_action": action,
+        "execute_requires": "execute=true or approved owner action",
+    }
+    if target:
+        metadata["target"] = target
+    conn = companyctl.connect()
+    try:
+        result = companyctl.create_approval_internal(
+            conn,
+            source=by,
+            action=approval_action,
+            reason=reason,
+            target=target,
+            risk=risk,
+            approval_id=approval_id,
+            metadata=metadata,
+        )
+    finally:
+        conn.close()
+    event_id = str(result.get("event", {}).get("id", "") or "")
+    approval = dict(result.get("approval", {}) or {})
+    detail = approval.get("detail", {}) if isinstance(approval.get("detail", {}), dict) else {}
+    approval["metadata"] = detail.get("metadata", {}) if isinstance(detail.get("metadata", {}), dict) else {}
+    payload = {
+        "ok": False,
+        "executed": False,
+        "approval_required": True,
+        "approval": approval,
+        "notification": result.get("notification", {}),
+        "event": result.get("event", {}),
+    }
+    response = with_control_action(
+        payload,
+        action=action,
+        event_type="approval.requested",
+        requires_owner_approval=True,
+        dangerous=dangerous,
+    )
+    response["control_action"]["event_id"] = event_id
+    response["control_action"]["approval_mode"] = "pending_owner_approval"
+    response["control_action"]["audit"] = {"recorded": bool(event_id), "event_id": event_id, "ledger": "company_events"}
+    return HTTPStatus.ACCEPTED, response
+
+
 PATH_LIKE_EVENT_KEYS = {
     "artifact",
     "artifact_path",
@@ -1168,6 +1228,15 @@ def route_post(path: str, body: dict) -> tuple[int, dict]:
         return (HTTPStatus.OK if code == 0 else HTTPStatus.BAD_REQUEST), {"exit_code": code, **payload}
     if path.startswith("/v1/tasks/") and path.endswith("/correct"):
         task_id = path.removeprefix("/v1/tasks/").removesuffix("/correct").strip("/")
+        if not truthy(body.get("ack")) and not truthy(body.get("execute")):
+            return control_action_approval_response(
+                task_id=task_id,
+                action="correction",
+                by=str(body.get("by", "")),
+                reason=str(body.get("message", "")),
+                attempt_id=str(body.get("attempt_id", "")),
+                risk="P1",
+            )
         argv = ["task", "correct", "--task-id", task_id, "--attempt-id", str(body.get("attempt_id", "")), "--by", str(body.get("by", "")), "--message", str(body.get("message", ""))]
         if truthy(body.get("ack")):
             argv.append("--ack")
@@ -1180,6 +1249,9 @@ def route_post(path: str, body: dict) -> tuple[int, dict]:
                 event_type="supervisor.correction_acknowledged" if truthy(body.get("ack")) else "supervisor.correction_requested",
                 requires_owner_approval=not truthy(body.get("ack")),
             )
+            if truthy(body.get("execute")) and not truthy(body.get("ack")):
+                response["executed"] = True
+                response["control_action"]["approval_mode"] = "owner_approved_execute"
         return (HTTPStatus.OK if code == 0 else HTTPStatus.BAD_REQUEST), response
     if path.startswith("/v1/tasks/") and path.endswith("/progress"):
         task_id = path.removeprefix("/v1/tasks/").removesuffix("/progress").strip("/")
@@ -1194,10 +1266,22 @@ def route_post(path: str, body: dict) -> tuple[int, dict]:
         return (HTTPStatus.OK if code == 0 else HTTPStatus.BAD_REQUEST), {"exit_code": code, **payload}
     if path.startswith("/v1/tasks/") and path.endswith("/cancel"):
         task_id = path.removeprefix("/v1/tasks/").removesuffix("/cancel").strip("/")
+        if not truthy(body.get("execute")):
+            return control_action_approval_response(
+                task_id=task_id,
+                action="cancel",
+                by=str(body.get("by", "")),
+                reason=str(body.get("reason", "")),
+                attempt_id=str(body.get("attempt_id", "")),
+                risk="P0",
+                dangerous=True,
+            )
         code, payload = run_companyctl(["task", "cancel", "--task-id", task_id, "--attempt-id", str(body.get("attempt_id", "")), "--by", str(body.get("by", "")), "--reason", str(body.get("reason", ""))])
         response = {"exit_code": code, **payload}
         if code == 0:
             response = with_control_action(response, action="cancel", event_type="supervisor.cancel_requested", dangerous=True)
+            response["executed"] = True
+            response["control_action"]["approval_mode"] = "owner_approved_execute"
         return (HTTPStatus.OK if code == 0 else HTTPStatus.BAD_REQUEST), response
     if path.startswith("/v1/tasks/") and path.endswith("/claim"):
         task_id = path.removeprefix("/v1/tasks/").removesuffix("/claim").strip("/")
@@ -1223,17 +1307,38 @@ def route_post(path: str, body: dict) -> tuple[int, dict]:
         return (HTTPStatus.OK if code == 0 else HTTPStatus.BAD_REQUEST), {"exit_code": code, **payload}
     if path.startswith("/v1/tasks/") and path.endswith("/retry"):
         task_id = path.removeprefix("/v1/tasks/").removesuffix("/retry").strip("/")
+        if not truthy(body.get("execute")):
+            return control_action_approval_response(
+                task_id=task_id,
+                action="retry",
+                by=str(body.get("by", "")),
+                reason=str(body.get("reason", "")),
+                risk="P1",
+            )
         code, payload = run_companyctl(["task", "retry", "--task-id", task_id, "--by", str(body.get("by", "")), "--reason", str(body.get("reason", ""))])
         response = {"exit_code": code, **payload}
         if code == 0:
             response = with_control_action(response, action="retry", event_type="task.retrying")
+            response["executed"] = True
+            response["control_action"]["approval_mode"] = "owner_approved_execute"
         return (HTTPStatus.OK if code == 0 else HTTPStatus.BAD_REQUEST), response
     if path.startswith("/v1/tasks/") and path.endswith("/reassign"):
         task_id = path.removeprefix("/v1/tasks/").removesuffix("/reassign").strip("/")
+        if not truthy(body.get("execute")):
+            return control_action_approval_response(
+                task_id=task_id,
+                action="reassign",
+                by=str(body.get("by", "")),
+                reason=str(body.get("reason", "")),
+                target=str(body.get("to", "")),
+                risk="P1",
+            )
         code, payload = run_companyctl(["task", "reassign", "--task-id", task_id, "--by", str(body.get("by", "")), "--to", str(body.get("to", "")), "--reason", str(body.get("reason", ""))])
         response = {"exit_code": code, **payload}
         if code == 0:
             response = with_control_action(response, action="reassign", event_type="task.reassigned")
+            response["executed"] = True
+            response["control_action"]["approval_mode"] = "owner_approved_execute"
         return (HTTPStatus.OK if code == 0 else HTTPStatus.BAD_REQUEST), response
     if path == "/v1/conversations":
         argv = [
