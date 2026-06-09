@@ -2,69 +2,62 @@
 
 Date: 2026-06-09
 
-Scope: Super AI Company Kernel local-first CEO Cockpit MVP. This document is a small implementation contract for the next 3 days. It is based on `docs/research/ai-company-os-research-plan.md` and Antigravity design-review feedback.
+Scope: local-first Super AI Company Kernel CEO Cockpit UI contract. This design is based on `docs/research/ai-company-os-research-plan.md` and two Antigravity design-review rounds. It is a 3-day MVP only.
 
-## 1. Goal
+## Goal
 
 The CEO Cockpit must let the owner see, from real Kernel data:
 
-- Which AI employees are active, limited, candidate, skill-only, unsafe, or offline.
-- What each employee is doing now.
-- Which task, attempt, runtime session, and trace are involved.
-- Which tools were used.
-- What the task cost in tokens, runtime, and ledger currency.
-- What evidence was submitted and whether it is safe/final/valid.
+- what every AI employee is doing now;
+- which task, attempt, runtime session, and trace it belongs to;
+- which tools were used;
+- how much budget was spent in tokens, runtime, and ledger currency;
+- what evidence was submitted and whether it is final, safe, and task-bound.
 
 The UI must not treat chat, ACK, stdout, inbox files, or heartbeat as completion.
 
-## 2. Hard MVP Boundary
+## Non-Goals
 
-Build:
+Do not build or expose:
 
-- Budget Center MVP.
-- Tool Call automatic-record visibility.
-- Runtime Session visibility.
-- Dashboard panels for employee current work, tool use, cost, and evidence.
-- Task detail drawer with timeline and owner controls.
-
-Do not build:
-
-- Marketplace.
-- WorkGraph large canvas.
-- Skill pricing.
-- Distributed rental.
-- Payments.
-- Complex multi-tenant accounts or RBAC.
+- marketplace;
+- WorkGraph large canvas;
+- skill pricing;
+- distributed rental;
+- payments;
+- complex multi-tenant accounts or RBAC;
+- chat/DM product;
 - WebSocket/SSE realtime layer.
-- Frontend cost estimation.
-- Chat/DM product.
 
-## 3. Primary APIs
+All employee chat/direct buttons are hidden in this MVP, including for active employees, candidates, and skill workers. Skill workers such as `ecommerce-copy-skill` show task execution, runtime sessions, tool calls, budget, artifacts, and evidence, but no chat affordance.
 
-| UI need | API |
-|---|---|
-| Cockpit aggregate | `GET /v1/dashboard/cockpit` |
-| Doctor status | `GET /v1/doctor` |
-| Employees | `GET /v1/employees` |
-| Employee detail | `GET /v1/employees/{employee_id}` |
-| Readiness badge | `GET /v1/agent-matrix?agents={employee_id}` |
-| Task detail drawer | `GET /v1/tasks/{task_id}` |
-| Trace timeline fallback | `GET /v1/traces/{trace_id}/timeline` |
-| Runtime sessions | `GET /v1/runtime-sessions?employee_id=&task_id=&trace_id=&limit=` |
-| Tool calls | `GET /v1/tool-calls?employee_id=&task_id=&trace_id=&attempt_id=&session_id=&limit=200` |
-| Budget summary | `GET /v1/budget-summary?employee_id=&task_id=&trace_id=&attempt_id=` |
-| Budget events | `GET /v1/budget-events?employee_id=&task_id=&trace_id=&attempt_id=&limit=50` |
-| Evidence list | `GET /v1/evidence?task_id=&employee_id=&limit=50` |
-| Evidence safe preview | `GET /v1/evidence/{evidence_id}/safe-preview` |
-| Correction | `POST /v1/tasks/{task_id}/correct` |
-| Cancel | `POST /v1/tasks/{task_id}/cancel` |
-| Retry | `POST /v1/tasks/{task_id}/retry` |
-| Reassign | `POST /v1/tasks/{task_id}/reassign` |
-| Reject / reopen | `POST /v1/tasks/{task_id}/reopen` |
+## API Contract
 
-Default actor is `owner-shift`. Control actions default to approval-request mode unless backend explicitly returns `executed: true`.
+Existing or planned APIs must be labeled honestly. If an API is not implemented, mark it `[API Gap - Mocking Prohibited]`; the frontend may show empty state or disabled controls only. It must not fabricate tasks, evidence, sessions, token counts, or costs.
 
-## 4. Page Layout
+| UI need | API | Status |
+|---|---|---|
+| Cockpit aggregate | `GET /v1/dashboard/cockpit` | required |
+| Doctor status | `GET /v1/doctor` | required |
+| Employees | `GET /v1/employees` | required |
+| Employee detail | `GET /v1/employees/{employee_id}` | required |
+| Task detail drawer | `GET /v1/tasks/{task_id}` | required |
+| Runtime sessions | `GET /v1/runtime-sessions?employee_id=&task_id=&trace_id=&limit=` | required |
+| Tool calls | `GET /v1/tool-calls?employee_id=&task_id=&trace_id=&attempt_id=&session_id=&limit=200` | required |
+| Budget summary | `GET /v1/budget-summary?employee_id=&task_id=&trace_id=&attempt_id=` | required |
+| Budget events | `GET /v1/budget-events?employee_id=&task_id=&trace_id=&attempt_id=&limit=50` | required |
+| Evidence list | `GET /v1/evidence?task_id=&employee_id=&limit=50` | required |
+| Evidence safe preview | `GET /v1/evidence/{evidence_id}/safe-preview` | required |
+| Trace timeline fallback | `GET /v1/traces/{trace_id}/timeline` | `[API Gap - Mocking Prohibited]` if absent |
+| Correction | `POST /v1/tasks/{task_id}/correct` | required or disabled |
+| Cancel | `POST /v1/tasks/{task_id}/cancel` | required or disabled |
+| Retry | `POST /v1/tasks/{task_id}/retry` | visible disabled if absent |
+| Reassign | `POST /v1/tasks/{task_id}/reassign` | visible disabled if absent |
+| Reject / reopen | `POST /v1/tasks/{task_id}/reopen` | visible disabled if absent |
+
+Default actor is `owner-shift`. Write actions must show disabled/loading state while pending so repeated owner clicks cannot create duplicate approval requests.
+
+## Page Layout
 
 One high-density page:
 
@@ -77,22 +70,44 @@ One high-density page:
 7. Evidence Panel.
 8. Task Detail Drawer.
 
-Use existing static dashboard template, vanilla CSS, and vanilla JavaScript. Poll `/v1/dashboard/cockpit` every 8 seconds. If API fails, keep last successful data visible but dimmed and show `Offline: API Connection Lost`.
+Use existing static dashboard template, vanilla CSS, and vanilla JavaScript. Poll `/v1/dashboard/cockpit` every 8 seconds. Pause polling when `document.hidden === true`; refresh immediately when the tab becomes visible. If API fails, keep last successful data visible, dim it, and show `Offline: API Connection Lost`; do not replace populated panels with empty state.
 
-## 5. CEO Cockpit Home
-
-Purpose: one screen answers whether the AI company is healthy and what needs owner action.
+## 1. Top Health Bar
 
 Displayed fields:
 
-- API status, doctor ok/issue count/generated time.
+- API status.
+- Doctor status and issue count.
+- Last successful sync timestamp.
+- Polling interval and manual `Refresh Now`.
+- Current filter chips, if any.
+
+Empty state:
+
+- `Waiting for Kernel API.`
+
+Abnormal states:
+
+- API offline: red banner, last good data dimmed.
+- Doctor unhealthy: yellow banner with issue count.
+- Missing required API: `API Gap - Mocking Prohibited`.
+
+Click actions:
+
+- `Refresh Now`: re-fetch cockpit payload and dependent visible panels.
+- Doctor banner: `GET /v1/doctor` and show JSON detail modal.
+
+## 2. CEO Summary Grid
+
+Displayed fields:
+
 - Employee counts: online, busy, active_ready, active_limited, candidate_only, online_only, task_unsupported, unsafe.
 - Task counts: running, stagnant, blocked, failed, awaiting approval, done, completion_invalid.
 - Runtime counts: active sessions, stale sessions, active attempts.
 - Tool counts: running, success, failed, blocked.
 - Budget totals by currency, token input/output, runtime seconds, soft/hard limit state.
 - Evidence counts: final evidence, unsafe evidence, missing evidence, invalid completion.
-- Supervisor: latest Hermes correction or pending correction ack.
+- Supervisor status: latest correction or pending correction ack when backend supplies it; otherwise `No recent supervisor activity`.
 
 Empty states:
 
@@ -100,27 +115,21 @@ Empty states:
 - `No running tasks.`
 - `No budget ledger events recorded.`
 - `No evidence submitted yet.`
-- `No recent supervisor activity.`
 
 Abnormal states:
 
-- API offline: red banner, stale data dimmed, do not clear populated panels.
-- Doctor unhealthy: yellow banner, click opens `/v1/doctor` JSON modal.
-- Hard budget limit: red banner; disable `Retry` and `Reassign`; keep `Cancel`, `Correct`, and `Reject / Reopen`.
-- Completion invalid: red count and filter to invalid task cards.
-- API missing field: show `API gap`, do not infer.
+- Hard budget limit: red card; disable retry and reassign controls globally.
+- Completion invalid: red card and filter action.
+- API missing field: `API gap`, not inferred.
 
 Click actions:
 
 - Employee count filters Employee Cards.
 - Stagnant/blocked count filters Running Task Cards.
-- Budget count scrolls to Budget Panel.
-- Evidence count scrolls to Evidence Panel.
-- Doctor banner calls `GET /v1/doctor`.
+- Budget card scrolls to Budget Panel.
+- Evidence card scrolls to Evidence Panel.
 
-## 6. Employee Cards
-
-Purpose: make readiness honest. Online is not active.
+## 3. Employee Cards
 
 Displayed fields:
 
@@ -131,37 +140,38 @@ Displayed fields:
 - Current task title or `Title unavailable from API`.
 - Current `task_id`, `attempt_id`, `session_id`, latest progress.
 - Capabilities: task/chat/tool support summary.
-- Tool calls count, evidence count, cost by currency.
+- Runtime session count.
+- Tool call count and failed tool count.
+- Evidence count and final evidence count.
+- Cost by currency and token input/output when available.
 
 Empty states:
 
-- Idle employee: `Idle. Awaiting task assignment.`
+- Idle active employee: `Idle. Awaiting task assignment.`
+- Candidate: `Awaiting activation. Needs structured runtime evidence.`
 - Skill worker: `No chat; task/evidence execution only.`
 
 Abnormal states:
 
 - `unsafe`: red border, auto-assignment disabled.
-- `candidate_only`: gray badge, `Needs structured runtime evidence before activation.`
+- `candidate_only`: gray dashed border, not counted as active capacity.
 - `online_only`: yellow badge, `Online but no task/evidence proof.`
-- Heartbeat stale: amber badge.
+- Heartbeat stale/offline: dim card.
 
 Click actions:
 
 - Click card: `GET /v1/employees/{employee_id}`.
 - `View Task`: open Task Detail Drawer.
 - `Filter Tools`: `GET /v1/tool-calls?employee_id={employee_id}&limit=200`.
-- `Filter Budget`: `GET /v1/budget-summary?employee_id={employee_id}` and `GET /v1/budget-events?employee_id={employee_id}&limit=50`.
+- `Filter Budget`: budget summary/events filtered by `employee_id`.
 - `Filter Evidence`: `GET /v1/evidence?employee_id={employee_id}&limit=50`.
-- `Verify Runtime Evidence`: `GET /v1/agent-matrix?agents={employee_id}`.
 
-Chat rule:
+Rules:
 
-- Hide chat/direct buttons for all employees in this 3-day MVP.
-- Skill workers such as `ecommerce-copy-skill` still show task progress, runtime sessions, tool calls, budget, artifacts, and evidence.
+- Hide all chat/direct/message buttons.
+- Do not promote candidate or online-only employees visually into active staff.
 
-## 7. Running Task Cards
-
-Purpose: show long-running work without confusing request timeout with task failure.
+## 4. Running Task Cards
 
 Displayed fields:
 
@@ -169,6 +179,7 @@ Displayed fields:
 - Assigned employee.
 - Current `attempt_id`, `session_id`, `trace_id`.
 - Long-task state: `running`, `progress_fresh`, `stagnant`, `correcting`, `blocked`, `failed`, `cancelled`, `done`.
+- Elapsed duration.
 - Latest progress message and timestamp.
 - Heartbeat/progress freshness.
 - Completion contract: valid/invalid and reason.
@@ -183,41 +194,30 @@ Empty states:
 
 Abnormal states:
 
-- Stagnant: `Employee is still online, but no new progress. Continue waiting, send probe, request Hermes correction, or cancel.`
+- Stagnant: `Employee is still online, but no new progress. Continue waiting, send probe, request correction, or cancel.`
+- Claimed but no runtime session: `Cold start: waiting for runtime session.`
 - Blocked: show blocker reason.
-- Failed: show failure reason and retry/reassign controls.
+- Failed: show sanitized failure reason.
 - Done without final evidence: red `Completion Invalid`.
-- Missing tool-call records while progress exists: `Tool-call ledger missing for this attempt`.
+- Progress exists but tool calls are missing: `Tool-call ledger missing for this attempt`.
 
 Click actions:
 
 - Click card: `GET /v1/tasks/{task_id}`.
 - Correct: `POST /v1/tasks/{task_id}/correct`.
 - Cancel: `POST /v1/tasks/{task_id}/cancel`.
-- Retry: `POST /v1/tasks/{task_id}/retry`.
-- Reassign: `POST /v1/tasks/{task_id}/reassign`.
-- Reject / Reopen: `POST /v1/tasks/{task_id}/reopen`.
+- Retry/Reassign/Reject/Reopen: visible but disabled with `Backend API pending (API Gap)` if backend does not support the endpoint.
 
-Control body pattern:
-
-```json
-{"by":"owner-shift","attempt_id":"{attempt_id}","reason":"{owner_reason}","message":"{owner_text}","to":"{employee_id}","status":"submitted"}
-```
-
-Use only the fields required by each endpoint.
-
-## 8. Tool Calls Panel
-
-Purpose: answer what tools employees used.
+## 5. Tool Calls Panel
 
 Displayed fields:
 
 - Tool call ID.
 - Employee ID, task ID, trace ID, attempt ID, session ID.
-- Tool name and type.
+- Tool name and tool type.
 - Risk level and approval ID.
-- Status: planned/running/success/failed/blocked/cancelled.
-- Started/finished time.
+- Status: planned, running, success, failed, blocked, cancelled.
+- Started/finished time and duration.
 - Sanitized input summary, output summary, error summary.
 
 Empty states:
@@ -236,7 +236,7 @@ Click actions:
 
 - Row click opens sanitized detail modal from the hydrated row.
 - `Open Task`: open Task Detail Drawer.
-- `Open Trace`: call `GET /v1/traces/{trace_id}/timeline`.
+- `Open Trace`: call trace timeline only if available.
 - Filters call `/v1/tool-calls` with `employee_id`, `task_id`, `trace_id`, `attempt_id`, or `session_id`.
 
 Rules:
@@ -245,22 +245,20 @@ Rules:
 - Do not request raw stdout/stderr.
 - Do not invent `/v1/tool-calls/{tool_call_id}`.
 - Cap each summary field to 500 display characters.
-- Disable row copy when the row is not explicitly sanitized.
+- Disable copy when the row is not explicitly sanitized.
 
-## 9. Budget Panel
-
-Purpose: show ledger-owned cost, not frontend-estimated cost.
+## 6. Budget Panel
 
 Displayed fields:
 
 - Total amount grouped by currency.
 - Token input/output.
 - Runtime seconds.
-- Cost by employee, task, attempt, and cost type.
-- Soft/hard budget limits.
+- Cost by employee, task, attempt, provider/model, and cost type when available.
+- Soft/hard budget limits and utilization.
 - Recent budget events.
 
-Empty states:
+Empty state:
 
 - `No budget ledger events recorded.`
 
@@ -268,13 +266,14 @@ Abnormal states:
 
 - Runtime activity with no budget rows: `Cost missing`.
 - Soft limit exceeded: amber warning.
-- Hard limit exceeded: red warning; disable `Retry` and `Reassign`; keep `Cancel`, `Correct`, `Reject / Reopen`.
+- Hard limit exceeded: red warning; disable retry and reassign.
 - Mixed currencies: show per-currency rows; do not combine.
 - Missing per-currency rows: `API gap: per-currency budget totals unavailable`.
+- Burn-rate data absent: `Burn rate unavailable`.
 
 Click actions:
 
-- Employee/task row filters other panels.
+- Employee/task/attempt rows filter other panels.
 - Budget event opens related task drawer.
 
 Rules:
@@ -282,11 +281,8 @@ Rules:
 - No frontend token-to-USD formula.
 - No exchange-rate conversion.
 - No skill pricing.
-- If burn rate is absent, show `Burn rate unavailable`.
 
-## 10. Evidence Panel
-
-Purpose: show what was actually delivered.
+## 7. Evidence Panel
 
 Displayed fields:
 
@@ -298,7 +294,7 @@ Displayed fields:
 - Final evidence badge.
 - Completion contract reason when task-bound.
 
-Empty states:
+Empty state:
 
 - `No evidence submitted yet.`
 
@@ -309,45 +305,52 @@ Abnormal states:
 - Checksum mismatch: red `Checksum Error`, preview disabled.
 - Not final: neutral row; not sufficient for done.
 - Done task without valid final evidence: `Completion Invalid`.
+- Too large to preview: disabled preview, `Too large to preview (>100KB)`.
 
 Click actions:
 
 - `Preview Content`: `GET /v1/evidence/{evidence_id}/safe-preview`.
 - `Open Task`: Task Detail Drawer.
-- `Open Trace`: trace timeline.
+- `Open Trace`: trace timeline only if available.
 
 Security rules:
 
 - Preview only through safe-preview API.
 - Render only plain text, JSON text, or Markdown source in read-only `<pre>`.
-- Preview container hard limit is 100 KB in the browser. If backend returns more text, truncate client display and show `Preview truncated for MVP safe viewer`.
+- Browser preview hard limit is 100 KB; truncate display if needed.
 - Do not render image/PDF/Office/HTML/binary in MVP.
 - Do not create `file://` links.
 - Do not expose absolute `/Users/...` paths.
 - Do not use `/v1/evidence/{evidence_id}/content` for new UI.
 
-## 11. Task Detail Drawer
-
-Purpose: one task lifecycle view.
+## 8. Task Detail Drawer
 
 Open behavior:
 
 - Click task card or task link.
 - Fetch exactly one primary payload: `GET /v1/tasks/{task_id}`.
-- Only call `GET /v1/traces/{trace_id}/timeline` if task payload lacks timeline.
+- Only call trace timeline fallback if task payload lacks timeline and the API exists.
 
-Displayed sections:
+Displayed tabs:
+
+- Overview.
+- Runtime.
+- Tool Calls.
+- Budget.
+- Evidence.
+- Timeline.
+
+Displayed fields:
 
 - Task metadata: title, status, priority, source, target, trace ID.
 - Completion contract: valid, reason, final evidence count.
 - Attempts: attempt ID, employee, adapter/runtime, status, started/finished, last heartbeat, last progress, cancellation state.
-- Runtime sessions: session ID, runtime type, status, pid/session key if safe, last heartbeat/progress.
+- Runtime sessions: session ID, runtime type, status, safe pid/session key, last heartbeat/progress.
 - Tool calls: sanitized list grouped by attempt/session.
 - Budget: summary and events.
 - Evidence: final evidence, checksum, preview button.
 - Timeline: vertical text event list.
 - Controls: correction, cancel, retry, reassign, reject/reopen.
-- Control buttons enter disabled/loading state until the API returns, so repeated owner clicks cannot create duplicate approval requests.
 
 Empty states:
 
@@ -360,14 +363,20 @@ Empty states:
 
 Abnormal states:
 
-- Stagnant attempt: amber attempt row and owner action hint.
+- Stagnant attempt: amber row and owner action hint.
 - Failed/blocked tool call: expanded sanitized error.
 - Hard budget limit: sticky warning; disable retry/reassign.
-- Done without valid final evidence: red banner plus `Reject / Reopen`.
+- Done without valid final evidence: red banner plus `Reject / Reopen` if API exists.
 - Timeline API returns nested graph instead of flat list: `Timeline API gap: flat event list unavailable`.
-- Timeline fallback may expose a debug-only `Copy raw JSON` button, but it must not attempt to render a graph/tree/canvas.
 
-## 12. Runtime Session Badges
+Control rules:
+
+- Disable and show loading state during POST.
+- Correction message max display contract is 1,000 characters; backend may enforce stricter validation.
+- Retry/Reassign/Reopen may be shown disabled when backend endpoints are missing.
+- No kill-session button in MVP; use task/attempt cancel.
+
+## Runtime Session Badges
 
 | Backend status | UI badge | Meaning |
 |---|---|---|
@@ -380,43 +389,46 @@ Abnormal states:
 
 No global Runtime Session page in the 3-day MVP. Show sessions on employee cards, task cards, and task drawer only.
 
-## 13. False-State Guardrails
+## False-State Guardrails
 
-- Employee evidence history is trusted only from `/v1/evidence?employee_id={employee_id}` or task drawer payload.
+- Employee readiness comes from backend data; online is not active.
+- Candidate and online-only employees are visually degraded and excluded from active capacity.
+- Skill workers hide chat but keep execution monitoring.
 - Current task title missing means `Title unavailable from API`, not guessed from messages.
 - Backend state owns `running`, `stagnant`, `failed`, and `stale`; browser time can show age but cannot declare failure.
 - Unsanitized tool-call fields are redacted.
 - Mixed-currency budget is displayed per currency only.
 - `done` requires backend-valid final evidence for the same task/attempt context.
-- Skill workers hide chat but keep execution monitoring.
-- Request timeout keeps stale data dimmed; it does not replace a populated panel with empty state.
+- Request timeout does not equal task failure.
+- Request timeout keeps stale data visible and dimmed; it does not create empty panels.
 - Evidence checksum mismatch disables preview and acceptance.
+- `[API Gap - Mocking Prohibited]` means disabled or empty state only, never mock data.
 
-## 14. Three-Day Delivery Plan
+## Three-Day Delivery Plan
 
 Day 1:
 
-- Cockpit layout: health bar, summary grid, employee cards, task cards.
-- 8-second REST polling from `/v1/dashboard/cockpit`.
-- Pause polling while `document.hidden === true`; refresh immediately when the tab becomes visible again.
-- Doctor banner via `/v1/doctor`.
-- Candidate/skill-only/unsafe employee badges.
+- Build Cockpit layout: health bar, summary grid, employee cards, running task cards.
+- Poll `/v1/dashboard/cockpit` every 8 seconds with hidden-tab pause.
+- Add doctor banner through `/v1/doctor`.
+- Render honest readiness badges: candidate, online-only, skill-only, unsafe.
+- Hide all chat/direct buttons.
 
 Day 2:
 
-- Task Detail Drawer from `GET /v1/tasks/{task_id}`.
-- Runtime session visibility on employee/task/drawer.
-- Tool Calls panel and sanitized row detail.
-- Owner controls for correct/cancel/retry/reassign/reopen.
+- Add task detail drawer from `GET /v1/tasks/{task_id}`.
+- Show runtime sessions on cards and drawer.
+- Add Tool Calls panel and sanitized row detail.
+- Add correction/cancel controls where backend supports them; show retry/reassign/reopen disabled if API gap.
 
 Day 3:
 
-- Budget panel from budget summary/events.
-- Evidence panel and safe preview modal.
-- Local real-data smoke: a skill worker task must produce visible runtime/tool/budget/evidence state.
-- Full unit tests and doctor verification.
+- Add Budget Panel from budget summary/events.
+- Add Evidence Panel and safe-preview modal.
+- Run a local skill-worker smoke so runtime/tool/budget/evidence data appears from real ledger state.
+- Run focused dashboard/API tests, full unit tests, and doctor.
 
-## 15. Acceptance Commands
+## Acceptance Commands
 
 ```bash
 curl -s http://127.0.0.1:8765/v1/dashboard/cockpit | python3 -m json.tool
@@ -434,19 +446,20 @@ Browser acceptance:
 - Confirm the page shows real API data, not placeholders.
 - Confirm a real task drawer shows attempt/session/tool/budget/evidence.
 - Confirm skill workers do not show chat buttons.
+- Confirm candidate employees do not look active.
 
-## 16. Antigravity Review Log
+## Antigravity Review Log
 
 Antigravity was used only as a design-review employee. Its replies are critique input, not execution evidence.
 
-Round 1 summary:
+Round 1:
 
-- Required areas are Top Health Bar, CEO Summary, Employee Cards, Running Task Cards, Tool Calls, Budget, Evidence, and Task Detail Drawer.
-- Most important missing states are API offline with stale data preserved, hard budget limit policy, done-without-final-evidence invalid marker, unsanitized tool-call redaction, unsafe evidence path/checksum handling, and API gap labels.
-- All owner actions must go through task-bound Kernel APIs with `owner-shift`.
-- No-go boundaries are no chat/DM, no marketplace, no WorkGraph canvas, no skill pricing, no frontend cost calculation, no graph libraries, no WebSocket/SSE, and no kill-session button.
+- Cut anything that makes the 3-day MVP look like marketplace, WorkGraph, skill pricing, distributed rental, or multi-tenant admin.
+- Add stale-data preservation, hard budget policy, completion-invalid markers, unsanitized tool redaction, unsafe evidence path/checksum handling, API-gap labels, loading/disabled states, safe-preview cap, hidden-tab polling pause, and skill-worker chat removal.
 
-Round 2 requirement:
+Round 2:
 
-- Antigravity confirmed this remains a 3-day MVP and not a marketplace, WorkGraph canvas, skill pricing, distributed rental, or multi-tenant expansion.
-- It requested four small UI safeguards: disable control buttons while requests are pending, cap safe-preview rendering in the browser, pause polling for hidden tabs, and add debug-only raw JSON copy for unusable timeline payloads.
+- Keep `Retry`, `Reassign`, and `Reject / Reopen` visible in the task drawer as owner mental-model controls, but disable them with `Backend API pending (API Gap)` until backend support exists.
+- Runtime Session visibility comes before Tool Calls; Tool Calls before Budget; Budget before Evidence preview.
+- All unimplemented APIs must be labeled `[API Gap - Mocking Prohibited]`.
+- Hide all Chat/Direct entry points in this MVP so the cockpit remains task, tool, budget, and evidence driven.
