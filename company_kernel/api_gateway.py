@@ -363,7 +363,19 @@ PATH_LIKE_EVENT_KEYS = {
     "evidence_path",
     "file",
     "files",
-    "log",
+    "path",
+    "path_or_url",
+    "profile",
+    "state_file",
+    "original_path",
+}
+PATH_DISPLAY_KEYS = {
+    "artifact",
+    "artifact_path",
+    "evidence",
+    "evidence_path",
+    "file",
+    "files",
     "path",
     "path_or_url",
     "profile",
@@ -379,7 +391,7 @@ def sanitize_event_value(value: object, *, key: str = "") -> object:
     if isinstance(value, list):
         return [sanitize_event_value(item, key=key) for item in value]
     if isinstance(value, str):
-        if any(marker in key_lower for marker in PATH_LIKE_EVENT_KEYS):
+        if key_lower in PATH_DISPLAY_KEYS:
             display = companyctl.sanitize_evidence_path_for_display(value)
             return {
                 "relative_path": display.get("relative_path", ""),
@@ -428,6 +440,52 @@ def sanitize_task_list_payload(payload: dict) -> dict:
             item["current_attempt"] = companyctl.sanitize_json_like(item["current_attempt"])
         sanitized_tasks.append(item)
     result["tasks"] = sanitized_tasks
+    return result
+
+
+def sanitize_dashboard_text(value: object) -> str:
+    return ABSOLUTE_PATH_RE.sub("[REDACTED_PATH]", companyctl.sanitize_log_text(value))
+
+
+def sanitize_api_display_value(value: object, *, key: str = "") -> object:
+    key_lower = key.lower()
+    if key_lower in {"payload_json", "detail_json", "result_json", "metadata_json"}:
+        return None
+    if isinstance(value, dict):
+        sanitized = {}
+        for item_key, item_value in value.items():
+            clean_value = sanitize_api_display_value(item_value, key=str(item_key))
+            if clean_value is not None:
+                sanitized[str(item_key)] = clean_value
+        return sanitized
+    if isinstance(value, list):
+        return [item for item in (sanitize_api_display_value(item, key=key) for item in value) if item is not None]
+    if isinstance(value, str):
+        if key_lower in PATH_DISPLAY_KEYS:
+            display = companyctl.sanitize_evidence_path_for_display(value)
+            return {
+                "relative_path": display.get("relative_path", ""),
+                "basename": display.get("basename", ""),
+                "allowed": display.get("allowed", False),
+                "reason": display.get("reason", ""),
+                "absolute_path_exposed": False,
+            }
+        return sanitize_dashboard_text(value)
+    return value
+
+
+def sanitize_task_detail_payload(payload: dict) -> dict:
+    result = sanitize_api_display_value(payload)
+    if not isinstance(result, dict):
+        return {}
+    task = result.get("task")
+    if isinstance(task, dict):
+        raw_evidence_path = ""
+        original_task = payload.get("task", {}) if isinstance(payload.get("task"), dict) else {}
+        if isinstance(original_task, dict):
+            raw_evidence_path = str(original_task.get("evidence_path") or "")
+        task.pop("evidence_path", None)
+        task["evidence"] = companyctl.sanitize_evidence_path_for_display(raw_evidence_path)
     return result
 
 
@@ -557,6 +615,7 @@ def route_get(path: str, query: dict[str, list[str]]) -> tuple[int, dict]:
     if path.startswith("/v1/tasks/"):
         task_id = path.removeprefix("/v1/tasks/").strip("/")
         code, payload = run_companyctl(["task", "show", "--task-id", task_id])
+        payload = sanitize_task_detail_payload(payload)
         return (HTTPStatus.OK if code == 0 else HTTPStatus.BAD_REQUEST), {"exit_code": code, **payload}
     if path == "/v1/messages":
         agent = query_value(query, "agent")
