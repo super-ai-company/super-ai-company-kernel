@@ -4223,8 +4223,12 @@ class CompanyKernelCoreTest(unittest.TestCase):
             "budget.by_cost_type",
             "budget.by_model",
             "budget.by_provider",
+            "showToolCallDetails",
+            "/v1/tool-calls/${encodeURIComponent(toolCallId)}",
+            "Tool Call API detail loaded",
         ]:
             self.assertIn(snippet, html)
+        self.assertNotIn("No /v1/tool-calls/{tool_call_id} detail endpoint in MVP", html)
 
     def test_dashboard_cockpit_enforces_mvp_ui_data_contract(self) -> None:
         template = Path(__file__).resolve().parents[1] / "dashboard_templates" / "gemini_dashboard.html"
@@ -4232,8 +4236,10 @@ class CompanyKernelCoreTest(unittest.TestCase):
         for snippet in [
             "Mixed currencies: totals are ledger sums, not converted values.",
             "per-currency ledger rows",
+            "showToolCallDetails",
             "showHydratedToolCallDetails",
-            "No /v1/tool-calls/{tool_call_id} detail endpoint in MVP",
+            "Tool Call API detail loaded",
+            "Tool Call API detail failed",
             "employeeEvidenceClientSideFilter",
             "Employee evidence history is backend-filtered by /v1/evidence?employee_id= when available.",
             "backend evidence filter supports employee_id",

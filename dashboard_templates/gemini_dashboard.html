@@ -3928,12 +3928,12 @@
     const calls = (cockpit && cockpit.tool_calls) || [];
     if (toolCalls) {
       toolCalls.innerHTML = calls.length ? calls.slice(0, 6).map(item => `
-        <div class="cockpit-row" onclick="showHydratedToolCallDetails(${escapeHtml(JSON.stringify(item))})">
+        <div class="cockpit-row" onclick="showToolCallDetails('${escapeHtml(item.tool_call_id || '')}', ${escapeHtml(JSON.stringify(item))})">
           <div>
             <strong>${escapeHtml(item.tool_name || item.tool_call_id || '-')}</strong>
             <span>${escapeHtml(item.employee_id || '-')} · ${escapeHtml(item.tool_type || '-')} · task=${escapeHtml(item.task_id || '-')}</span>
             <span>${escapeHtml(item.input_summary || item.output_summary || item.error_message || 'No sanitized summary yet')}</span>
-            <span>No /v1/tool-calls/{tool_call_id} detail endpoint in MVP; row detail is hydrated and sanitized client-side.</span>
+            <span>Click loads /v1/tool-calls/{tool_call_id}: task, attempt, runtime session, budget, evidence, and sanitized events.</span>
           </div>
           <div class="long-task-state ${escapeHtml(item.status || 'running')}">${escapeHtml(item.status || 'running')}</div>
         </div>
@@ -4329,7 +4329,6 @@
   }
 
   function showHydratedToolCallDetails(toolCall) {
-    // No /v1/tool-calls/{tool_call_id} detail endpoint in MVP; use the sanitized hydrated row only.
     const row = toolCall && typeof toolCall === 'object' ? toolCall : {};
     const safe = row.sanitized === true;
     const detail = safe ? row : {
@@ -4340,6 +4339,54 @@
     };
     showDetails(`Tool Call: ${row.tool_call_id || row.tool_name || 'detail'}`, detail);
   }
+
+  async function showToolCallDetails(toolCallId, hydratedRow) {
+    const safeId = String(toolCallId || '').trim();
+    if (!safeId) {
+      showHydratedToolCallDetails(hydratedRow || {});
+      return;
+    }
+    companyApiLog('TOOL', `Loading Tool Call API detail ${safeId}`, 'normal');
+    try {
+      const payload = await companyApiGet(`/v1/tool-calls/${encodeURIComponent(toolCallId)}`);
+      const toolCall = payload.tool_call || {};
+      const task = payload.task || {};
+      const attempt = payload.attempt || {};
+      const session = payload.runtime_session || {};
+      const budget = payload.budget_summary || {};
+      const evidence = payload.evidence_records || [];
+      const events = payload.events || [];
+      showDetails(`Tool Call: ${toolCall.tool_call_id || safeId}`, {
+        ok: payload.ok,
+        source: payload.source,
+        tool_call: toolCall,
+        task,
+        attempt,
+        runtime_session: session,
+        budget_summary: budget,
+        budget_events: payload.budget_events || [],
+        evidence_records: evidence,
+        events,
+        redaction_policy: payload.redaction_policy || {},
+        owner_readable_summary: [
+          `tool=${toolCall.tool_name || toolCall.tool_call_id || safeId}`,
+          `status=${toolCall.status || '-'}`,
+          `task=${toolCall.task_id || task.id || '-'}`,
+          `attempt=${toolCall.attempt_id || attempt.attempt_id || '-'}`,
+          `session=${toolCall.session_id || session.session_id || '-'}`,
+          `budget=${budget.currency || 'USD'} ${budget.total_amount || 0}`,
+          `evidence=${evidence.length}`,
+          `events=${events.length}`,
+          'raw_available=false',
+        ].join(' · '),
+      });
+      companyApiLog('TOOL', `Tool Call API detail loaded: ${safeId} · task=${toolCall.task_id || '-'} · cost=${budget.currency || 'USD'} ${budget.total_amount || 0} · evidence=${evidence.length}`, 'success');
+    } catch (err) {
+      companyApiLog('TOOL', `Tool Call API detail failed for ${safeId}: ${err.message}; using hydrated sanitized row fallback.`, 'warn');
+      showHydratedToolCallDetails(hydratedRow || {tool_call_id: safeId, status: 'unknown'});
+    }
+  }
+  window.showToolCallDetails = showToolCallDetails;
 
   function mixedCurrencyBudgetWarning(summary) {
     const item = summary || {};
@@ -4553,7 +4600,7 @@
     return rows.slice(0, 10).map(item => {
       const policy = item.redaction_policy || {};
       const sanitized = item.sanitized === true;
-      const detailPolicy = 'No /v1/tool-calls/{tool_call_id} detail endpoint in MVP; use hydrated row only.';
+      const detailPolicy = '/v1/tool-calls/{tool_call_id} detail API available; click Tool Calls row for task/attempt/session/budget/evidence/events.';
       const summary = sanitized ? (item.output_summary || item.input_summary || item.error_message || '') : '[Raw output redacted for safety]';
       return sanitizeDisplayText(`${item.status || '-'} · ${item.tool_name || item.tool_call_id || '-'} · type=${item.tool_type || '-'} · employee=${item.employee_id || '-'} · attempt=${item.attempt_id || '-'} · sanitized=${String(sanitized)} · raw_available=${String(!!item.raw_available)} · policy=${policy.mode || 'sanitized_only'} · ${detailPolicy} · ${summary}`);
     }).join('\n');
@@ -4700,7 +4747,7 @@
       const policy = item.redaction_policy || {};
       const sanitized = item.sanitized === true;
       const summary = sanitized ? (item.output_summary || item.input_summary || item.error_message || '') : '[Raw output redacted for safety]';
-      return sanitizeDisplayText(`${item.status || '-'} · ${item.tool_name || item.tool_call_id || '-'} · task=${item.task_id || '-'} · attempt=${item.attempt_id || '-'} · session=${item.session_id || '-'} · sanitized=${String(sanitized)} · raw_available=${String(!!item.raw_available)} · policy=${policy.mode || 'sanitized_only'} · No /v1/tool-calls/{tool_call_id} detail endpoint in MVP · ${summary}`);
+      return sanitizeDisplayText(`${item.status || '-'} · ${item.tool_name || item.tool_call_id || '-'} · task=${item.task_id || '-'} · attempt=${item.attempt_id || '-'} · session=${item.session_id || '-'} · sanitized=${String(sanitized)} · raw_available=${String(!!item.raw_available)} · policy=${policy.mode || 'sanitized_only'} · /v1/tool-calls/{tool_call_id} detail API available · ${summary}`);
     }).join('\n');
   }
 
