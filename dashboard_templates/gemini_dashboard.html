@@ -4629,12 +4629,17 @@
   function employeeWorkHistorySummary(workHistory) {
     const source = workHistory || {};
     const counts = source.counts || {};
+    const statusCounts = source.status_counts || {};
+    const attentionCounts = source.attention_counts || {};
     const current = Array.isArray(source.current_tasks) ? source.current_tasks : [];
     const recent = Array.isArray(source.recent_tasks) ? source.recent_tasks : [];
     const currentRows = current.slice(0, 5).map(item => `${item.status || '-'} · ${item.id || '-'} · ${item.title || item.summary || ''}`).join('\n');
     const recentRows = recent.slice(0, 5).map(item => `${item.status || '-'} · ${item.id || '-'} · ${item.title || item.summary || ''}`).join('\n');
     return [
       `tasks=${counts.tasks || 0} · current=${counts.current_tasks || 0} · attempts=${counts.attempts || 0}`,
+      `Work Summary · ${sanitizeDisplayText(source.summary || 'No work history summary from API')}`,
+      `status_counts running=${statusCounts.running || 0} · completed=${statusCounts.completed || 0} · blocked=${statusCounts.blocked || 0} · failed=${statusCounts.failed || 0} · stale=${statusCounts.stale || 0}`,
+      `attention_counts running_tasks=${attentionCounts.running_tasks || 0} · blocked_tasks=${attentionCounts.blocked_tasks || 0} · failed_tasks=${attentionCounts.failed_tasks || 0} · failed_tool_calls=${attentionCounts.failed_tool_calls || 0} · completion_invalid_tasks=${attentionCounts.completion_invalid_tasks || 0} · tasks_with_final_evidence=${attentionCounts.tasks_with_final_evidence || 0}`,
       currentRows ? `Current:\n${sanitizeDisplayText(currentRows)}` : 'Current: idle',
       recentRows ? `Recent:\n${sanitizeDisplayText(recentRows)}` : 'Recent: none'
     ].join('\n');
