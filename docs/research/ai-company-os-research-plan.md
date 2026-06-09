@@ -1249,8 +1249,8 @@ Conclusion: a similar direction exists, but our differentiation remains valid if
 | Trace Timeline | Exists and extended | `company_trace.py`, `/v1/traces/{trace_id}/timeline` | Reuse | Ensure timeline includes runtime sessions, tool calls, budget events |
 | CEO Dashboard | Partial but real | `company_dashboard.py`, `dashboard_templates/gemini_dashboard.html`, `/v1/dashboard/cockpit` | Reuse | Add visible tool-call/runtime/budget cards |
 | Approval Center | Exists basic | `approvals`, `/v1/approvals`, dashboard approval actions | Reuse | Add risk policy and budget exceed routing |
-| Budget Center | Missing | No budget tables yet | None | Add `budget_accounts`, `budget_events` MVP |
-| Cost Records | Missing | No token/cost table yet | Tool-call metadata can bridge temporarily | Add first-class token/cost fields |
+| Budget Center | Exists / P0 foundation | `budget_accounts`, `budget_events`, `companyctl budget record/summary`, `/v1/budget-events`, `/v1/budget-summary` | Reuse cost ledger, budget limits, budget-overrun approval routing, cockpit rollups | Auto-record costs from real adapters and demo runs |
+| Cost Records | Exists / P0 foundation | `budget_events` token/cost/runtime/provider/model fields | Reuse for CEO budget panels and trace timelines | Add provider-specific estimators later |
 | Marketplace | Not for MVP | N/A | Do not build now | Only keep skill package metadata |
 
 ### Existing Schema Anchors
@@ -1272,11 +1272,11 @@ Already present:
 - `task_context_packages`
 - `runtime_sessions`
 - `agent_tool_calls`
+- `budget_accounts`
+- `budget_events`
 
 Need next:
 
-- `budget_accounts`
-- `budget_events`
 - Optional later: `risk_policies`, `goal_records`, `workgraph_nodes`, `workgraph_edges`
 
 ### Existing API Anchors
@@ -1298,12 +1298,12 @@ Already present or newly added:
 - `POST /v1/tasks/{task_id}/cancel`
 - `POST /v1/tasks/{task_id}/retry`
 - `POST /v1/tasks/{task_id}/reassign`
-
-Need next:
-
 - `GET /v1/budget-events`
 - `POST /v1/budget-events`
 - `GET /v1/budget-summary`
+
+Need next:
+
 - Optional later: `GET /v1/risk-policies`, `POST /v1/risk-policies`
 
 ### Existing CLI Anchors
@@ -1325,14 +1325,15 @@ Already present or newly added:
 - `companyctl tool-call start`
 - `companyctl tool-call finish`
 - `companyctl tool-call list`
+- `companyctl budget record`
+- `companyctl budget summary`
 - `companyctl trace timeline`
 - `companyctl audit evidence`
 - `companyctl approval list`
 
 Need next:
 
-- `companyctl budget record`
-- `companyctl budget summary`
+- Adapter-level automatic calls into these ledger commands/APIs.
 
 ### Existing Dashboard Anchors
 
@@ -1352,13 +1353,15 @@ Already usable:
 - Evidence safety display.
 - Trace telemetry.
 - Approval actions.
-
-Need next:
-
 - Visible Runtime Session card.
 - Visible Tool Call ledger panel.
 - Budget summary card.
 - Task detail drawer should include tool calls and cost events.
+
+Need next:
+
+- Real local demo data for every worker path.
+- More compact owner-facing summaries for current work, cost, and evidence.
 
 ## Phase 1 MVP Scope
 
@@ -1372,7 +1375,7 @@ Phase 1 must be small enough to complete and verify quickly.
 | Task timeline | Show task, event, attempt, artifact, handoff, evidence | Existing |
 | Tool-call ledger | Record tool call start/finish and show in trace | Added P0 foundation |
 | Runtime session | Track CLI/GUI/script session heartbeat | Added P0 foundation |
-| Cost record | Record token/cost/runtime seconds | Next missing MVP |
+| Cost record | Record token/cost/runtime seconds | Added P0 foundation |
 | Evidence submission | Final task requires evidence | Existing |
 | Owner cockpit | Show true counts from DB/API | Existing, needs visible cost/tool panels |
 
@@ -1399,7 +1402,17 @@ Files:
 - `company_kernel/company_dashboard.py`
 - `tests/test_company_kernel_core.py`
 
-New tables:
+Status:
+
+- Implemented P0 foundation.
+- Tables exist: `budget_accounts`, `budget_events`.
+- CLI exists: `companyctl budget record`, `companyctl budget summary`.
+- API exists: `GET /v1/budget-events`, `POST /v1/budget-events`, `GET /v1/budget-summary`.
+- Dashboard cockpit and task detail already consume budget summary/events.
+- Trace timeline includes `budget_event`.
+- Budget hard-limit overrun creates `budget_overrun` approval.
+
+Existing tables:
 
 - `budget_accounts`
 - `budget_events`
@@ -1429,29 +1442,36 @@ Minimum fields:
 - `created_at`
 - `metadata_json`
 
-CLI:
+Existing CLI:
 
 - `companyctl budget record --task-id ... --employee ... --amount ... --cost-type ...`
 - `companyctl budget summary --task-id ...`
 
-API:
+Existing API:
 
 - `GET /v1/budget-events`
 - `POST /v1/budget-events`
 - `GET /v1/budget-summary`
 
-Dashboard:
+Existing Dashboard:
 
 - Add `counts.budget_events`, `counts.estimated_cost`.
 - Add cockpit `budget_summary`.
 - Add task detail cost row.
 
-Tests:
+Existing tests:
 
 - budget event can be recorded by CLI.
 - API returns sanitized budget events.
+- API can create budget events via `POST /v1/budget-events`.
 - cockpit shows task/employee/project cost.
 - trace timeline includes budget event.
+
+Remaining:
+
+- Adapters must record cost automatically instead of relying on manual calls.
+- Local smoke must create non-empty budget data for real worker flows.
+- Provider-specific token/cost estimation can be added after the ledger is stable.
 
 ### 2. Tool Call Auto-Instrumentation
 
@@ -1527,15 +1547,16 @@ python3 -m unittest discover -s tests -p 'test*.py'
 
 Goal:
 
-- Owner can see basic cost per task/employee.
+- Owner can see basic cost per task/employee from real adapter/demo runs.
 
 Tasks:
 
-- Add `budget_accounts` and `budget_events`.
-- Add `companyctl budget record/summary`.
-- Add `/v1/budget-events` and `/v1/budget-summary`.
-- Add budget rollup to `/v1/dashboard/cockpit`.
-- Add trace timeline budget event.
+- Verify `budget_accounts` and `budget_events`.
+- Verify `companyctl budget record/summary`.
+- Verify `GET/POST /v1/budget-events` and `GET /v1/budget-summary`.
+- Verify budget rollup in `/v1/dashboard/cockpit`.
+- Verify trace timeline budget event.
+- Add automatic budget recording to the first real adapter path.
 
 Acceptance commands:
 
@@ -1577,10 +1598,10 @@ Do not build marketplace or a new UI shell yet.
 
 The next code sprint should implement:
 
-1. Budget Center MVP tables and API.
-2. Adapter auto-instrumentation for tool calls.
-3. Dashboard visible panels for Runtime Sessions, Tool Calls, and Budget.
-4. One local end-to-end demo proving employee -> task -> attempt -> tool call -> budget -> artifact -> evidence -> cockpit.
+1. Adapter auto-instrumentation for tool calls and budget events.
+2. One local end-to-end demo proving employee -> task -> attempt -> runtime session -> tool call -> budget -> artifact -> evidence -> cockpit.
+3. More compact dashboard owner summaries for current work, cost, and evidence.
+4. Provider-specific budget estimation only after adapter instrumentation is reliable.
 
 If this is complete, the product becomes meaningfully more usable: the owner can see not only that an employee is online, but what it did, which tool it used, what it cost, and what evidence it delivered.
 

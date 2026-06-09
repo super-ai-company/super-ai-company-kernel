@@ -76,6 +76,7 @@ API_ENDPOINTS = [
     {"method": "GET", "path": "/v1/tool-calls", "summary": "List structured agent tool calls", "query": {"employee_id": "employee optional", "task_id": "task optional", "trace_id": "trace optional", "attempt_id": "attempt optional", "session_id": "runtime session optional", "limit": "integer optional"}},
     {"method": "GET", "path": "/v1/tool-calls/{tool_call_id}", "summary": "Show one sanitized tool call with related task, attempt, runtime session, budget, evidence, and events"},
     {"method": "GET", "path": "/v1/budget-events", "summary": "List budget/cost ledger events", "query": {"employee_id": "employee optional", "task_id": "task optional", "trace_id": "trace optional", "attempt_id": "attempt optional", "limit": "integer optional"}},
+    {"method": "POST", "path": "/v1/budget-events", "summary": "Record a budget/cost ledger event for adapter, tool, or model usage", "body": {"employee_id": "employee id", "task_id": "task optional", "attempt_id": "attempt optional", "trace_id": "trace optional", "cost_type": "model_api/tool_runtime/compute/etc", "amount": "number", "currency": "USD optional", "token_input": "integer optional", "token_output": "integer optional", "model_name": "optional", "provider": "optional", "runtime_seconds": "integer optional", "summary": "optional"}},
     {"method": "GET", "path": "/v1/budget-summary", "summary": "Read budget rollup for owner cockpit", "query": {"employee_id": "employee optional", "task_id": "task optional", "trace_id": "trace optional", "attempt_id": "attempt optional"}},
     {"method": "GET", "path": "/v1/tasks", "summary": "List tasks", "query": {"agent": "employee id optional", "status": "task status optional"}},
     {"method": "POST", "path": "/v1/tasks", "summary": "Submit task", "body": {"from": "employee id", "to": "employee id", "title": "string", "description": "string optional", "task_id": "string optional", "priority": "P0/P1/P2/P3 optional", "requires_approval": "action optional", "approval_id": "string optional"}},
@@ -1113,6 +1114,33 @@ def route_post(path: str, body: dict) -> tuple[int, dict]:
             argv.append("--dry-run")
         code, payload = run_companyctl(argv)
         return (HTTPStatus.OK if code == 0 else HTTPStatus.BAD_REQUEST), {"exit_code": code, **payload}
+    if path == "/v1/budget-events":
+        conn = companyctl.connect()
+        try:
+            payload = companyctl.record_budget_event_internal(
+                conn,
+                budget_event_id=str(body.get("budget_event_id", "") or ""),
+                budget_account_id=str(body.get("budget_account_id", "") or ""),
+                trace_id=str(body.get("trace_id", "") or ""),
+                task_id=str(body.get("task_id", "") or ""),
+                attempt_id=str(body.get("attempt_id", "") or ""),
+                employee_id=str(body.get("employee_id", body.get("employee", "")) or ""),
+                cost_type=str(body.get("cost_type", "") or ""),
+                amount=float(body.get("amount", 0) or 0),
+                currency=str(body.get("currency", "USD") or "USD"),
+                token_input=int(body.get("token_input", 0) or 0),
+                token_output=int(body.get("token_output", 0) or 0),
+                model_name=str(body.get("model_name", "") or ""),
+                provider=str(body.get("provider", "") or ""),
+                runtime_seconds=int(body.get("runtime_seconds", 0) or 0),
+                summary=str(body.get("summary", "") or ""),
+                metadata=body.get("metadata") if isinstance(body.get("metadata"), dict) else {},
+            )
+        except (SystemExit, ValueError) as exc:
+            return HTTPStatus.BAD_REQUEST, {"ok": False, "error": str(exc)}
+        finally:
+            conn.close()
+        return HTTPStatus.CREATED, {"ok": True, "source": "/v1/budget-events", **payload}
     if path == "/v1/supervisor/delivery-loop":
         argv = ["supervisor", "delivery-loop"]
         if body.get("limit") not in {None, ""}:
