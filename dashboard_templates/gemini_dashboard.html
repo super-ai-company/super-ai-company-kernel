@@ -4584,6 +4584,37 @@
     }).join('\n');
   }
 
+  function taskOperationalLedgerSummary(payload, tracePayload) {
+    const source = payload || {};
+    const trace = tracePayload || {};
+    const task = source.task || {};
+    const attempts = Array.isArray(source.attempts) ? source.attempts : [];
+    const runtimeSessions = Array.isArray(source.runtime_sessions) ? source.runtime_sessions : [];
+    const toolCalls = Array.isArray(source.tool_calls) ? source.tool_calls : [];
+    const budgetSummary = source.budget_summary || {};
+    const budgetEvents = Array.isArray(source.budget_events) ? source.budget_events : [];
+    const evidenceRecords = Array.isArray(source.evidence_records) ? source.evidence_records : [];
+    const progressEvents = Array.isArray(source.progress_events) ? source.progress_events : [];
+    const timeline = Array.isArray(trace.timeline) ? trace.timeline : [];
+    const completionContract = source.completion_contract || {};
+    const failedTools = toolCalls.filter(item => ['failed', 'blocked', 'cancelled'].includes(String(item.status || ''))).length;
+    let nextAction = 'monitor next progress event';
+    const longState = String(task.long_task_state || task.status || '');
+    if (longState === 'progress_stagnant') nextAction = 'send probe or request Hermes correction';
+    if (['blocked', 'failed', 'stale'].includes(longState)) nextAction = 'review blocker, then request retry or reassign approval';
+    if (failedTools) nextAction = 'inspect failed or blocked tool calls before retry';
+    if (completionContract.valid === false) nextAction = 'block completion until final evidence is attached';
+    if (completionContract.valid !== false && completionContract.final_evidence_count) nextAction = 'review final evidence and accept delivery';
+    return [
+      `attempts=${attempts.length} · runtime_sessions=${runtimeSessions.length} · progress_events=${progressEvents.length}`,
+      `tool_calls=${toolCalls.length} · failed_tool_calls=${failedTools} · budget_events=${budgetEvents.length} · cost=${budgetSummary.currency || 'USD'} ${budgetSummary.total_amount || 0}`,
+      `tokens input=${budgetSummary.token_input || 0} · output=${budgetSummary.token_output || 0} · runtime=${budgetSummary.runtime_seconds || 0}s`,
+      `evidence=${evidenceRecords.length} · final_evidence=${completionContract.final_evidence_count || 0} · completion_valid=${String(completionContract.valid !== false)}`,
+      `timeline_events=${timeline.length} · trace=${trace.trace_id || task.trace_id || '-'}`,
+      `owner_readable_next_action=${nextAction}`
+    ].join('\n');
+  }
+
   function budgetBreakdownRows(label, values) {
     const rows = values && typeof values === 'object' && !Array.isArray(values) ? Object.entries(values) : [];
     if (!rows.length) return `${label}: none`;
@@ -5251,6 +5282,7 @@
         ['Long Task State', task.long_task_state || latestAttempt.long_task_state || task.status || '-'],
         ['Status Contract', longTaskStatusContractSummary(task, latestAttempt)],
         ['Task Decision', taskDecisionSummary(task, latestAttempt, payload)],
+        ['Task Operational Ledger', taskOperationalLedgerSummary(payload, taskTracePayload)],
         ['Latest Attempt Summary', latestAttemptSummary(latestAttempt)],
         ['Attempt History Summary', attemptHistoryContractSummary(attemptHistory, attempts)],
         ['Runtime Sessions', runtimeSessionsSummary(runtimeSessions)],
