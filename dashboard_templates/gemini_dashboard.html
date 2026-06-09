@@ -3980,6 +3980,7 @@
     const cockpit = summary.cockpit || {};
     const counts = cockpit.counts || summary.counts || {};
     const approvals = summary.approvals || [];
+    const approvalCenter = cockpit.approval_center_summary || summary.approval_control_summary || {};
     const traces = summary.traces || [];
     const attempts = attemptHistoryRows(summary);
     const evidence = summary.evidence_records || [];
@@ -3996,8 +3997,8 @@
       },
       {
         label: 'Approvals safe',
-        state: pendingApprovals ? 'blocked' : 'ok',
-        message: `${pendingApprovals} pending · ${closedApprovals} closed · approve/deny/mock resolve controls live in Audit tab; external_send remains dry-run until owner approval`,
+        state: approvalCenter.real_execution_blocked || pendingApprovals ? 'blocked' : 'ok',
+        message: `${pendingApprovals} pending · ${closedApprovals} closed · blocked_real_execution=${approvalCenter.blocked_real_execution_count || 0} · ${approvalCenter.owner_next_action || 'approve/deny/mock resolve controls live in Audit tab; external_send remains dry-run until owner approval'}`,
         tab: 'governance'
       },
       {

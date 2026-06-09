@@ -455,6 +455,8 @@ def build_cockpit_summary(summary: dict) -> dict:
             }
         )
     pending_approvals = [item for item in summary.get("approvals", []) if str(item.get("status", "")).lower() == "pending"]
+    approval_center_summary = companyctl.approval_control_summary(pending_approvals)
+    approval_center_summary["real_execution_blocked"] = bool(approval_center_summary.get("blocked_real_execution_count") or approval_center_summary.get("pending_owner_action_count"))
     approval_details = {}
     pending_approval_task_ids = set()
     for approval in pending_approvals:
@@ -1233,6 +1235,7 @@ def build_cockpit_summary(summary: dict) -> dict:
         "budget_summary": summary.get("budget_summary", {}),
         "supervisor_activity": supervisor_activity[:10],
         "owner_attention": owner_attention[:20],
+        "approval_center_summary": approval_center_summary,
         "pending_approvals": pending_approvals[:10],
         "recent_evidence": recent_evidence[:10],
         "evidence_acceptance_queue": evidence_acceptance_queue[:10],
