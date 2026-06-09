@@ -907,15 +907,38 @@ def build_cockpit_summary(summary: dict) -> dict:
 
     task_cards_by_id: dict[str, dict] = {}
 
+    def task_owner_next_action(card: dict) -> str:
+        state = str(card.get("state", "") or "")
+        correction = card.get("correction", {}) if isinstance(card.get("correction", {}), dict) else {}
+        tool_summary = card.get("tool_summary", {}) if isinstance(card.get("tool_summary", {}), dict) else {}
+        budget = card.get("budget_summary", {}) if isinstance(card.get("budget_summary", {}), dict) else {}
+        if bool(card.get("completion_invalid")):
+            return "review task and require valid final evidence before accepting completion"
+        if state == "correcting" or correction.get("needs_ack"):
+            return "wait for correction ack or cancel/reassign if progress remains stagnant"
+        if state in {"blocked", "failed", "stale"}:
+            return "review blocker, then correct, retry, reassign, or cancel"
+        if state in {"progress_stagnant", "heartbeat_stale"}:
+            return "employee may still be online; inspect logs, request correction, wait, or cancel"
+        if int(tool_summary.get("failed_tool_call_count") or 0) > 0:
+            return "inspect failed tool calls before accepting output"
+        if str(budget.get("limit_status") or "") in {"hard_exceeded", "soft_exceeded"}:
+            return "review budget status before retrying or assigning more work"
+        if int(card.get("final_evidence_count") or 0) > 0:
+            return "review final evidence and accept if it matches the task"
+        return "monitor progress, tool calls, budget, and evidence"
+
     def upsert_task_card(card: dict) -> None:
         task_id = str(card.get("task_id", "") or "")
         if not task_id:
             return
         existing = task_cards_by_id.get(task_id, {})
         card = {**task_observability_summary(task_id), **card}
+        card["owner_next_action"] = task_owner_next_action(card)
         merged = {**existing, **card}
         if existing.get("actions") and not card.get("actions"):
             merged["actions"] = existing["actions"]
+        merged["owner_next_action"] = task_owner_next_action(merged)
         task_cards_by_id[task_id] = merged
 
     for item in long_tasks:
