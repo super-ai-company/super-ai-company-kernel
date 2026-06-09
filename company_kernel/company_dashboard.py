@@ -1441,6 +1441,11 @@ def build_cockpit_summary(summary: dict) -> dict:
         "owner_next_action": health_owner_next_action,
     }
     owner_attention = annotate_owner_attention(owner_attention)
+    task_card_states = [str(item.get("state") or "") for item in task_cards]
+    long_task_states = [str(item.get("long_task_state") or "") for item in long_tasks]
+    running_task_count = sum(1 for item in summary.get("tasks", []) if str(item.get("status", "")).lower() in {"claimed", "running"})
+    stagnant_task_count = sum(1 for state in long_task_states if state in {"progress_stagnant", "correcting"})
+    blocked_task_count = sum(1 for state in task_card_states if state in {"blocked", "failed", "stale", "heartbeat_stale", "completion_invalid"})
     return {
         "ok": True,
         "generated_at": generated_at,
@@ -1475,9 +1480,9 @@ def build_cockpit_summary(summary: dict) -> dict:
             "estimated_cost": float(summary.get("budget_summary", {}).get("total_amount", 0) or 0),
             "token_input": int(summary.get("budget_summary", {}).get("token_input", 0) or 0),
             "token_output": int(summary.get("budget_summary", {}).get("token_output", 0) or 0),
-            "running_tasks": sum(1 for item in summary.get("tasks", []) if str(item.get("status", "")).lower() in {"claimed", "running"}),
-            "stagnant_tasks": sum(1 for item in long_tasks if item.get("long_task_state") == "progress_stagnant"),
-            "blocked_tasks": sum(1 for item in summary.get("tasks", []) if str(item.get("status", "")).lower() in {"blocked", "failed", "stale"}),
+            "running_tasks": running_task_count,
+            "stagnant_tasks": stagnant_task_count,
+            "blocked_tasks": blocked_task_count,
             "done_tasks": sum(1 for item in summary.get("tasks", []) if str(item.get("status", "")).lower() in {"completed", "done"}),
             "awaiting_approval_tasks": sum(
                 1

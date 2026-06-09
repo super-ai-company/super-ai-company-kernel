@@ -2498,6 +2498,8 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual(2, cockpit["counts"]["done_tasks"])
         self.assertEqual(1, cockpit["counts"]["evidence_issues"])
         self.assertEqual(2, cockpit["counts"]["awaiting_approval_tasks"])
+        self.assertGreaterEqual(cockpit["counts"]["stagnant_tasks"], 1)
+        self.assertGreaterEqual(cockpit["counts"]["blocked_tasks"], 1)
         verification_summary = cockpit["verification_summary"]
         self.assertTrue(verification_summary["ok"])
         self.assertEqual("all_recent_verifications_green", verification_summary["status"])
