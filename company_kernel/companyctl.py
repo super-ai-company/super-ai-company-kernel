@@ -885,6 +885,16 @@ def sanitize_log_text(raw: object, *, max_length: int = 1200) -> str:
     return text
 
 
+def sanitize_json_like(value: object) -> object:
+    if isinstance(value, dict):
+        return {str(key): sanitize_json_like(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [sanitize_json_like(item) for item in value]
+    if isinstance(value, str):
+        return sanitize_log_text(value)
+    return value
+
+
 def sha256_file(path: Path) -> str:
     if not path.exists() or not path.is_file():
         return ""
@@ -1597,6 +1607,66 @@ def list_tool_calls(conn: sqlite3.Connection, *, employee_id: str = "", task_id:
     safe_limit = max(1, min(int(limit or 50), 200))
     rows_out = rows(conn, f"SELECT * FROM agent_tool_calls {clause} ORDER BY started_at DESC, rowid DESC LIMIT ?", tuple([*params, safe_limit]))
     return [hydrate_tool_call(item) for item in rows_out]
+
+
+def tool_call_detail_bundle(conn: sqlite3.Connection, tool_call_id: str) -> dict:
+    safe_id = str(tool_call_id or "").strip()
+    if not safe_id or "/" in safe_id:
+        return {"ok": False, "error": "invalid tool_call_id", "tool_call_id": safe_id}
+    raw_tool_call = conn.execute("SELECT * FROM agent_tool_calls WHERE tool_call_id = ?", (safe_id,)).fetchone()
+    if not raw_tool_call:
+        return {"ok": False, "error": "tool_call not found", "tool_call_id": safe_id}
+    tool_call = hydrate_tool_call(dict(raw_tool_call))
+    task_id = str(tool_call.get("task_id") or "")
+    attempt_id = str(tool_call.get("attempt_id") or "")
+    session_id = str(tool_call.get("session_id") or "")
+    trace_id = str(tool_call.get("trace_id") or "")
+    task_row = conn.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone() if task_id else None
+    attempt_row = conn.execute("SELECT * FROM execution_attempts WHERE attempt_id = ?", (attempt_id,)).fetchone() if attempt_id else None
+    session_row = conn.execute("SELECT * FROM runtime_sessions WHERE session_id = ?", (session_id,)).fetchone() if session_id else None
+    events = rows(
+        conn,
+        """
+        SELECT id, trace_id, event_type, source_agent, task_id, payload_json, created_at, processed_at
+        FROM company_events
+        WHERE payload_json LIKE ?
+        ORDER BY created_at ASC
+        LIMIT 50
+        """,
+        (f"%{safe_id}%",),
+    )
+    sanitized_events = []
+    for event in events:
+        raw_payload = event.get("payload_json", "")
+        try:
+            payload = json.loads(raw_payload or "{}")
+        except json.JSONDecodeError:
+            payload = {"raw": sanitize_log_text(raw_payload)}
+        sanitized_events.append(
+            {
+                **event,
+                "payload": sanitize_json_like(payload),
+                "payload_json": json.dumps(sanitize_json_like(payload), ensure_ascii=False, sort_keys=True),
+            }
+        )
+    evidence_records = task_evidence_records(conn, task_id) if task_id else []
+    task_payload = dict(task_row) if task_row else {}
+    if task_payload:
+        raw_evidence_path = task_payload.pop("evidence_path", "")
+        task_payload["evidence"] = sanitize_evidence_path_for_display(raw_evidence_path)
+    return {
+        "ok": True,
+        "source": "/v1/tool-calls/{tool_call_id}",
+        "tool_call": tool_call,
+        "task": task_payload,
+        "attempt": hydrate_execution_attempt(dict(attempt_row)) if attempt_row else {},
+        "runtime_session": hydrate_runtime_session(dict(session_row)) if session_row else {},
+        "budget_summary": budget_summary(conn, task_id=task_id, employee_id=str(tool_call.get("employee_id") or ""), trace_id=trace_id, attempt_id=attempt_id),
+        "budget_events": list_budget_events(conn, task_id=task_id, employee_id=str(tool_call.get("employee_id") or ""), trace_id=trace_id, attempt_id=attempt_id, limit=50),
+        "evidence_records": evidence_records,
+        "events": sanitized_events,
+        "redaction_policy": sanitized_log_policy(),
+    }
 
 
 def start_tool_call_internal(

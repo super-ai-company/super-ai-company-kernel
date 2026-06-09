@@ -2783,6 +2783,145 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertNotIn("id_rsa", failures_json)
         self.assertNotIn(".env", failures_json)
 
+    def test_api_gateway_exposes_single_tool_call_detail_with_related_ledgers(self) -> None:
+        for employee_id, role in [("main", "operator"), ("codex", "developer")]:
+            code, created = run_cli("employee", "create", "--id", employee_id, "--name", employee_id, "--role", role, "--runtime", "local", "--workspace", str(self.root / "workspace" / employee_id))
+            self.assertEqual(0, code, created)
+            if employee_id != "main":
+                self.mark_active(employee_id)
+        code, submitted = run_cli("task", "submit", "--from", "main", "--to", "codex", "--task-id", "task-api-tool-detail", "--title", "Tool detail")
+        self.assertEqual(0, code, submitted)
+        code, run = run_cli("task", "run", "--task-id", "task-api-tool-detail", "--agent", "codex", "--by", "hermes")
+        self.assertEqual(0, code, run)
+        attempt_id = run["attempt"]["attempt_id"]
+        trace_id = run["attempt"]["trace_id"]
+        code, session = run_cli(
+            "runtime",
+            "session",
+            "start",
+            "--session-id",
+            "session-api-tool-detail",
+            "--employee",
+            "codex",
+            "--adapter-type",
+            "codex",
+            "--runtime-type",
+            "cli",
+            "--task-id",
+            "task-api-tool-detail",
+            "--attempt-id",
+            attempt_id,
+        )
+        self.assertEqual(0, code, session)
+        secret = "sk-tool-detail-secret"
+        code, tool = run_cli(
+            "tool-call",
+            "start",
+            "--tool-call-id",
+            "tool-api-detail-shell",
+            "--task-id",
+            "task-api-tool-detail",
+            "--attempt-id",
+            attempt_id,
+            "--employee",
+            "codex",
+            "--session-id",
+            "session-api-tool-detail",
+            "--tool-name",
+            "shell",
+            "--tool-type",
+            "shell",
+            "--input-summary",
+            f"cat /Users/owner/.ssh/id_rsa api_key={secret}",
+            "--risk-level",
+            "low",
+        )
+        self.assertEqual(0, code, tool)
+        code, finished = run_cli(
+            "tool-call",
+            "finish",
+            "--tool-call-id",
+            "tool-api-detail-shell",
+            "--status",
+            "success",
+            "--output-summary",
+            f"checked output token={secret} without exposing raw path /Users/owner/.ssh/id_rsa",
+        )
+        self.assertEqual(0, code, finished)
+        code, budget = run_cli(
+            "budget",
+            "record",
+            "--budget-event-id",
+            "budget-api-tool-detail",
+            "--task-id",
+            "task-api-tool-detail",
+            "--attempt-id",
+            attempt_id,
+            "--employee",
+            "codex",
+            "--cost-type",
+            "model_api",
+            "--amount",
+            "0.25",
+            "--currency",
+            "USD",
+            "--token-input",
+            "1200",
+            "--token-output",
+            "300",
+            "--runtime-seconds",
+            "45",
+            "--summary",
+            "tool detail cost",
+        )
+        self.assertEqual(0, code, budget)
+        conn = companyctl.connect()
+        try:
+            workspace = companyctl.ensure_task_workspace(conn, "task-api-tool-detail", trace_id)
+            final_path = Path(workspace["path"]) / "final" / "tool-detail.md"
+            final_path.write_text("tool detail final evidence\n", encoding="utf-8")
+            artifact = companyctl.register_artifact_internal(
+                conn,
+                task_id="task-api-tool-detail",
+                employee_id="codex",
+                path=str(final_path),
+                artifact_type="md",
+                name="tool-detail.md",
+                stage="final",
+                summary="tool detail final evidence",
+                is_final=True,
+            )
+            promoted = companyctl.promote_artifact_to_evidence_internal(
+                conn,
+                artifact_id=artifact["artifact"]["artifact_id"],
+                by="codex",
+                attempt_id=attempt_id,
+                summary="tool detail final evidence",
+            )
+        finally:
+            conn.close()
+
+        status, detail = api_gateway.route_get("/v1/tool-calls/tool-api-detail-shell", {})
+        self.assertEqual(200, status, detail)
+        self.assertTrue(detail["ok"])
+        self.assertEqual("tool-api-detail-shell", detail["tool_call"]["tool_call_id"])
+        self.assertEqual("task-api-tool-detail", detail["task"]["id"])
+        self.assertNotIn("evidence_path", detail["task"])
+        self.assertFalse(detail["task"]["evidence"]["absolute_path_exposed"])
+        self.assertEqual(attempt_id, detail["attempt"]["attempt_id"])
+        self.assertEqual("session-api-tool-detail", detail["runtime_session"]["session_id"])
+        self.assertEqual(0.25, detail["budget_summary"]["total_amount"])
+        self.assertEqual(1200, detail["budget_summary"]["token_input"])
+        self.assertEqual(300, detail["budget_summary"]["token_output"])
+        self.assertEqual(promoted["evidence"]["evidence_id"], detail["evidence_records"][0]["evidence_id"])
+        self.assertTrue(detail["tool_call"]["sanitized"])
+        self.assertFalse(detail["tool_call"]["raw_available"])
+        detail_json = json.dumps(detail, ensure_ascii=False)
+        self.assertIn("api_key=[REDACTED]", detail_json)
+        self.assertNotIn(secret, detail_json)
+        self.assertNotIn("/Users/owner/.ssh", detail_json)
+        self.assertFalse(detail["evidence_records"][0]["display"]["absolute_path_exposed"])
+
     def test_cli_audit_ledgers_match_api_sanitized_records(self) -> None:
         for employee_id, role in [("main", "operator"), ("writer", "writer"), ("qa", "qa"), ("codex", "developer")]:
             code, created = run_cli("employee", "create", "--id", employee_id, "--name", employee_id, "--role", role, "--runtime", "local", "--workspace", str(self.root / "workspace" / employee_id))
