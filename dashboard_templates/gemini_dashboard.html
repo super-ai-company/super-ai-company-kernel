@@ -5324,6 +5324,18 @@
     ].join('\n');
   }
 
+  function ceoStageSummary(summary) {
+    const item = summary || {};
+    const stages = Array.isArray(item.stages) ? item.stages : [];
+    const stageRows = stages.map(stage => `${stage.stage || '-'} · ${stage.status || '-'} · ${stage.severity || '-'} · action=${stage.recommended_owner_action || '-'}`).join('\n');
+    return [
+      `chain_state=${item.chain_state || '-'} · severity=${item.severity || '-'} · critical=${item.critical_count || 0} · attention=${item.attention_count || 0}`,
+      `missing=${(item.missing_required || []).join(' -> ') || '-'}`,
+      `owner_action=${item.recommended_owner_action || '-'}`,
+      stageRows || 'No stage coverage available.'
+    ].join('\n');
+  }
+
   function ceoTimelineSummary(timeline) {
     const rows = Array.isArray(timeline) ? timeline : [];
     if (!rows.length) return 'No CEO timeline available for this trace.';
@@ -5382,6 +5394,7 @@
         ['Trace ID', payload.trace_id || traceId],
         ['Counts', payload.counts || {}],
         ['Trace Story', traceStorySummary(payload.trace_story || {})],
+        ['CEO Stage Summary', ceoStageSummary(payload.ceo_stage_summary || {})],
         ['CEO Timeline', ceoTimelineSummary(payload.ceo_timeline || [])],
         ['Tasks', (payload.tasks || []).map(task => `${task.id || '-'} · ${task.status || '-'} · ${task.target_agent || '-'}`).join('\n') || '-'],
         ['Attempts', traceObjectSummary(payload.execution_attempts || [], item => `${item.attempt_id || '-'} · ${item.status || '-'} · ${item.employee_id || '-'} · ${item.adapter_type || '-'} · started=${item.started_at || '-'}`)],
