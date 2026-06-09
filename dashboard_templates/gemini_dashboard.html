@@ -3746,6 +3746,11 @@
     const ledgerConsistency = ledgerConsistencySummary(cockpit && cockpit.ledger_consistency);
     const doctor = (cockpit && cockpit.doctor) || {};
     const doctorIssues = doctor.issue_count ?? counts.doctor_issues ?? (Array.isArray(doctor.issues) ? doctor.issues.length : 0);
+    const cockpitBudget = (cockpit && cockpit.budget_summary) || {};
+    const cockpitBudgetCurrency = cockpitBudget.currency || 'USD';
+    const cockpitBudgetAmount = cockpitBudget.total_amount || 0;
+    const cockpitBudgetCurrencyRows = budgetCurrencyRows(cockpitBudget);
+    const cockpitBudgetLimit = budgetLimitStatusSummary(cockpitBudget);
     cards.innerHTML = `
       <div class="cockpit-card">
         <h3>Ledger Consistency</h3>
@@ -3779,8 +3784,8 @@
       </div>
       <div class="cockpit-card">
         <h3>Budget</h3>
-        <div class="cockpit-value" style="color:${Number(counts.estimated_cost || 0) ? 'var(--color-amber)' : 'var(--text-primary)'}">${escapeHtml(counts.estimated_cost || 0)}</div>
-        <div class="cockpit-subtext">estimated cost · input ${escapeHtml(counts.token_input || 0)} tokens · output ${escapeHtml(counts.token_output || 0)} tokens</div>
+        <div class="cockpit-value" style="color:${Number(cockpitBudgetAmount || 0) ? 'var(--color-amber)' : 'var(--text-primary)'}">${escapeHtml(cockpitBudgetAmount)}</div>
+        <div class="cockpit-subtext">${escapeHtml(cockpitBudgetCurrency)} ledger · events ${escapeHtml(cockpitBudget.event_count || 0)} · input ${escapeHtml(cockpitBudget.token_input || counts.token_input || 0)} tokens · output ${escapeHtml(cockpitBudget.token_output || counts.token_output || 0)} tokens · runtime ${escapeHtml(cockpitBudget.runtime_seconds || 0)}s · ${escapeHtml(cockpitBudgetLimit)}${cockpitBudgetCurrencyRows ? ` · ${escapeHtml(cockpitBudgetCurrencyRows)}` : ''}</div>
       </div>
       <div class="cockpit-card">
         <h3>Running Tasks</h3>
