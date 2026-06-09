@@ -4304,7 +4304,7 @@
   }
 
   function employeeEvidenceClientSideFilter(records, employeeId) {
-    // Evidence employee filters use hydrated rows; /v1/evidence supports task_id only.
+    // Employee evidence history is backend-filtered by /v1/evidence?employee_id= when available.
     const rows = Array.isArray(records) ? records : [];
     if (!employeeId) return rows;
     return rows.filter(item => String(item.employee_id || '') === String(employeeId));
@@ -4646,7 +4646,7 @@
     return rows.slice(0, 8).map(item => {
       const display = item.display || {};
       const path = display.relative_path || display.basename || item.path_or_url || '-';
-      return sanitizeDisplayText(`${item.evidence_id || '-'} · task=${item.task_id || '-'} · attempt=${item.attempt_id || '-'} · final=${item.is_final} · Evidence employee filters use hydrated rows; /v1/evidence supports task_id only. · ${path} · ${item.summary || ''}`);
+      return sanitizeDisplayText(`${item.evidence_id || '-'} · task=${item.task_id || '-'} · attempt=${item.attempt_id || '-'} · employee=${item.employee_id || '-'} · final=${item.is_final} · backend evidence filter supports employee_id · ${path} · ${item.summary || ''}`);
     }).join('\n');
   }
 
