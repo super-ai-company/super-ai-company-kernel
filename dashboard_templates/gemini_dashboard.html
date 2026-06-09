@@ -4475,6 +4475,23 @@
     return 'Not schedulable';
   }
 
+  function employeeControlPlaneSummary(emp) {
+    const runtime = emp.runtime_summary || {};
+    const tools = emp.tool_summary || {};
+    const budget = emp.budget_summary || {};
+    const evidence = emp.evidence_summary || {};
+    const currency = budget.currency || 'USD';
+    const total = budget.total_amount || 0;
+    return `
+      <div class="employee-meta employee-control-plane-summary" style="margin-top: 8px; font-size: 11px; border-top: 1px solid rgba(255,255,255,0.05); padding-top: 8px;">
+        <div><strong>Runtime · sessions=</strong>${escapeHtml(runtime.session_count || 0)} · active=${escapeHtml(runtime.active_session_count || 0)} · latest=${escapeHtml(runtime.latest_runtime_type || '-')} ${escapeHtml(runtime.latest_status || '')}</div>
+        <div><strong>Tools · calls=</strong>${escapeHtml(tools.tool_call_count || 0)} · failed=${escapeHtml(tools.failed_tool_call_count || 0)} · latest=${escapeHtml(tools.latest_tool_name || '-')} ${escapeHtml(tools.latest_tool_status || '')}</div>
+        <div><strong>Budget ·</strong> ${escapeHtml(currency)} ${escapeHtml(total)} · input=${escapeHtml(budget.token_input || 0)} · output=${escapeHtml(budget.token_output || 0)} · runtime=${escapeHtml(budget.runtime_seconds || 0)}s</div>
+        <div><strong>Evidence · final=</strong>${escapeHtml(evidence.final_evidence_count || 0)} · total=${escapeHtml(evidence.evidence_count || 0)} · latest=${escapeHtml(evidence.latest_evidence_id || '-')}</div>
+      </div>
+    `;
+  }
+
   function sandboxProfileChip(employee) {
     const profile = employee.sandbox_profile || {};
     const source = profile.source || 'runtime_fallback';
@@ -7484,6 +7501,7 @@
               <div style="margin-bottom: 4px;"><strong>Schedulable:</strong> ${emp.schedulable ? 'yes' : 'no'} · <span title="${escapeHtml(emp.readiness_reason || '')}">readiness_reason=${escapeHtml(emp.readiness_reason || '-')}</span></div>
               <div><strong>Last Active:</strong> ${formatDate(emp.last_seen_at) || 'Never'}</div>
             </div>
+          ${employeeControlPlaneSummary(emp)}
           <div style="display: flex; flex-wrap: wrap; gap: 4px; margin-top: 10px; border-top: 1px solid rgba(255,255,255,0.05); padding-top: 8px;">
             ${skillsPills}
           </div>
@@ -7534,6 +7552,7 @@
               <div style="margin-bottom: 4px;"><strong>Schedulable:</strong> ${emp.schedulable ? 'yes' : 'no'} · <span title="${escapeHtml(emp.readiness_reason || '')}">readiness_reason=${escapeHtml(emp.readiness_reason || '-')}</span></div>
               <div><strong>Last Active:</strong> ${formatDate(emp.last_seen_at) || 'Never'}</div>
             </div>
+            ${employeeControlPlaneSummary(emp)}
             <div style="display: flex; flex-wrap: wrap; gap: 4px; margin-top: 10px; border-top: 1px solid rgba(255,255,255,0.05); padding-top: 8px;">
               ${skillsPills}
             </div>

@@ -4372,6 +4372,15 @@ class CompanyKernelCoreTest(unittest.TestCase):
             "showToolCallDetails",
             "/v1/tool-calls/${encodeURIComponent(toolCallId)}",
             "Tool Call API detail loaded",
+            "employeeControlPlaneSummary",
+            "runtime_summary",
+            "tool_summary",
+            "budget_summary",
+            "evidence_summary",
+            "Runtime · sessions=",
+            "Tools · calls=",
+            "Budget ·",
+            "Evidence · final=",
         ]:
             self.assertIn(snippet, html)
         self.assertNotIn("No /v1/tool-calls/{tool_call_id} detail endpoint in MVP", html)
