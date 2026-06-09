@@ -581,6 +581,7 @@ def route_get(path: str, query: dict[str, list[str]]) -> tuple[int, dict]:
             "employee": bundle.get("employee", {}),
             "current_activity": bundle.get("current_activity", {}),
             "operational_summary": bundle.get("operational_summary", {}),
+            "ceo_work_contract": bundle.get("ceo_work_contract", {}),
             "work_history": bundle.get("work_history", {}),
             "attempts": bundle.get("attempts", []),
             "runtime_sessions": bundle.get("runtime_sessions", []),

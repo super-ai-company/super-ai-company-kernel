@@ -5322,6 +5322,111 @@ def employee_sandbox_profile(employee: dict, permissions: dict, profile_name: st
     }
 
 
+def employee_ceo_work_contract(
+    *,
+    employee: dict,
+    current_activity: dict,
+    operational_summary: dict,
+    runtime_sessions: list[dict],
+    tool_calls: list[dict],
+    budget_summary: dict,
+    evidence_records: list[dict],
+) -> dict:
+    latest_session = runtime_sessions[0] if runtime_sessions else {}
+    latest_tool = tool_calls[0] if tool_calls else {}
+    latest_evidence = evidence_records[0] if evidence_records else {}
+    failed_or_blocked_tools = [
+        item
+        for item in tool_calls
+        if str(item.get("status") or "") in {"failed", "blocked", "cancelled"}
+    ]
+    final_evidence = [
+        item
+        for item in evidence_records
+        if bool(item.get("is_final")) or str(item.get("stage") or "") == "final"
+    ]
+    warnings: list[str] = []
+    current_state = str(operational_summary.get("current_state") or current_activity.get("long_task_state") or current_activity.get("task_status") or "idle")
+    if current_state in {"blocked", "failed", "stale", "heartbeat_stale", "progress_stagnant"}:
+        warnings.append(current_state)
+    if failed_or_blocked_tools:
+        warnings.append("failed_or_blocked_tool_calls")
+    if current_activity.get("task_id") and not tool_calls:
+        warnings.append("tool_call_ledger_missing")
+    if current_state in {"completed", "done", "success"} and not final_evidence:
+        warnings.append("completion_without_final_evidence")
+    if str(employee.get("status") or "") == "candidate":
+        warnings.append("candidate_not_active")
+
+    mode = "idle"
+    if current_activity.get("task_id"):
+        mode = "monitor"
+    if warnings:
+        mode = "owner_attention"
+    if current_state in {"blocked", "failed", "stale", "progress_stagnant", "heartbeat_stale"}:
+        mode = "intervene"
+
+    return {
+        "employee_id": employee.get("id", ""),
+        "employee_status": employee.get("status", ""),
+        "runtime": employee.get("runtime", ""),
+        "current_task": {
+            "task_id": current_activity.get("task_id", ""),
+            "title": current_activity.get("task_title", ""),
+            "state": current_state or "idle",
+            "task_status": current_activity.get("task_status", ""),
+            "attempt_id": current_activity.get("attempt_id", ""),
+            "attempt_status": current_activity.get("attempt_status", ""),
+            "trace_id": current_activity.get("trace_id", ""),
+            "session_id": latest_session.get("session_id", ""),
+            "heartbeat_state": current_activity.get("heartbeat_state", ""),
+            "progress_state": current_activity.get("progress_state", ""),
+            "progress_age_seconds": current_activity.get("progress_age_seconds", 0),
+            "latest_progress": current_activity.get("latest_progress", {}),
+        },
+        "runtime_sessions": {
+            "total": len(runtime_sessions),
+            "latest_session_id": latest_session.get("session_id", ""),
+            "latest_status": latest_session.get("status", ""),
+            "latest_runtime_type": latest_session.get("runtime_type", ""),
+        },
+        "tool_calls": {
+            "total": len(tool_calls),
+            "failed_or_blocked": len(failed_or_blocked_tools),
+            "latest_tool_call_id": latest_tool.get("tool_call_id", ""),
+            "latest_tool_name": latest_tool.get("tool_name", ""),
+            "latest_status": latest_tool.get("status", ""),
+        },
+        "budget": {
+            "event_count": budget_summary.get("event_count", 0),
+            "currency": budget_summary.get("currency", "USD"),
+            "total_amount": budget_summary.get("total_amount", 0),
+            "token_input": budget_summary.get("token_input", 0),
+            "token_output": budget_summary.get("token_output", 0),
+            "runtime_seconds": budget_summary.get("runtime_seconds", 0),
+            "limit_status": budget_summary.get("limit_status", "ok"),
+        },
+        "evidence": {
+            "total": len(evidence_records),
+            "final_count": len(final_evidence),
+            "latest_evidence_id": latest_evidence.get("evidence_id", ""),
+            "latest_summary": latest_evidence.get("summary", ""),
+        },
+        "owner_review": {
+            "mode": mode,
+            "warnings": warnings,
+            "next_action": operational_summary.get("owner_next_action", "inspect employee work before assigning more tasks"),
+        },
+        "truth_rules": {
+            "completion_requires_final_evidence": True,
+            "heartbeat_is_completion": False,
+            "chat_reply_is_completion": False,
+            "stdout_is_completion": False,
+            "candidate_can_auto_assign": False,
+        },
+    }
+
+
 def employee_file_bundle(conn: sqlite3.Connection, employee_id: str) -> dict:
     employee_id = resolve_employee_alias(employee_id)
     row = conn.execute("SELECT * FROM employees WHERE id = ?", (employee_id,)).fetchone()
@@ -5601,6 +5706,15 @@ def employee_file_bundle(conn: sqlite3.Connection, employee_id: str) -> dict:
         "final_evidence_count": final_evidence_count,
         "owner_next_action": owner_next_action,
     }
+    ceo_work_contract = employee_ceo_work_contract(
+        employee=profile,
+        current_activity=current_activity,
+        operational_summary=operational_summary,
+        runtime_sessions=runtime_sessions,
+        tool_calls=tool_calls,
+        budget_summary=employee_budget_summary,
+        evidence_records=evidence_records,
+    )
     return {
         "employee": profile,
         "profile": file_profile,
@@ -5628,6 +5742,7 @@ def employee_file_bundle(conn: sqlite3.Connection, employee_id: str) -> dict:
         "attempts": attempt_rows,
         "current_activity": current_activity,
         "operational_summary": operational_summary,
+        "ceo_work_contract": ceo_work_contract,
         "runtime_sessions": runtime_sessions,
         "tool_calls": tool_calls,
         "budget_events": budget_events,
