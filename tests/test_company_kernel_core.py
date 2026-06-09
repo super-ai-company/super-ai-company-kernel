@@ -6436,6 +6436,37 @@ class CompanyKernelCoreTest(unittest.TestCase):
             "task detail budget",
         )
         self.assertEqual(0, code, budget)
+        unsafe_report = self.root / "reports" / "task-detail-control-plane.md"
+        unsafe_report.parent.mkdir(parents=True, exist_ok=True)
+        unsafe_report.write_text("task detail evidence\n", encoding="utf-8")
+        with companyctl.connect() as conn:
+            conn.execute(
+                "UPDATE tasks SET summary = ?, evidence_path = ?, updated_at = ? WHERE id = ?",
+                (f"completed with report {unsafe_report}", str(unsafe_report), companyctl.now(), "task-detail-control-plane"),
+            )
+            conn.execute(
+                "INSERT INTO company_events(id, trace_id, event_type, source_agent, task_id, payload_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (
+                    "evt-task-detail-unsafe-payload",
+                    trace_id,
+                    "task.progress",
+                    "codex",
+                    "task-detail-control-plane",
+                    json.dumps({"message": f"read {unsafe_report}", "path": str(unsafe_report)}, ensure_ascii=False),
+                    companyctl.now(),
+                ),
+            )
+            conn.execute(
+                "INSERT INTO audit_logs(actor, action, target, detail_json, created_at) VALUES (?, ?, ?, ?, ?)",
+                (
+                    "codex",
+                    "task.progress",
+                    "task-detail-control-plane",
+                    json.dumps({"path": str(unsafe_report), "message": f"used {unsafe_report}"}, ensure_ascii=False),
+                    companyctl.now(),
+                ),
+            )
+            conn.commit()
 
         code, shown = run_cli("task", "show", "--task-id", "task-detail-control-plane")
         self.assertEqual(0, code, shown)
@@ -6451,6 +6482,14 @@ class CompanyKernelCoreTest(unittest.TestCase):
 
         status, api_payload = api_gateway.route_get("/v1/tasks/task-detail-control-plane", {})
         self.assertEqual(HTTPStatus.OK, status, api_payload)
+        api_json = json.dumps(api_payload, ensure_ascii=False)
+        self.assertNotIn("evidence_path", api_payload["task"])
+        self.assertNotIn("payload_json", api_json)
+        self.assertNotIn("detail_json", api_json)
+        self.assertNotIn(str(self.root), api_json)
+        self.assertNotIn("/Users/shift", api_json)
+        self.assertIn("evidence", api_payload["task"])
+        self.assertFalse(api_payload["task"]["evidence"]["absolute_path_exposed"])
         self.assertEqual(["tool-task-detail-control-plane"], [item["tool_call_id"] for item in api_payload["tool_calls"]])
         self.assertEqual(0.25, api_payload["budget_summary"]["total_amount"])
         self.assertEqual(["project-task-detail-cost"], [item["id"] for item in api_payload["projects"]])
