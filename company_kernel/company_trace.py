@@ -67,7 +67,7 @@ def first_payload_value(payload: dict, *keys: str) -> str:
 
 
 def enrich_recovery_event(timeline_item: dict, event_type: str, payload: dict) -> None:
-    if event_type in {"task.retrying", "task.reassigned", "task.blocked", "task.failed", "task.stale", "task.progress", "supervisor.cancel_requested", "task.cancelled", "task.done"}:
+    if event_type in {"task.retrying", "task.reassigned", "task.blocked", "task.failed", "task.stale", "task.progress", "task.probe", "supervisor.cancel_requested", "task.cancelled", "task.done"}:
         for key in ("attempt_id", "previous_attempt_id", "reason", "message"):
             value = first_payload_value(payload, key)
             if value:
@@ -91,6 +91,10 @@ def enrich_recovery_event(timeline_item: dict, event_type: str, payload: dict) -
             timeline_item["progress_state"] = progress_state
         if progress:
             timeline_item["progress"] = progress
+    if event_type == "task.probe":
+        timeline_item["action"] = "probe_requested"
+        timeline_item["external_send"] = bool(payload.get("external_send"))
+        timeline_item["non_mutating"] = bool(payload.get("non_mutating"))
 
 
 def load_trace(conn: sqlite3.Connection, trace_id: str) -> dict:
@@ -693,7 +697,10 @@ def ceo_timeline_items(timeline: list[dict]) -> list[dict]:
         title = label or kind
         recommended_action = "observe"
         severity = "info"
-        if item.get("action") in {"correction_requested", "correction_acknowledged"}:
+        if item.get("action") == "probe_requested" or label == "task.probe":
+            recommended_action = "wait for worker response or escalate to Hermes correction if progress remains stagnant"
+            severity = "attention"
+        elif item.get("action") in {"correction_requested", "correction_acknowledged"}:
             recommended_action = "verify correction ack" if item.get("action") == "correction_requested" else "continue monitoring"
             severity = "attention"
         elif status.lower() in {"failed", "blocked", "stale", "cancelled"}:
@@ -721,6 +728,8 @@ def ceo_timeline_items(timeline: list[dict]) -> list[dict]:
         summary = item.get("sanitized_log") or item.get("message") or label
         if label == "task.retrying" and item.get("reason"):
             summary = f"retry {item.get('previous_attempt_id', '-') or '-'} -> {item.get('attempt_id', '-') or '-'} · {item.get('reason', '')}"
+        elif label == "task.probe":
+            summary = f"probe {item.get('attempt_id', '-') or '-'} · {item.get('reason', '') or item.get('message', '') or 'progress_probe'}"
         elif label == "task.reassigned":
             summary = f"reassign {item.get('from_employee', '-') or '-'} -> {item.get('to_employee', '-') or '-'} · {item.get('reason', '')}"
         elif label in {"supervisor.cancel_requested", "task.cancelled"} and item.get("reason"):

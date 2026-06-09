@@ -5163,7 +5163,7 @@
       `<button class="filter-tab" onclick="event.stopPropagation(); openTaskDetailDrawer('${escapeHtml(taskId)}')">Detail</button>`
     ];
     if (isObservable && !isDone && !isCancelled) {
-      buttons.push(`<button class="filter-tab" data-ledger-action="task.probe" data-requires-owner-approval="true" onclick="event.stopPropagation(); recordWaitDecision('${escapeHtml(taskId)}', '${escapeHtml(attemptId)}')">Send Probe <small>ledger only</small></button>`);
+      buttons.push(`<button class="filter-tab" data-ledger-action="task.probe" data-requires-owner-approval="false" onclick="event.stopPropagation(); sendStagnantProbe('${escapeHtml(taskId)}', '${escapeHtml(attemptId)}')">Send Probe <small>ledger only</small></button>`);
       buttons.push(`<button class="filter-tab" onclick="event.stopPropagation(); viewTaskLogs('${escapeHtml(taskId)}')">View Logs</button>`);
       buttons.push(`<button class="filter-tab" data-ledger-action="task.correct" data-requires-owner-approval="true" onclick="event.stopPropagation(); correctTaskAttempt('${escapeHtml(taskId)}', '${escapeHtml(attemptId)}')">Correct <small>owner approval</small></button>`);
       buttons.push(`<button class="filter-tab" data-ledger-action="task.cancel" data-requires-owner-approval="true" data-dangerous="true" onclick="event.stopPropagation(); cancelTaskAttempt('${escapeHtml(taskId)}', '${escapeHtml(attemptId)}')">Cancel <small>danger</small></button>`);
