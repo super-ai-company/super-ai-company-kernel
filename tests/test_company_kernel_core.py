@@ -8,6 +8,7 @@ import os
 import plistlib
 import re
 import runpy
+import shutil
 import sqlite3
 import subprocess
 import sys
@@ -439,6 +440,16 @@ class CompanyKernelCoreTest(unittest.TestCase):
             self.assertIn("trace_id", event_columns)
             evidence_columns = {row["name"] for row in conn.execute("PRAGMA table_info(evidence)").fetchall()}
             self.assertIn("attempt_id", evidence_columns)
+            runtime_session_columns = {row["name"] for row in conn.execute("PRAGMA table_info(runtime_sessions)").fetchall()}
+            self.assertIn("session_id", runtime_session_columns)
+            self.assertIn("attempt_id", runtime_session_columns)
+            tool_call_columns = {row["name"] for row in conn.execute("PRAGMA table_info(agent_tool_calls)").fetchall()}
+            self.assertIn("tool_call_id", tool_call_columns)
+            self.assertIn("attempt_id", tool_call_columns)
+            budget_event_columns = {row["name"] for row in conn.execute("PRAGMA table_info(budget_events)").fetchall()}
+            self.assertIn("budget_event_id", budget_event_columns)
+            self.assertIn("amount", budget_event_columns)
+            self.assertIn("token_input", budget_event_columns)
             backfilled = conn.execute("SELECT task_id FROM adapter_runs WHERE id = 'adapter-run-backfill-task'").fetchone()
             self.assertEqual("task-backfilled-adapter-run", backfilled["task_id"])
             migrations = conn.execute("SELECT id FROM schema_migrations ORDER BY id").fetchall()
@@ -464,6 +475,10 @@ class CompanyKernelCoreTest(unittest.TestCase):
                     "20260607_execution_attempts_supervisor_state_json",
                     "20260607_v3_file_flow_tables",
                     "20260608_evidence_attempt_id",
+                    "20260609_agent_tool_calls",
+                    "20260609_budget_accounts",
+                    "20260609_budget_events",
+                    "20260609_runtime_sessions",
                 ],
                 [row["id"] for row in migrations],
             )
@@ -1824,12 +1839,18 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertNotIn("direct_messages_recent", debug_match.group(1))
         self.assertNotIn("\"employees\": [", debug_match.group(1))
         self.assertNotIn("\"tasks\": [", debug_match.group(1))
+        first_script_match = re.search(r"<script>(.*?)</script>", html, flags=re.S)
+        self.assertIsNotNone(first_script_match)
+        self.assertNotIn("<!--", first_script_match.group(1))
+        self.assertLess(html.index("</script>"), html.index("kernel-summary-debug"))
         self.assertNotIn("本次还车里程是 10234 km", html)
         self.assertNotIn("conv-dashboard-001", html)
         self.assertIn("/v1/telemetry/traces", html)
         self.assertIn("/v1/messages/recent-direct", html)
         self.assertIn("Live SQLite + OpenClaw Runtime", html)
         self.assertIn("Company Event Ledger", html)
+        self.assertNotIn("\n  window.summaryData = window.kernelSummary;\n", html)
+        self.assertIn("if (!window.summaryData)", html)
         self.assertIn("/v1/events", html)
         self.assertIn("company-events-tbody", html)
         self.assertIn("window.showDetails", html)
@@ -1889,6 +1910,12 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertIn("human owner excluded", html)
         self.assertIn("counts.employees_abnormal", html)
         self.assertIn("counts.running_tasks", html)
+        self.assertIn("cockpit.task_cards || cockpit.long_tasks", html)
+        self.assertIn("Completion Invalid", html)
+        self.assertIn("Runtime · sessions=", html)
+        self.assertIn("Tools · calls=", html)
+        self.assertIn("Budget ·", html)
+        self.assertIn("Work Health ·", html)
         self.assertIn("counts.done_tasks", html)
         self.assertIn("counts.evidence_issues", html)
         self.assertIn("counts.blocked_tasks", html)
@@ -1968,6 +1995,7 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertIn("data-attempt-id", html)
         self.assertIn("viewEvidenceContent", html)
         self.assertIn("/v1/evidence/", html)
+        self.assertIn("/safe-preview", html)
         self.assertIn("View Safe Evidence", html)
         self.assertIn("Safe Evidence: ${evidenceId}", html)
         self.assertIn("Absolute Path Exposed", html)
@@ -2068,6 +2096,9 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertIn("viewTaskLogs(taskId)", html)
         self.assertIn("recordWaitDecision(taskId, attemptId)", html)
         self.assertIn("Waiting is recorded locally only; no external send is triggered.", html)
+        self.assertIn("sendStagnantProbe(taskId, attemptId)", html)
+        self.assertIn("/probe`, {attempt_id: attemptId || '', by: 'hermes', message, reason: 'progress_stagnant'}", html)
+        self.assertNotIn("/correct`, {attempt_id: attemptId || '', by: 'hermes', message}", html)
         self.assertIn("function isTerminalTaskState(task, attempt)", html)
         self.assertIn("function taskStateMetaSummary(task)", html)
         self.assertIn("final=${finalState} · evidence=${hasEvidence ? 'present' : 'missing'}", html)
@@ -2083,6 +2114,7 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertIn('data-ledger-action="task.correct"', html)
         self.assertIn('data-ledger-action="task.cancel"', html)
         self.assertIn('data-ledger-action="task.probe"', html)
+        self.assertIn('data-ledger-action="task.probe" data-requires-owner-approval="false"', html)
         self.assertIn('data-requires-owner-approval="true"', html)
         self.assertIn('data-dangerous="true"', html)
         self.assertIn("retryTask(taskId)", html)
@@ -2116,8 +2148,68 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertNotIn("directMessageEmployee('image-copy-skill')", row)
         self.assertIn("No chat; task/evidence only", row)
         self.assertIn("submitTaskToEmployee('image-copy-skill')", row)
+        with companyctl.connect() as conn:
+            summary = company_dashboard.load_summary(conn)
+            models = company_dashboard.employee_view_models(summary)
+        skill_model = next(item for item in models if item["id"] == "image-copy-skill")
+        contract = skill_model["interaction_contract"]
+        self.assertFalse(contract["can_chat"])
+        self.assertTrue(contract["can_execute_task"])
+        self.assertTrue(contract["can_submit_evidence"])
+        self.assertEqual("task_evidence_only", contract["mode"])
+        self.assertEqual("skill_runtime_no_chat", contract["reason"])
+        status, employees_payload = api_gateway.route_get("/v1/employees", {})
+        self.assertEqual(HTTPStatus.OK, status, employees_payload)
+        api_skill = next(item for item in employees_payload["employees"] if item["id"] == "image-copy-skill")
+        self.assertEqual(contract, api_skill["interaction_contract"])
 
     def test_cockpit_api_sanitizes_evidence_and_exposes_long_task_state(self) -> None:
+        fresh_generated_at = companyctl.now()
+        local_smoke_dir = self.root / "state" / "local-smoke"
+        local_smoke_dir.mkdir(parents=True, exist_ok=True)
+        (local_smoke_dir / "latest.json").write_text(
+            json.dumps(
+                {
+                    "ok": True,
+                    "smoke_id": "local-smoke-test",
+                    "generated_at": fresh_generated_at,
+                    "attendance": {"ok": True},
+                    "direct_matrix": [{"agent_id": "codex", "direct_status": "ok"}],
+                    "skill_closed_loop": {
+                        "ok": True,
+                        "task_id": "task-local-smoke-skill",
+                        "cockpit_verification": {
+                            "ok": True,
+                            "task_visible": True,
+                            "tool_call_count": 1,
+                            "budget_event_count": 1,
+                            "evidence_count": 1,
+                        },
+                    },
+                    "summary": "local smoke passed",
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        comm_dir = self.root / "reports" / "communication-acceptance"
+        comm_dir.mkdir(parents=True, exist_ok=True)
+        (comm_dir / "latest.json").write_text(
+            json.dumps(
+                {
+                    "ok": True,
+                    "mechanism_ok": True,
+                    "real_execution": True,
+                    "mode": "live",
+                    "run_id": "comm-test",
+                    "generated_at": fresh_generated_at,
+                    "metrics": {"continuity_total": 10, "continuity_passed": 10, "continuity_success_rate": 1.0},
+                    "summary": "communication acceptance passed",
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
         code, created = run_cli("employee", "create", "--id", "main", "--name", "main", "--role", "operator", "--runtime", "openclaw", "--workspace", str(self.root / "workspace" / "main"))
         self.assertEqual(0, code, created)
         code, created = run_cli("employee", "create", "--id", "codex-cockpit", "--name", "codex-cockpit", "--role", "engineer", "--runtime", "codex", "--workspace", str(self.root / "workspace" / "codex-cockpit"))
@@ -2145,10 +2237,19 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual(0, code, blocked)
         code, submitted_done = run_cli("task", "submit", "--from", "main", "--to", "codex-cockpit", "--task-id", "task-cockpit-done", "--title", "Cockpit done task")
         self.assertEqual(0, code, submitted_done)
+        code, done_run = run_cli("task", "run", "--task-id", "task-cockpit-done", "--agent", "codex-cockpit", "--by", "main", "--adapter-type", "codex")
+        self.assertEqual(0, code, done_run)
+        done_attempt_id = done_run["attempt"]["attempt_id"]
         code, submitted_missing_evidence = run_cli("task", "submit", "--from", "main", "--to", "codex-cockpit", "--task-id", "task-cockpit-done-missing-evidence", "--title", "Cockpit missing evidence")
         self.assertEqual(0, code, submitted_missing_evidence)
         code, submitted_approval = run_cli("task", "submit", "--from", "main", "--to", "codex-cockpit", "--task-id", "task-cockpit-awaiting-approval", "--title", "Cockpit approval task")
         self.assertEqual(0, code, submitted_approval)
+        code, submitted_ledger_gap = run_cli("task", "submit", "--from", "main", "--to", "codex-cockpit", "--task-id", "task-cockpit-ledger-gap", "--title", "Cockpit missing tool and cost")
+        self.assertEqual(0, code, submitted_ledger_gap)
+        code, project = run_cli("project", "create", "--project-id", "project-cockpit-cost", "--title", "Cockpit Cost", "--goal", "Expose project spend in CEO cockpit", "--owner", "main")
+        self.assertEqual(0, code, project)
+        code, linked = run_cli("project", "link-task", "--project-id", "project-cockpit-cost", "--task-id", "task-cockpit-long")
+        self.assertEqual(0, code, linked)
         code, approval = run_cli(
             "approval",
             "request",
@@ -2168,6 +2269,34 @@ class CompanyKernelCoreTest(unittest.TestCase):
             "approval-cockpit-awaiting",
         )
         self.assertEqual(0, code, approval)
+        code, budget_approval = run_cli(
+            "approval",
+            "request",
+            "--from",
+            "main",
+            "--action",
+            "budget_overrun",
+            "--reason",
+            "task budget exceeded hard limit",
+            "--target",
+            "codex-cockpit",
+            "--risk",
+            "P0",
+            "--task-id",
+            "task-cockpit-long",
+            "--approval-id",
+            "approval-cockpit-budget-overrun",
+        )
+        self.assertEqual(0, code, budget_approval)
+        conn = companyctl.connect()
+        try:
+            approval_row = conn.execute("SELECT reason FROM approvals WHERE id = ?", ("approval-cockpit-budget-overrun",)).fetchone()
+            detail = json.loads(approval_row["reason"])
+            detail["metadata"].update({"budget_amount": 1.2, "currency": "USD", "limit_status": "hard_exceeded", "hard_limit": 1.0})
+            conn.execute("UPDATE approvals SET reason = ? WHERE id = ?", (json.dumps(detail, ensure_ascii=False), "approval-cockpit-budget-overrun"))
+            conn.commit()
+        finally:
+            conn.close()
         conn = companyctl.connect()
         try:
             workspace = companyctl.ensure_task_workspace(conn, "task-cockpit-long")
@@ -2196,6 +2325,7 @@ class CompanyKernelCoreTest(unittest.TestCase):
                 by="codex-cockpit",
                 summary="promoted cockpit final evidence",
             )
+            conn.execute("UPDATE evidence SET attempt_id = ? WHERE evidence_id = ?", (done_attempt_id, promoted["evidence"]["evidence_id"]))
             conn.execute("UPDATE tasks SET evidence_path = ?, status = 'completed', claimed_by = 'codex-cockpit', summary = 'done', updated_at = ? WHERE id = ?", (str(done_evidence), companyctl.now(), "task-cockpit-done"))
             conn.execute("UPDATE tasks SET status = 'completed', claimed_by = 'codex-cockpit', summary = 'missing evidence', updated_at = ? WHERE id = ?", (companyctl.now(), "task-cockpit-done-missing-evidence"))
             conn.commit()
@@ -2209,6 +2339,112 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual(0, code, progress)
         code, corrected = run_cli("task", "correct", "--task-id", "task-cockpit-long", "--attempt-id", attempt_id, "--by", "hermes", "--message", "请收口 evidence，不要继续扩散")
         self.assertEqual(0, code, corrected)
+        code, session = run_cli(
+            "runtime",
+            "session",
+            "start",
+            "--session-id",
+            "session-cockpit-long",
+            "--employee",
+            "codex-cockpit",
+            "--adapter-type",
+            "codex",
+            "--runtime-type",
+            "cli",
+            "--pid",
+            "9876",
+            "--session-key",
+            "codex-cockpit-session",
+            "--task-id",
+            "task-cockpit-long",
+            "--attempt-id",
+            attempt_id,
+        )
+        self.assertEqual(0, code, session)
+        code, tool = run_cli(
+            "tool-call",
+            "start",
+            "--tool-call-id",
+            "tool-cockpit-long-shell",
+            "--task-id",
+            "task-cockpit-long",
+            "--attempt-id",
+            attempt_id,
+            "--employee",
+            "codex-cockpit",
+            "--session-id",
+            "session-cockpit-long",
+            "--tool-name",
+            "shell",
+            "--tool-type",
+            "shell",
+            "--input-summary",
+            "run evidence packaging check",
+            "--risk-level",
+            "low",
+        )
+        self.assertEqual(0, code, tool)
+        code, finished_tool = run_cli(
+            "tool-call",
+            "finish",
+            "--tool-call-id",
+            "tool-cockpit-long-shell",
+            "--status",
+            "success",
+            "--output-summary",
+            "evidence packaging check passed",
+        )
+        self.assertEqual(0, code, finished_tool)
+        code, budget = run_cli(
+            "budget",
+            "record",
+            "--budget-event-id",
+            "budget-cockpit-project-cost",
+            "--task-id",
+            "task-cockpit-long",
+            "--attempt-id",
+            attempt_id,
+            "--employee",
+            "codex-cockpit",
+            "--cost-type",
+            "model_api",
+            "--amount",
+            "1.2",
+            "--currency",
+            "USD",
+            "--token-input",
+            "3000",
+            "--token-output",
+            "700",
+            "--runtime-seconds",
+            "120",
+            "--summary",
+            "cockpit project cost",
+        )
+        self.assertEqual(0, code, budget)
+        code, gap_run = run_cli("task", "run", "--task-id", "task-cockpit-ledger-gap", "--agent", "codex-cockpit", "--by", "main", "--stale-after-seconds", "900")
+        self.assertEqual(0, code, gap_run)
+        gap_attempt_id = gap_run["attempt"]["attempt_id"]
+        code, gap_progress = run_cli("task", "progress", "--task-id", "task-cockpit-ledger-gap", "--agent", "codex-cockpit", "--attempt-id", gap_attempt_id, "--state", "in_progress", "--message", "running without tool and cost ledger", "--progress", "30")
+        self.assertEqual(0, code, gap_progress)
+        code, gap_session = run_cli(
+            "runtime",
+            "session",
+            "start",
+            "--session-id",
+            "session-cockpit-ledger-gap",
+            "--employee",
+            "codex-cockpit",
+            "--adapter-type",
+            "codex",
+            "--runtime-type",
+            "cli",
+            "--task-id",
+            "task-cockpit-ledger-gap",
+            "--attempt-id",
+            gap_attempt_id,
+        )
+        self.assertEqual(0, code, gap_session)
         conn = companyctl.connect()
         try:
             current = datetime.now(timezone.utc).astimezone()
@@ -2223,6 +2459,22 @@ class CompanyKernelCoreTest(unittest.TestCase):
         status, cockpit = api_gateway.route_get("/v1/dashboard/cockpit", {})
         self.assertEqual(200, status, cockpit)
         self.assertTrue(cockpit["ok"])
+        self.assertIn("doctor", cockpit)
+        self.assertFalse(cockpit["doctor"]["ok"])
+        self.assertEqual(1, cockpit["doctor"]["exit_code"])
+        self.assertEqual(len(cockpit["doctor"]["issues"]), cockpit["doctor"]["issue_count"])
+        self.assertIn("task_evidence_issues", cockpit["doctor"]["issues"])
+        self.assertIn("generated_at", cockpit["doctor"])
+        self.assertEqual("rest_polling", cockpit["health_bar"]["poll_mode"])
+        self.assertEqual(10, cockpit["health_bar"]["poll_interval_seconds"])
+        self.assertEqual(cockpit["generated_at"], cockpit["health_bar"]["last_successful_sync_at"])
+        self.assertEqual(0, cockpit["health_bar"]["data_age_seconds"])
+        self.assertFalse(cockpit["health_bar"]["doctor_ok"])
+        self.assertEqual(1, cockpit["health_bar"]["doctor_exit_code"])
+        self.assertEqual(len(cockpit["health_bar"]["doctor_issues"]), cockpit["health_bar"]["doctor_issue_count"])
+        self.assertIn("task_evidence_issues", cockpit["health_bar"]["doctor_issues"])
+        self.assertIn("doctor unhealthy", cockpit["health_bar"]["owner_next_action"])
+        self.assertEqual("warn", cockpit["health_bar"]["status"])
         conn = companyctl.connect()
         try:
             employee_total = conn.execute("SELECT COUNT(*) AS count FROM employees").fetchone()["count"]
@@ -2240,10 +2492,43 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertGreaterEqual(cockpit["counts"]["employee_status_counts"]["active"], 1)
         self.assertGreaterEqual(cockpit["counts"]["employee_status_counts"]["abnormal"], 1)
         self.assertEqual(1, cockpit["counts"]["readiness_counts"]["active_ready"])
-        self.assertGreaterEqual(cockpit["counts"]["readiness_counts"]["online_only"], 1)
+        self.assertGreaterEqual(
+            sum(cockpit["counts"]["readiness_counts"].get(level, 0) for level in ["active_limited", "online_only", "candidate_only"]),
+            1,
+        )
         self.assertEqual(2, cockpit["counts"]["done_tasks"])
         self.assertEqual(1, cockpit["counts"]["evidence_issues"])
-        self.assertEqual(1, cockpit["counts"]["awaiting_approval_tasks"])
+        self.assertEqual(2, cockpit["counts"]["awaiting_approval_tasks"])
+        self.assertGreaterEqual(cockpit["counts"]["stagnant_tasks"], 1)
+        self.assertGreaterEqual(cockpit["counts"]["blocked_tasks"], 1)
+        verification_summary = cockpit["verification_summary"]
+        self.assertTrue(verification_summary["ok"])
+        self.assertEqual("all_recent_verifications_green", verification_summary["status"])
+        self.assertEqual("local-smoke-test", verification_summary["local_smoke"]["id"])
+        self.assertEqual("comm-test", verification_summary["communication_acceptance"]["id"])
+        self.assertEqual("fresh", verification_summary["freshness"])
+        self.assertLessEqual(verification_summary["max_report_age_minutes"], 10)
+        self.assertEqual(24 * 60, verification_summary["freshness_threshold_minutes"])
+        self.assertEqual("10/10", verification_summary["communication_acceptance"]["continuity"])
+        self.assertTrue(verification_summary["local_smoke"]["direct_checked"])
+        self.assertTrue(verification_summary["local_smoke"]["direct_ok"])
+        self.assertTrue(verification_summary["local_smoke"]["skill_closed_loop_checked"])
+        self.assertTrue(verification_summary["local_smoke"]["skill_closed_loop_ok"])
+        self.assertTrue(verification_summary["local_smoke"]["cockpit_visible"])
+        self.assertEqual(1, verification_summary["local_smoke"]["cockpit_tool_call_count"])
+        self.assertEqual(1, verification_summary["local_smoke"]["cockpit_budget_event_count"])
+        self.assertEqual(1, verification_summary["local_smoke"]["cockpit_evidence_count"])
+        self.assertIn("local smoke passed", verification_summary["summary"])
+        self.assertIn("communication acceptance passed", verification_summary["summary"])
+        matrix_summary = cockpit["agent_matrix_summary"]
+        self.assertEqual(cockpit["counts"]["readiness_counts"], matrix_summary["counts"])
+        self.assertEqual(1, matrix_summary["active_ready"])
+        self.assertGreaterEqual(matrix_summary["owner_attention_required"], 1)
+        self.assertIn("candidate_only", matrix_summary["attention_levels"])
+        self.assertIn("no_reply", matrix_summary["attention_levels"])
+        self.assertIn("active_ready", matrix_summary["summary"])
+        self.assertIn("candidate_only", matrix_summary["summary"])
+        self.assertIn("review employee_readiness rows", matrix_summary["owner_next_action"])
         self.assertEqual("single_company_kernel_ledger", cockpit["ledger_consistency"]["source"])
         self.assertEqual(["api", "cli", "dashboard"], cockpit["ledger_consistency"]["surfaces"])
         self.assertEqual("API / CLI / Dashboard read the same Company Kernel ledger", cockpit["ledger_consistency"]["summary"])
@@ -2252,6 +2537,9 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual("active_ready", cockpit_employees["codex-cockpit"]["readiness_level"])
         self.assertIn("runtime_evidence", cockpit_employees["codex-cockpit"]["readiness_reason"])
         self.assertEqual("candidate", cockpit_employees["agy-cockpit"]["status"])
+        self.assertIn("active_limited_reasons", cockpit)
+        self.assertIn("agy-cockpit", cockpit["active_limited_reasons"])
+        self.assertIn("candidate_requires_structured_runtime_evidence", cockpit["active_limited_reasons"]["agy-cockpit"])
         agy_attention = next(item for item in cockpit["owner_attention"] if item["kind"] == "employee_readiness" and item["employee_id"] == "agy-cockpit")
         self.assertEqual("candidate_only", agy_attention["state"])
         self.assertEqual("agy-cockpit", agy_attention["title"])
@@ -2279,11 +2567,105 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertIn("evidence/result.md", long_task["evidence"]["relative_path"])
         self.assertEqual(1, cockpit["counts"]["recent_evidence"])
         self.assertEqual(2, cockpit["counts"]["legacy_task_evidence"])
+        self.assertEqual(1, cockpit["counts"]["completion_invalid_tasks"])
+        self.assertIn("task_cards", cockpit)
+        task_cards = {item["task_id"]: item for item in cockpit["task_cards"]}
+        long_card = task_cards["task-cockpit-long"]
+        self.assertEqual("correcting", long_card["state"])
+        self.assertEqual("correcting", long_card["long_task_state"])
+        self.assertEqual("stagnant", long_card["progress_state"])
+        self.assertEqual(attempt_id, long_card["attempt_id"])
+        self.assertEqual("codex-cockpit", long_card["employee_id"])
+        self.assertEqual(42, long_card["latest_progress"]["progress"])
+        self.assertTrue(long_card["evidence"]["allowed"])
+        self.assertFalse(long_card["completion_invalid"])
+        self.assertEqual(1, long_card["runtime_summary"]["session_count"])
+        self.assertEqual(1, long_card["runtime_summary"]["active_session_count"])
+        self.assertEqual("session-cockpit-long", long_card["runtime_summary"]["latest_session_id"])
+        self.assertEqual("cli", long_card["runtime_summary"]["latest_runtime_type"])
+        self.assertEqual(1, long_card["tool_summary"]["tool_call_count"])
+        self.assertEqual(0, long_card["tool_summary"]["failed_tool_call_count"])
+        self.assertEqual("shell", long_card["tool_summary"]["latest_tool_name"])
+        self.assertEqual("success", long_card["tool_summary"]["latest_tool_status"])
+        self.assertEqual(1.2, long_card["budget_summary"]["total_amount"])
+        self.assertEqual("USD", long_card["budget_summary"]["currency"])
+        self.assertEqual(3000, long_card["budget_summary"]["token_input"])
+        self.assertEqual(700, long_card["budget_summary"]["token_output"])
+        self.assertEqual(120, long_card["budget_summary"]["runtime_seconds"])
+        self.assertEqual(["send_probe", "send_correction", "view_logs", "wait", "cancel_attempt"], [action["id"] for action in long_card["actions"]])
+        self.assertFalse(long_card["actions"][0]["requires_owner_approval"])
+        self.assertEqual("POST", long_card["actions"][0]["method"])
+        self.assertIn("/progress", long_card["actions"][0]["api"])
+        self.assertIn("wait for correction ack", long_card["owner_next_action"])
+        blocked_card = task_cards["task-cockpit-blocked"]
+        self.assertEqual("blocked", blocked_card["state"])
+        self.assertEqual("needs owner input", blocked_card["blocker"])
+        self.assertEqual(["send_correction", "view_logs", "retry", "reassign"], [action["id"] for action in blocked_card["actions"]])
+        self.assertIn("review blocker", blocked_card["owner_next_action"])
+        gap_card = task_cards["task-cockpit-ledger-gap"]
+        self.assertEqual("running", gap_card["state"])
+        self.assertEqual(gap_attempt_id, gap_card["attempt_id"])
+        self.assertEqual(["tool_call_ledger_missing", "budget_ledger_missing"], gap_card["ledger_gaps"])
+        self.assertIn("tool-call ledger missing", gap_card["owner_next_action"])
+        invalid_card = task_cards["task-cockpit-done-missing-evidence"]
+        self.assertEqual("completion_invalid", invalid_card["state"])
+        self.assertTrue(invalid_card["completion_invalid"])
+        self.assertEqual("missing_final_evidence", invalid_card["completion_invalid_reason"])
+        self.assertEqual(0, invalid_card["final_evidence_count"])
+        self.assertEqual(["review_task", "view_trace"], [action["id"] for action in invalid_card["actions"]])
+        self.assertIn("final evidence", invalid_card["owner_next_action"])
+        project_cost = next(item for item in cockpit["projects"] if item["id"] == "project-cockpit-cost")
+        self.assertEqual({"USD": 1.2}, project_cost["budget_by_currency"])
+        self.assertEqual(1, project_cost["budget_event_count"])
+        self.assertEqual(3000, project_cost["token_input"])
+        self.assertEqual(700, project_cost["token_output"])
+        self.assertEqual(120, project_cost["runtime_seconds"])
+        invalid_task = next(item for item in cockpit["completion_invalid_tasks"] if item["task_id"] == "task-cockpit-done-missing-evidence")
+        self.assertTrue(invalid_task["completion_invalid"])
+        self.assertEqual("missing_final_evidence", invalid_task["completion_invalid_reason"])
+        self.assertEqual(0, invalid_task["final_evidence_count"])
+        self.assertEqual(["review_task", "view_trace"], [action["id"] for action in invalid_task["actions"]])
+        expected_evidence_trace_id = promoted["evidence"]["trace_id"]
         recent_evidence = next(item for item in cockpit["recent_evidence"] if item["task_id"] == "task-cockpit-done")
         self.assertEqual(promoted["evidence"]["evidence_id"], recent_evidence["evidence_id"])
+        self.assertEqual(expected_evidence_trace_id, recent_evidence["trace_id"])
         self.assertTrue(recent_evidence["evidence"]["allowed"])
         self.assertFalse(recent_evidence["evidence"]["absolute_path_exposed"])
         self.assertIn("artifacts/done-final.md", recent_evidence["evidence"]["relative_path"])
+        self.assertEqual("pending", recent_evidence["acceptance_status"])
+        self.assertEqual("reviewable_final_evidence", recent_evidence["acceptance_state"])
+        self.assertEqual("pending_review_fresh", recent_evidence["review_state"])
+        self.assertEqual(0, recent_evidence["pending_age_minutes"])
+        self.assertIn("accept or reject final evidence", recent_evidence["owner_next_action"])
+        self.assertEqual(["safe_preview", "accept_evidence", "reject_evidence", "view_trace"], [action["id"] for action in recent_evidence["actions"]])
+        self.assertEqual(1, cockpit["counts"]["pending_final_evidence"])
+        pending_evidence = next(item for item in cockpit["evidence_acceptance_queue"] if item["task_id"] == "task-cockpit-done")
+        self.assertEqual(promoted["evidence"]["evidence_id"], pending_evidence["evidence_id"])
+        self.assertEqual(expected_evidence_trace_id, pending_evidence["trace_id"])
+        self.assertEqual("pending", pending_evidence["acceptance_status"])
+        self.assertEqual("reviewable_final_evidence", pending_evidence["acceptance_state"])
+        self.assertEqual("pending_review_fresh", pending_evidence["review_state"])
+        self.assertEqual(0, pending_evidence["pending_age_minutes"])
+        self.assertEqual(1440, pending_evidence["review_sla_minutes"])
+        self.assertIn("accept or reject final evidence", pending_evidence["owner_next_action"])
+        self.assertEqual(["safe_preview", "accept_evidence", "reject_evidence", "view_trace"], [action["id"] for action in pending_evidence["actions"]])
+        approval_center = cockpit["approval_center_summary"]
+        self.assertEqual("owner_action_required", approval_center["queue_health"])
+        self.assertEqual("dry_run_until_owner_approval", approval_center["default_policy"])
+        self.assertEqual(2, approval_center["pending_owner_action_count"])
+        self.assertEqual(2, approval_center["blocked_real_execution_count"])
+        self.assertEqual({"budget_overrun": 1, "external_send": 1}, approval_center["real_execution_blockers"])
+        self.assertEqual(["budget_overrun", "external_send"], approval_center["pending_high_risk_actions"])
+        self.assertTrue(approval_center["real_external_send_requires_owner_approval"])
+        self.assertTrue(approval_center["real_execution_blocked"])
+        self.assertIn("review pending high-risk approvals", approval_center["owner_next_action"])
+        evidence_attention = next(item for item in cockpit["owner_attention"] if item["task_id"] == "task-cockpit-done" and item["kind"] == "evidence")
+        self.assertEqual("pending_review", evidence_attention["state"])
+        self.assertEqual(expected_evidence_trace_id, evidence_attention["trace_id"])
+        self.assertEqual("pending_review_fresh", evidence_attention["review_state"])
+        self.assertEqual(0, evidence_attention["pending_age_minutes"])
+        self.assertIn("accept or reject final evidence", evidence_attention["message"])
+        self.assertEqual(["safe_preview", "accept_evidence", "reject_evidence", "view_trace"], [action["id"] for action in evidence_attention["actions"]])
         legacy_evidence = next(item for item in cockpit["legacy_task_evidence"] if item["task_id"] == "task-cockpit-long")
         self.assertTrue(legacy_evidence["evidence"]["allowed"])
         self.assertIn("evidence/result.md", legacy_evidence["evidence"]["relative_path"])
@@ -2304,10 +2686,12 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual(attempt_id, supervisor_item["attempt_id"])
         self.assertIn("请收口 evidence", supervisor_item["message"])
         self.assertEqual(
-            ["send_correction", "view_logs", "wait", "cancel_attempt"],
+            ["send_probe", "send_correction", "view_logs", "wait", "cancel_attempt"],
             [action["id"] for action in attention["actions"]],
         )
         action_meta = {action["id"]: action for action in attention["actions"]}
+        self.assertEqual("POST", action_meta["send_probe"]["method"])
+        self.assertFalse(action_meta["send_probe"]["requires_owner_approval"])
         self.assertEqual("POST", action_meta["send_correction"]["method"])
         self.assertTrue(action_meta["send_correction"]["requires_owner_approval"])
         self.assertEqual("GET", action_meta["view_logs"]["method"])
@@ -2318,6 +2702,12 @@ class CompanyKernelCoreTest(unittest.TestCase):
         blocked_attention = next(item for item in cockpit["owner_attention"] if item["task_id"] == "task-cockpit-blocked" and item["kind"] == "blocked_task")
         self.assertEqual(["send_correction", "view_logs", "retry", "reassign"], [action["id"] for action in blocked_attention["actions"]])
         self.assertTrue(all(action["task_id"] == "task-cockpit-blocked" for action in blocked_attention["actions"]))
+        ledger_gap_attention = next(item for item in cockpit["owner_attention"] if item["task_id"] == "task-cockpit-ledger-gap" and item["kind"] == "ledger_gap")
+        self.assertEqual("missing_observability", ledger_gap_attention["state"])
+        self.assertEqual(gap_attempt_id, ledger_gap_attention["attempt_id"])
+        self.assertEqual(["tool_call_ledger_missing", "budget_ledger_missing"], ledger_gap_attention["ledger_gaps"])
+        self.assertIn("Tool-call ledger missing", ledger_gap_attention["message"])
+        self.assertEqual(["send_probe", "view_logs", "send_correction"], [action["id"] for action in ledger_gap_attention["actions"]])
         approval_attention = next(item for item in cockpit["owner_attention"] if item["approval_id"] == "approval-cockpit-awaiting")
         self.assertEqual("approval", approval_attention["kind"])
         self.assertEqual("task-cockpit-awaiting-approval", approval_attention["task_id"])
@@ -2333,18 +2723,151 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertTrue(approval_action_meta["deny"]["requires_owner_approval"])
         self.assertTrue(all(action["task_id"] == "task-cockpit-awaiting-approval" for action in approval_attention["actions"]))
         self.assertTrue(all(action["approval_id"] == "approval-cockpit-awaiting" for action in approval_attention["actions"]))
+        budget_attention = next(item for item in cockpit["owner_attention"] if item["approval_id"] == "approval-cockpit-budget-overrun")
+        self.assertEqual("approval", budget_attention["kind"])
+        self.assertEqual("budget_overrun", budget_attention["approval_action"])
+        self.assertEqual("P0", budget_attention["risk"])
+        self.assertEqual("P0", budget_attention["priority_label"])
+        self.assertLess(budget_attention["priority_rank"], pending_evidence["priority_rank"])
+        self.assertEqual("hard_exceeded", budget_attention["budget"]["limit_status"])
+        self.assertEqual(1.2, budget_attention["budget"]["amount"])
+        self.assertEqual("USD", budget_attention["budget"]["currency"])
+        self.assertIn("预算超限", budget_attention["message"])
+        self.assertTrue(all(action["requires_owner_approval"] for action in budget_attention["actions"] if action["id"] in {"approve", "deny"}))
         evidence_attention = next(item for item in cockpit["owner_attention"] if item["task_id"] == "task-cockpit-done-missing-evidence" and item["kind"] == "evidence_issue")
         self.assertEqual("evidence_issue", evidence_attention["kind"])
         self.assertEqual("blocked", evidence_attention["state"])
+        self.assertEqual("P0", evidence_attention["priority_label"])
         self.assertEqual("completed_without_evidence", evidence_attention["reason"])
         self.assertIn("done 但缺少 final evidence", evidence_attention["message"])
         self.assertEqual(["review_task", "view_trace"], [action["id"] for action in evidence_attention["actions"]])
+        priority_ranks = [item["priority_rank"] for item in cockpit["owner_attention"]]
+        self.assertEqual(sorted(priority_ranks), priority_ranks)
+        self.assertTrue(all(item.get("owner_next_action") for item in cockpit["owner_attention"]))
 
         status, shown = api_gateway.route_get("/v1/tasks/task-cockpit-long", {})
         self.assertEqual(200, status, shown)
         self.assertTrue(shown["evidence"]["allowed"])
         self.assertFalse(shown["evidence"]["absolute_path_exposed"])
         self.assertNotIn(str(self.root), json.dumps(shown["evidence"], ensure_ascii=False))
+
+    def test_cockpit_verification_summary_marks_old_green_reports_stale(self) -> None:
+        old_generated_at = (datetime.now(timezone.utc).astimezone() - timedelta(days=3)).isoformat(timespec="seconds")
+        local_smoke_dir = self.root / "state" / "local-smoke"
+        local_smoke_dir.mkdir(parents=True, exist_ok=True)
+        (local_smoke_dir / "latest.json").write_text(
+            json.dumps({"ok": True, "smoke_id": "old-local-smoke", "generated_at": old_generated_at}, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        comm_dir = self.root / "reports" / "communication-acceptance"
+        comm_dir.mkdir(parents=True, exist_ok=True)
+        (comm_dir / "latest.json").write_text(
+            json.dumps(
+                {
+                    "ok": True,
+                    "mechanism_ok": True,
+                    "run_id": "old-comm",
+                    "generated_at": old_generated_at,
+                    "metrics": {"continuity_total": 10, "continuity_passed": 10, "continuity_success_rate": 1.0},
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+
+        status, cockpit = api_gateway.route_get("/v1/dashboard/cockpit", {})
+        self.assertEqual(200, status, cockpit)
+        verification = cockpit["verification_summary"]
+        self.assertTrue(verification["ok"])
+        self.assertEqual("stale", verification["freshness"])
+        self.assertEqual("stale_verification_reports", verification["status"])
+        self.assertGreater(verification["max_report_age_minutes"], verification["freshness_threshold_minutes"])
+        self.assertIn("rerun company-local-smoke", verification["owner_next_action"])
+
+    def test_cockpit_verification_summary_marks_missing_skill_closed_loop_coverage(self) -> None:
+        fresh_generated_at = companyctl.now()
+        local_smoke_dir = self.root / "state" / "local-smoke"
+        local_smoke_dir.mkdir(parents=True, exist_ok=True)
+        (local_smoke_dir / "latest.json").write_text(
+            json.dumps(
+                {
+                    "ok": True,
+                    "smoke_id": "local-smoke-no-skill",
+                    "generated_at": fresh_generated_at,
+                    "attendance": {"ok": True},
+                    "direct_matrix": [{"agent_id": "codex", "direct_status": "ok"}],
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        comm_dir = self.root / "reports" / "communication-acceptance"
+        comm_dir.mkdir(parents=True, exist_ok=True)
+        (comm_dir / "latest.json").write_text(
+            json.dumps(
+                {
+                    "ok": True,
+                    "mechanism_ok": True,
+                    "run_id": "comm-fresh",
+                    "generated_at": fresh_generated_at,
+                    "metrics": {"continuity_total": 10, "continuity_passed": 10, "continuity_success_rate": 1.0},
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+
+        status, cockpit = api_gateway.route_get("/v1/dashboard/cockpit", {})
+        self.assertEqual(200, status, cockpit)
+        verification = cockpit["verification_summary"]
+        self.assertTrue(verification["ok"])
+        self.assertEqual("fresh", verification["freshness"])
+        self.assertEqual("verification_coverage_gap", verification["status"])
+        self.assertEqual(["skill_closed_loop_not_checked"], verification["coverage_gaps"])
+        self.assertIn("run company-local-smoke with skill closed-loop", verification["owner_next_action"])
+
+    def test_cockpit_verification_summary_requires_cockpit_visibility_coverage(self) -> None:
+        fresh_generated_at = companyctl.now()
+        local_smoke_dir = self.root / "state" / "local-smoke"
+        local_smoke_dir.mkdir(parents=True, exist_ok=True)
+        (local_smoke_dir / "latest.json").write_text(
+            json.dumps(
+                {
+                    "ok": True,
+                    "smoke_id": "local-smoke-no-cockpit",
+                    "generated_at": fresh_generated_at,
+                    "attendance": {"ok": True},
+                    "direct_matrix": [{"agent_id": "codex", "direct_status": "ok"}],
+                    "skill_closed_loop": {"ok": True, "task_id": "task-local-smoke-skill"},
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        comm_dir = self.root / "reports" / "communication-acceptance"
+        comm_dir.mkdir(parents=True, exist_ok=True)
+        (comm_dir / "latest.json").write_text(
+            json.dumps(
+                {
+                    "ok": True,
+                    "mechanism_ok": True,
+                    "run_id": "comm-fresh",
+                    "generated_at": fresh_generated_at,
+                    "metrics": {"continuity_total": 10, "continuity_passed": 10, "continuity_success_rate": 1.0},
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+
+        status, cockpit = api_gateway.route_get("/v1/dashboard/cockpit", {})
+        self.assertEqual(200, status, cockpit)
+        verification = cockpit["verification_summary"]
+        self.assertTrue(verification["ok"])
+        self.assertEqual("verification_coverage_gap", verification["status"])
+        self.assertEqual(["cockpit_visibility_not_checked"], verification["coverage_gaps"])
+        self.assertFalse(verification["local_smoke"]["cockpit_visible"])
+        self.assertIn("cockpit visibility", verification["owner_next_action"])
 
     def test_cockpit_ignores_orphan_active_attempts_on_finished_tasks(self) -> None:
         code, created = run_cli("employee", "create", "--id", "main", "--name", "main", "--role", "operator", "--runtime", "openclaw", "--workspace", str(self.root / "workspace" / "main"))
@@ -2398,14 +2921,17 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual("active", employee["status"])
         self.assertEqual({}, employee["current_attempt"])
 
-    def test_api_gateway_lists_sanitized_evidence_records(self) -> None:
+    def test_api_gateway_lists_sanitized_evidence_records_and_filters_by_employee(self) -> None:
         code, created = run_cli("employee", "create", "--id", "main", "--name", "main", "--role", "operator", "--runtime", "openclaw", "--workspace", str(self.root / "workspace" / "main"))
         self.assertEqual(0, code, created)
-        code, created = run_cli("employee", "create", "--id", "writer", "--name", "writer", "--role", "writer", "--runtime", "local", "--workspace", str(self.root / "workspace" / "writer"))
-        self.assertEqual(0, code, created)
-        self.mark_active("writer")
+        for employee_id in ("writer", "qa"):
+            code, created = run_cli("employee", "create", "--id", employee_id, "--name", employee_id, "--role", employee_id, "--runtime", "local", "--workspace", str(self.root / "workspace" / employee_id))
+            self.assertEqual(0, code, created)
+            self.mark_active(employee_id)
         code, submitted = run_cli("task", "submit", "--from", "main", "--to", "writer", "--task-id", "task-api-evidence-list", "--title", "Evidence list")
         self.assertEqual(0, code, submitted)
+        code, qa_submitted = run_cli("task", "submit", "--from", "main", "--to", "qa", "--task-id", "task-api-evidence-list-qa", "--title", "Evidence list QA")
+        self.assertEqual(0, code, qa_submitted)
         conn = companyctl.connect()
         try:
             workspace = companyctl.ensure_task_workspace(conn, "task-api-evidence-list")
@@ -2422,6 +2948,20 @@ class CompanyKernelCoreTest(unittest.TestCase):
                 is_final=True,
             )["artifact"]
             promoted = companyctl.promote_artifact_to_evidence_internal(conn, artifact_id=artifact["artifact_id"], by="writer", summary="safe final evidence")
+            qa_workspace = companyctl.ensure_task_workspace(conn, "task-api-evidence-list-qa")
+            qa_path = Path(qa_workspace["path"]) / "final" / "qa-delivery.md"
+            qa_path.write_text("qa delivery\n", encoding="utf-8")
+            qa_artifact = companyctl.register_artifact_internal(
+                conn,
+                task_id="task-api-evidence-list-qa",
+                employee_id="qa",
+                artifact_type="text",
+                path=str(qa_path),
+                summary="qa final delivery",
+                stage="final",
+                is_final=True,
+            )["artifact"]
+            qa_promoted = companyctl.promote_artifact_to_evidence_internal(conn, artifact_id=qa_artifact["artifact_id"], by="qa", summary="qa safe final evidence")
             conn.commit()
         finally:
             conn.close()
@@ -2443,6 +2983,123 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertIn("v1-delivery.md", payload_json)
         self.assertNotIn(str(self.root), payload_json)
         self.assertNotIn("path_or_url", payload_json)
+
+        status, writer_evidence = api_gateway.route_get("/v1/evidence", {"employee_id": ["writer"], "limit": ["10"]})
+        self.assertEqual(200, status, writer_evidence)
+        self.assertTrue(writer_evidence["ok"])
+        writer_ids = [row["evidence_id"] for row in writer_evidence["evidence"]]
+        self.assertIn(promoted["evidence"]["evidence_id"], writer_ids)
+        self.assertNotIn(qa_promoted["evidence"]["evidence_id"], writer_ids)
+        self.assertTrue(all(row["employee_id"] == "writer" for row in writer_evidence["evidence"]))
+        self.assertEqual("writer", writer_evidence["filters"]["employee_id"])
+
+    def test_api_gateway_accepts_and_rejects_final_evidence_with_audit_trail(self) -> None:
+        code, created = run_cli("employee", "create", "--id", "main", "--name", "main", "--role", "operator", "--runtime", "openclaw", "--workspace", str(self.root / "workspace" / "main"))
+        self.assertEqual(0, code, created)
+        code, created = run_cli("employee", "create", "--id", "writer", "--name", "writer", "--role", "writer", "--runtime", "local", "--workspace", str(self.root / "workspace" / "writer"))
+        self.assertEqual(0, code, created)
+        self.mark_active("writer")
+        code, submitted = run_cli("task", "submit", "--from", "main", "--to", "writer", "--task-id", "task-evidence-decision", "--title", "Evidence decision")
+        self.assertEqual(0, code, submitted)
+        code, run = run_cli("task", "run", "--task-id", "task-evidence-decision", "--agent", "writer", "--by", "main")
+        self.assertEqual(0, code, run)
+        attempt_id = run["attempt"]["attempt_id"]
+        conn = companyctl.connect()
+        try:
+            workspace = companyctl.ensure_task_workspace(conn, "task-evidence-decision")
+            final_path = Path(workspace["path"]) / "final" / "delivery.md"
+            final_path.write_text("accepted delivery\n", encoding="utf-8")
+            artifact = companyctl.register_artifact_internal(
+                conn,
+                task_id="task-evidence-decision",
+                employee_id="writer",
+                artifact_type="text",
+                path=str(final_path),
+                summary="accepted delivery",
+                stage="final",
+                is_final=True,
+            )["artifact"]
+            promoted = companyctl.promote_artifact_to_evidence_internal(conn, artifact_id=artifact["artifact_id"], by="writer", summary="accepted final evidence", attempt_id=attempt_id)
+        finally:
+            conn.close()
+        evidence_id = promoted["evidence"]["evidence_id"]
+
+        status, accepted = api_gateway.route_post(f"/v1/evidence/{evidence_id}/accept", {"by": "main", "summary": "验收通过"})
+        self.assertEqual(HTTPStatus.OK, status, accepted)
+        self.assertEqual("accepted", accepted["evidence"]["acceptance_decision"]["status"])
+        self.assertEqual("main", accepted["evidence"]["acceptance_decision"]["by"])
+        self.assertEqual("evidence.accepted", accepted["event"]["event_type"])
+        self.assertEqual("task-evidence-decision", accepted["event"]["task_id"])
+        self.assertEqual("evidence.accept", accepted["audit"]["action"])
+
+        status, content = api_gateway.route_get(f"/v1/evidence/{evidence_id}/content", {})
+        self.assertEqual(HTTPStatus.OK, status, content)
+        self.assertEqual("accepted", content["acceptance"]["decision"]["status"])
+        self.assertTrue(content["acceptance"]["accepted"])
+
+        status, shown = api_gateway.route_get("/v1/tasks/task-evidence-decision", {})
+        self.assertEqual(HTTPStatus.OK, status, shown)
+        self.assertEqual("accepted", shown["evidence_records"][0]["acceptance_decision"]["status"])
+        self.assertEqual("accepted", shown["completion_contract"]["acceptance_status"])
+        self.assertIn("evidence.accepted", [item["event_type"] for item in shown["events"]])
+
+        status, rejected = api_gateway.route_post(f"/v1/evidence/{evidence_id}/reject", {"by": "main", "reason": "证据不匹配"})
+        self.assertEqual(HTTPStatus.OK, status, rejected)
+        self.assertEqual("rejected", rejected["evidence"]["acceptance_decision"]["status"])
+        self.assertEqual("evidence.rejected", rejected["event"]["event_type"])
+        status, shown_after_reject = api_gateway.route_get("/v1/tasks/task-evidence-decision", {})
+        self.assertEqual(HTTPStatus.OK, status, shown_after_reject)
+        self.assertEqual("rejected", shown_after_reject["completion_contract"]["acceptance_status"])
+
+    def test_cli_accepts_and_rejects_final_evidence_with_audit_trail(self) -> None:
+        code, created = run_cli("employee", "create", "--id", "main", "--name", "main", "--role", "operator", "--runtime", "openclaw", "--workspace", str(self.root / "workspace" / "main"))
+        self.assertEqual(0, code, created)
+        code, created = run_cli("employee", "create", "--id", "writer", "--name", "writer", "--role", "writer", "--runtime", "local", "--workspace", str(self.root / "workspace" / "writer"))
+        self.assertEqual(0, code, created)
+        self.mark_active("writer")
+        code, submitted = run_cli("task", "submit", "--from", "main", "--to", "writer", "--task-id", "task-cli-evidence-decision", "--title", "CLI evidence decision")
+        self.assertEqual(0, code, submitted)
+        code, run = run_cli("task", "run", "--task-id", "task-cli-evidence-decision", "--agent", "writer", "--by", "main")
+        self.assertEqual(0, code, run)
+        conn = companyctl.connect()
+        try:
+            workspace = companyctl.ensure_task_workspace(conn, "task-cli-evidence-decision")
+            final_path = Path(workspace["path"]) / "final" / "cli-delivery.md"
+            final_path.write_text("cli accepted delivery\n", encoding="utf-8")
+            artifact = companyctl.register_artifact_internal(
+                conn,
+                task_id="task-cli-evidence-decision",
+                employee_id="writer",
+                artifact_type="text",
+                path=str(final_path),
+                summary="cli accepted delivery",
+                stage="final",
+                is_final=True,
+            )["artifact"]
+            promoted = companyctl.promote_artifact_to_evidence_internal(conn, artifact_id=artifact["artifact_id"], by="writer", summary="cli final evidence", attempt_id=run["attempt"]["attempt_id"])
+        finally:
+            conn.close()
+        evidence_id = promoted["evidence"]["evidence_id"]
+
+        code, accepted = run_cli("task", "evidence", "accept", "--evidence-id", evidence_id, "--by", "main", "--summary", "CLI 验收通过")
+        self.assertEqual(0, code, accepted)
+        self.assertEqual("accepted", accepted["evidence"]["acceptance_decision"]["status"])
+        self.assertEqual("evidence.accepted", accepted["event"]["event_type"])
+        self.assertEqual("evidence.accept", accepted["audit"]["action"])
+
+        code, shown = run_cli("task", "show", "--task-id", "task-cli-evidence-decision")
+        self.assertEqual(0, code, shown)
+        self.assertEqual("accepted", shown["completion_contract"]["acceptance_status"])
+
+        code, rejected = run_cli("task", "evidence", "reject", "--evidence-id", evidence_id, "--by", "main", "--summary", "CLI 验收不通过", "--reason", "证据需要重做")
+        self.assertEqual(0, code, rejected)
+        self.assertEqual("rejected", rejected["evidence"]["acceptance_decision"]["status"])
+        self.assertEqual("evidence.rejected", rejected["event"]["event_type"])
+        self.assertEqual("evidence.reject", rejected["audit"]["action"])
+
+        code, shown_after_reject = run_cli("task", "show", "--task-id", "task-cli-evidence-decision")
+        self.assertEqual(0, code, shown_after_reject)
+        self.assertEqual("rejected", shown_after_reject["completion_contract"]["acceptance_status"])
 
     def test_api_gateway_lists_sanitized_artifacts_and_handoffs(self) -> None:
         for employee_id, role in [("main", "operator"), ("writer", "writer"), ("qa", "qa")]:
@@ -2549,6 +3206,272 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertNotIn(secret, failures_json)
         self.assertNotIn("id_rsa", failures_json)
         self.assertNotIn(".env", failures_json)
+
+    def test_api_gateway_exposes_single_tool_call_detail_with_related_ledgers(self) -> None:
+        for employee_id, role in [("main", "operator"), ("codex", "developer")]:
+            code, created = run_cli("employee", "create", "--id", employee_id, "--name", employee_id, "--role", role, "--runtime", "local", "--workspace", str(self.root / "workspace" / employee_id))
+            self.assertEqual(0, code, created)
+            if employee_id != "main":
+                self.mark_active(employee_id)
+        code, submitted = run_cli("task", "submit", "--from", "main", "--to", "codex", "--task-id", "task-api-tool-detail", "--title", "Tool detail")
+        self.assertEqual(0, code, submitted)
+        code, run = run_cli("task", "run", "--task-id", "task-api-tool-detail", "--agent", "codex", "--by", "hermes")
+        self.assertEqual(0, code, run)
+        attempt_id = run["attempt"]["attempt_id"]
+        trace_id = run["attempt"]["trace_id"]
+        code, session = run_cli(
+            "runtime",
+            "session",
+            "start",
+            "--session-id",
+            "session-api-tool-detail",
+            "--employee",
+            "codex",
+            "--adapter-type",
+            "codex",
+            "--runtime-type",
+            "cli",
+            "--task-id",
+            "task-api-tool-detail",
+            "--attempt-id",
+            attempt_id,
+        )
+        self.assertEqual(0, code, session)
+        secret = "sk-tool-detail-secret"
+        code, tool = run_cli(
+            "tool-call",
+            "start",
+            "--tool-call-id",
+            "tool-api-detail-shell",
+            "--task-id",
+            "task-api-tool-detail",
+            "--attempt-id",
+            attempt_id,
+            "--employee",
+            "codex",
+            "--session-id",
+            "session-api-tool-detail",
+            "--tool-name",
+            "shell",
+            "--tool-type",
+            "shell",
+            "--input-summary",
+            f"cat /Users/owner/.ssh/id_rsa api_key={secret}",
+            "--risk-level",
+            "low",
+        )
+        self.assertEqual(0, code, tool)
+        code, finished = run_cli(
+            "tool-call",
+            "finish",
+            "--tool-call-id",
+            "tool-api-detail-shell",
+            "--status",
+            "success",
+            "--output-summary",
+            f"checked output token={secret} without exposing raw path /Users/owner/.ssh/id_rsa",
+        )
+        self.assertEqual(0, code, finished)
+        code, budget = run_cli(
+            "budget",
+            "record",
+            "--budget-event-id",
+            "budget-api-tool-detail",
+            "--task-id",
+            "task-api-tool-detail",
+            "--attempt-id",
+            attempt_id,
+            "--employee",
+            "codex",
+            "--cost-type",
+            "model_api",
+            "--amount",
+            "0.25",
+            "--currency",
+            "USD",
+            "--token-input",
+            "1200",
+            "--token-output",
+            "300",
+            "--runtime-seconds",
+            "45",
+            "--summary",
+            "tool detail cost",
+        )
+        self.assertEqual(0, code, budget)
+        conn = companyctl.connect()
+        try:
+            workspace = companyctl.ensure_task_workspace(conn, "task-api-tool-detail", trace_id)
+            final_path = Path(workspace["path"]) / "final" / "tool-detail.md"
+            final_path.write_text("tool detail final evidence\n", encoding="utf-8")
+            artifact = companyctl.register_artifact_internal(
+                conn,
+                task_id="task-api-tool-detail",
+                employee_id="codex",
+                path=str(final_path),
+                artifact_type="md",
+                name="tool-detail.md",
+                stage="final",
+                summary="tool detail final evidence",
+                is_final=True,
+            )
+            promoted = companyctl.promote_artifact_to_evidence_internal(
+                conn,
+                artifact_id=artifact["artifact"]["artifact_id"],
+                by="codex",
+                attempt_id=attempt_id,
+                summary="tool detail final evidence",
+            )
+        finally:
+            conn.close()
+
+        status, detail = api_gateway.route_get("/v1/tool-calls/tool-api-detail-shell", {})
+        self.assertEqual(200, status, detail)
+        self.assertTrue(detail["ok"])
+        self.assertEqual("tool-api-detail-shell", detail["tool_call"]["tool_call_id"])
+        self.assertEqual("task-api-tool-detail", detail["task"]["id"])
+        self.assertNotIn("evidence_path", detail["task"])
+        self.assertFalse(detail["task"]["evidence"]["absolute_path_exposed"])
+        self.assertEqual(attempt_id, detail["attempt"]["attempt_id"])
+        self.assertEqual("session-api-tool-detail", detail["runtime_session"]["session_id"])
+        self.assertEqual(0.25, detail["budget_summary"]["total_amount"])
+        self.assertEqual(1200, detail["budget_summary"]["token_input"])
+        self.assertEqual(300, detail["budget_summary"]["token_output"])
+        self.assertEqual(promoted["evidence"]["evidence_id"], detail["evidence_records"][0]["evidence_id"])
+        self.assertTrue(detail["tool_call"]["sanitized"])
+        self.assertFalse(detail["tool_call"]["raw_available"])
+        detail_json = json.dumps(detail, ensure_ascii=False)
+        self.assertIn("api_key=[REDACTED]", detail_json)
+        self.assertNotIn(secret, detail_json)
+        self.assertNotIn("/Users/owner/.ssh", detail_json)
+        self.assertFalse(detail["evidence_records"][0]["display"]["absolute_path_exposed"])
+
+    def test_api_gateway_exposes_single_runtime_session_detail_with_related_ledgers(self) -> None:
+        for employee_id, role in [("main", "operator"), ("codex", "developer")]:
+            code, created = run_cli("employee", "create", "--id", employee_id, "--name", employee_id, "--role", role, "--runtime", "local", "--workspace", str(self.root / "workspace" / employee_id))
+            self.assertEqual(0, code, created)
+            if employee_id != "main":
+                self.mark_active(employee_id)
+        code, submitted = run_cli("task", "submit", "--from", "main", "--to", "codex", "--task-id", "task-api-session-detail", "--title", "Session detail")
+        self.assertEqual(0, code, submitted)
+        code, run = run_cli("task", "run", "--task-id", "task-api-session-detail", "--agent", "codex", "--by", "hermes")
+        self.assertEqual(0, code, run)
+        attempt_id = run["attempt"]["attempt_id"]
+        trace_id = run["attempt"]["trace_id"]
+        code, session = run_cli(
+            "runtime",
+            "session",
+            "start",
+            "--session-id",
+            "session-api-runtime-detail",
+            "--employee",
+            "codex",
+            "--adapter-type",
+            "codex",
+            "--runtime-type",
+            "cli",
+            "--pid",
+            "4321",
+            "--task-id",
+            "task-api-session-detail",
+            "--attempt-id",
+            attempt_id,
+        )
+        self.assertEqual(0, code, session)
+        secret = "sk-session-detail-secret"
+        code, tool = run_cli(
+            "tool-call",
+            "start",
+            "--tool-call-id",
+            "tool-session-detail-shell",
+            "--task-id",
+            "task-api-session-detail",
+            "--attempt-id",
+            attempt_id,
+            "--employee",
+            "codex",
+            "--session-id",
+            "session-api-runtime-detail",
+            "--tool-name",
+            "shell",
+            "--tool-type",
+            "shell",
+            "--input-summary",
+            f"session command api_key={secret} /Users/owner/.ssh/id_rsa",
+        )
+        self.assertEqual(0, code, tool)
+        code, finished = run_cli("tool-call", "finish", "--tool-call-id", "tool-session-detail-shell", "--status", "success", "--output-summary", f"session output token={secret}")
+        self.assertEqual(0, code, finished)
+        code, budget = run_cli(
+            "budget",
+            "record",
+            "--budget-event-id",
+            "budget-api-session-detail",
+            "--task-id",
+            "task-api-session-detail",
+            "--attempt-id",
+            attempt_id,
+            "--employee",
+            "codex",
+            "--cost-type",
+            "model_api",
+            "--amount",
+            "0.4",
+            "--currency",
+            "USD",
+            "--token-input",
+            "1400",
+            "--token-output",
+            "350",
+            "--runtime-seconds",
+            "66",
+            "--summary",
+            "session detail cost",
+        )
+        self.assertEqual(0, code, budget)
+        conn = companyctl.connect()
+        try:
+            workspace = companyctl.ensure_task_workspace(conn, "task-api-session-detail", trace_id)
+            final_path = Path(workspace["path"]) / "final" / "session-detail.md"
+            final_path.write_text("session detail final evidence\n", encoding="utf-8")
+            artifact = companyctl.register_artifact_internal(
+                conn,
+                task_id="task-api-session-detail",
+                employee_id="codex",
+                path=str(final_path),
+                artifact_type="md",
+                name="session-detail.md",
+                stage="final",
+                summary="session detail final evidence",
+                is_final=True,
+            )
+            promoted = companyctl.promote_artifact_to_evidence_internal(
+                conn,
+                artifact_id=artifact["artifact"]["artifact_id"],
+                by="codex",
+                attempt_id=attempt_id,
+                summary="session detail final evidence",
+            )
+        finally:
+            conn.close()
+
+        status, detail = api_gateway.route_get("/v1/runtime-sessions/session-api-runtime-detail", {})
+        self.assertEqual(200, status, detail)
+        self.assertTrue(detail["ok"])
+        self.assertEqual("session-api-runtime-detail", detail["runtime_session"]["session_id"])
+        self.assertEqual("task-api-session-detail", detail["task"]["id"])
+        self.assertNotIn("evidence_path", detail["task"])
+        self.assertEqual(attempt_id, detail["attempt"]["attempt_id"])
+        self.assertEqual(["tool-session-detail-shell"], [item["tool_call_id"] for item in detail["tool_calls"]])
+        self.assertEqual(0.4, detail["budget_summary"]["total_amount"])
+        self.assertEqual(1400, detail["budget_summary"]["token_input"])
+        self.assertEqual(350, detail["budget_summary"]["token_output"])
+        self.assertEqual(promoted["evidence"]["evidence_id"], detail["evidence_records"][0]["evidence_id"])
+        detail_json = json.dumps(detail, ensure_ascii=False)
+        self.assertIn("api_key=[REDACTED]", detail_json)
+        self.assertNotIn(secret, detail_json)
+        self.assertNotIn("/Users/owner/.ssh", detail_json)
+        self.assertFalse(detail["evidence_records"][0]["display"]["absolute_path_exposed"])
 
     def test_cli_audit_ledgers_match_api_sanitized_records(self) -> None:
         for employee_id, role in [("main", "operator"), ("writer", "writer"), ("qa", "qa"), ("codex", "developer")]:
@@ -3457,9 +4380,9 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertIn("/v1/health", html)
         self.assertIn("API offline", html)
         self.assertIn("editEmployee", html)
-        self.assertIn("directMessageEmployee", html)
-        self.assertIn("/v1/messages/direct", html)
-        self.assertIn("Direct reply from", html)
+        self.assertNotIn("directMessageEmployee", html)
+        self.assertNotIn("/v1/messages/direct", html)
+        self.assertNotIn("Direct reply from", html)
         self.assertIn("'PATCH'", html)
         self.assertIn("'DELETE'", html)
         self.assertIn("/v1/employees/${encodeURIComponent(id)}", html)
@@ -3538,7 +4461,7 @@ class CompanyKernelCoreTest(unittest.TestCase):
     }).join('');
   }
   document.getElementById('db-path-label').innerText = isSimulationMode ? 'simulation://gateway.company.internal' : 'https://gateway.company.internal';
-  // Stubs for test assertions: companyApiGet checkCompanyApi /v1/health refreshLiveDashboardFromApi window.refreshLiveDashboardFromApi /v1/tasks?limit=50 /v1/messages/recent-direct?limit=20 /v1/telemetry/traces /v1/traces/${encodeURIComponent(traceId)}/timeline /v1/traces/${encodeURIComponent(taskTraceId)}/timeline Trace Timeline traceTimelineSummary traceObjectSummary payload.execution_attempts payload.artifacts payload.evidence payload.handoffs Supervisor Chain supervisionChainSummary payload.supervision_chain Task Supervisor Chain taskSupervisorChainSummary /v1/openclaw/runtime-inventory openclaw-runtime-inventory-container OpenClaw Runtime Inventory source=/v1/openclaw/runtime-inventory · read-only · no OpenClaw bus mutation registration status, and Telegram queue counts telemetry.traces populateKanban(window.summaryData) kanbanTransitionTask const agent = (task.claimed_by || task.target_agent block`, { agent, blocker: reason } stalled_tasks setInterval(refreshLiveDashboardFromApi, 10000) API OFFLINE /v1/attendance/latest realOnboardGeneratedEmployee realDirectEmployeeMessage openDirectEmployeeMessage /v1/messages/direct realOffboardEmployee openEditEmployeeProfile realUpdateEmployeeProfile 'PATCH' 'DELETE' timeZone: 'Asia/Bangkok' THA bindMentionAutocomplete agent-mention-suggestions collaborationHelpText 是否需要其他员工协助 kernel-form-modal openKernelFormModal('direct' openKernelFormModal('conversation' employee-card-actions employee-card-menu toggleEmployeeActionMenu Send Message prefillChatMention Chat Hub ready for @ grid-template-columns: minmax(0, 1fr) 34px dashboard-layout-fix showApprovalDetails refreshGovernanceTables refreshTraceTelemetry refreshTraceTelemetry() notify-route-status setTimeout(loadNotificationSettings, 350) decideApprovalFromDashboard /v1/approvals/${encodeURIComponent(approvalId)}/${normalized} Mock Resolve mock resolved from dashboard; no external delivery executed Approve Deny Approval Actions
+  // Stubs for test assertions: companyApiGet checkCompanyApi /v1/health refreshLiveDashboardFromApi window.refreshLiveDashboardFromApi /v1/tasks?limit=50 /v1/messages/recent-direct?limit=20 /v1/telemetry/traces /v1/traces/${encodeURIComponent(traceId)}/timeline /v1/traces/${encodeURIComponent(taskTraceId)}/timeline Trace Timeline traceTimelineSummary traceStorySummary ceoStageSummary ceoTimelineSummary payload.trace_story payload.ceo_stage_summary payload.ceo_timeline CEO Stage Summary traceObjectSummary payload.execution_attempts payload.artifacts payload.evidence payload.handoffs Supervisor Chain supervisionChainSummary payload.supervision_chain Task Supervisor Chain taskSupervisorChainSummary /v1/openclaw/runtime-inventory openclaw-runtime-inventory-container OpenClaw Runtime Inventory source=/v1/openclaw/runtime-inventory · read-only · no OpenClaw bus mutation registration status, and Telegram queue counts telemetry.traces populateKanban(window.summaryData) kanbanTransitionTask const agent = (task.claimed_by || task.target_agent block`, { agent, blocker: reason } stalled_tasks setInterval(refreshLiveDashboardFromApi, 10000) API OFFLINE /v1/attendance/latest realOnboardGeneratedEmployee realOffboardEmployee openEditEmployeeProfile realUpdateEmployeeProfile 'PATCH' 'DELETE' timeZone: 'Asia/Bangkok' THA bindMentionAutocomplete agent-mention-suggestions collaborationHelpText 是否需要其他员工协助 kernel-form-modal openKernelFormModal('conversation' employee-card-actions employee-card-menu toggleEmployeeActionMenu Task Chat Hub ready for @ grid-template-columns: minmax(0, 1fr) 34px dashboard-layout-fix showApprovalDetails refreshGovernanceTables refreshTraceTelemetry refreshTraceTelemetry() notify-route-status setTimeout(loadNotificationSettings, 350) decideApprovalFromDashboard /v1/approvals/${encodeURIComponent(approvalId)}/${normalized} Mock Resolve mock resolved from dashboard; no external delivery executed Approve Deny Approval Actions
 </script>
 </body></html>
             """,
@@ -3580,6 +4503,13 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertIn("/v1/traces/${encodeURIComponent(taskTraceId)}/timeline", html)
         self.assertIn("Trace Timeline", html)
         self.assertIn("traceTimelineSummary", html)
+        self.assertIn("traceStorySummary", html)
+        self.assertIn("ceoStageSummary", html)
+        self.assertIn("ceoTimelineSummary", html)
+        self.assertIn("payload.trace_story", html)
+        self.assertIn("payload.ceo_stage_summary", html)
+        self.assertIn("payload.ceo_timeline", html)
+        self.assertIn("CEO Stage Summary", html)
         self.assertIn("traceObjectSummary", html)
         self.assertIn("payload.execution_attempts", html)
         self.assertIn("payload.artifacts", html)
@@ -3607,9 +4537,9 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertIn("API OFFLINE", html)
         self.assertIn("/v1/attendance/latest", html)
         self.assertIn("realOnboardGeneratedEmployee", html)
-        self.assertIn("realDirectEmployeeMessage", html)
-        self.assertIn("openDirectEmployeeMessage", html)
-        self.assertIn("/v1/messages/direct", html)
+        self.assertNotIn("realDirectEmployeeMessage", html)
+        self.assertNotIn("openDirectEmployeeMessage", html)
+        self.assertNotIn("/v1/messages/direct", html)
         self.assertIn("realOffboardEmployee", html)
         self.assertIn("openEditEmployeeProfile", html)
         self.assertIn("realUpdateEmployeeProfile", html)
@@ -3623,13 +4553,13 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertIn("collaborationHelpText", html)
         self.assertIn("是否需要其他员工协助", html)
         self.assertIn("kernel-form-modal", html)
-        self.assertIn("openKernelFormModal('direct'", html)
+        self.assertNotIn("openKernelFormModal('direct'", html)
         self.assertIn("openKernelFormModal('conversation'", html)
         self.assertIn("employee-card-actions", html)
         self.assertIn("employee-card-menu", html)
         self.assertIn("toggleEmployeeActionMenu", html)
-        self.assertIn("Send Message", html)
-        self.assertIn("prefillChatMention", html)
+        self.assertNotIn("Send Message", html)
+        self.assertNotIn("prefillChatMention", html)
         self.assertIn("Chat Hub ready for @", html)
         self.assertIn("grid-template-columns: minmax(0, 1fr) 34px", html)
         self.assertNotIn("prompt('Participants, comma-separated", html)
@@ -3673,6 +4603,25 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertIn("Live refresh partial:", html)
         self.assertNotIn("Optional API ${path} failed: ${err.message}; continuing refresh.", html)
 
+    def test_real_dashboard_inline_scripts_are_valid_javascript(self) -> None:
+        node = shutil.which("node")
+        if not node:
+            self.skipTest("node is required for dashboard JavaScript syntax validation")
+        template = Path(__file__).resolve().parents[1] / "dashboard_templates" / "gemini_dashboard.html"
+        html = template.read_text(encoding="utf-8")
+        scripts = re.findall(r"<script[^>]*>([\s\S]*?)</script>", html, flags=re.IGNORECASE)
+        self.assertGreaterEqual(len(scripts), 1)
+        for index, script in enumerate(scripts):
+            with self.subTest(script=index):
+                result = subprocess.run(
+                    [node, "--check"],
+                    input=script,
+                    text=True,
+                    capture_output=True,
+                    timeout=10,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_real_dashboard_template_task_detail_modal_is_closeable(self) -> None:
         template = Path(__file__).resolve().parents[1] / "dashboard_templates" / "gemini_dashboard.html"
         html = template.read_text(encoding="utf-8")
@@ -3711,7 +4660,36 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertIn("openFireEmployeeModal('${escapeHtml(emp.id)}')", html)
         self.assertNotIn("openFireEmployeeModal('${escapeHtml(emp.id)}', '${escapeHtml(emp.runtime)}', '${escapeHtml(emp.workspace)}')", html)
         self.assertIn("function storeDashboardDetail(prefix, raw)", html)
-        self.assertIn("showStoredDetails('Employee details:", html)
+        self.assertIn("openEmployeeDetailDrawer('${escapeHtml(emp.id)}'", html)
+        self.assertIn("async function openEmployeeDetailDrawer(employeeId, fallbackKey)", html)
+        self.assertIn("/v1/employees/${encodeURIComponent(employeeId)}", html)
+        self.assertIn("employeeWorkHistorySummary", html)
+        self.assertIn("employeeBudgetSummary", html)
+        self.assertIn("employeeToolCallsSummary", html)
+        self.assertIn("employeeEvidenceSummary", html)
+        self.assertIn("employeeCurrentActivitySummary", html)
+        self.assertIn("employeeOperationalSummary", html)
+        self.assertIn("employeeCeoWorkContractSummary", html)
+        self.assertIn("status_counts", html)
+        self.assertIn("attention_counts", html)
+        self.assertIn("completion_invalid_tasks", html)
+        self.assertIn("tasks_with_final_evidence", html)
+        self.assertIn("Work Summary", html)
+        self.assertIn("owner_actions", html)
+        self.assertIn("actions=", html)
+        self.assertIn("const operationalSummary = workPayload.operational_summary || payload.operational_summary || {};", html)
+        self.assertIn("/v1/employees/${encodeURIComponent(employeeId)}/work-history", html)
+        self.assertIn("Employee work-history fallback", html)
+        self.assertIn("Work History API", html)
+        self.assertIn("const ceoWorkContract = workPayload.ceo_work_contract || payload.ceo_work_contract || {};", html)
+        self.assertIn("['CEO Work Contract', employeeCeoWorkContractSummary(ceoWorkContract)]", html)
+        self.assertIn("truth_rules completion_requires_final_evidence=", html)
+        self.assertIn("['Operational Summary', employeeOperationalSummary(operationalSummary)]", html)
+        self.assertIn("owner_next_action=", html)
+        self.assertIn("const currentActivity = workPayload.current_activity || payload.current_activity || {};", html)
+        self.assertIn("['Current Activity', employeeCurrentActivitySummary(currentActivity)]", html)
+        self.assertIn("latest_progress", html)
+        self.assertIn("active_task_count", html)
         self.assertIn("showStoredDetails('Adapter Run:", html)
         self.assertIn('onclick="openTaskDetailDrawer(\'${escapeHtml(taskId)}\')"', html)
         self.assertNotIn("onclick=\"showDetails('Task: ' + '${escapeHtml(task.id)}'", html)
@@ -3765,6 +4743,44 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertIn("external_send_executed=${String(!!safety.external_send_executed)}", html)
         self.assertIn("owner approval required before real external delivery", html)
 
+    def test_dashboard_approvals_table_exposes_task_control_traceability(self) -> None:
+        template = Path(__file__).resolve().parents[1] / "dashboard_templates" / "gemini_dashboard.html"
+        html = template.read_text(encoding="utf-8")
+        self.assertIn("approvalTaskControlSummary(app)", html)
+        self.assertIn("control_action=${escapeHtml(control.control_action || '-')}", html)
+        self.assertIn("attempt=${escapeHtml(control.attempt_id || '-')}", html)
+        self.assertIn("execute_requires=${escapeHtml(control.execute_requires || '-')}", html)
+        self.assertIn("Task Control Detail", html)
+
+    def test_dashboard_approvals_render_owner_control_summary(self) -> None:
+        template = Path(__file__).resolve().parents[1] / "dashboard_templates" / "gemini_dashboard.html"
+        html = template.read_text(encoding="utf-8")
+        self.assertIn('id="approval-control-summary"', html)
+        self.assertIn("approvalControlSummary(summary.approval_control_summary", html)
+        self.assertIn("approval_control_summary: approvals.approval_control_summary", html)
+        self.assertIn("cockpit.approval_center_summary || summary.approval_control_summary", html)
+        self.assertIn("blocked_real_execution=${approvalCenter.blocked_real_execution_count || 0}", html)
+        self.assertIn("pending_high_risk_actions", html)
+        self.assertIn("real_execution_blockers", html)
+        self.assertIn("realExecutionBlockerRows", html)
+
+    def test_dashboard_approval_rows_load_api_detail_bundle(self) -> None:
+        template = Path(__file__).resolve().parents[1] / "dashboard_templates" / "gemini_dashboard.html"
+        html = template.read_text(encoding="utf-8")
+        self.assertIn("showApprovalApiDetails", html)
+        self.assertIn("/v1/approvals/${encodeURIComponent(safeId)}", html)
+        self.assertIn("Approval API detail loaded", html)
+        self.assertIn("Bound Task", html)
+        self.assertIn("Related Events", html)
+        self.assertIn("Audit Logs", html)
+        self.assertIn("pending_owner_action_count", html)
+        self.assertIn("blocked_real_execution_count", html)
+        self.assertIn("queue_health", html)
+        self.assertIn("owner_next_action", html)
+        self.assertIn("default_policy", html)
+        self.assertIn("budget_overrun", html)
+        self.assertIn("blocked until owner approval", html)
+
     def test_dashboard_owner_attention_actions_render_safety_metadata(self) -> None:
         template = Path(__file__).resolve().parents[1] / "dashboard_templates" / "gemini_dashboard.html"
         html = template.read_text(encoding="utf-8")
@@ -3775,6 +4791,85 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertIn("action.requires_owner_approval ? 'owner approval' : ''", html)
         self.assertIn("action.dry_run_default === false ? 'live action' : 'dry-run default'", html)
         self.assertIn("action.dangerous ? 'danger' : ''", html)
+
+    def test_dashboard_cockpit_renders_runtime_tool_call_and_budget_panels(self) -> None:
+        template = Path(__file__).resolve().parents[1] / "dashboard_templates" / "gemini_dashboard.html"
+        html = template.read_text(encoding="utf-8")
+        for snippet in [
+            'id="cockpit-runtime-sessions"',
+            'id="cockpit-tool-calls"',
+            'id="cockpit-budget-summary"',
+            "const runtimeSessions = document.getElementById('cockpit-runtime-sessions');",
+            "const toolCalls = document.getElementById('cockpit-tool-calls');",
+            "const budgetSummary = document.getElementById('cockpit-budget-summary');",
+            "cockpit.runtime_sessions",
+            "cockpit.tool_calls",
+            "cockpit.budget_summary",
+            "const cockpitBudget = (cockpit && cockpit.budget_summary) || {};",
+            "cockpitBudget.currency || 'USD'",
+            "cockpitBudget.total_amount || 0",
+            "budgetCurrencyRows(cockpitBudget)",
+            "budgetLimitStatusSummary(cockpitBudget)",
+            "counts.active_runtime_sessions",
+            "counts.running_tool_calls",
+            "budgetBreakdownRows",
+            "budget.by_task",
+            "budget.by_cost_type",
+            "budget.by_model",
+            "budget.by_provider",
+            "showRuntimeSessionDetails",
+            "/v1/runtime-sessions/${encodeURIComponent(sessionId)}",
+            "Runtime Session API detail loaded",
+            "showToolCallDetails",
+            "/v1/tool-calls/${encodeURIComponent(toolCallId)}",
+            "Tool Call API detail loaded",
+            "employeeControlPlaneSummary",
+            "runtime_summary",
+            "tool_summary",
+            "budget_summary",
+            "evidence_summary",
+            "emp.work_health || work.work_health",
+            "Runtime · sessions=",
+            "Tools · calls=",
+            "Budget ·",
+            "Work Health ·",
+            "ledger_gaps",
+            "Tool-call ledger missing",
+            "Cost ledger missing",
+            "Control-plane ledger gaps",
+            "Evidence · final=",
+        ]:
+            self.assertIn(snippet, html)
+        self.assertNotIn("No /v1/tool-calls/{tool_call_id} detail endpoint in MVP", html)
+
+    def test_dashboard_cockpit_enforces_mvp_ui_data_contract(self) -> None:
+        template = Path(__file__).resolve().parents[1] / "dashboard_templates" / "gemini_dashboard.html"
+        html = template.read_text(encoding="utf-8")
+        for snippet in [
+            "Mixed currencies: totals are ledger sums, not converted values.",
+            "per-currency ledger rows",
+            "showToolCallDetails",
+            "showHydratedToolCallDetails",
+            "Tool Call API detail loaded",
+            "Tool Call API detail failed",
+            "employeeEvidenceClientSideFilter",
+            "Employee evidence history is backend-filtered by /v1/evidence?employee_id= when available.",
+            "backend evidence filter supports employee_id",
+            "item.by_currency || item.total_amounts_by_currency || item.currency_totals",
+            "No kill or archive session action in MVP",
+            "POST /v1/tasks/{task_id}/reopen",
+            "completion_invalid_tasks",
+            "Agent readiness matrix",
+            "cockpit.agent_matrix_summary",
+            "owner_attention_required=${agentMatrix.owner_attention_required || 0}",
+            "Local verification",
+            "cockpit.verification_summary",
+            "missing_verification_reports",
+            "freshness=${verification.freshness || '-'}",
+            "max_age=${verification.max_report_age_minutes ?? '-'}m",
+            "coverage_gaps=${(verification.coverage_gaps || []).join(',') || '-'}",
+        ]:
+            self.assertIn(snippet, html)
 
     def test_dashboard_renders_task_evidence_blocker_and_approval_counts(self) -> None:
         code, submitted = run_cli("task", "submit", "--from", "ops", "--to", "maker", "--task-id", "task-dashboard-blocked", "--title", "blocked task")
@@ -3904,6 +4999,104 @@ class CompanyKernelCoreTest(unittest.TestCase):
         code, task = run_cli("task", "show", "--task-id", "task-approval-mock-resolve")
         self.assertEqual(0, code, task)
         self.assertEqual("mock", task["approvals"][0]["safety"]["resolution_mode"])
+
+    def test_approval_list_exposes_owner_control_summary_for_high_risk_actions(self) -> None:
+        code, submitted = run_cli("task", "submit", "--from", "ops", "--to", "maker", "--task-id", "task-approval-control", "--title", "approval control task")
+        self.assertEqual(code, 0, submitted)
+        code, pending = run_cli(
+            "approval",
+            "request",
+            "--from",
+            "ops",
+            "--action",
+            "external_send",
+            "--reason",
+            "real customer send needs owner approval",
+            "--target",
+            "maker",
+            "--risk",
+            "P1",
+            "--task-id",
+            "task-approval-control",
+            "--approval-id",
+            "approval-control-pending",
+        )
+        self.assertEqual(code, 0, pending)
+        code, rule_change = run_cli(
+            "approval",
+            "request",
+            "--from",
+            "ops",
+            "--action",
+            "rule_change",
+            "--reason",
+            "kernel rule change needs owner approval",
+            "--risk",
+            "P0",
+            "--approval-id",
+            "approval-control-rule-change",
+        )
+        self.assertEqual(code, 0, rule_change)
+        code, budget_overrun = run_cli(
+            "approval",
+            "request",
+            "--from",
+            "ops",
+            "--action",
+            "budget_overrun",
+            "--reason",
+            "task spend exceeded hard limit",
+            "--risk",
+            "P0",
+            "--task-id",
+            "task-approval-control",
+            "--approval-id",
+            "approval-control-budget-overrun",
+        )
+        self.assertEqual(code, 0, budget_overrun)
+        code, mock = run_cli(
+            "approval",
+            "request",
+            "--from",
+            "ops",
+            "--action",
+            "external_send",
+            "--reason",
+            "mock customer send",
+            "--target",
+            "maker",
+            "--risk",
+            "P1",
+            "--task-id",
+            "task-approval-control",
+            "--approval-id",
+            "approval-control-mock",
+        )
+        self.assertEqual(code, 0, mock)
+        code, resolved = run_cli("approval", "resolve", "--approval-id", "approval-control-mock", "--by", "ops", "--reason", "mock only", "--mock")
+        self.assertEqual(code, 0, resolved)
+
+        status, listed = api_gateway.route_get("/v1/approvals", {"status": ["all"], "limit": ["10"]})
+        self.assertEqual(200, status, listed)
+        summary = listed["approval_control_summary"]
+        self.assertEqual(4, summary["total"])
+        self.assertEqual(3, summary["by_status"]["pending"])
+        self.assertEqual(1, summary["by_status"]["resolved"])
+        self.assertEqual(["budget_overrun", "external_send", "rule_change"], summary["high_risk_actions"])
+        self.assertEqual(["budget_overrun", "external_send", "rule_change"], summary["pending_high_risk_actions"])
+        self.assertEqual(1, summary["dry_run_resolved"])
+        self.assertEqual(0, summary["external_send_executed"])
+        self.assertEqual(2, summary["real_execution_blockers"]["external_send"])
+        self.assertEqual(1, summary["real_execution_blockers"]["budget_overrun"])
+        self.assertTrue(summary["real_external_send_requires_owner_approval"])
+        self.assertEqual(3, summary["pending_owner_action_count"])
+        self.assertEqual(3, summary["blocked_real_execution_count"])
+        self.assertEqual("owner_action_required", summary["queue_health"])
+        self.assertEqual("dry_run_until_owner_approval", summary["default_policy"])
+        self.assertIn("review pending high-risk approvals", summary["owner_next_action"])
+        self.assertIn("external_send=2", summary["owner_next_action"])
+        self.assertIn("budget_overrun=1", summary["owner_next_action"])
+        self.assertIn("blocked until owner approval", summary["summary"])
 
     def test_dashboard_renders_project_goal_acceptance_review_and_retro(self) -> None:
         code, project = run_cli(
@@ -4563,7 +5756,9 @@ class CompanyKernelCoreTest(unittest.TestCase):
 
         code, pending = run_cli("scheduler", "events", "--pending")
         self.assertEqual(code, 0, pending)
-        self.assertEqual(1, len(pending["events"]))
+        pending_event_types = [event["event_type"] for event in pending["events"]]
+        self.assertIn("task.done", pending_event_types)
+        self.assertNotIn("approval.requested", pending_event_types)
 
         code, approval = run_cli("approval", "approve", "--approval-id", "approval-publish-task-video-001", "--by", "ops", "--reason", "允许发布")
         self.assertEqual(code, 0, approval)
@@ -4915,6 +6110,19 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertIn("artifact", timeline_kinds)
         self.assertIn("handoff", timeline_kinds)
         self.assertIn("evidence", timeline_kinds)
+        story = api_payload["trace_story"]
+        self.assertEqual(story["required_chain"], [item["stage"] for item in story["stage_status"]])
+        story_by_stage = {item["stage"]: item for item in story["stage_status"]}
+        self.assertTrue(story_by_stage["task.created"]["observed"])
+        self.assertTrue(story_by_stage["attempt.started"]["observed"])
+        self.assertTrue(story_by_stage["artifact.created"]["observed"])
+        self.assertTrue(story_by_stage["handoff.created"]["observed"])
+        self.assertTrue(story_by_stage["evidence.promoted"]["observed"])
+        self.assertFalse(story_by_stage["tool.call.started"]["observed"])
+        self.assertEqual("missing", story_by_stage["tool.call.started"]["status"])
+        self.assertEqual("task-trace-api", story_by_stage["artifact.created"]["task_id"])
+        self.assertEqual(artifact["artifact_id"], story_by_stage["artifact.created"]["ref_id"])
+        self.assertEqual("artifact", story_by_stage["artifact.created"]["kind"])
         correction_items = [item for item in api_payload["timeline"] if item.get("label") in {"supervisor.correction_requested", "supervisor.correction_acknowledged"}]
         self.assertEqual(2, len(correction_items))
         self.assertEqual(["correction_requested", "correction_acknowledged"], [item["action"] for item in correction_items])
@@ -4926,6 +6134,45 @@ class CompanyKernelCoreTest(unittest.TestCase):
             ["hermes -> codex · correction_requested · task-trace-api", "codex -> hermes · correction_acknowledged · task-trace-api"],
             [item["summary"] for item in api_payload["supervision_chain"]],
         )
+        self.assertIn("trace_story", api_payload)
+        self.assertEqual("incomplete", api_payload["trace_story"]["state"])
+        self.assertIn("task.created", api_payload["trace_story"]["required_chain"])
+        self.assertIn("tool.call.started", api_payload["trace_story"]["required_chain"])
+        self.assertIn("artifact.created", api_payload["trace_story"]["observed_stages"])
+        self.assertIn("handoff.created", api_payload["trace_story"]["observed_stages"])
+        self.assertIn("evidence.promoted", api_payload["trace_story"]["observed_stages"])
+        self.assertIn("tool.call.started", api_payload["trace_story"]["missing_required"])
+        self.assertTrue(api_payload["trace_story"]["has_failure_or_recovery"])
+        self.assertIn("ceo_stage_summary", api_payload)
+        stage_summary = api_payload["ceo_stage_summary"]
+        self.assertEqual("incomplete", stage_summary["chain_state"])
+        self.assertEqual("critical", stage_summary["severity"])
+        self.assertIn("tool.call.started", stage_summary["missing_required"])
+        self.assertIn("artifact.created", stage_summary["observed_stages"])
+        self.assertTrue(stage_summary["has_failure_or_recovery"])
+        self.assertIn("review failed/recovery items", stage_summary["recommended_owner_action"])
+        stage_rows = {item["stage"]: item for item in stage_summary["stages"]}
+        self.assertEqual("observed", stage_rows["artifact.created"]["status"])
+        self.assertEqual("missing", stage_rows["tool.call.started"]["status"])
+        self.assertEqual("critical", stage_rows["tool.call.started"]["severity"])
+        self.assertIn("ceo_trace_brief", api_payload)
+        brief = api_payload["ceo_trace_brief"]
+        self.assertEqual("critical", brief["severity"])
+        self.assertEqual("incomplete", brief["chain_state"])
+        self.assertIn("review failed/recovery items", brief["owner_next_action"])
+        self.assertEqual(1, brief["critical_count"])
+        self.assertEqual(2, brief["correction_count"])
+        self.assertEqual(0, brief["tool_call_count"])
+        self.assertEqual(1, brief["final_evidence_count"])
+        self.assertEqual(0, brief["budget_event_count"])
+        self.assertEqual(0, brief["estimated_cost"])
+        self.assertIn("Trace incomplete", brief["headline"])
+        self.assertIn("tool.call.started", brief["missing_required"])
+        self.assertTrue(api_payload["ceo_timeline"])
+        ceo_text = json.dumps(api_payload["ceo_timeline"], ensure_ascii=False)
+        self.assertIn("supervisor.correction_requested", ceo_text)
+        self.assertIn("artifact.created", ceo_text)
+        self.assertIn("adapter failed", ceo_text)
         payload_json = json.dumps(api_payload, ensure_ascii=False)
         self.assertIn("safe trace output", payload_json)
         self.assertIn("trace-delivery.md", payload_json)
@@ -4933,7 +6180,845 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertNotIn(secret, payload_json)
         self.assertNotIn("id_rsa", payload_json)
         self.assertNotIn("path_or_url", payload_json)
-        self.assertNotIn("result_json", payload_json)
+
+    def test_runtime_sessions_and_tool_calls_are_first_class_trace_records(self) -> None:
+        code, submitted = run_cli("task", "submit", "--from", "openclaw-main", "--to", "codex", "--task-id", "task-control-plane-ledger", "--title", "Control plane ledger")
+        self.assertEqual(0, code, submitted)
+        trace_id = submitted["task"]["metadata"]["trace_id"]
+        code, running = run_cli("task", "run", "--task-id", "task-control-plane-ledger", "--agent", "codex", "--by", "hermes", "--adapter-type", "codex")
+        self.assertEqual(0, code, running)
+        attempt_id = running["attempt"]["attempt_id"]
+
+        code, session = run_cli(
+            "runtime",
+            "session",
+            "start",
+            "--session-id",
+            "session-control-plane-ledger",
+            "--employee",
+            "codex",
+            "--adapter-type",
+            "codex",
+            "--runtime-type",
+            "cli",
+            "--pid",
+            "4242",
+            "--session-key",
+            "codex-plan-session",
+            "--task-id",
+            "task-control-plane-ledger",
+            "--attempt-id",
+            attempt_id,
+        )
+        self.assertEqual(0, code, session)
+        self.assertEqual("active", session["session"]["status"])
+        self.assertEqual(trace_id, session["session"]["trace_id"])
+
+        code, heartbeat = run_cli("runtime", "session", "heartbeat", "--session-id", "session-control-plane-ledger", "--status", "active")
+        self.assertEqual(0, code, heartbeat)
+        self.assertEqual("active", heartbeat["session"]["status"])
+        self.assertNotEqual("", heartbeat["session"]["last_heartbeat_at"])
+
+        secret = "sk-toolCallSECRET1234567890"
+        code, tool = run_cli(
+            "tool-call",
+            "start",
+            "--tool-call-id",
+            "tool-call-control-plane-ledger",
+            "--trace-id",
+            trace_id,
+            "--task-id",
+            "task-control-plane-ledger",
+            "--attempt-id",
+            attempt_id,
+            "--employee",
+            "codex",
+            "--session-id",
+            "session-control-plane-ledger",
+            "--tool-name",
+            "shell",
+            "--tool-type",
+            "shell",
+            "--input-summary",
+            f"run tests with token={secret}",
+            "--risk-level",
+            "low",
+        )
+        self.assertEqual(0, code, tool)
+        self.assertEqual("running", tool["tool_call"]["status"])
+
+        code, finished_tool = run_cli(
+            "tool-call",
+            "finish",
+            "--tool-call-id",
+            "tool-call-control-plane-ledger",
+            "--status",
+            "success",
+            "--output-summary",
+            f"tests passed; inspected /Users/owner/.ssh/id_rsa; token={secret}",
+        )
+        self.assertEqual(0, code, finished_tool)
+        self.assertEqual("success", finished_tool["tool_call"]["status"])
+
+        status, sessions = api_gateway.route_get("/v1/runtime-sessions", {"employee_id": ["codex"]})
+        self.assertEqual(HTTPStatus.OK, status, sessions)
+        self.assertTrue(sessions["ok"])
+        self.assertEqual(["session-control-plane-ledger"], [item["session_id"] for item in sessions["runtime_sessions"]])
+
+        status, tool_calls = api_gateway.route_get("/v1/tool-calls", {"task_id": ["task-control-plane-ledger"]})
+        self.assertEqual(HTTPStatus.OK, status, tool_calls)
+        self.assertTrue(tool_calls["ok"])
+        self.assertEqual(["tool-call-control-plane-ledger"], [item["tool_call_id"] for item in tool_calls["tool_calls"]])
+        api_tool_call = tool_calls["tool_calls"][0]
+        self.assertTrue(api_tool_call["sanitized"])
+        self.assertFalse(api_tool_call["raw_available"])
+        self.assertEqual("sanitized_only", api_tool_call["redaction_policy"]["mode"])
+        self.assertIn("raw tool payload hidden", api_tool_call["redaction_policy"]["summary"])
+        status, session_tool_calls = api_gateway.route_get("/v1/tool-calls", {"session_id": ["session-control-plane-ledger"]})
+        self.assertEqual(HTTPStatus.OK, status, session_tool_calls)
+        self.assertEqual(["tool-call-control-plane-ledger"], [item["tool_call_id"] for item in session_tool_calls["tool_calls"]])
+        status, other_session_tool_calls = api_gateway.route_get("/v1/tool-calls", {"session_id": ["session-control-plane-other"]})
+        self.assertEqual(HTTPStatus.OK, status, other_session_tool_calls)
+        self.assertEqual([], other_session_tool_calls["tool_calls"])
+        tool_payload = json.dumps(tool_calls, ensure_ascii=False)
+        self.assertNotIn(secret, tool_payload)
+        self.assertNotIn("id_rsa", tool_payload)
+
+        status, api_payload = api_gateway.route_get(f"/v1/traces/{trace_id}/timeline", {})
+        self.assertEqual(HTTPStatus.OK, status, api_payload)
+        self.assertEqual(1, api_payload["counts"]["runtime_sessions"])
+        self.assertEqual(1, api_payload["counts"]["tool_calls"])
+        kinds = [item["kind"] for item in api_payload["timeline"]]
+        self.assertIn("runtime_session", kinds)
+        self.assertIn("tool_call", kinds)
+        trace_payload = json.dumps(api_payload, ensure_ascii=False)
+        self.assertIn("tool-call-control-plane-ledger", trace_payload)
+        self.assertIn("session-control-plane-ledger", trace_payload)
+        self.assertNotIn(secret, trace_payload)
+        self.assertNotIn("id_rsa", trace_payload)
+        self.assertNotIn("result_json", trace_payload)
+
+        status, cockpit = api_gateway.route_get("/v1/dashboard/cockpit", {})
+        self.assertEqual(HTTPStatus.OK, status, cockpit)
+        self.assertEqual(1, cockpit["counts"]["runtime_sessions"])
+        self.assertEqual(1, cockpit["counts"]["active_runtime_sessions"])
+        self.assertEqual(1, cockpit["counts"]["tool_calls"])
+        self.assertEqual(0, cockpit["counts"]["running_tool_calls"])
+        self.assertEqual(["session-control-plane-ledger"], [item["session_id"] for item in cockpit["runtime_sessions"]])
+        self.assertEqual(["tool-call-control-plane-ledger"], [item["tool_call_id"] for item in cockpit["tool_calls"]])
+
+        code, older_failed_tool = run_cli(
+            "tool-call",
+            "start",
+            "--tool-call-id",
+            "tool-call-control-plane-ledger-failed",
+            "--trace-id",
+            trace_id,
+            "--task-id",
+            "task-control-plane-ledger",
+            "--attempt-id",
+            attempt_id,
+            "--employee",
+            "codex",
+            "--session-id",
+            "session-control-plane-ledger",
+            "--tool-name",
+            "shell",
+            "--tool-type",
+            "shell",
+            "--input-summary",
+            "run failed command",
+            "--risk-level",
+            "medium",
+        )
+        self.assertEqual(0, code, older_failed_tool)
+        code, finished_failed_tool = run_cli(
+            "tool-call",
+            "finish",
+            "--tool-call-id",
+            "tool-call-control-plane-ledger-failed",
+            "--status",
+            "failed",
+            "--output-summary",
+            "command failed",
+        )
+        self.assertEqual(0, code, finished_failed_tool)
+        with companyctl.connect() as conn:
+            conn.execute(
+                """
+                UPDATE agent_tool_calls
+                SET started_at = ?, finished_at = ?
+                WHERE tool_call_id = ?
+                """,
+                ("2026-06-09T01:00:00+07:00", "2026-06-09T01:01:00+07:00", "tool-call-control-plane-ledger-failed"),
+            )
+            conn.commit()
+
+        status, cockpit_with_failure = api_gateway.route_get("/v1/dashboard/cockpit", {})
+        self.assertEqual(HTTPStatus.OK, status, cockpit_with_failure)
+        self.assertEqual(
+            ["tool-call-control-plane-ledger-failed", "tool-call-control-plane-ledger"],
+            [item["tool_call_id"] for item in cockpit_with_failure["tool_calls"][:2]],
+        )
+        self.assertEqual(
+            "failed",
+            cockpit_with_failure["task_cards"][0]["tool_summary"]["latest_tool_status"],
+        )
+
+        code, newer_failed_tool = run_cli(
+            "tool-call",
+            "start",
+            "--tool-call-id",
+            "tool-call-control-plane-ledger-failed-newer",
+            "--trace-id",
+            trace_id,
+            "--task-id",
+            "task-control-plane-ledger",
+            "--attempt-id",
+            attempt_id,
+            "--employee",
+            "codex",
+            "--session-id",
+            "session-control-plane-ledger",
+            "--tool-name",
+            "browser",
+            "--tool-type",
+            "browser",
+            "--input-summary",
+            "newer failed browser action",
+            "--risk-level",
+            "medium",
+        )
+        self.assertEqual(0, code, newer_failed_tool)
+        code, finished_newer_failed_tool = run_cli(
+            "tool-call",
+            "finish",
+            "--tool-call-id",
+            "tool-call-control-plane-ledger-failed-newer",
+            "--status",
+            "failed",
+            "--output-summary",
+            "newer command failed",
+        )
+        self.assertEqual(0, code, finished_newer_failed_tool)
+        status, cockpit_with_newer_failure = api_gateway.route_get("/v1/dashboard/cockpit", {})
+        self.assertEqual(HTTPStatus.OK, status, cockpit_with_newer_failure)
+        self.assertEqual(
+            "tool-call-control-plane-ledger-failed-newer",
+            cockpit_with_newer_failure["tool_calls"][0]["tool_call_id"],
+        )
+
+    def test_budget_center_records_costs_in_trace_and_cockpit(self) -> None:
+        code, submitted = run_cli("task", "submit", "--from", "openclaw-main", "--to", "codex", "--task-id", "task-budget-ledger", "--title", "Budget ledger")
+        self.assertEqual(0, code, submitted)
+        trace_id = submitted["task"]["metadata"]["trace_id"]
+        code, running = run_cli("task", "run", "--task-id", "task-budget-ledger", "--agent", "codex", "--by", "hermes", "--adapter-type", "codex")
+        self.assertEqual(0, code, running)
+        attempt_id = running["attempt"]["attempt_id"]
+
+        code, budget = run_cli(
+            "budget",
+            "record",
+            "--budget-event-id",
+            "budget-event-ledger",
+            "--task-id",
+            "task-budget-ledger",
+            "--attempt-id",
+            attempt_id,
+            "--employee",
+            "codex",
+            "--cost-type",
+            "model_api",
+            "--amount",
+            "0.42",
+            "--currency",
+            "USD",
+            "--token-input",
+            "1200",
+            "--token-output",
+            "340",
+            "--model-name",
+            "gpt-5",
+            "--provider",
+            "openai",
+            "--runtime-seconds",
+            "75",
+            "--summary",
+            "budget smoke cost",
+        )
+        self.assertEqual(0, code, budget)
+        self.assertEqual("budget-event-ledger", budget["budget_event"]["budget_event_id"])
+        self.assertEqual(trace_id, budget["budget_event"]["trace_id"])
+
+        code, summary = run_cli("budget", "summary", "--task-id", "task-budget-ledger")
+        self.assertEqual(0, code, summary)
+        self.assertEqual(1, summary["summary"]["event_count"])
+        self.assertEqual(0.42, summary["summary"]["total_amount"])
+        self.assertEqual(1200, summary["summary"]["token_input"])
+        self.assertEqual(340, summary["summary"]["token_output"])
+        self.assertEqual(75, summary["summary"]["runtime_seconds"])
+
+        status, budget_events = api_gateway.route_get("/v1/budget-events", {"task_id": ["task-budget-ledger"]})
+        self.assertEqual(HTTPStatus.OK, status, budget_events)
+        self.assertTrue(budget_events["ok"])
+        self.assertEqual(["budget-event-ledger"], [item["budget_event_id"] for item in budget_events["budget_events"]])
+
+        status, api_budget = api_gateway.route_post(
+            "/v1/budget-events",
+            {
+                "budget_event_id": "budget-event-api-ledger",
+                "task_id": "task-budget-ledger",
+                "attempt_id": attempt_id,
+                "employee_id": "codex",
+                "cost_type": "tool_runtime",
+                "amount": 0.08,
+                "currency": "USD",
+                "token_input": 40,
+                "token_output": 20,
+                "model_name": "gpt-5",
+                "provider": "openai",
+                "runtime_seconds": 5,
+                "summary": "api budget cost",
+            },
+        )
+        self.assertEqual(HTTPStatus.CREATED, status, api_budget)
+        self.assertEqual("budget-event-api-ledger", api_budget["budget_event"]["budget_event_id"])
+        self.assertEqual(trace_id, api_budget["budget_event"]["trace_id"])
+
+        status, budget_summary = api_gateway.route_get("/v1/budget-summary", {"task_id": ["task-budget-ledger"]})
+        self.assertEqual(HTTPStatus.OK, status, budget_summary)
+        self.assertEqual(0.5, budget_summary["summary"]["total_amount"])
+        self.assertEqual({"codex": 0.5}, budget_summary["summary"]["by_employee"])
+        self.assertEqual({"task-budget-ledger": 0.5}, budget_summary["summary"]["by_task"])
+        self.assertEqual({"model_api": 0.42, "tool_runtime": 0.08}, budget_summary["summary"]["by_cost_type"])
+        self.assertEqual(0.08, budget_summary["summary"]["by_cost_type"]["tool_runtime"])
+        self.assertEqual({"gpt-5": 0.5}, budget_summary["summary"]["by_model"])
+        self.assertEqual({"openai": 0.5}, budget_summary["summary"]["by_provider"])
+
+        status, trace = api_gateway.route_get(f"/v1/traces/{trace_id}/timeline", {})
+        self.assertEqual(HTTPStatus.OK, status, trace)
+        self.assertEqual(2, trace["counts"]["budget_events"])
+        self.assertIn("budget_event", [item["kind"] for item in trace["timeline"]])
+
+        status, cockpit = api_gateway.route_get("/v1/dashboard/cockpit", {})
+        self.assertEqual(HTTPStatus.OK, status, cockpit)
+        self.assertEqual(2, cockpit["counts"]["budget_events"])
+        self.assertEqual(0.5, cockpit["budget_summary"]["total_amount"])
+        self.assertEqual(1240, cockpit["budget_summary"]["token_input"])
+        self.assertEqual(360, cockpit["budget_summary"]["token_output"])
+        self.assertEqual({"gpt-5": 0.5}, cockpit["budget_summary"]["by_model"])
+        self.assertEqual({"openai": 0.5}, cockpit["budget_summary"]["by_provider"])
+
+    def test_budget_summary_reports_soft_and_hard_limit_status(self) -> None:
+        with sqlite3.connect(self.root / "company.sqlite") as conn:
+            conn.execute(
+                """
+                INSERT INTO budget_accounts(
+                  budget_account_id, scope_type, scope_id, currency, soft_limit, hard_limit, status, created_at, updated_at, metadata_json
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "budget-account-task-limit",
+                    "task",
+                    "task-budget-limit",
+                    "USD",
+                    0.5,
+                    1.0,
+                    "active",
+                    datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds"),
+                    datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds"),
+                    "{}",
+                ),
+            )
+            conn.commit()
+
+        code, submitted = run_cli("task", "submit", "--from", "openclaw-main", "--to", "codex", "--task-id", "task-budget-limit", "--title", "Budget limit")
+        self.assertEqual(0, code, submitted)
+        code, budget = run_cli(
+            "budget",
+            "record",
+            "--budget-event-id",
+            "budget-event-limit",
+            "--budget-account-id",
+            "budget-account-task-limit",
+            "--task-id",
+            "task-budget-limit",
+            "--employee",
+            "codex",
+            "--cost-type",
+            "model_api",
+            "--amount",
+            "0.75",
+            "--currency",
+            "USD",
+            "--summary",
+            "soft limit crossed",
+        )
+        self.assertEqual(0, code, budget)
+
+        status, budget_summary = api_gateway.route_get("/v1/budget-summary", {"task_id": ["task-budget-limit"]})
+        self.assertEqual(HTTPStatus.OK, status, budget_summary)
+        self.assertEqual("soft_exceeded", budget_summary["summary"]["limit_status"])
+        self.assertEqual(0.5, budget_summary["summary"]["budget_limits"]["soft_limit"])
+        self.assertEqual(1.0, budget_summary["summary"]["budget_limits"]["hard_limit"])
+        self.assertEqual(0.25, budget_summary["summary"]["budget_limits"]["remaining_to_hard"])
+
+    def test_budget_record_auto_requests_owner_approval_when_hard_limit_exceeded(self) -> None:
+        with sqlite3.connect(self.root / "company.sqlite") as conn:
+            conn.execute(
+                """
+                INSERT INTO budget_accounts(
+                  budget_account_id, scope_type, scope_id, currency, soft_limit, hard_limit, status, created_at, updated_at, metadata_json
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "budget-account-auto-approval",
+                    "task",
+                    "task-budget-auto-approval",
+                    "USD",
+                    0.5,
+                    1.0,
+                    "active",
+                    datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds"),
+                    datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds"),
+                    "{}",
+                ),
+            )
+            conn.commit()
+
+        code, submitted = run_cli("task", "submit", "--from", "openclaw-main", "--to", "codex", "--task-id", "task-budget-auto-approval", "--title", "Budget auto approval")
+        self.assertEqual(0, code, submitted)
+        code, budget = run_cli(
+            "budget",
+            "record",
+            "--budget-event-id",
+            "budget-event-auto-approval",
+            "--budget-account-id",
+            "budget-account-auto-approval",
+            "--task-id",
+            "task-budget-auto-approval",
+            "--employee",
+            "codex",
+            "--cost-type",
+            "model_api",
+            "--amount",
+            "1.25",
+            "--currency",
+            "USD",
+            "--summary",
+            "hard limit crossed",
+        )
+        self.assertEqual(0, code, budget)
+        self.assertEqual("hard_exceeded", budget["budget_limits"]["status"])
+        self.assertEqual("budget_overrun", budget["approval"]["action"])
+        self.assertEqual("pending", budget["approval"]["status"])
+        self.assertEqual("task-budget-auto-approval", budget["approval"]["detail"]["metadata"]["task_id"])
+        self.assertEqual(1.25, budget["approval"]["detail"]["metadata"]["budget_amount"])
+        self.assertEqual(1.0, budget["approval"]["detail"]["metadata"]["hard_limit"])
+        self.assertEqual("approval.requested", budget["approval_event"]["event_type"])
+        self.assertEqual("task-budget-auto-approval", budget["approval_event"]["task_id"])
+        self.assertTrue(budget["approval_event"]["processed_at"])
+
+        status, approvals = api_gateway.route_get("/v1/approvals", {"status": ["pending"], "action": ["budget_overrun"]})
+        self.assertEqual(HTTPStatus.OK, status, approvals)
+        self.assertEqual(["budget-overrun-task-budget-auto-approval"], [item["id"] for item in approvals["approvals"]])
+        self.assertEqual(1, approvals["approval_control_summary"]["real_execution_blockers"]["budget_overrun"])
+        trace_id = submitted["task"]["metadata"]["trace_id"]
+        status, trace = api_gateway.route_get(f"/v1/traces/{trace_id}/timeline", {})
+        self.assertEqual(HTTPStatus.OK, status, trace)
+        timeline = trace["timeline"]
+        self.assertIn("budget_event", [item["kind"] for item in timeline])
+        approval_events = [item for item in timeline if item.get("label") == "approval.requested"]
+        self.assertEqual(["budget-overrun-task-budget-auto-approval"], [item["approval_id"] for item in approval_events])
+        self.assertEqual(["budget_overrun"], [item["approval_action"] for item in approval_events])
+        ceo_approval_items = [item for item in trace["ceo_timeline"] if item.get("approval_id") == "budget-overrun-task-budget-auto-approval"]
+        self.assertEqual(["critical"], [item["severity"] for item in ceo_approval_items])
+        self.assertEqual(["owner approval required"], [item["recommended_action"] for item in ceo_approval_items])
+        self.assertIn("budget_overrun", ceo_approval_items[0]["summary"])
+
+    def test_budget_summary_reports_mixed_currency_ledger_rows(self) -> None:
+        code, submitted = run_cli("task", "submit", "--from", "openclaw-main", "--to", "codex", "--task-id", "task-budget-mixed", "--title", "Mixed currency budget")
+        self.assertEqual(0, code, submitted)
+        for event_id, amount, currency in [
+            ("budget-event-mixed-usd", "1.25", "USD"),
+            ("budget-event-mixed-thb", "40", "THB"),
+        ]:
+            code, budget = run_cli(
+                "budget",
+                "record",
+                "--budget-event-id",
+                event_id,
+                "--task-id",
+                "task-budget-mixed",
+                "--employee",
+                "codex",
+                "--cost-type",
+                "model_api",
+                "--amount",
+                amount,
+                "--currency",
+                currency,
+                "--summary",
+                f"mixed currency {currency}",
+            )
+            self.assertEqual(0, code, budget)
+
+        status, budget_summary = api_gateway.route_get("/v1/budget-summary", {"task_id": ["task-budget-mixed"]})
+        self.assertEqual(HTTPStatus.OK, status, budget_summary)
+        summary = budget_summary["summary"]
+        self.assertEqual("mixed", summary["currency"])
+        self.assertEqual({"THB": 40.0, "USD": 1.25}, summary["total_amounts_by_currency"])
+        self.assertEqual({"THB": 40.0, "USD": 1.25}, summary["by_currency"])
+        self.assertEqual({"codex": {"THB": 40.0, "USD": 1.25}}, summary["by_employee_by_currency"])
+        self.assertEqual({"task-budget-mixed": {"THB": 40.0, "USD": 1.25}}, summary["by_task_by_currency"])
+
+    def test_budget_summary_rolls_up_project_costs(self) -> None:
+        code, project = run_cli("project", "create", "--project-id", "project-budget-rollup", "--title", "Budget rollup", "--goal", "Track owner-visible project spend", "--owner", "openclaw-main")
+        self.assertEqual(0, code, project)
+        for task_id, amount, currency in [
+            ("task-project-budget-copy", "0.25", "USD"),
+            ("task-project-budget-image", "8", "THB"),
+        ]:
+            code, submitted = run_cli("task", "submit", "--from", "openclaw-main", "--to", "codex", "--task-id", task_id, "--title", f"Project budget {task_id}")
+            self.assertEqual(0, code, submitted)
+            code, linked = run_cli("project", "link-task", "--project-id", "project-budget-rollup", "--task-id", task_id)
+            self.assertEqual(0, code, linked)
+            code, budget = run_cli(
+                "budget",
+                "record",
+                "--budget-event-id",
+                f"budget-{task_id}",
+                "--task-id",
+                task_id,
+                "--employee",
+                "codex",
+                "--cost-type",
+                "model_api",
+                "--amount",
+                amount,
+                "--currency",
+                currency,
+                "--token-input",
+                "100",
+                "--token-output",
+                "25",
+                "--summary",
+                f"project cost {task_id}",
+            )
+            self.assertEqual(0, code, budget)
+
+        status, budget_summary = api_gateway.route_get("/v1/budget-summary", {})
+        self.assertEqual(HTTPStatus.OK, status, budget_summary)
+        summary = budget_summary["summary"]
+        self.assertEqual({"THB": 8.0, "USD": 0.25}, summary["by_project_by_currency"]["project-budget-rollup"])
+        self.assertEqual(2, summary["by_project_event_count"]["project-budget-rollup"])
+        self.assertEqual(200, summary["by_project_token_input"]["project-budget-rollup"])
+        self.assertEqual(50, summary["by_project_token_output"]["project-budget-rollup"])
+
+        code, cli_summary = run_cli("budget", "summary")
+        self.assertEqual(0, code, cli_summary)
+        self.assertEqual({"THB": 8.0, "USD": 0.25}, cli_summary["summary"]["by_project_by_currency"]["project-budget-rollup"])
+
+    def test_task_detail_includes_runtime_tool_call_and_budget_ledgers(self) -> None:
+        code, project = run_cli("project", "create", "--project-id", "project-task-detail-cost", "--title", "Task Detail Cost", "--goal", "Show task project spend", "--owner", "openclaw-main")
+        self.assertEqual(0, code, project)
+        code, submitted = run_cli("task", "submit", "--from", "openclaw-main", "--to", "codex", "--task-id", "task-detail-control-plane", "--title", "Task detail control plane")
+        self.assertEqual(0, code, submitted)
+        code, linked = run_cli("project", "link-task", "--project-id", "project-task-detail-cost", "--task-id", "task-detail-control-plane")
+        self.assertEqual(0, code, linked)
+        code, running = run_cli("task", "run", "--task-id", "task-detail-control-plane", "--agent", "codex", "--by", "hermes", "--adapter-type", "codex")
+        self.assertEqual(0, code, running)
+        attempt_id = running["attempt"]["attempt_id"]
+        trace_id = running["attempt"]["trace_id"]
+        code, session = run_cli(
+            "runtime",
+            "session",
+            "start",
+            "--session-id",
+            "session-task-detail-control-plane",
+            "--task-id",
+            "task-detail-control-plane",
+            "--attempt-id",
+            attempt_id,
+            "--employee",
+            "codex",
+            "--adapter-type",
+            "codex",
+            "--runtime-type",
+            "cli",
+        )
+        self.assertEqual(0, code, session)
+        code, tool = run_cli(
+            "tool-call",
+            "start",
+            "--tool-call-id",
+            "tool-task-detail-control-plane",
+            "--task-id",
+            "task-detail-control-plane",
+            "--attempt-id",
+            attempt_id,
+            "--employee",
+            "codex",
+            "--session-id",
+            "session-task-detail-control-plane",
+            "--tool-name",
+            "shell",
+            "--tool-type",
+            "shell",
+            "--input-summary",
+            "inspect task detail",
+        )
+        self.assertEqual(0, code, tool)
+        code, finished_tool = run_cli(
+            "tool-call",
+            "finish",
+            "--tool-call-id",
+            "tool-task-detail-control-plane",
+            "--status",
+            "success",
+            "--output-summary",
+            "task detail inspected",
+        )
+        self.assertEqual(0, code, finished_tool)
+        code, budget = run_cli(
+            "budget",
+            "record",
+            "--budget-event-id",
+            "budget-task-detail-control-plane",
+            "--task-id",
+            "task-detail-control-plane",
+            "--attempt-id",
+            attempt_id,
+            "--employee",
+            "codex",
+            "--cost-type",
+            "model_api",
+            "--amount",
+            "0.25",
+            "--currency",
+            "USD",
+            "--token-input",
+            "500",
+            "--token-output",
+            "120",
+            "--runtime-seconds",
+            "30",
+            "--summary",
+            "task detail budget",
+        )
+        self.assertEqual(0, code, budget)
+        unsafe_report = self.root / "reports" / "task-detail-control-plane.md"
+        unsafe_report.parent.mkdir(parents=True, exist_ok=True)
+        unsafe_report.write_text("task detail evidence\n", encoding="utf-8")
+        with companyctl.connect() as conn:
+            conn.execute(
+                "UPDATE tasks SET summary = ?, evidence_path = ?, updated_at = ? WHERE id = ?",
+                (f"completed with report {unsafe_report}", str(unsafe_report), companyctl.now(), "task-detail-control-plane"),
+            )
+            conn.execute(
+                "INSERT INTO company_events(id, trace_id, event_type, source_agent, task_id, payload_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (
+                    "evt-task-detail-unsafe-payload",
+                    trace_id,
+                    "task.progress",
+                    "codex",
+                    "task-detail-control-plane",
+                    json.dumps({"message": f"read {unsafe_report}", "path": str(unsafe_report)}, ensure_ascii=False),
+                    companyctl.now(),
+                ),
+            )
+            conn.execute(
+                "INSERT INTO audit_logs(actor, action, target, detail_json, created_at) VALUES (?, ?, ?, ?, ?)",
+                (
+                    "codex",
+                    "task.progress",
+                    "task-detail-control-plane",
+                    json.dumps({"path": str(unsafe_report), "message": f"used {unsafe_report}"}, ensure_ascii=False),
+                    companyctl.now(),
+                ),
+            )
+            conn.commit()
+
+        code, shown = run_cli("task", "show", "--task-id", "task-detail-control-plane")
+        self.assertEqual(0, code, shown)
+        self.assertEqual(["session-task-detail-control-plane"], [item["session_id"] for item in shown["runtime_sessions"]])
+        self.assertEqual(["tool-task-detail-control-plane"], [item["tool_call_id"] for item in shown["tool_calls"]])
+        self.assertEqual(["budget-task-detail-control-plane"], [item["budget_event_id"] for item in shown["budget_events"]])
+        self.assertEqual(0.25, shown["budget_summary"]["total_amount"])
+        self.assertEqual(500, shown["budget_summary"]["token_input"])
+        self.assertEqual(["project-task-detail-cost"], [item["id"] for item in shown["projects"]])
+        self.assertEqual({"USD": 0.25}, shown["projects"][0]["budget_by_currency"])
+        self.assertEqual(1, shown["projects"][0]["budget_event_count"])
+        self.assertEqual(trace_id, shown["runtime_sessions"][0]["trace_id"])
+        self.assertEqual("needs_progress", shown["ceo_acceptance_contract"]["status"])
+        self.assertEqual("running", shown["ceo_acceptance_contract"]["current_state"])
+        self.assertEqual(attempt_id, shown["ceo_acceptance_contract"]["current_attempt_id"])
+        self.assertEqual(1, shown["ceo_acceptance_contract"]["ledger_counts"]["tool_calls"])
+        self.assertEqual(1, shown["ceo_acceptance_contract"]["ledger_counts"]["budget_events"])
+        self.assertIn("monitor", shown["ceo_acceptance_contract"]["owner_next_action"])
+
+        status, api_payload = api_gateway.route_get("/v1/tasks/task-detail-control-plane", {})
+        self.assertEqual(HTTPStatus.OK, status, api_payload)
+        api_json = json.dumps(api_payload, ensure_ascii=False)
+        self.assertNotIn("evidence_path", api_payload["task"])
+        self.assertNotIn("payload_json", api_json)
+        self.assertNotIn("detail_json", api_json)
+        self.assertNotIn(str(self.root), api_json)
+        self.assertNotIn("/Users/owner", api_json)
+        self.assertIn("evidence", api_payload["task"])
+        self.assertFalse(api_payload["task"]["evidence"]["absolute_path_exposed"])
+        self.assertIsInstance(api_payload["evidence"]["path"], str)
+        self.assertEqual(api_payload["evidence"]["relative_path"], api_payload["evidence"]["path"])
+        self.assertEqual("task-detail-control-plane.md", api_payload["evidence"]["basename"])
+        self.assertFalse(api_payload["evidence"]["absolute_path_exposed"])
+        self.assertEqual(["tool-task-detail-control-plane"], [item["tool_call_id"] for item in api_payload["tool_calls"]])
+        self.assertEqual(0.25, api_payload["budget_summary"]["total_amount"])
+        self.assertEqual(["project-task-detail-cost"], [item["id"] for item in api_payload["projects"]])
+        self.assertEqual({"USD": 0.25}, api_payload["projects"][0]["budget_by_currency"])
+        timeline = api_payload["control_plane_timeline"]
+        timeline_kinds = [item["kind"] for item in timeline]
+        self.assertIn("task_event", timeline_kinds)
+        self.assertIn("attempt", timeline_kinds)
+        self.assertIn("runtime_session", timeline_kinds)
+        self.assertIn("tool_call", timeline_kinds)
+        self.assertIn("budget_event", timeline_kinds)
+        self.assertEqual("tool-task-detail-control-plane", next(item for item in timeline if item["kind"] == "tool_call")["tool_call_id"])
+        self.assertEqual("budget-task-detail-control-plane", next(item for item in timeline if item["kind"] == "budget_event")["budget_event_id"])
+        self.assertTrue(all(item["timestamp"] for item in timeline))
+        self.assertEqual(sorted(item["timestamp"] for item in timeline), [item["timestamp"] for item in timeline])
+        self.assertEqual(shown["ceo_acceptance_contract"], api_payload["ceo_acceptance_contract"])
+
+    def test_task_detail_marks_completed_task_without_final_evidence_invalid(self) -> None:
+        with sqlite3.connect(self.root / "company.sqlite") as conn:
+            conn.execute(
+                """
+                INSERT INTO tasks(id, source_agent, target_agent, title, description, priority, status, claimed_by, summary, evidence_path, blocker, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "task-completed-missing-final-evidence",
+                    "main",
+                    "codex",
+                    "Missing final evidence",
+                    "",
+                    "P1",
+                    "completed",
+                    "codex",
+                    "claimed done without final evidence",
+                    "",
+                    "",
+                    companyctl.now(),
+                    companyctl.now(),
+                ),
+            )
+            conn.commit()
+
+        status, shown = api_gateway.route_get("/v1/tasks/task-completed-missing-final-evidence", {})
+        self.assertEqual(HTTPStatus.OK, status, shown)
+        self.assertFalse(shown["completion_contract"]["valid"])
+        self.assertEqual("missing_final_evidence", shown["completion_contract"]["reason"])
+        self.assertEqual(0, shown["completion_contract"]["final_evidence_count"])
+        self.assertIn("final evidence", shown["completion_contract"]["summary"])
+        self.assertTrue(shown["completion_invalid"])
+        self.assertEqual("missing_final_evidence", shown["completion_invalid_reason"])
+        self.assertEqual(0, shown["final_evidence_count"])
+        self.assertEqual("blocked", shown["ceo_acceptance_contract"]["status"])
+        self.assertEqual("missing_final_evidence", shown["ceo_acceptance_contract"]["blocking_reasons"][0])
+        self.assertIn("final evidence", shown["ceo_acceptance_contract"]["owner_next_action"])
+
+    def test_dashboard_task_detail_drawer_renders_control_plane_ledgers(self) -> None:
+        template = Path(__file__).resolve().parents[1] / "dashboard_templates" / "gemini_dashboard.html"
+        html = template.read_text(encoding="utf-8")
+        for snippet in [
+            "const runtimeSessions = payload.runtime_sessions || [];",
+            "const toolCalls = payload.tool_calls || [];",
+            "const budgetSummary = payload.budget_summary || {};",
+            "const budgetEvents = payload.budget_events || [];",
+            "const controlPlaneTimeline = payload.control_plane_timeline || [];",
+            "const controlActionSummary = payload.control_action_summary || {};",
+            "const ownerActionTimeline = payload.owner_action_timeline || [];",
+            "const completionContract = payload.completion_contract || {};",
+            "const ceoAcceptanceContract = payload.ceo_acceptance_contract || {};",
+            "['Task Operational Ledger', taskOperationalLedgerSummary(payload, taskTracePayload)]",
+            "['CEO Trace Brief', ceoTraceBriefSummary(taskTracePayload.ceo_trace_brief || {})]",
+            "['CEO Acceptance Contract', ceoAcceptanceContractSummary(ceoAcceptanceContract)]",
+            "['Task Control Plane Timeline', taskControlPlaneTimelineSummary(controlPlaneTimeline)]",
+            "['Control Action Summary', controlActionSummaryDetail(controlActionSummary)]",
+            "['Owner Action Timeline', ownerActionTimelineSummary(ownerActionTimeline)]",
+            "['Runtime Sessions', runtimeSessionsSummary(runtimeSessions)]",
+            "['Tool Calls', toolCallsSummary(toolCalls)]",
+            "['Budget Summary', budgetSummaryDetail(budgetSummary)]",
+            "['Budget Events', budgetEventsSummary(budgetEvents)]",
+            "['Completion Contract', completionContractSummary(completionContract)]",
+            "['Evidence Acceptance', evidenceAcceptanceSummary(evidenceRecords, completionContract)]",
+            "function taskOperationalLedgerSummary",
+            "function ceoTraceBriefSummary",
+            "trace_headline=",
+            "owner_next_action=${item.owner_next_action || '-'}",
+            "tool_calls=${toolCalls.length}",
+            "budget_events=${budgetEvents.length}",
+            "evidence=${evidenceRecords.length}",
+            "timeline_events=${timeline.length}",
+            "final_evidence=${completionContract.final_evidence_count || 0}",
+            "owner_readable_next_action=",
+            "function taskControlPlaneTimelineSummary",
+            "control_plane_timeline empty: no task event/attempt/runtime/tool/budget/evidence rows yet.",
+            "item.kind || '-'",
+            "item.timestamp || '-'",
+            "function controlActionSummaryDetail",
+            "function ownerActionTimelineSummary",
+            "owner_action_timeline empty: no owner probe/correction/cancel/retry/reassign/approval actions yet.",
+            "requires_owner_approval=${String(!!item.requires_owner_approval)}",
+            "priority=${item.priority_label}",
+            "<span>next=${escapeHtml(item.owner_next_action || '-')}</span>",
+            "function ceoAcceptanceContractSummary",
+            "ready_for_acceptance=",
+            "truth_rules completion_requires_final_evidence=",
+            "pending_owner_approvals=",
+            "executed_control_actions=",
+            "owner_next_action=",
+            "function runtimeSessionsSummary",
+            "function toolCallsSummary",
+            "const sanitized = item.sanitized === true;",
+            "[Raw output redacted for safety]",
+            "raw_available=${String(!!item.raw_available)}",
+            "function budgetSummaryDetail",
+            "budgetLimitStatusSummary",
+            "function budgetEventsSummary",
+            "function completionContractSummary",
+            "function evidenceAcceptanceSummary",
+            "preview_policy=safe-preview-only",
+            "owner_acceptance_action=",
+            "accepted_final_evidence_count",
+            "rejected_final_evidence_count",
+            "acceptance_status",
+            "evidence_acceptance_queue",
+            "pending_final_evidence",
+            "acceptance_status=${escapeHtml(item.acceptance_status || 'pending')}",
+            "review_state=${escapeHtml(item.review_state || '-')}",
+            "pending_age_minutes=${escapeHtml(item.pending_age_minutes ?? '-')}",
+            "owner_next_action=${escapeHtml(item.owner_next_action || 'Review final evidence.')}",
+            "trace=${escapeHtml(item.trace_id || '-')}",
+            "function evidenceDecisionRows",
+            "acceptEvidenceFromDashboard",
+            "rejectEvidenceFromDashboard",
+            "/v1/evidence/${encodeURIComponent(evidenceId)}/accept",
+            "/v1/evidence/${encodeURIComponent(evidenceId)}/reject",
+            "Trace ·",
+            "trace=${escapeHtml(work.current_trace_id || '-')}",
+            "attempt=${escapeHtml(work.current_attempt_id || '-')}",
+            "session=${escapeHtml(runtime.latest_session_id || '-')}",
+            "tool_call=${escapeHtml(tools.latest_tool_call_id || '-')}",
+            "budget_events=${escapeHtml(budget.event_count || 0)}",
+            "const healthBar = (cockpit && cockpit.health_bar) || {};",
+            "Health Bar",
+            "poll=${escapeHtml(healthBar.poll_mode || '-')}",
+            "data_age=${escapeHtml(healthBar.data_age_seconds ?? '-')}",
+            "owner_next_action=${escapeHtml(healthBar.owner_next_action || '-')}",
+        ]:
+            self.assertIn(snippet, html)
 
     def test_v3_workspace_artifact_handoff_attempt_and_trace_flow(self) -> None:
         for employee_id, role in [("manager", "supervisor"), ("writer", "copywriter"), ("qa", "qa")]:
@@ -5297,6 +7382,73 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual(shown["correction_summary"], api_shown["correction_summary"])
         self.assertEqual(shown["correction_events"], api_shown["correction_events"])
 
+        code, trace = run_cli("trace", "timeline", "--task-id", "task-long-managed")
+        self.assertEqual(0, code, trace)
+        cancel_item = next(item for item in trace["timeline"] if item["kind"] == "event" and item["label"] == "supervisor.cancel_requested")
+        self.assertEqual(attempt_id, cancel_item["attempt_id"])
+        self.assertEqual("用户停止", cancel_item["reason"])
+        ceo_cancel_item = next(item for item in trace["ceo_timeline"] if item["stage"] == "supervisor.cancel_requested")
+        self.assertEqual(attempt_id, ceo_cancel_item["attempt_id"])
+        self.assertIn("用户停止", ceo_cancel_item["summary"])
+
+    def test_task_reassign_writes_event_attempt_audit_and_trace(self) -> None:
+        for employee_id, role in [("main", "operator"), ("hermes", "supervisor"), ("codex", "developer"), ("backup", "developer")]:
+            code, created = run_cli("employee", "create", "--id", employee_id, "--name", employee_id, "--role", role, "--runtime", "local", "--workspace", str(self.root / "workspace" / employee_id))
+            self.assertEqual(code, 0, created)
+            self.mark_active(employee_id)
+        code, submitted = run_cli("task", "submit", "--from", "main", "--to", "codex", "--task-id", "task-reassign-ledger", "--title", "Reassign ledger task")
+        self.assertEqual(0, code, submitted)
+        with companyctl.connect() as conn:
+            trace_id = companyctl.trace_id_for_task(conn, "task-reassign-ledger")
+        code, run = run_cli("task", "run", "--task-id", "task-reassign-ledger", "--agent", "codex", "--by", "hermes")
+        self.assertEqual(0, code, run)
+
+        code, reassigned = run_cli("task", "reassign", "--task-id", "task-reassign-ledger", "--by", "hermes", "--to", "backup", "--reason", "codex is blocked")
+        self.assertEqual(0, code, reassigned)
+        self.assertEqual("backup", reassigned["task"]["target_agent"])
+        self.assertEqual("submitted", reassigned["task"]["status"])
+        self.assertEqual(trace_id, reassigned["attempt"]["trace_id"])
+        self.assertEqual("reassign", reassigned["attempt"]["adapter_type"])
+        self.assertEqual("backup", reassigned["attempt"]["employee_id"])
+        self.assertEqual("codex is blocked", reassigned["attempt"]["metadata"]["reason"])
+        self.assertEqual("hermes", reassigned["attempt"]["metadata"]["by"])
+        self.assertEqual(run["attempt"]["attempt_id"], reassigned["attempt"]["metadata"]["previous_attempt_id"])
+        self.assertIn("event_id", reassigned)
+
+        with companyctl.connect() as conn:
+            event = conn.execute("SELECT * FROM company_events WHERE id = ?", (reassigned["event_id"],)).fetchone()
+            audit_row = conn.execute("SELECT * FROM audit_logs WHERE action = 'task.reassign' ORDER BY created_at DESC LIMIT 1").fetchone()
+        self.assertIsNotNone(event)
+        self.assertEqual("task.reassigned", event["event_type"])
+        self.assertEqual("hermes", event["source_agent"])
+        self.assertEqual("task-reassign-ledger", event["task_id"])
+        self.assertEqual(trace_id, event["trace_id"])
+        event_payload = json.loads(event["payload_json"])
+        self.assertEqual("codex", event_payload["from"])
+        self.assertEqual("backup", event_payload["to"])
+        self.assertEqual("codex is blocked", event_payload["reason"])
+        self.assertEqual(reassigned["attempt"]["attempt_id"], event_payload["attempt_id"])
+        self.assertEqual(run["attempt"]["attempt_id"], event_payload["previous_attempt_id"])
+        self.assertIsNotNone(audit_row)
+        self.assertEqual("hermes", audit_row["actor"])
+        self.assertEqual("task-reassign-ledger", audit_row["target"])
+        audit_payload = json.loads(audit_row["detail_json"])
+        self.assertEqual(reassigned["event_id"], audit_payload["event_id"])
+        self.assertEqual(reassigned["attempt"]["attempt_id"], audit_payload["attempt_id"])
+
+        code, trace = run_cli("trace", "timeline", "--trace-id", trace_id)
+        self.assertEqual(0, code, trace)
+        trace_event = next(item for item in trace["timeline"] if item["kind"] == "event" and item["label"] == "task.reassigned" and item["task_id"] == "task-reassign-ledger")
+        self.assertEqual(reassigned["attempt"]["attempt_id"], trace_event["attempt_id"])
+        self.assertEqual(run["attempt"]["attempt_id"], trace_event["previous_attempt_id"])
+        self.assertEqual("codex", trace_event["from_employee"])
+        self.assertEqual("backup", trace_event["to_employee"])
+        self.assertEqual("codex is blocked", trace_event["reason"])
+        ceo_event = next(item for item in trace["ceo_timeline"] if item["stage"] == "task.reassigned")
+        self.assertEqual(reassigned["attempt"]["attempt_id"], ceo_event["attempt_id"])
+        self.assertEqual(run["attempt"]["attempt_id"], ceo_event["previous_attempt_id"])
+        self.assertIn("codex -> backup", ceo_event["summary"])
+
     def test_managed_attempt_done_requires_promoted_final_evidence(self) -> None:
         for employee_id, role in [("main", "operator"), ("codex", "developer")]:
             code, created = run_cli("employee", "create", "--id", employee_id, "--name", employee_id, "--role", role, "--runtime", "local", "--workspace", str(self.root / "workspace" / employee_id))
@@ -5384,6 +7536,59 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual(200, status, api_shown)
         self.assertEqual(shown["progress_events"], api_shown["progress_events"])
 
+    def test_stagnant_probe_records_non_approval_ledger_progress_event(self) -> None:
+        for employee_id, role in [("main", "operator"), ("hermes", "supervisor"), ("codex", "developer")]:
+            code, created = run_cli("employee", "create", "--id", employee_id, "--name", employee_id, "--role", role, "--runtime", "local", "--workspace", str(self.root / "workspace" / employee_id))
+            self.assertEqual(0, code, created)
+        self.mark_active("codex")
+        code, submitted = run_cli("task", "submit", "--from", "main", "--to", "codex", "--task-id", "task-stagnant-probe", "--title", "Probe stagnant task")
+        self.assertEqual(0, code, submitted)
+        code, run = run_cli("task", "run", "--task-id", "task-stagnant-probe", "--agent", "codex", "--by", "hermes")
+        self.assertEqual(0, code, run)
+        attempt_id = run["attempt"]["attempt_id"]
+        status, probe = api_gateway.route_post(
+            "/v1/tasks/task-stagnant-probe/probe",
+            {
+                "attempt_id": attempt_id,
+                "by": "hermes",
+                "message": "Owner progress probe: report heartbeat, progress, blocker, or evidence.",
+                "reason": "progress_stagnant",
+            },
+        )
+        self.assertEqual(200, status, probe)
+        self.assertTrue(probe["ok"])
+        self.assertEqual("task.probe", probe["control_action"]["action"])
+        self.assertFalse(probe["control_action"]["requires_owner_approval"])
+        self.assertNotIn("approval", probe)
+        code, shown = run_cli("task", "show", "--task-id", "task-stagnant-probe")
+        self.assertEqual(0, code, shown)
+        self.assertEqual([], shown["progress_events"])
+        control_probe = next(item for item in shown["control_plane_timeline"] if item.get("event_type") == "task.probe")
+        self.assertEqual("task_event", control_probe["kind"])
+        self.assertEqual(attempt_id, control_probe["attempt_id"])
+        self.assertEqual("progress_stagnant", control_probe["reason"])
+        self.assertEqual("Owner progress probe: report heartbeat, progress, blocker, or evidence.", control_probe["summary"])
+        probe_event = next(item for item in shown["events"] if item["event_type"] == "task.probe")
+        probe_payload = json.loads(probe_event["payload_json"])
+        self.assertEqual(attempt_id, probe_payload["attempt_id"])
+        self.assertEqual("progress_stagnant", probe_payload["reason"])
+        self.assertEqual("Owner progress probe: report heartbeat, progress, blocker, or evidence.", probe_payload["message"])
+        status, trace_payload = api_gateway.route_get(f"/v1/traces/{submitted['task']['metadata']['trace_id']}/timeline", {})
+        self.assertEqual(200, status, trace_payload)
+        probe_ceo_item = next(item for item in trace_payload["ceo_timeline"] if item["stage"] == "task.probe")
+        self.assertEqual(attempt_id, probe_ceo_item["attempt_id"])
+        self.assertEqual("hermes", probe_ceo_item["actor"])
+        self.assertEqual("progress_stagnant", probe_ceo_item["reason"])
+        self.assertEqual("attention", probe_ceo_item["severity"])
+        self.assertIn("wait for worker response", probe_ceo_item["recommended_action"])
+        with companyctl.connect() as conn:
+            audit_row = conn.execute(
+                "SELECT action, detail_json FROM audit_logs WHERE target = ? AND action = ? ORDER BY created_at DESC LIMIT 1",
+                ("task-stagnant-probe", "task.probe"),
+            ).fetchone()
+        self.assertEqual("task.probe", audit_row["action"])
+        self.assertEqual(probe["event_id"], json.loads(audit_row["detail_json"])["event_id"])
+
     def test_retry_after_stale_starts_new_managed_attempt_with_same_trace(self) -> None:
         for employee_id, role in [("main", "operator"), ("hermes", "supervisor"), ("codex", "developer")]:
             code, created = run_cli("employee", "create", "--id", employee_id, "--name", employee_id, "--role", role, "--runtime", "local", "--workspace", str(self.root / "workspace" / employee_id))
@@ -5458,6 +7663,16 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual(original_attempt_id, retry_span["previous_attempt_id"])
         self.assertEqual([original_attempt_id, retry_attempt["attempt_id"]], retry_span["attempt_chain"])
         self.assertEqual("retry", retry_span["adapter_type"])
+        code, trace_payload = run_cli("trace", "timeline", "--trace-id", trace_id)
+        self.assertEqual(0, code, trace_payload)
+        retry_item = next(item for item in trace_payload["timeline"] if item["kind"] == "event" and item["label"] == "task.retrying")
+        self.assertEqual(retry_attempt["attempt_id"], retry_item["attempt_id"])
+        self.assertEqual(original_attempt_id, retry_item["previous_attempt_id"])
+        self.assertEqual("resume after stale", retry_item["reason"])
+        ceo_retry_item = next(item for item in trace_payload["ceo_timeline"] if item["stage"] == "task.retrying")
+        self.assertEqual(retry_attempt["attempt_id"], ceo_retry_item["attempt_id"])
+        self.assertEqual(original_attempt_id, ceo_retry_item["previous_attempt_id"])
+        self.assertIn("resume after stale", ceo_retry_item["summary"])
 
     def test_supervisor_scan_warns_on_missing_heartbeat_without_marking_progress_stale(self) -> None:
         for employee_id, role in [("main", "operator"), ("hermes", "supervisor"), ("codex", "developer")]:
@@ -5776,21 +7991,140 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual(200, status, progressed)
         self.assertEqual("running", progressed["attempt"]["status"])
         self.assertEqual("received", progressed["progress"]["progress_layer"])
-        status, corrected = api_gateway.route_post("/v1/tasks/task-long-api/correct", {"attempt_id": attempt_id, "by": "hermes", "message": "继续按计划执行"})
+        status, corrected = api_gateway.route_post("/v1/tasks/task-long-api/correct", {"attempt_id": attempt_id, "by": "hermes", "message": "继续按计划执行", "execute": "true"})
         self.assertEqual(200, status, corrected)
+        self.assertEqual("correction", corrected["control_action"]["action"])
+        self.assertTrue(corrected["control_action"]["requires_owner_approval"])
+        self.assertEqual("supervisor.correction_requested", corrected["control_action"]["event_type"])
+        self.assertEqual(corrected["event_id"], corrected["control_action"]["event_id"])
+        self.assertIn("audit", corrected["control_action"])
+        self.assertEqual("task-long-api", corrected["control_context"]["task"]["id"])
+        self.assertIn("supervisor.correction_requested", [item["event_type"] for item in corrected["control_context"]["events"]])
+        self.assertIn("budget_summary", corrected["control_context"])
+        self.assertIn("evidence_records", corrected["control_context"])
         status, attempts = api_gateway.route_get("/v1/tasks/task-long-api/attempts", {})
         self.assertEqual(200, status, attempts)
         self.assertEqual(attempt_id, attempts["attempts"][0]["attempt_id"])
-        status, cancelled = api_gateway.route_post("/v1/tasks/task-long-api/cancel", {"attempt_id": attempt_id, "by": "hermes", "reason": "测试取消"})
+        status, cancelled = api_gateway.route_post("/v1/tasks/task-long-api/cancel", {"attempt_id": attempt_id, "by": "hermes", "reason": "测试取消", "execute": "true"})
         self.assertEqual(200, status, cancelled)
+        self.assertEqual("cancel", cancelled["control_action"]["action"])
+        self.assertTrue(cancelled["control_action"]["requires_owner_approval"])
+        self.assertTrue(cancelled["control_action"]["dangerous"])
+        self.assertEqual("supervisor.cancel_requested", cancelled["control_action"]["event_type"])
+        self.assertEqual(cancelled["event_id"], cancelled["control_action"]["event_id"])
         self.assertEqual("cancelled", cancelled["attempt"]["status"])
-        status, retry = api_gateway.route_post("/v1/tasks/task-long-api/retry", {"by": "hermes", "reason": "API retry after cancel"})
+        self.assertEqual("task-long-api", cancelled["control_context"]["task"]["id"])
+        self.assertIn("supervisor.cancel_requested", [item["event_type"] for item in cancelled["control_context"]["events"]])
+        status, retry = api_gateway.route_post("/v1/tasks/task-long-api/retry", {"by": "hermes", "reason": "API retry after cancel", "execute": "true"})
         self.assertEqual(200, status, retry)
+        self.assertEqual("retry", retry["control_action"]["action"])
+        self.assertTrue(retry["control_action"]["requires_owner_approval"])
+        self.assertEqual("task.retrying", retry["control_action"]["event_type"])
+        self.assertEqual(retry["event_id"], retry["control_action"]["event_id"])
         self.assertNotEqual(attempt_id, retry["attempt"]["attempt_id"])
         self.assertEqual("starting", retry["attempt"]["status"])
         self.assertEqual(run["attempt"]["trace_id"], retry["attempt"]["trace_id"])
         self.assertEqual(attempt_id, retry["attempt"]["metadata"]["previous_attempt_id"])
         self.assertEqual("claimed", retry["task"]["status"])
+        self.assertEqual("task-long-api", retry["control_context"]["task"]["id"])
+        self.assertTrue(any(item["attempt_id"] == retry["attempt"]["attempt_id"] for item in retry["control_context"]["attempts"]))
+        self.assertIn("task.retrying", [item["event_type"] for item in retry["control_context"]["events"]])
+        self.assertIn("task.retry", [item["action"] for item in retry["control_context"]["audit_logs"]])
+        self.assertIn("budget_summary", retry["control_context"])
+        self.assertIn("evidence_records", retry["control_context"])
+        status, reassigned = api_gateway.route_post("/v1/tasks/task-long-api/reassign", {"by": "hermes", "to": "codex", "reason": "API reassign metadata check", "execute": "true"})
+        self.assertEqual(200, status, reassigned)
+        self.assertEqual("reassign", reassigned["control_action"]["action"])
+        self.assertTrue(reassigned["control_action"]["requires_owner_approval"])
+        self.assertEqual("task.reassigned", reassigned["control_action"]["event_type"])
+        self.assertEqual(reassigned["event_id"], reassigned["control_action"]["event_id"])
+        self.assertEqual("task-long-api", reassigned["control_context"]["task"]["id"])
+        self.assertIn("task.reassigned", [item["event_type"] for item in reassigned["control_context"]["events"]])
+        self.assertIn("task.reassign", [item["action"] for item in reassigned["control_context"]["audit_logs"]])
+        status, reopened = api_gateway.route_post("/v1/tasks/task-long-api/reopen", {"by": "main", "reason": "API reopen after reassign", "status": "submitted"})
+        self.assertEqual(200, status, reopened)
+        self.assertEqual("reopen", reopened["control_action"]["action"])
+        self.assertEqual("task.reopened", reopened["control_action"]["event_type"])
+        self.assertEqual(reopened["event_id"], reopened["control_action"]["event_id"])
+        self.assertEqual("task-long-api", reopened["control_context"]["task"]["id"])
+        self.assertIn("task.reopened", [item["event_type"] for item in reopened["control_context"]["events"]])
+        self.assertIn("task.reopen", [item["action"] for item in reopened["control_context"]["audit_logs"]])
+
+    def test_task_control_actions_request_approval_unless_explicitly_executed(self) -> None:
+        for employee_id, role in [("main", "operator"), ("hermes", "supervisor"), ("codex", "developer")]:
+            code, created = run_cli("employee", "create", "--id", employee_id, "--name", employee_id, "--role", role, "--runtime", "local", "--workspace", str(self.root / "workspace" / employee_id))
+            self.assertEqual(code, 0, created)
+        self.mark_active("codex")
+        code, submitted = run_cli("task", "submit", "--from", "main", "--to", "codex", "--task-id", "task-control-approval", "--title", "Approval gated control task")
+        self.assertEqual(0, code, submitted)
+        status, run = api_gateway.route_post("/v1/tasks/task-control-approval/run", {"agent": "codex", "by": "hermes", "stale_after_seconds": 900})
+        self.assertEqual(200, status, run)
+        attempt_id = run["attempt"]["attempt_id"]
+
+        status, pending_cancel = api_gateway.route_post("/v1/tasks/task-control-approval/cancel", {"attempt_id": attempt_id, "by": "hermes", "reason": "needs approval first"})
+        self.assertEqual(HTTPStatus.ACCEPTED, status, pending_cancel)
+        self.assertFalse(pending_cancel["executed"])
+        self.assertEqual("pending_owner_approval", pending_cancel["control_action"]["approval_mode"])
+        self.assertEqual("cancel", pending_cancel["control_action"]["action"])
+        self.assertEqual("task_control.cancel", pending_cancel["approval"]["action"])
+        self.assertEqual("task-control-approval", pending_cancel["approval"]["metadata"]["task_id"])
+        self.assertEqual(attempt_id, pending_cancel["approval"]["metadata"]["attempt_id"])
+        self.assertEqual("task-control-approval", pending_cancel["control_context"]["task"]["id"])
+        self.assertTrue(any(item["attempt_id"] == attempt_id for item in pending_cancel["control_context"]["attempts"]))
+        self.assertIn("approval.requested", [item["event_type"] for item in pending_cancel["control_context"]["events"]])
+        self.assertIn("budget_summary", pending_cancel["control_context"])
+        self.assertIn("evidence_records", pending_cancel["control_context"])
+        status, pending_correction = api_gateway.route_post("/v1/tasks/task-control-approval/correct", {"attempt_id": attempt_id, "by": "hermes", "message": "needs owner approval first"})
+        self.assertEqual(HTTPStatus.ACCEPTED, status, pending_correction)
+        self.assertEqual("task-control-approval", pending_correction["control_context"]["task"]["id"])
+        self.assertIn("approval.requested", [item["event_type"] for item in pending_correction["control_context"]["events"]])
+        status, shown_after_pending = api_gateway.route_get("/v1/tasks/task-control-approval", {})
+        self.assertEqual(200, status, shown_after_pending)
+        self.assertEqual("starting", shown_after_pending["attempts"][0]["status"])
+        self.assertEqual(2, shown_after_pending["control_action_summary"]["pending_owner_approvals"])
+        self.assertEqual(0, shown_after_pending["control_action_summary"]["executed_control_actions"])
+        self.assertEqual(["cancel", "correction"], sorted(shown_after_pending["control_action_summary"]["pending_actions"]))
+        self.assertEqual("review pending owner approvals before executing controls", shown_after_pending["control_action_summary"]["owner_next_action"])
+        pending_timeline = shown_after_pending["owner_action_timeline"]
+        self.assertEqual(["pending_approval", "pending_approval"], [item["kind"] for item in pending_timeline])
+        self.assertEqual(["cancel", "correction"], sorted(item["action"] for item in pending_timeline))
+        self.assertTrue(all(item["requires_owner_approval"] for item in pending_timeline))
+        self.assertTrue(all(item["status"] == "pending" for item in pending_timeline))
+        self.assertTrue(all(item["task_id"] == "task-control-approval" for item in pending_timeline))
+
+        status, probe = api_gateway.route_post(
+            "/v1/tasks/task-control-approval/probe",
+            {"attempt_id": attempt_id, "by": "hermes", "message": "owner probe before cancel", "reason": "owner_attention_check"},
+        )
+        self.assertEqual(200, status, probe)
+
+        status, executed_cancel = api_gateway.route_post("/v1/tasks/task-control-approval/cancel", {"attempt_id": attempt_id, "by": "hermes", "reason": "owner approved execution", "execute": "true"})
+        self.assertEqual(200, status, executed_cancel)
+        self.assertTrue(executed_cancel["executed"])
+        self.assertEqual("owner_approved_execute", executed_cancel["control_action"]["approval_mode"])
+        self.assertEqual("cancelled", executed_cancel["attempt"]["status"])
+        status, shown_after_cancel = api_gateway.route_get("/v1/tasks/task-control-approval", {})
+        self.assertEqual(200, status, shown_after_cancel)
+        self.assertEqual(2, shown_after_cancel["control_action_summary"]["executed_control_actions"])
+        self.assertEqual("cancel", shown_after_cancel["control_action_summary"]["latest_executed_action"])
+        self.assertEqual("cancelled", shown_after_cancel["control_action_summary"]["latest_attempt_status"])
+        self.assertEqual("old attempt is cancelled; retry or reassign only after owner decision", shown_after_cancel["control_action_summary"]["owner_next_action"])
+        action_timeline = shown_after_cancel["owner_action_timeline"]
+        self.assertEqual(["pending_approval", "pending_approval", "executed_control", "executed_control"], [item["kind"] for item in action_timeline])
+        self.assertEqual(["cancel", "cancel", "correction", "probe"], sorted(item["action"] for item in action_timeline))
+        approval_flags = {item["action"]: item["requires_owner_approval"] for item in action_timeline}
+        self.assertTrue(approval_flags["cancel"])
+        self.assertTrue(approval_flags["correction"])
+        self.assertFalse(approval_flags["probe"])
+        probe_item = next(item for item in action_timeline if item["action"] == "probe")
+        self.assertEqual("task.probe", probe_item["event_type"])
+        self.assertEqual("owner_attention_check", probe_item["reason"])
+        self.assertEqual("hermes", probe_item["actor"])
+        self.assertIn("wait for worker response", probe_item["owner_next_action"])
+        cancel_item = next(item for item in action_timeline if item["action"] == "cancel" and item["kind"] == "executed_control")
+        self.assertEqual("supervisor.cancel_requested", cancel_item["event_type"])
+        self.assertEqual("owner approved execution", cancel_item["reason"])
+        self.assertIn("verify process stopped", cancel_item["owner_next_action"])
 
     def test_dashboard_employee_cards_include_managed_attempt_state(self) -> None:
         for employee_id, role in [("main", "operator"), ("hermes", "supervisor"), ("codex", "developer")]:
@@ -5808,8 +8142,180 @@ class CompanyKernelCoreTest(unittest.TestCase):
             conn.close()
         codex = next(item for item in summary["employees"] if item["id"] == "codex")
         self.assertEqual("task-long-dashboard", codex["current_attempt"]["task_id"])
+        self.assertEqual("Long dashboard task", codex["current_attempt"]["task_title"])
         self.assertEqual("starting", codex["current_attempt"]["status"])
         self.assertEqual(run["attempt"]["attempt_id"], codex["current_attempt"]["attempt_id"])
+        models = company_dashboard.employee_view_models(summary)
+        codex_model = next(item for item in models if item["id"] == "codex")
+        self.assertEqual("Long dashboard task", codex_model["current_task_title"])
+        self.assertEqual("task-long-dashboard", codex_model["current_task_id"])
+
+    def test_dashboard_employee_cards_include_control_plane_rollups(self) -> None:
+        for employee_id, role in [("main", "operator"), ("codex", "developer")]:
+            code, created = run_cli("employee", "create", "--id", employee_id, "--name", employee_id, "--role", role, "--runtime", "local", "--workspace", str(self.root / "workspace" / employee_id))
+            self.assertEqual(code, 0, created)
+        self.mark_active("codex")
+        attendance_dir = self.root / "state" / "attendance"
+        attendance_dir.mkdir(parents=True)
+        (attendance_dir / "latest.json").write_text(
+            json.dumps({"ok": True, "employees": [{"agent": "codex", "status": "online"}]}, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        code, submitted = run_cli("task", "submit", "--from", "main", "--to", "codex", "--task-id", "task-employee-card-rollup", "--title", "Employee card rollup")
+        self.assertEqual(0, code, submitted)
+        code, run = run_cli("task", "run", "--task-id", "task-employee-card-rollup", "--agent", "codex", "--by", "hermes", "--adapter-type", "codex")
+        self.assertEqual(0, code, run)
+        attempt_id = run["attempt"]["attempt_id"]
+        code, session = run_cli("runtime", "session", "start", "--session-id", "session-employee-card-rollup", "--task-id", "task-employee-card-rollup", "--attempt-id", attempt_id, "--employee", "codex", "--adapter-type", "codex", "--runtime-type", "cli")
+        self.assertEqual(0, code, session)
+        code, tool = run_cli("tool-call", "start", "--tool-call-id", "tool-employee-card-rollup", "--task-id", "task-employee-card-rollup", "--attempt-id", attempt_id, "--employee", "codex", "--session-id", "session-employee-card-rollup", "--tool-name", "shell", "--tool-type", "shell", "--input-summary", "card rollup command")
+        self.assertEqual(0, code, tool)
+        code, finished_tool = run_cli("tool-call", "finish", "--tool-call-id", "tool-employee-card-rollup", "--status", "success", "--output-summary", "card rollup command completed")
+        self.assertEqual(0, code, finished_tool)
+        code, budget = run_cli("budget", "record", "--budget-event-id", "budget-employee-card-rollup", "--task-id", "task-employee-card-rollup", "--attempt-id", attempt_id, "--employee", "codex", "--cost-type", "model_api", "--amount", "0.21", "--currency", "USD", "--token-input", "70", "--token-output", "30", "--runtime-seconds", "9", "--summary", "employee card cost")
+        self.assertEqual(0, code, budget)
+        evidence_file = Path(submitted["task"]["workspace"]["path"]) / "final" / "employee-card-evidence.md"
+        evidence_file.parent.mkdir(parents=True, exist_ok=True)
+        evidence_file.write_text("employee card final evidence\n", encoding="utf-8")
+        code, artifact = run_cli("task", "artifact", "register", "--task-id", "task-employee-card-rollup", "--employee", "codex", "--path", str(evidence_file), "--type", "markdown", "--stage", "final", "--summary", "employee card artifact")
+        self.assertEqual(0, code, artifact)
+        code, evidence = run_cli("task", "evidence", "promote", "--artifact-id", artifact["artifact"]["artifact_id"], "--employee", "codex", "--summary", "employee card final evidence")
+        self.assertEqual(0, code, evidence)
+
+        with companyctl.connect() as conn:
+            summary = company_dashboard.load_summary(conn)
+            models = company_dashboard.employee_view_models(summary)
+        codex_model = next(item for item in models if item["id"] == "codex")
+        self.assertEqual(1, codex_model["runtime_summary"]["session_count"])
+        self.assertEqual("session-employee-card-rollup", codex_model["runtime_summary"]["latest_session_id"])
+        self.assertEqual(1, codex_model["tool_summary"]["tool_call_count"])
+        self.assertEqual("tool-employee-card-rollup", codex_model["tool_summary"]["latest_tool_call_id"])
+        self.assertEqual(1, codex_model["budget_summary"]["event_count"])
+        self.assertEqual(0.21, codex_model["budget_summary"]["total_amount"])
+        self.assertEqual(70, codex_model["budget_summary"]["token_input"])
+        self.assertEqual(30, codex_model["budget_summary"]["token_output"])
+        self.assertEqual(9, codex_model["budget_summary"]["runtime_seconds"])
+        self.assertEqual(1, codex_model["evidence_summary"]["evidence_count"])
+        self.assertEqual(1, codex_model["evidence_summary"]["final_evidence_count"])
+        self.assertEqual(evidence["evidence"]["evidence_id"], codex_model["evidence_summary"]["latest_evidence_id"])
+        self.assertEqual("task-employee-card-rollup", codex_model["work_status_summary"]["current_task_id"])
+        self.assertEqual("running", codex_model["work_status_summary"]["current_state"])
+        self.assertEqual("Employee card rollup", codex_model["work_status_summary"]["current_task_title"])
+        self.assertEqual(1, codex_model["work_status_summary"]["tool_call_count"])
+        self.assertEqual(0.21, codex_model["work_status_summary"]["budget_total"])
+        self.assertEqual(1, codex_model["work_status_summary"]["final_evidence_count"])
+        self.assertIn("monitor current task", codex_model["work_status_summary"]["owner_next_action"])
+        self.assertEqual("warn", codex_model["work_health"]["state"])
+        self.assertEqual(["readiness_online_only"], codex_model["work_health"]["reasons"])
+        self.assertIn("observable with warnings", codex_model["work_health"]["summary"])
+        self.assertEqual("warn", codex_model["work_status_summary"]["work_health"]["state"])
+        status, cockpit = api_gateway.route_get("/v1/dashboard/cockpit", {})
+        self.assertEqual(HTTPStatus.OK, status, cockpit)
+        api_codex = next(item for item in cockpit["employees"] if item["id"] == "codex")
+        self.assertEqual(1, api_codex["runtime_summary"]["session_count"])
+        self.assertEqual("session-employee-card-rollup", api_codex["runtime_summary"]["latest_session_id"])
+        self.assertEqual(1, api_codex["tool_summary"]["tool_call_count"])
+        self.assertEqual("tool-employee-card-rollup", api_codex["tool_summary"]["latest_tool_call_id"])
+        self.assertEqual(1, api_codex["budget_summary"]["event_count"])
+        self.assertEqual(0.21, api_codex["budget_summary"]["total_amount"])
+        self.assertEqual(1, api_codex["evidence_summary"]["final_evidence_count"])
+        self.assertEqual(evidence["evidence"]["evidence_id"], api_codex["evidence_summary"]["latest_evidence_id"])
+        self.assertEqual("task-employee-card-rollup", api_codex["work_status_summary"]["current_task_id"])
+        self.assertEqual("running", api_codex["work_status_summary"]["current_state"])
+        self.assertEqual("warn", api_codex["work_health"]["state"])
+        status, employees_payload = api_gateway.route_get("/v1/employees", {})
+        self.assertEqual(HTTPStatus.OK, status, employees_payload)
+        list_codex = next(item for item in employees_payload["employees"] if item["id"] == "codex")
+        self.assertEqual("task-employee-card-rollup", list_codex["work_status_summary"]["current_task_id"])
+        self.assertEqual("running", list_codex["work_status_summary"]["current_state"])
+        self.assertEqual(1, list_codex["work_status_summary"]["tool_call_count"])
+        self.assertEqual(0.21, list_codex["work_status_summary"]["budget_total"])
+        self.assertEqual("warn", list_codex["work_health"]["state"])
+
+        status, employee_detail = api_gateway.route_get("/v1/employees/codex", {})
+        self.assertEqual(HTTPStatus.OK, status, employee_detail)
+        contract = employee_detail["ceo_work_contract"]
+        self.assertEqual("codex", contract["employee_id"])
+        self.assertEqual("task-employee-card-rollup", contract["current_task"]["task_id"])
+        self.assertEqual(attempt_id, contract["current_task"]["attempt_id"])
+        self.assertEqual("session-employee-card-rollup", contract["current_task"]["session_id"])
+        self.assertEqual("running", contract["current_task"]["state"])
+        self.assertEqual("tool-employee-card-rollup", contract["tool_calls"]["latest_tool_call_id"])
+        self.assertEqual(1, contract["tool_calls"]["total"])
+        self.assertEqual(0, contract["tool_calls"]["failed_or_blocked"])
+        self.assertEqual(0.21, contract["budget"]["total_amount"])
+        self.assertEqual(70, contract["budget"]["token_input"])
+        self.assertEqual(30, contract["budget"]["token_output"])
+        self.assertEqual(1, contract["evidence"]["final_count"])
+        self.assertEqual(evidence["evidence"]["evidence_id"], contract["evidence"]["latest_evidence_id"])
+        self.assertEqual("monitor", contract["owner_review"]["mode"])
+        self.assertIn("monitor current task", contract["owner_review"]["next_action"])
+        self.assertEqual([], contract["owner_review"]["warnings"])
+        self.assertTrue(contract["truth_rules"]["completion_requires_final_evidence"])
+        self.assertFalse(contract["truth_rules"]["heartbeat_is_completion"])
+
+        status, work_history = api_gateway.route_get("/v1/employees/codex/work-history", {})
+        self.assertEqual(HTTPStatus.OK, status, work_history)
+        self.assertEqual(contract, work_history["ceo_work_contract"])
+
+    def test_employee_work_status_summary_reports_stagnant_tasks_and_actions(self) -> None:
+        for employee_id, role in [("main", "operator"), ("codex", "developer")]:
+            code, created = run_cli("employee", "create", "--id", employee_id, "--name", employee_id, "--role", role, "--runtime", "local", "--workspace", str(self.root / "workspace" / employee_id))
+            self.assertEqual(code, 0, created)
+        self.mark_active("codex")
+        code, submitted = run_cli("task", "submit", "--from", "main", "--to", "codex", "--task-id", "task-employee-stagnant", "--title", "Employee stagnant work")
+        self.assertEqual(0, code, submitted)
+        code, run = run_cli("task", "run", "--task-id", "task-employee-stagnant", "--agent", "codex", "--by", "hermes", "--stale-after-seconds", "1")
+        self.assertEqual(0, code, run)
+        attempt_id = run["attempt"]["attempt_id"]
+        conn = companyctl.connect()
+        try:
+            conn.execute(
+                """
+                UPDATE execution_attempts
+                SET status = 'running',
+                    last_heartbeat_at = ?,
+                    last_progress_at = ?,
+                    runtime_policy_json = ?
+                WHERE attempt_id = ?
+                """,
+                (
+                    companyctl.now(),
+                    "2000-01-01T00:00:00+00:00",
+                    json.dumps({"heartbeat_interval_seconds": 3600, "stale_after_seconds": 1, "max_runtime_seconds": 36000}),
+                    attempt_id,
+                ),
+            )
+            conn.commit()
+            summary = company_dashboard.load_summary(conn)
+            models = company_dashboard.employee_view_models(summary)
+        finally:
+            conn.close()
+        codex_model = next(item for item in models if item["id"] == "codex")
+        work = codex_model["work_status_summary"]
+        self.assertEqual("task-employee-stagnant", work["current_task_id"])
+        self.assertEqual("progress_stagnant", work["current_state"])
+        self.assertEqual("fresh", work["heartbeat_state"])
+        self.assertEqual("stagnant", work["progress_state"])
+        self.assertTrue(work["progress_age_seconds"] >= 1)
+        self.assertIn("inspect logs", work["owner_next_action"])
+        self.assertIn("request correction", work["owner_next_action"])
+        self.assertEqual(["send_probe", "view_logs", "request_correction", "wait", "cancel"], [action["id"] for action in work["recommended_actions"]])
+        self.assertFalse(work["recommended_actions"][0]["requires_owner_approval"])
+        self.assertEqual("POST", work["recommended_actions"][0]["method"])
+        self.assertEqual("block", codex_model["work_health"]["state"])
+        self.assertIn("progress_stagnant", codex_model["work_health"]["reasons"])
+        self.assertIn("tool_call_ledger_missing", codex_model["work_health"]["reasons"])
+        self.assertIn("budget_ledger_missing", codex_model["work_health"]["reasons"])
+        self.assertIn("final_evidence_missing_for_current_task", codex_model["work_health"]["reasons"])
+        self.assertIn("needs owner attention", codex_model["work_health"]["summary"])
+
+        status, employees_payload = api_gateway.route_get("/v1/employees", {})
+        self.assertEqual(HTTPStatus.OK, status, employees_payload)
+        api_codex = next(item for item in employees_payload["employees"] if item["id"] == "codex")
+        self.assertEqual("progress_stagnant", api_codex["work_status_summary"]["current_state"])
+        self.assertEqual(["send_probe", "view_logs", "request_correction", "wait", "cancel"], [action["id"] for action in api_codex["work_status_summary"]["recommended_actions"]])
+        self.assertEqual("block", api_codex["work_health"]["state"])
 
     def test_dashboard_employee_view_models_include_readiness_badges(self) -> None:
         for employee_id, role, runtime in [
@@ -5851,6 +8357,11 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual("active_ready", by_id["codex"]["readiness_level"])
         self.assertEqual("online_only", by_id["main"]["readiness_level"])
         self.assertEqual("online_only", by_id["antigravity"]["readiness_level"])
+        self.assertTrue(by_id["codex"]["interaction_contract"]["can_chat"])
+        self.assertTrue(by_id["codex"]["interaction_contract"]["can_execute_task"])
+        self.assertEqual("chat_and_task", by_id["codex"]["interaction_contract"]["mode"])
+        self.assertFalse(by_id["antigravity"]["interaction_contract"]["can_execute_task"])
+        self.assertEqual("observe_only", by_id["antigravity"]["interaction_contract"]["mode"])
         self.assertTrue(by_id["codex"]["schedulable"])
         self.assertFalse(by_id["main"]["schedulable"])
         self.assertFalse(by_id["antigravity"]["schedulable"])
@@ -5884,6 +8395,29 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertIn("Limited / review", html)
         self.assertIn("Not schedulable", html)
         self.assertIn("reason=${escapeHtml(shortText(reason, 90))}", html)
+        self.assertIn("interaction_contract", html)
+        self.assertIn("employeeInteractionFooter", html)
+
+    def test_dashboard_readiness_does_not_treat_heartbeat_as_direct_attendance(self) -> None:
+        code, created = run_cli("employee", "create", "--id", "claude-code", "--name", "Claude Code", "--role", "runtime-agent", "--runtime", "claude", "--workspace", str(self.root / "workspace" / "claude-code"))
+        self.assertEqual(0, code, created)
+        self.mark_active("claude-code")
+        code, heartbeat = run_cli("heartbeat", "--agent", "claude-code")
+        self.assertEqual(0, code, heartbeat)
+        verification_dir = self.root / "state" / "employee-verification" / "claude-code"
+        verification_dir.mkdir(parents=True)
+        (verification_dir / "latest-runtime.json").write_text(json.dumps({"ok": True, "activation_allowed": True}, ensure_ascii=False), encoding="utf-8")
+        attendance_dir = self.root / "state" / "attendance"
+        attendance_dir.mkdir(parents=True)
+        (attendance_dir / "latest.json").write_text(json.dumps({"ok": True, "employees": []}, ensure_ascii=False), encoding="utf-8")
+
+        with companyctl.connect() as conn:
+            summary = company_dashboard.load_summary(conn)
+            models = company_dashboard.employee_view_models(summary)
+        row = next(item for item in models if item["id"] == "claude-code")
+        self.assertEqual("active_limited", row["readiness_level"])
+        self.assertEqual("runtime_evidence_without_live_task_or_direct_attendance", row["readiness_reason"])
+        self.assertFalse(row["schedulable"])
 
     def test_skill_registry_lists_packages_in_cli_api_and_dashboard(self) -> None:
         manifest_path = self.write_skill_manifest()
@@ -5957,6 +8491,10 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertIn("Owner-approved cancellation recorded", html)
         self.assertIn("Owner-approved retry recorded", html)
         self.assertIn("Owner-approved reassign recorded", html)
+        self.assertIn("showTaskControlContextDetails", html)
+        self.assertIn("control_context", html)
+        self.assertIn("Approved Retry Control", html)
+        self.assertIn("Approved Reassign Control", html)
         self.assertIn("action === 'task.cancel'", html)
         self.assertIn("action === 'task.retry'", html)
         self.assertIn("action === 'task.reassign'", html)
@@ -5964,9 +8502,21 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertIn("Requesting owner approval for cancellation", html)
         self.assertIn("Requesting owner approval for retry", html)
         self.assertIn("Requesting owner approval for reassign", html)
+        self.assertIn("message, execute: true", html)
+        self.assertIn("reason, execute: true", html)
+        self.assertIn("to, reason, execute: true", html)
+        self.assertIn("requestDashboardApproval('task.correct'", html)
+        self.assertIn("requestDashboardApproval('task.cancel'", html)
+        self.assertIn("requestDashboardApproval('task.retry'", html)
+        self.assertIn("requestDashboardApproval('task.reassign'", html)
         self.assertIn("const isDone = isTerminalTaskState(task, attempt)", html)
         self.assertIn("const isObservable = isRunning || ['heartbeat_stale', 'progress_stagnant', 'stale', 'correcting'].includes(longTaskState);", html)
         self.assertIn("if (isObservable && !isDone && !isCancelled)", html)
+        self.assertIn("data-ledger-action=\"task.probe\"", html)
+        self.assertIn("Send Probe <small>ledger only</small>", html)
+        self.assertIn("sendStagnantProbe('${escapeHtml(taskId)}', '${escapeHtml(attemptId)}')", html)
+        self.assertIn("data-ledger-action=\"task.probe\" data-requires-owner-approval=\"false\"", html)
+        self.assertNotIn("data-ledger-action=\"task.probe\" data-requires-owner-approval=\"true\"", html)
         self.assertIn("if (isRecoverable && !isDone)", html)
         self.assertIn("handleOwnerAttentionAction('${escapeHtml(taskId)}', '${escapeHtml(attemptId)}', '', 'review_evidence')", html)
         self.assertIn("viewTaskTrace('", html)
@@ -5985,6 +8535,18 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertIn("Log Policy", html)
         self.assertIn("adapterRunLogPolicySummary", html)
         self.assertIn("readiness-badge", html)
+        self.assertIn("work_status_summary", html)
+        self.assertIn("Owner Next", html)
+        self.assertIn("Current Work", html)
+        self.assertIn("Long Task", html)
+        self.assertIn("Recommended Actions", html)
+        self.assertIn("employee-recommended-action", html)
+        self.assertIn("data-action-id=\"${escapeHtml(action.id || '')}\"", html)
+        self.assertIn("data-task-id=\"${escapeHtml(work.current_task_id || '')}\"", html)
+        self.assertIn("data-attempt-id=\"${escapeHtml(work.current_attempt_id || '')}\"", html)
+        self.assertIn("handleOwnerAttentionAction('${escapeHtml(work.current_task_id || '')}', '${escapeHtml(work.current_attempt_id || '')}', '', '${escapeHtml(action.id || '')}', '${escapeHtml(emp.id || work.employee_id || '')}')", html)
+        self.assertIn("actionId === 'request_correction'", html)
+        self.assertIn("actionId === 'cancel'", html)
 
     def test_agent_matrix_reports_employee_readiness_levels(self) -> None:
         for employee_id, role, runtime, status in [
@@ -6163,6 +8725,43 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual("active_ready", row["level"])
         self.assertEqual("runtime_evidence", row["checks"]["evidence"])
 
+    def test_agent_matrix_does_not_mark_adapter_ready_from_verification_and_heartbeat_only(self) -> None:
+        code, employee = run_cli(
+            "employee",
+            "create",
+            "--id",
+            "claude-code",
+            "--name",
+            "Claude Code",
+            "--role",
+            "runtime-agent",
+            "--runtime",
+            "claude",
+            "--workspace",
+            str(self.root / "workspace" / "claude-code"),
+        )
+        self.assertEqual(0, code, employee)
+        self.mark_active("claude-code")
+        verification_dir = self.root / "state" / "employee-verification" / "claude-code"
+        verification_dir.mkdir(parents=True)
+        (verification_dir / "latest-runtime.json").write_text(
+            json.dumps({"ok": True, "activation_allowed": True}, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        attendance_dir = self.root / "state" / "attendance"
+        attendance_dir.mkdir(parents=True)
+        (attendance_dir / "latest.json").write_text(json.dumps({"ok": True, "employees": []}, ensure_ascii=False), encoding="utf-8")
+        with companyctl.connect() as conn:
+            companyctl.heartbeat_internal(conn, "claude-code", {"source": "adapter-heartbeat-only"})
+
+        code, matrix = run_cli("agent-matrix", "--agents", "claude-code")
+        self.assertEqual(0, code, matrix)
+        row = matrix["employees"][0]
+        self.assertEqual("active_limited", row["level"])
+        self.assertEqual("runtime_evidence_without_live_task_or_direct_attendance", row["reason"])
+        self.assertEqual("verified_limited", row["checks"]["runtime"])
+        self.assertEqual("fresh", row["checks"]["heartbeat"])
+
     def test_agent_matrix_marks_skill_ready_from_runtime_evidence_without_direct_chat(self) -> None:
         code, runtime = run_cli("runtime", "register", "--runtime", "skill", "--command", "company-skill-package-worker", "--notes", "Skill Package runtime")
         self.assertEqual(0, code, runtime)
@@ -6275,6 +8874,134 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertTrue(any("attendance" in cmd for cmd in calls))
         self.assertTrue(any("direct" in cmd for cmd in calls))
 
+    def test_local_smoke_can_verify_skill_closed_loop_ledgers(self) -> None:
+        calls = []
+        submitted_task_id = {"value": "task-local-smoke-skill"}
+
+        def fake_run(cmd, cwd=None, text=None, capture_output=None, timeout=None):
+            calls.append(cmd)
+
+            class Result:
+                returncode = 0
+                stderr = ""
+
+            result = Result()
+            if "company-skill-package-worker" in cmd[0]:
+                result.stdout = json.dumps({
+                    "ok": True,
+                    "status": "completed",
+                    "task_id": "task-local-smoke-skill",
+                    "attempt": {"attempt_id": "attempt-local-smoke-skill", "status": "success"},
+                    "runtime_session": {"session_id": "skill-session-ecommerce-copy-skill-task-local-smoke-skill"},
+                    "tool_call_id": "skill-tool-ecommerce-copy-skill-task-local-smoke-skill",
+                    "artifact": {"artifact_id": "artifact-local-smoke-skill"},
+                    "evidence": {"evidence_id": "evidence-local-smoke-skill", "path_or_url": "final/listing-summary.md"},
+                })
+            elif "task" in cmd and "evidence" in cmd and "accept" in cmd:
+                result.stdout = json.dumps({
+                    "ok": True,
+                    "evidence": {
+                        "evidence_id": "evidence-local-smoke-skill",
+                        "acceptance_decision": {"status": "accepted", "by": "main"},
+                    },
+                    "event": {"event_type": "evidence.accepted"},
+                    "audit": {"action": "evidence.accept"},
+                })
+            elif "task" in cmd and "show" in cmd:
+                result.stdout = json.dumps({
+                    "ok": True,
+                    "task": {"id": "task-local-smoke-skill", "status": "completed"},
+                    "completion_contract": {"valid": True, "final_evidence_count": 1, "accepted_final_evidence_count": 1, "acceptance_status": "accepted"},
+                    "attempts": [{"attempt_id": "attempt-local-smoke-skill", "status": "success"}],
+                    "runtime_sessions": [{"session_id": "skill-session-ecommerce-copy-skill-task-local-smoke-skill"}],
+                    "tool_calls": [{"tool_call_id": "skill-tool-ecommerce-copy-skill-task-local-smoke-skill"}],
+                    "budget_summary": {"event_count": 1, "total_amount": 10, "currency": "USD"},
+                    "evidence_records": [{"evidence_id": "evidence-local-smoke-skill", "acceptance_decision": {"status": "accepted", "by": "main"}}],
+                    "handoffs": [{"handoff_id": "handoff-local-smoke-skill"}],
+                })
+            elif "trace" in cmd and "timeline" in cmd:
+                result.stdout = json.dumps({"ok": True, "timeline": [{"kind": "tool_call"}, {"kind": "budget_event"}, {"kind": "evidence"}, {"kind": "handoff"}]})
+            else:
+                if "task" in cmd and "submit" in cmd and "--task-id" in cmd:
+                    task_id_arg = cmd[cmd.index("--task-id") + 1]
+                    if task_id_arg.startswith("task-local-smoke-skill-") and not task_id_arg.endswith("-review"):
+                        submitted_task_id["value"] = task_id_arg
+                result.stdout = json.dumps({"ok": True, "task": {"id": "task-local-smoke-skill", "metadata": {"trace_id": "trace-local-smoke-skill"}}})
+            return result
+
+        def fake_cockpit_snapshot():
+            task_id = submitted_task_id["value"]
+            return {
+                "ok": True,
+                "exit_code": 0,
+                "payload": {
+                    "ok": True,
+                    "task_cards": [{
+                        "task_id": task_id,
+                        "state": "done",
+                        "runtime_summary": {"session_count": 1},
+                        "tool_summary": {"tool_call_count": 1},
+                        "budget_summary": {"event_count": 1, "total_amount": 10, "currency": "USD"},
+                        "evidence_summary": {"final_evidence_count": 1},
+                    }],
+                    "tool_calls": [{"task_id": task_id, "tool_call_id": "skill-tool-ecommerce-copy-skill-task-local-smoke-skill"}],
+                    "budget_summary": {"by_task_event_count": {task_id: 1}, "by_task": {task_id: 10}},
+                    "recent_evidence": [{"task_id": task_id}],
+                    "counts": {"tool_calls": 1, "budget_events": 1, "recent_evidence": 1},
+                },
+                "stderr": "",
+            }
+
+        with mock.patch.object(company_local_smoke.subprocess, "run", side_effect=fake_run), mock.patch.object(company_local_smoke, "cockpit_snapshot", side_effect=fake_cockpit_snapshot):
+            result = company_local_smoke.run_skill_closed_loop_smoke(source="main", agent="ecommerce-copy-skill", package="skill-packages/ecommerce-copy-demo/skill.json", timeout=30)
+        self.assertTrue(result["ok"], result)
+        self.assertTrue(result["task_id"].startswith("task-local-smoke-skill-"))
+        self.assertEqual("completed", result["task_status"])
+        self.assertEqual(1, result["counts"]["attempts"])
+        self.assertEqual(1, result["counts"]["runtime_sessions"])
+        self.assertEqual(1, result["counts"]["tool_calls"])
+        self.assertEqual(1, result["counts"]["budget_events"])
+        self.assertEqual(1, result["counts"]["evidence"])
+        self.assertEqual(1, result["counts"]["accepted_evidence"])
+        self.assertEqual(1, result["counts"]["handoffs"])
+        self.assertTrue(result["completion_contract"]["valid"])
+        self.assertEqual("accepted", result["completion_contract"]["acceptance_status"])
+        self.assertEqual("accepted", result["acceptance"]["status"])
+        self.assertEqual(["budget_event", "evidence", "handoff", "tool_call"], result["trace_kinds"])
+        self.assertTrue(result["cockpit_verification"]["ok"], result["cockpit_verification"])
+        self.assertEqual(result["task_id"], result["cockpit_verification"]["task_id"])
+        self.assertTrue(result["cockpit_verification"]["task_visible"])
+        self.assertTrue(result["cockpit_verification"]["task_card_visible"])
+        self.assertEqual(1, result["cockpit_verification"]["tool_call_count"])
+        self.assertEqual(1, result["cockpit_verification"]["budget_event_count"])
+        self.assertEqual(1, result["cockpit_verification"]["evidence_count"])
+        self.assertTrue(any("company-skill-package-worker" in cmd[0] for cmd in calls))
+        self.assertTrue(any("task" in cmd and "evidence" in cmd and "accept" in cmd for cmd in calls))
+
+    def test_local_smoke_main_persists_skill_closed_loop_report(self) -> None:
+        def fake_run_local_smoke(agents, source, direct_targets, reply_timeout):
+            return company_local_smoke.persist_report({
+                "ok": True,
+                "smoke_id": "local-smoke-main-test",
+                "generated_at": "2026-06-09T10:00:00+07:00",
+                "service": {"ok": True},
+                "dashboard": {"ok": True},
+                "attendance": {"ok": True},
+                "direct_matrix": [{"direct_status": "ok"}],
+            })
+
+        with (
+            mock.patch.object(company_local_smoke, "run_local_smoke", side_effect=fake_run_local_smoke),
+            mock.patch.object(company_local_smoke, "run_skill_closed_loop_smoke", return_value={"ok": True, "task_id": "task-skill"}),
+            mock.patch("sys.stdout", new_callable=io.StringIO),
+        ):
+            exit_code = company_local_smoke.main(["--skill-closed-loop", "--json-only"])
+
+        self.assertEqual(0, exit_code)
+        latest = json.loads((self.root / "state" / "local-smoke" / "latest.json").read_text(encoding="utf-8"))
+        self.assertTrue(latest["ok"])
+        self.assertEqual({"ok": True, "task_id": "task-skill"}, latest["skill_closed_loop"])
+
     def test_api_gateway_exposes_health_tasks_messages_and_heartbeats(self) -> None:
         status, descriptor = api_gateway.route_get("/v1", {})
         self.assertEqual(200, status, descriptor)
@@ -6297,10 +9024,19 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertIn("/v1/approvals/{approval_id}/approve", openapi["paths"])
         self.assertIn("/v1/approvals/{approval_id}/resolve", openapi["paths"])
         self.assertIn("/v1/evidence", openapi["paths"])
+        evidence_query_names = {
+            parameter["name"]
+            for parameter in openapi["paths"]["/v1/evidence"]["get"]["parameters"]
+        }
+        self.assertIn("employee_id", evidence_query_names)
         self.assertIn("/v1/evidence/{evidence_id}/content", openapi["paths"])
+        self.assertIn("/v1/evidence/{evidence_id}/safe-preview", openapi["paths"])
+        self.assertIn("/v1/evidence/{evidence_id}/accept", openapi["paths"])
+        self.assertIn("/v1/evidence/{evidence_id}/reject", openapi["paths"])
         self.assertIn("/v1/artifacts", openapi["paths"])
         self.assertIn("/v1/handoffs", openapi["paths"])
         self.assertIn("/v1/failures", openapi["paths"])
+        self.assertIn("/v1/employees/{employee_id}/work-history", openapi["paths"])
         doctor_query_names = {
             parameter["name"]
             for parameter in openapi["paths"]["/v1/doctor"]["get"]["parameters"]
@@ -6398,9 +9134,20 @@ class CompanyKernelCoreTest(unittest.TestCase):
         status, claimed = api_gateway.route_post("/v1/tasks/task-api-gateway/claim", {"agent": "codex", "lease_seconds": "60"})
         self.assertEqual(200, status, claimed)
         self.assertEqual("claimed", claimed["task"]["status"])
-        status, done = api_gateway.route_post("/v1/tasks/task-api-gateway/done", {"agent": "codex", "summary": "completed through REST", "evidence": str(evidence)})
+        status, done = api_gateway.route_post(
+            "/v1/tasks/task-api-gateway/done",
+            {"agent": "codex", "summary": f"completed through REST in {self.root}", "evidence": str(evidence)},
+        )
         self.assertEqual(200, status, done)
         self.assertEqual("completed", done["status"])
+        status, listed_after_done = api_gateway.route_get("/v1/tasks", {})
+        self.assertEqual(200, status, listed_after_done)
+        listed_done_task = next(item for item in listed_after_done["tasks"] if item["id"] == "task-api-gateway")
+        self.assertNotIn("evidence_path", listed_done_task)
+        self.assertIn("evidence", listed_done_task)
+        self.assertFalse(listed_done_task["evidence"]["absolute_path_exposed"])
+        self.assertIn("api-task-done.md", listed_done_task["evidence"]["basename"])
+        self.assertNotIn(str(self.root), json.dumps(listed_done_task, ensure_ascii=False))
 
         status, submitted_block = api_gateway.route_post(
             "/v1/tasks",
@@ -6421,7 +9168,7 @@ class CompanyKernelCoreTest(unittest.TestCase):
         status, reopened = api_gateway.route_post("/v1/tasks/task-api-gateway-block/reopen", {"by": "codex", "reason": "blocker cleared through REST"})
         self.assertEqual(200, status, reopened)
         self.assertEqual("submitted", reopened["task"]["status"])
-        status, reassigned = api_gateway.route_post("/v1/tasks/task-api-gateway-block/reassign", {"by": "openclaw-main", "to": "hermes", "reason": "better owner through REST"})
+        status, reassigned = api_gateway.route_post("/v1/tasks/task-api-gateway-block/reassign", {"by": "openclaw-main", "to": "hermes", "reason": "better owner through REST", "execute": "true"})
         self.assertEqual(200, status, reassigned)
         self.assertEqual("hermes", reassigned["task"]["target_agent"])
         self.assertEqual("submitted", reassigned["task"]["status"])
@@ -6544,15 +9291,38 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertFalse(safe["display"]["absolute_path_exposed"])
         self.assertEqual("safe evidence body\n", safe["content"]["text"])
         self.assertIn("safe-report.md", safe["display"]["relative_path"])
+        self.assertEqual("task-safe-content", safe["acceptance"]["task_id"])
+        self.assertEqual("attempt-safe-content", safe["acceptance"]["attempt_id"])
+        self.assertTrue(safe["acceptance"]["is_final"])
+        self.assertTrue(safe["acceptance"]["preview_allowed"])
+        self.assertTrue(safe["acceptance"]["can_accept"])
+        self.assertEqual("reviewable_final_evidence", safe["acceptance"]["state"])
         self.assertNotIn(str(self.root), json.dumps(safe, ensure_ascii=False))
+
+        status, safe_alias = api_gateway.route_get("/v1/evidence/evidence-safe-content/safe-preview", {})
+        self.assertEqual(200, status, safe_alias)
+        self.assertTrue(safe_alias["display"]["allowed"])
+        self.assertEqual("safe evidence body\n", safe_alias["content"]["text"])
+        self.assertEqual(safe["display"]["relative_path"], safe_alias["display"]["relative_path"])
+        self.assertNotIn(str(self.root), json.dumps(safe_alias, ensure_ascii=False))
 
         status, blocked = api_gateway.route_get("/v1/evidence/evidence-secret-content/content", {})
         self.assertEqual(403, status, blocked)
         self.assertFalse(blocked["display"]["allowed"])
         self.assertFalse(blocked["display"]["absolute_path_exposed"])
         self.assertEqual("", blocked["content"]["text"])
+        self.assertFalse(blocked["acceptance"]["preview_allowed"])
+        self.assertFalse(blocked["acceptance"]["can_accept"])
+        self.assertEqual("blocked_by_preview_policy", blocked["acceptance"]["state"])
         self.assertNotIn("API_KEY", json.dumps(blocked, ensure_ascii=False))
         self.assertNotIn(str(secret_path), json.dumps(blocked, ensure_ascii=False))
+
+        status, blocked_alias = api_gateway.route_get("/v1/evidence/evidence-secret-content/safe-preview", {})
+        self.assertEqual(403, status, blocked_alias)
+        self.assertFalse(blocked_alias["display"]["allowed"])
+        self.assertEqual("", blocked_alias["content"]["text"])
+        self.assertNotIn("API_KEY", json.dumps(blocked_alias, ensure_ascii=False))
+        self.assertNotIn(str(secret_path), json.dumps(blocked_alias, ensure_ascii=False))
 
     def test_api_gateway_exposes_conversations_approvals_and_adapter_run_recovery(self) -> None:
         status, started = api_gateway.route_post(
@@ -6599,6 +9369,43 @@ class CompanyKernelCoreTest(unittest.TestCase):
         status, shown_approval = api_gateway.route_get("/v1/approvals/approval-api-gateway", {})
         self.assertEqual(200, status, shown_approval)
         self.assertEqual("approved", shown_approval["approval"]["status"])
+
+        status, submitted_task = api_gateway.route_post(
+            "/v1/tasks",
+            {
+                "from": "hermes",
+                "to": "codex",
+                "task_id": "task-api-approval-detail",
+                "title": "Approval detail bound task",
+            },
+        )
+        self.assertEqual(201, status, submitted_task)
+        status, detail_approval = api_gateway.route_post(
+            "/v1/approvals",
+            {
+                "from": "hermes",
+                "action": "external_send",
+                "reason": "send customer report with token=SECRET and /Users/owner/.ssh/id_rsa",
+                "target": "nestcar",
+                "risk": "P1",
+                "approval_id": "approval-api-detail",
+                "task_id": "task-api-approval-detail",
+                "evidence": "/Users/owner/.ssh/id_rsa",
+            },
+        )
+        self.assertEqual(201, status, detail_approval)
+        status, detail = api_gateway.route_get("/v1/approvals/approval-api-detail", {})
+        self.assertEqual(200, status, detail)
+        self.assertEqual("approval-api-detail", detail["approval"]["id"])
+        self.assertEqual("task-api-approval-detail", detail["task"]["id"])
+        self.assertEqual("dry_run_until_owner_approval", detail["approval_control_summary"]["default_policy"])
+        self.assertTrue(detail["approval"]["safety"]["requires_owner_approval"])
+        self.assertIn("approval.requested", [event["event_type"] for event in detail["events"]])
+        self.assertIn("approval.request", [item["action"] for item in detail["audit_logs"]])
+        raw = json.dumps(detail, ensure_ascii=False)
+        self.assertNotIn("SECRET", raw)
+        self.assertNotIn("/Users/owner/.ssh/id_rsa", raw)
+        self.assertIn("sensitive_path_tokens_redacted", raw)
 
         status, mock_approval = api_gateway.route_post(
             "/v1/approvals",
@@ -7375,6 +10182,130 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual(200, status, attendance_latest)
         self.assertEqual("api-attendance", attendance_latest["sweep_id"])
 
+    def test_employee_detail_includes_work_history_control_plane_and_costs(self) -> None:
+        code, source = run_cli("employee", "create", "--id", "ops", "--name", "Ops", "--role", "owner", "--runtime", "local", "--workspace", str(self.root / "workspace" / "ops"))
+        self.assertEqual(0, code, source)
+        code, created = run_cli("employee", "create", "--id", "employee-detail-agent", "--name", "Employee Detail Agent", "--role", "developer", "--runtime", "codex", "--workspace", str(self.root / "workspace" / "employee-detail-agent"))
+        self.assertEqual(0, code, created)
+        with sqlite3.connect(self.root / "company.sqlite") as conn:
+            conn.execute("UPDATE employees SET status = 'active' WHERE id = 'employee-detail-agent'")
+            conn.commit()
+
+        code, submitted = run_cli("task", "submit", "--from", "ops", "--to", "employee-detail-agent", "--task-id", "task-employee-detail", "--title", "Employee detail work")
+        self.assertEqual(0, code, submitted)
+        code, running = run_cli("task", "run", "--task-id", "task-employee-detail", "--agent", "employee-detail-agent", "--by", "hermes", "--adapter-type", "codex")
+        self.assertEqual(0, code, running)
+        attempt_id = running["attempt"]["attempt_id"]
+        code, session = run_cli("runtime", "session", "start", "--session-id", "session-employee-detail", "--task-id", "task-employee-detail", "--attempt-id", attempt_id, "--employee", "employee-detail-agent", "--adapter-type", "codex", "--runtime-type", "cli")
+        self.assertEqual(0, code, session)
+        code, tool = run_cli("tool-call", "start", "--tool-call-id", "tool-employee-detail", "--task-id", "task-employee-detail", "--attempt-id", attempt_id, "--employee", "employee-detail-agent", "--session-id", "session-employee-detail", "--tool-name", "shell", "--tool-type", "shell", "--input-summary", "employee detail command")
+        self.assertEqual(0, code, tool)
+        code, finished_tool = run_cli("tool-call", "finish", "--tool-call-id", "tool-employee-detail", "--status", "success", "--output-summary", "employee detail command completed")
+        self.assertEqual(0, code, finished_tool)
+        code, failed_tool = run_cli("tool-call", "start", "--tool-call-id", "tool-employee-detail-failed", "--task-id", "task-employee-detail", "--attempt-id", attempt_id, "--employee", "employee-detail-agent", "--session-id", "session-employee-detail", "--tool-name", "browser", "--tool-type", "browser", "--input-summary", "employee detail browser probe")
+        self.assertEqual(0, code, failed_tool)
+        code, failed_tool_finished = run_cli("tool-call", "finish", "--tool-call-id", "tool-employee-detail-failed", "--status", "failed", "--output-summary", "browser probe failed", "--error", "selector missing")
+        self.assertEqual(0, code, failed_tool_finished)
+        code, budget = run_cli("budget", "record", "--budget-event-id", "budget-employee-detail", "--task-id", "task-employee-detail", "--attempt-id", attempt_id, "--employee", "employee-detail-agent", "--cost-type", "model_api", "--amount", "0.33", "--currency", "USD", "--token-input", "900", "--token-output", "210", "--runtime-seconds", "45", "--summary", "employee detail cost")
+        self.assertEqual(0, code, budget)
+        task_workspace = Path(submitted["task"]["workspace"]["path"])
+        evidence_file = task_workspace / "final" / "detail-evidence.md"
+        evidence_file.parent.mkdir(parents=True, exist_ok=True)
+        evidence_file.write_text("employee detail evidence\n", encoding="utf-8")
+        code, artifact = run_cli("task", "artifact", "register", "--task-id", "task-employee-detail", "--employee", "employee-detail-agent", "--path", str(evidence_file), "--type", "markdown", "--stage", "final", "--summary", "employee detail artifact")
+        self.assertEqual(0, code, artifact)
+        code, promoted = run_cli("task", "evidence", "promote", "--artifact-id", artifact["artifact"]["artifact_id"], "--employee", "employee-detail-agent", "--summary", "employee detail final evidence")
+        self.assertEqual(0, code, promoted)
+        code, done = run_cli("task", "done", "--agent", "employee-detail-agent", "--task-id", "task-employee-detail", "--summary", "done", "--evidence", str(evidence_file))
+        self.assertEqual(0, code, done)
+        code, current_task = run_cli("task", "submit", "--from", "ops", "--to", "employee-detail-agent", "--task-id", "task-employee-current", "--title", "Current employee work")
+        self.assertEqual(0, code, current_task)
+        code, current_run = run_cli("task", "run", "--task-id", "task-employee-current", "--agent", "employee-detail-agent", "--by", "hermes", "--adapter-type", "codex")
+        self.assertEqual(0, code, current_run)
+        current_attempt_id = current_run["attempt"]["attempt_id"]
+        code, current_progress = run_cli("task", "progress", "--task-id", "task-employee-current", "--agent", "employee-detail-agent", "--attempt-id", current_attempt_id, "--state", "in_progress", "--message", "currently processing employee detail view", "--progress", "42")
+        self.assertEqual(0, code, current_progress)
+
+        status, shown = api_gateway.route_get("/v1/employees/employee-detail-agent", {})
+        self.assertEqual(HTTPStatus.OK, status, shown)
+        self.assertEqual("employee-detail-agent", shown["employee"]["id"])
+        self.assertEqual(["task-employee-current", "task-employee-detail"], [item["id"] for item in shown["work_history"]["tasks"]])
+        self.assertEqual("task-employee-current", shown["work_history"]["recent_tasks"][0]["id"])
+        self.assertEqual(1, shown["work_history"]["status_counts"]["running"])
+        self.assertEqual(1, shown["work_history"]["status_counts"]["completed"])
+        self.assertEqual(1, shown["work_history"]["attention_counts"]["running_tasks"])
+        self.assertEqual(0, shown["work_history"]["attention_counts"]["blocked_tasks"])
+        self.assertEqual(0, shown["work_history"]["attention_counts"]["failed_tasks"])
+        self.assertEqual(1, shown["work_history"]["attention_counts"]["failed_tool_calls"])
+        self.assertEqual(0, shown["work_history"]["attention_counts"]["completion_invalid_tasks"])
+        self.assertEqual(1, shown["work_history"]["attention_counts"]["tasks_with_final_evidence"])
+        self.assertIn("1 running", shown["work_history"]["summary"])
+        self.assertIn("1 final evidence", shown["work_history"]["summary"])
+        task_rollup = next(item for item in shown["work_history"]["tasks"] if item["id"] == "task-employee-detail")
+        self.assertEqual(1, task_rollup["attempt_count"])
+        self.assertEqual(1, task_rollup["runtime_session_count"])
+        self.assertEqual(2, task_rollup["tool_call_count"])
+        self.assertEqual(1, task_rollup["failed_tool_call_count"])
+        self.assertEqual("browser", task_rollup["latest_tool_name"])
+        self.assertEqual("failed", task_rollup["latest_tool_status"])
+        self.assertEqual(1, task_rollup["budget_event_count"])
+        self.assertEqual(1, task_rollup["evidence_count"])
+        self.assertTrue(task_rollup["has_final_evidence"])
+        self.assertEqual(0.33, task_rollup["budget_total"])
+        self.assertEqual("USD", task_rollup["budget_currency"])
+        self.assertEqual(900, task_rollup["token_input"])
+        self.assertEqual(210, task_rollup["token_output"])
+        self.assertEqual(45, task_rollup["runtime_seconds"])
+        self.assertEqual(attempt_id, task_rollup["latest_attempt_id"])
+        self.assertEqual("success", task_rollup["latest_attempt_status"])
+        self.assertEqual(["review_evidence", "view_trace"], [action["id"] for action in task_rollup["owner_actions"]])
+        action_by_id = {action["id"]: action for action in task_rollup["owner_actions"]}
+        self.assertEqual(f"/v1/tasks/{task_rollup['id']}", action_by_id["review_evidence"]["api"])
+        self.assertFalse(action_by_id["review_evidence"]["requires_owner_approval"])
+        current_rollup = next(item for item in shown["work_history"]["tasks"] if item["id"] == "task-employee-current")
+        self.assertEqual(["view_task", "view_trace"], [action["id"] for action in current_rollup["owner_actions"]])
+        self.assertEqual(f"/v1/tasks/{current_rollup['id']}", current_rollup["owner_actions"][0]["api"])
+        self.assertEqual(["session-employee-detail"], [item["session_id"] for item in shown["runtime_sessions"]])
+        self.assertEqual(["tool-employee-detail-failed", "tool-employee-detail"], [item["tool_call_id"] for item in shown["tool_calls"]])
+        self.assertEqual(["budget-employee-detail"], [item["budget_event_id"] for item in shown["budget_events"]])
+        self.assertEqual(0.33, shown["budget_summary"]["total_amount"])
+        self.assertEqual(900, shown["budget_summary"]["token_input"])
+        self.assertEqual(["task-employee-detail"], [item["task_id"] for item in shown["evidence_records"]])
+        self.assertEqual(current_attempt_id, shown["current_activity"]["attempt_id"])
+        self.assertEqual("task-employee-current", shown["current_activity"]["task_id"])
+        self.assertEqual("Current employee work", shown["current_activity"]["task_title"])
+        self.assertEqual("running", shown["current_activity"]["long_task_state"])
+        self.assertEqual("fresh", shown["current_activity"]["progress_state"])
+        self.assertEqual("in_progress", shown["current_activity"]["latest_progress"]["progress_state"])
+        self.assertEqual("currently processing employee detail view", shown["current_activity"]["latest_progress"]["message"])
+        self.assertEqual(42, shown["current_activity"]["latest_progress"]["progress"])
+        self.assertEqual(1, shown["current_activity"]["active_task_count"])
+        self.assertEqual(current_attempt_id, shown["attempts"][0]["attempt_id"])
+        self.assertEqual("employee-detail-agent", shown["operational_summary"]["employee_id"])
+        self.assertEqual("task-employee-current", shown["operational_summary"]["current_task_id"])
+        self.assertEqual(current_attempt_id, shown["operational_summary"]["current_attempt_id"])
+        self.assertEqual(2, shown["operational_summary"]["task_count"])
+        self.assertEqual(1, shown["operational_summary"]["current_task_count"])
+        self.assertEqual(2, shown["operational_summary"]["tool_call_count"])
+        self.assertEqual(1, shown["operational_summary"]["failed_tool_call_count"])
+        self.assertEqual(0.33, shown["operational_summary"]["budget_total"])
+        self.assertEqual("USD", shown["operational_summary"]["budget_currency"])
+        self.assertEqual(1, shown["operational_summary"]["final_evidence_count"])
+        self.assertIn("monitor current task", shown["operational_summary"]["owner_next_action"])
+
+        status, work_payload = api_gateway.route_get("/v1/employees/employee-detail-agent/work-history", {})
+        self.assertEqual(HTTPStatus.OK, status, work_payload)
+        self.assertTrue(work_payload["ok"])
+        self.assertEqual("employee-detail-agent", work_payload["employee_id"])
+        self.assertEqual("employee-detail-agent", work_payload["employee"]["id"])
+        self.assertEqual("task-employee-current", work_payload["current_activity"]["task_id"])
+        self.assertEqual(["task-employee-current", "task-employee-detail"], [item["id"] for item in work_payload["work_history"]["tasks"]])
+        self.assertEqual(["view_task", "view_trace"], [action["id"] for action in work_payload["work_history"]["tasks"][0]["owner_actions"]])
+        self.assertEqual(["review_evidence", "view_trace"], [action["id"] for action in work_payload["work_history"]["tasks"][1]["owner_actions"]])
+        self.assertEqual(0.33, work_payload["budget_summary"]["total_amount"])
+        self.assertEqual(1, work_payload["work_history"]["attention_counts"]["tasks_with_final_evidence"])
+        self.assertEqual(["tool-employee-detail-failed", "tool-employee-detail"], [item["tool_call_id"] for item in work_payload["tool_calls"]])
+
     def test_api_rpc_routes_rest_contract_without_direct_sqlite_access(self) -> None:
         described = api_rpc.handle_rpc({"jsonrpc": "2.0", "id": "describe", "method": "company.describe", "params": {}})
         self.assertEqual("describe", described["id"])
@@ -7937,15 +10868,13 @@ class CompanyKernelCoreTest(unittest.TestCase):
             if cmd[1:3] == ["scheduler", "run"]:
                 return subprocess.CompletedProcess(cmd, 0, stdout=json.dumps({"ok": True, "events": []}, ensure_ascii=False), stderr="")
             task_id = "task-runtime-candidate-claude-claude-code"
-            report = self.root / "employees" / "claude-code" / "reports" / task_id / "claude-adapter-report.md"
+            with companyctl.connect() as conn:
+                workspace = companyctl.ensure_task_workspace(conn, task_id, companyctl.trace_id_for_task(conn, task_id))
+            report = Path(workspace["path"]) / "final" / "claude-adapter-report.md"
             report.parent.mkdir(parents=True, exist_ok=True)
             report.write_text("claude candidate adapter evidence\n", encoding="utf-8")
             with companyctl.connect() as conn:
-                conn.execute(
-                    "UPDATE tasks SET status = 'completed', evidence_path = ?, summary = 'claude adapter evidence', updated_at = ? WHERE id = ?",
-                    (str(report), companyctl.now(), task_id),
-                )
-                conn.commit()
+                companyctl.complete_task_internal(conn, agent="claude-code", task_id=task_id, summary="claude adapter evidence", evidence=str(report))
                 companyctl.heartbeat_internal(conn, "claude-code", {"source": "candidate-adapter-test"})
             return subprocess.CompletedProcess(cmd, 0, stdout=json.dumps({"ok": True, "processed": 1, "task_id": task_id, "report": str(report)}, ensure_ascii=False), stderr="")
 
@@ -7955,6 +10884,7 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertTrue(verified["ok"], verified)
         self.assertTrue(verified["results"][0]["candidate_verification"])
         self.assertTrue(verified["results"][0]["evidence_exists"])
+        self.assertTrue(verified["results"][0]["final_evidence"])
         code, still_blocked = run_cli("task", "submit", "--from", "openclaw-main", "--to", "claude-code", "--task-id", "task-candidate-normal-submit-2", "--title", "normal submit still blocked")
         self.assertEqual(2, code, still_blocked)
         code, activated = run_cli("employee", "update", "--id", "claude-code", "--status", "active")
@@ -7985,7 +10915,20 @@ class CompanyKernelCoreTest(unittest.TestCase):
             str(self.root / "workspace" / "nestcar"),
         )
         self.assertEqual(0, code, created)
-        code, verified = run_cli("employee", "verify-direct", "--id", "nestcar", "--from", "openclaw-main", "--rounds", "2", "--activate")
+        def fake_run(cmd, cwd=None, text=None, capture_output=None, timeout=None):
+            expected = ""
+            if "--message" in cmd:
+                expected = cmd[cmd.index("--message") + 1].rsplit(" ", 1)[-1]
+
+            class Result:
+                returncode = 0
+                stdout = json.dumps({"result": {"payloads": [{"text": expected}]}})
+                stderr = ""
+
+            return Result()
+
+        with mock.patch.object(companyctl.subprocess, "run", side_effect=fake_run):
+            code, verified = run_cli("employee", "verify-direct", "--id", "nestcar", "--from", "openclaw-main", "--rounds", "2", "--activate")
         self.assertEqual(0, code, verified)
 
         code, matrix = run_cli("agent-matrix", "--agents", "car-rental")
@@ -8122,6 +11065,92 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual("working", pm_result["progress_layer"])
         self.assertEqual("in_progress", pm_result["progress_state"])
 
+    def test_hermes_adapter_execute_success_writes_control_plane_ledgers(self) -> None:
+        task_id = "task-hermes-execute-ok"
+        code, submitted = run_cli(
+            "task",
+            "submit",
+            "--from",
+            "openclaw-main",
+            "--to",
+            "hermes",
+            "--task-id",
+            task_id,
+            "--title",
+            "监督 Codex 执行",
+            "--description",
+            "mock Hermes 成功路径",
+        )
+        self.assertEqual(0, code, submitted)
+
+        def fake_run_hermes(prompt: Path, output: Path, workspace: Path, model: str, provider: str, isolation: str, sandbox_profile: str) -> tuple[int, str]:
+            output.write_text("Hermes reviewed Codex progress and approved evidence.\n", encoding="utf-8")
+            return 0, "hermes -z <prompt>"
+
+        with mock.patch.object(hermes_adapter.shutil, "which", lambda name: "/usr/local/bin/hermes"), mock.patch.object(hermes_adapter, "run_codex_pm_supervisor", return_value=(0, json.dumps({"ok": True, "status": "idle"}, ensure_ascii=False), "")), mock.patch.object(hermes_adapter, "run_hermes", fake_run_hermes), contextlib.redirect_stdout(io.StringIO()) as captured:
+            code = hermes_adapter.main(["--agent", "hermes", "--execute", "--model", "hermes-test", "--provider", "local"])
+        result = json.loads(captured.getvalue())
+        self.assertEqual(0, code, result)
+        self.assertTrue(result["ok"], result)
+        self.assertTrue(result["attempt"]["attempt_id"])
+        self.assertEqual("success", result["attempt"]["status"])
+        self.assertEqual("stopped", result["runtime_session"]["status"])
+        self.assertEqual("success", result["tool_call"]["status"])
+        self.assertEqual("hermes.oneshot", result["tool_call"]["tool_name"])
+        self.assertEqual("hermes_runtime", result["budget_event"]["cost_type"])
+        self.assertEqual("hermes-test", result["budget_event"]["model_name"])
+
+        code, task = run_cli("task", "show", "--task-id", task_id)
+        self.assertEqual(0, code, task)
+        self.assertEqual("completed", task["task"]["status"])
+        self.assertNotEqual(result["report"], task["task"]["evidence_path"])
+        self.assertIn("/evidence/", task["task"]["evidence_path"])
+        self.assertEqual([result["runtime_session"]["session_id"]], [item["session_id"] for item in task["runtime_sessions"]])
+        self.assertEqual([result["tool_call"]["tool_call_id"]], [item["tool_call_id"] for item in task["tool_calls"]])
+        self.assertEqual([result["budget_event"]["budget_event_id"]], [item["budget_event_id"] for item in task["budget_events"]])
+        self.assertEqual(1, task["ceo_acceptance_contract"]["ledger_counts"]["tool_calls"])
+        self.assertEqual(1, task["ceo_acceptance_contract"]["ledger_counts"]["budget_events"])
+
+    def test_hermes_adapter_execute_failure_blocks_with_control_plane_ledgers(self) -> None:
+        task_id = "task-hermes-execute-fail"
+        code, submitted = run_cli(
+            "task",
+            "submit",
+            "--from",
+            "openclaw-main",
+            "--to",
+            "hermes",
+            "--task-id",
+            task_id,
+            "--title",
+            "监督失败",
+            "--description",
+            "mock Hermes 失败路径",
+        )
+        self.assertEqual(0, code, submitted)
+
+        def fake_run_hermes(prompt: Path, output: Path, workspace: Path, model: str, provider: str, isolation: str, sandbox_profile: str) -> tuple[int, str]:
+            output.write_text("Hermes failed: Codex evidence missing.\n", encoding="utf-8")
+            return 9, "hermes -z <prompt>"
+
+        with mock.patch.object(hermes_adapter.shutil, "which", lambda name: "/usr/local/bin/hermes"), mock.patch.object(hermes_adapter, "run_codex_pm_supervisor", return_value=(0, json.dumps({"ok": True, "status": "idle"}, ensure_ascii=False), "")), mock.patch.object(hermes_adapter, "run_hermes", fake_run_hermes), contextlib.redirect_stdout(io.StringIO()) as captured:
+            code = hermes_adapter.main(["--agent", "hermes", "--execute"])
+        result = json.loads(captured.getvalue())
+        self.assertEqual(9, code, result)
+        self.assertFalse(result["ok"], result)
+        self.assertEqual("failed", result["attempt"]["status"])
+        self.assertEqual("failed", result["runtime_session"]["status"])
+        self.assertEqual("failed", result["tool_call"]["status"])
+        self.assertEqual("hermes_runtime", result["budget_event"]["cost_type"])
+
+        code, task = run_cli("task", "show", "--task-id", task_id)
+        self.assertEqual(0, code, task)
+        self.assertEqual("blocked", task["task"]["status"])
+        self.assertIn("Hermes failed", task["task"]["blocker"])
+        self.assertEqual([result["runtime_session"]["session_id"]], [item["session_id"] for item in task["runtime_sessions"]])
+        self.assertEqual([result["tool_call"]["tool_call_id"]], [item["tool_call_id"] for item in task["tool_calls"]])
+        self.assertEqual([result["budget_event"]["budget_event_id"]], [item["budget_event_id"] for item in task["budget_events"]])
+
     def test_openclaw_adapter_dry_run_writes_payload_and_evidence(self) -> None:
         code, submitted = run_cli(
             "task",
@@ -8219,8 +11248,20 @@ class CompanyKernelCoreTest(unittest.TestCase):
         code, task = run_cli("task", "show", "--task-id", task_id)
         self.assertEqual(code, 0, task)
         self.assertEqual("completed", task["task"]["status"])
-        self.assertEqual(executed["report"], task["task"]["evidence_path"])
+        self.assertNotEqual(executed["report"], task["task"]["evidence_path"])
+        self.assertIn("/evidence/", task["task"]["evidence_path"])
         self.assertIn("Submitted Company Kernel task to OpenClaw legacy bus", Path(executed["report"]).read_text(encoding="utf-8"))
+        self.assertTrue(executed["attempt"]["attempt_id"])
+        self.assertEqual("success", executed["attempt"]["status"])
+        self.assertEqual("stopped", executed["runtime_session"]["status"])
+        self.assertEqual("success", executed["tool_call"]["status"])
+        self.assertEqual("openclaw.bus.submit", executed["tool_call"]["tool_name"])
+        self.assertEqual("openclaw_bridge_runtime", executed["budget_event"]["cost_type"])
+        self.assertEqual([executed["runtime_session"]["session_id"]], [item["session_id"] for item in task["runtime_sessions"]])
+        self.assertEqual([executed["tool_call"]["tool_call_id"]], [item["tool_call_id"] for item in task["tool_calls"]])
+        self.assertEqual([executed["budget_event"]["budget_event_id"]], [item["budget_event_id"] for item in task["budget_events"]])
+        self.assertEqual(1, task["ceo_acceptance_contract"]["ledger_counts"]["tool_calls"])
+        self.assertEqual(1, task["ceo_acceptance_contract"]["ledger_counts"]["budget_events"])
 
     def test_openclaw_adapter_execute_uses_auto_approval_for_low_risk_data_fetch(self) -> None:
         (self.root / "config" / "policy.json").write_text(
@@ -8326,9 +11367,17 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual("blocked", result["status"])
         self.assertIn(str(missing_oc), result["blocker"])
         self.assertIn("OpenClaw executable not found", result["blocker"])
+        self.assertTrue(result["attempt"]["attempt_id"])
+        self.assertEqual("failed", result["attempt"]["status"])
+        self.assertEqual("failed", result["runtime_session"]["status"])
+        self.assertEqual("failed", result["tool_call"]["status"])
+        self.assertEqual("openclaw_bridge_runtime", result["budget_event"]["cost_type"])
         code, task = run_cli("task", "show", "--task-id", task_id)
         self.assertEqual(0, code, task)
         self.assertEqual("blocked", task["task"]["status"])
+        self.assertEqual([result["runtime_session"]["session_id"]], [item["session_id"] for item in task["runtime_sessions"]])
+        self.assertEqual([result["tool_call"]["tool_call_id"]], [item["tool_call_id"] for item in task["tool_calls"]])
+        self.assertEqual([result["budget_event"]["budget_event_id"]], [item["budget_event_id"] for item in task["budget_events"]])
 
     def test_codex_adapter_dry_run_writes_task_card_and_evidence(self) -> None:
         code, submitted = run_cli(
@@ -8408,14 +11457,28 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual("default", calls[0]["sandbox_profile"])
         self.assertTrue(Path(result["last_message"]).exists())
         self.assertTrue(Path(result["events"]).exists())
+        self.assertTrue(result["attempt"]["attempt_id"])
+        self.assertTrue(result["runtime_session"]["session_id"])
+        self.assertEqual("success", result["tool_call"]["status"])
+        self.assertEqual("codex.exec", result["tool_call"]["tool_name"])
+        self.assertEqual("codex_runtime", result["budget_event"]["cost_type"])
+        self.assertEqual("gpt-test", result["budget_event"]["model_name"])
 
         code, task = run_cli("task", "show", "--task-id", task_id)
         self.assertEqual(code, 0, task)
         self.assertEqual("completed", task["task"]["status"])
-        self.assertEqual(result["report"], task["task"]["evidence_path"])
+        self.assertNotEqual(result["report"], task["task"]["evidence_path"])
+        self.assertIn("/evidence/", task["task"]["evidence_path"])
         self.assertIn("runtime execution completed", task["task"]["summary"])
         self.assertIn("codex completed", task["task"]["summary"])
         self.assertIn("Runtime output summary", Path(result["report"]).read_text(encoding="utf-8"))
+        self.assertEqual(1, len(task["attempts"]))
+        self.assertEqual("success", task["attempts"][0]["status"])
+        self.assertEqual([result["runtime_session"]["session_id"]], [item["session_id"] for item in task["runtime_sessions"]])
+        self.assertEqual([result["tool_call"]["tool_call_id"]], [item["tool_call_id"] for item in task["tool_calls"]])
+        self.assertEqual([result["budget_event"]["budget_event_id"]], [item["budget_event_id"] for item in task["budget_events"]])
+        self.assertEqual(1, task["ceo_acceptance_contract"]["ledger_counts"]["tool_calls"])
+        self.assertEqual(1, task["ceo_acceptance_contract"]["ledger_counts"]["budget_events"])
 
     def test_codex_adapter_execute_failure_blocks_task_with_report(self) -> None:
         task_id = "task-codex-execute-fail"
@@ -8447,11 +11510,20 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual(7, code, result)
         self.assertFalse(result["ok"])
         self.assertEqual(7, result["codex_exit_code"])
+        self.assertTrue(result["attempt"]["attempt_id"])
+        self.assertEqual("failed", result["attempt"]["status"])
+        self.assertEqual("failed", result["runtime_session"]["status"])
+        self.assertEqual("failed", result["tool_call"]["status"])
+        self.assertEqual("codex_runtime", result["budget_event"]["cost_type"])
 
         code, task = run_cli("task", "show", "--task-id", task_id)
         self.assertEqual(code, 0, task)
         self.assertEqual("blocked", task["task"]["status"])
         self.assertIn("runtime execution failed exit_code=7", task["task"]["blocker"])
+        self.assertEqual(["failed"], [attempt["status"] for attempt in task["attempts"]])
+        self.assertEqual([result["runtime_session"]["session_id"]], [item["session_id"] for item in task["runtime_sessions"]])
+        self.assertEqual([result["tool_call"]["tool_call_id"]], [item["tool_call_id"] for item in task["tool_calls"]])
+        self.assertEqual([result["budget_event"]["budget_event_id"]], [item["budget_event_id"] for item in task["budget_events"]])
         self.assertIn("codex failed", task["task"]["blocker"])
         self.assertIn("Runtime output summary", Path(result["report"]).read_text(encoding="utf-8"))
 
@@ -8558,6 +11630,10 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual(task_id, result["task_id"])
         self.assertTrue(result["managed_attempt"])
         self.assertEqual("success", result["attempt"]["status"])
+        self.assertEqual("stopped", result["runtime_session"]["status"])
+        self.assertEqual("success", result["tool_call"]["status"])
+        self.assertEqual("antigravity.print", result["tool_call"]["tool_name"])
+        self.assertEqual("antigravity_runtime", result["budget_event"]["cost_type"])
         self.assertEqual("completed", result["task"]["status"])
         self.assertTrue(Path(result["evidence"]).exists())
 
@@ -8566,6 +11642,9 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual("completed", shown["task"]["status"])
         self.assertEqual(1, len(shown["attempts"]))
         self.assertEqual("success", shown["attempts"][0]["status"])
+        self.assertEqual([result["runtime_session"]["session_id"]], [item["session_id"] for item in shown["runtime_sessions"]])
+        self.assertEqual([result["tool_call"]["tool_call_id"]], [item["tool_call_id"] for item in shown["tool_calls"]])
+        self.assertEqual([result["budget_event"]["budget_event_id"]], [item["budget_event_id"] for item in shown["budget_events"]])
         event_types = [event["event_type"] for event in shown["events"]]
         self.assertIn("task.progress", event_types)
         self.assertIn("task.done", event_types)
@@ -8616,6 +11695,9 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual("blocked", result["status"])
         self.assertIn("Antigravity login expired", result["blocker"])
         self.assertEqual("failed", result["attempt"]["status"])
+        self.assertEqual("failed", result["runtime_session"]["status"])
+        self.assertEqual("failed", result["tool_call"]["status"])
+        self.assertEqual("antigravity_runtime", result["budget_event"]["cost_type"])
 
         code, shown = run_cli("task", "show", "--task-id", task_id)
         self.assertEqual(0, code, shown)
@@ -8623,6 +11705,9 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual("", shown["task"]["evidence_path"])
         self.assertEqual(1, len(shown["attempts"]))
         self.assertEqual("failed", shown["attempts"][0]["status"])
+        self.assertEqual([result["runtime_session"]["session_id"]], [item["session_id"] for item in shown["runtime_sessions"]])
+        self.assertEqual([result["tool_call"]["tool_call_id"]], [item["tool_call_id"] for item in shown["tool_calls"]])
+        self.assertEqual([result["budget_event"]["budget_event_id"]], [item["budget_event_id"] for item in shown["budget_events"]])
         event_types = [event["event_type"] for event in shown["events"]]
         self.assertIn("task.progress", event_types)
         self.assertIn("task.blocked", event_types)
@@ -9627,6 +12712,10 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual("completed", result["status"])
         self.assertTrue(result["artifact"]["artifact_id"])
         self.assertTrue(result["evidence"]["evidence_id"])
+        self.assertEqual("skill_runtime", result["budget_event"]["cost_type"])
+        self.assertEqual(10.0, result["budget_event"]["amount"])
+        self.assertEqual("USD", result["budget_event"]["currency"])
+        self.assertGreaterEqual(result["budget_event"]["runtime_seconds"], 0)
 
         code, shown = run_cli("task", "show", "--task-id", task_id)
         self.assertEqual(0, code, shown)
@@ -9636,10 +12725,21 @@ class CompanyKernelCoreTest(unittest.TestCase):
         try:
             artifact_count = conn.execute("SELECT COUNT(*) FROM artifacts WHERE task_id = ?", (task_id,)).fetchone()[0]
             evidence_count = conn.execute("SELECT COUNT(*) FROM evidence WHERE task_id = ?", (task_id,)).fetchone()[0]
+            tool_call_count = conn.execute("SELECT COUNT(*) FROM agent_tool_calls WHERE task_id = ? AND employee_id = ?", (task_id, "image-copy-skill")).fetchone()[0]
+            budget_event_count = conn.execute("SELECT COUNT(*) FROM budget_events WHERE task_id = ? AND employee_id = ?", (task_id, "image-copy-skill")).fetchone()[0]
+            budget_row = dict(conn.execute("SELECT * FROM budget_events WHERE task_id = ? AND employee_id = ?", (task_id, "image-copy-skill")).fetchone())
         finally:
             conn.close()
         self.assertEqual(1, artifact_count)
         self.assertEqual(1, evidence_count)
+        self.assertEqual(1, tool_call_count)
+        self.assertEqual(1, budget_event_count)
+        self.assertEqual(result["budget_event"]["budget_event_id"], budget_row["budget_event_id"])
+        self.assertEqual(result["budget_event"]["runtime_seconds"], budget_row["runtime_seconds"])
+        status, trace = api_gateway.route_get(f"/v1/traces/{submitted['task']['metadata']['trace_id']}/timeline", {})
+        self.assertEqual(HTTPStatus.OK, status, trace)
+        self.assertIn("tool_call", [item["kind"] for item in trace["timeline"]])
+        self.assertIn("budget_event", [item["kind"] for item in trace["timeline"]])
 
     def test_skill_package_worker_can_continue_claimed_retry_task(self) -> None:
         code, runtime = run_cli("runtime", "register", "--runtime", "skill", "--command", "company-skill-package-worker", "--notes", "Skill Package runtime")

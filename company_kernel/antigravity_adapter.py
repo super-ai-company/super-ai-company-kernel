@@ -7,6 +7,7 @@ import re
 import shutil
 import sqlite3
 import subprocess
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -541,9 +542,64 @@ def process_managed_attempt(args: argparse.Namespace, emp: sqlite3.Row) -> int:
         return run_code
     attempt = run_payload["attempt"]
     attempt_id = attempt["attempt_id"]
+    trace_id = str(attempt.get("trace_id", ""))
+    session_id = f"antigravity-session-{args.agent}-{task['id']}"
+    session_code, session_payload, session_err = run_companyctl_json(
+        [
+            "runtime",
+            "session",
+            "start",
+            "--session-id",
+            session_id,
+            "--employee",
+            args.agent,
+            "--adapter-type",
+            "antigravity",
+            "--runtime-type",
+            "cli",
+            "--session-key",
+            f"agent:{args.agent}:{args.by}",
+            "--task-id",
+            task["id"],
+            "--attempt-id",
+            attempt_id,
+        ]
+    )
+    if session_code != 0:
+        emit({"ok": False, "processed": 0, "agent": args.agent, "managed_attempt": True, "task_id": task["id"], "error": "runtime session start failed", "attempt": attempt, "companyctl": session_payload, "stderr": session_err[-1000:]})
+        return session_code
+    tool_call_id = f"antigravity-tool-{args.agent}-{task['id']}"
+    run_companyctl_json(
+        [
+            "tool-call",
+            "start",
+            "--tool-call-id",
+            tool_call_id,
+            "--trace-id",
+            trace_id,
+            "--task-id",
+            task["id"],
+            "--attempt-id",
+            attempt_id,
+            "--employee",
+            args.agent,
+            "--session-id",
+            session_id,
+            "--tool-name",
+            "antigravity.print",
+            "--tool-type",
+            "cli",
+            "--input-summary",
+            f"agy --print timeout={args.timeout}s",
+            "--risk-level",
+            "medium",
+        ]
+    )
     run_companyctl_json(["task", "progress", "--task-id", task["id"], "--agent", args.agent, "--attempt-id", attempt_id, "--state", "acknowledged", "--message", "Antigravity managed attempt acknowledged", "--progress", "5"])
     before_files = git_changed_files()
+    started_monotonic = time.monotonic()
     agy_code, agy_reply, agy_err = run_agy_print(prompt, args.timeout)
+    runtime_seconds = max(0, int(round(time.monotonic() - started_monotonic)))
     after_files = git_changed_files()
     validation = validate_agy_reply(message=prompt, reply=agy_reply, before_files=before_files, after_files=after_files)
     report_path = managed_attempt_report_path(args.agent, task["id"])
@@ -566,18 +622,24 @@ def process_managed_attempt(args: argparse.Namespace, emp: sqlite3.Row) -> int:
         evidence_code, evidence_payload, evidence_err = promote_managed_report_to_task_evidence(args.agent, task["id"], report_path, summary)
         evidence_path = str(evidence_payload.get("evidence", {}).get("path_or_url") or evidence_payload.get("final_path") or report_path)
         done_code, done_payload, done_err = run_companyctl_json(["task", "done", "--agent", args.agent, "--task-id", task["id"], "--summary", summary, "--evidence", evidence_path])
+        _, tool_payload, _ = run_companyctl_json(["tool-call", "finish", "--tool-call-id", tool_call_id, "--status", "success", "--output-summary", summary[:500], "--error", ""])
+        _, budget_payload, _ = run_companyctl_json(["budget", "record", "--task-id", task["id"], "--attempt-id", attempt_id, "--employee", args.agent, "--cost-type", "antigravity_runtime", "--amount", "0", "--currency", "USD", "--model-name", "", "--provider", "antigravity", "--runtime-seconds", str(runtime_seconds), "--summary", f"agy --print exit_code={agy_code}"])
         finish_code, finish_payload, finish_err = run_companyctl_json(["task", "attempt", "finish", "--attempt-id", attempt_id, "--status", "success"])
+        _, stopped_session, _ = run_companyctl_json(["runtime", "session", "stop", "--session-id", session_id, "--status", "stopped", "--error", ""])
         run_companyctl(["heartbeat", "--agent", args.agent])
         shown_code, shown_payload, _shown_err = run_companyctl_json(["task", "show", "--task-id", task["id"]])
         ok = evidence_code == 0 and done_code == 0 and finish_code == 0
-        emit({"ok": ok, "processed": 1, "managed_attempt": True, "task_id": task["id"], "agent": emp["id"], "attempt": finish_payload.get("attempt", attempt), "task": shown_payload.get("task", {}) if shown_code == 0 else {}, "evidence": evidence_path, "report": str(report_path), "validation": validation, "companyctl_evidence": evidence_payload, "companyctl_evidence_stderr": evidence_err[-1000:], "companyctl_done": done_payload, "companyctl_done_stderr": done_err[-1000:], "companyctl_finish_stderr": finish_err[-1000:]})
+        emit({"ok": ok, "processed": 1, "managed_attempt": True, "task_id": task["id"], "agent": emp["id"], "attempt": finish_payload.get("attempt", attempt), "runtime_session": stopped_session.get("session", session_payload.get("session", {})), "tool_call": tool_payload.get("tool_call", {}), "budget_event": budget_payload.get("budget_event", {}), "task": shown_payload.get("task", {}) if shown_code == 0 else {}, "evidence": evidence_path, "report": str(report_path), "validation": validation, "companyctl_evidence": evidence_payload, "companyctl_evidence_stderr": evidence_err[-1000:], "companyctl_done": done_payload, "companyctl_done_stderr": done_err[-1000:], "companyctl_finish_stderr": finish_err[-1000:]})
         return 0 if ok else 1
     blocker = validation["blocker"] or agy_err or "Antigravity managed attempt failed validation"
     run_companyctl_json(["task", "progress", "--task-id", task["id"], "--agent", args.agent, "--attempt-id", attempt_id, "--state", "blocked_on_input_or_dependency", "--message", blocker, "--progress", "50", "--payload", json.dumps({"validation": validation, "report": str(report_path)}, ensure_ascii=False)])
     block_code, block_payload, block_err = run_companyctl_json(["task", "block", "--agent", args.agent, "--task-id", task["id"], "--blocker", blocker])
+    _, tool_payload, _ = run_companyctl_json(["tool-call", "finish", "--tool-call-id", tool_call_id, "--status", "failed", "--output-summary", blocker[:500], "--error", blocker[:500]])
+    _, budget_payload, _ = run_companyctl_json(["budget", "record", "--task-id", task["id"], "--attempt-id", attempt_id, "--employee", args.agent, "--cost-type", "antigravity_runtime", "--amount", "0", "--currency", "USD", "--model-name", "", "--provider", "antigravity", "--runtime-seconds", str(runtime_seconds), "--summary", f"agy --print exit_code={agy_code}"])
     finish_code, finish_payload, finish_err = run_companyctl_json(["task", "attempt", "finish", "--attempt-id", attempt_id, "--status", "failed", "--error", blocker])
+    _, stopped_session, _ = run_companyctl_json(["runtime", "session", "stop", "--session-id", session_id, "--status", "failed", "--error", blocker[:500]])
     run_companyctl(["heartbeat", "--agent", args.agent])
-    emit({"ok": False, "processed": 1 if block_code == 0 else 0, "managed_attempt": True, "task_id": task["id"], "agent": emp["id"], "attempt": finish_payload.get("attempt", attempt), "status": "blocked", "blocker": blocker, "report": str(report_path), "validation": validation, "companyctl_block": block_payload, "companyctl_block_stderr": block_err[-1000:], "companyctl_finish_stderr": finish_err[-1000:]})
+    emit({"ok": False, "processed": 1 if block_code == 0 else 0, "managed_attempt": True, "task_id": task["id"], "agent": emp["id"], "attempt": finish_payload.get("attempt", attempt), "runtime_session": stopped_session.get("session", session_payload.get("session", {})), "tool_call": tool_payload.get("tool_call", {}), "budget_event": budget_payload.get("budget_event", {}), "status": "blocked", "blocker": blocker, "report": str(report_path), "validation": validation, "companyctl_block": block_payload, "companyctl_block_stderr": block_err[-1000:], "companyctl_finish_stderr": finish_err[-1000:]})
     return 1 if finish_code == 0 else finish_code
 
 
