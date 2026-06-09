@@ -11448,6 +11448,10 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual(task_id, result["task_id"])
         self.assertTrue(result["managed_attempt"])
         self.assertEqual("success", result["attempt"]["status"])
+        self.assertEqual("stopped", result["runtime_session"]["status"])
+        self.assertEqual("success", result["tool_call"]["status"])
+        self.assertEqual("antigravity.print", result["tool_call"]["tool_name"])
+        self.assertEqual("antigravity_runtime", result["budget_event"]["cost_type"])
         self.assertEqual("completed", result["task"]["status"])
         self.assertTrue(Path(result["evidence"]).exists())
 
@@ -11456,6 +11460,9 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual("completed", shown["task"]["status"])
         self.assertEqual(1, len(shown["attempts"]))
         self.assertEqual("success", shown["attempts"][0]["status"])
+        self.assertEqual([result["runtime_session"]["session_id"]], [item["session_id"] for item in shown["runtime_sessions"]])
+        self.assertEqual([result["tool_call"]["tool_call_id"]], [item["tool_call_id"] for item in shown["tool_calls"]])
+        self.assertEqual([result["budget_event"]["budget_event_id"]], [item["budget_event_id"] for item in shown["budget_events"]])
         event_types = [event["event_type"] for event in shown["events"]]
         self.assertIn("task.progress", event_types)
         self.assertIn("task.done", event_types)
@@ -11506,6 +11513,9 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual("blocked", result["status"])
         self.assertIn("Antigravity login expired", result["blocker"])
         self.assertEqual("failed", result["attempt"]["status"])
+        self.assertEqual("failed", result["runtime_session"]["status"])
+        self.assertEqual("failed", result["tool_call"]["status"])
+        self.assertEqual("antigravity_runtime", result["budget_event"]["cost_type"])
 
         code, shown = run_cli("task", "show", "--task-id", task_id)
         self.assertEqual(0, code, shown)
@@ -11513,6 +11523,9 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual("", shown["task"]["evidence_path"])
         self.assertEqual(1, len(shown["attempts"]))
         self.assertEqual("failed", shown["attempts"][0]["status"])
+        self.assertEqual([result["runtime_session"]["session_id"]], [item["session_id"] for item in shown["runtime_sessions"]])
+        self.assertEqual([result["tool_call"]["tool_call_id"]], [item["tool_call_id"] for item in shown["tool_calls"]])
+        self.assertEqual([result["budget_event"]["budget_event_id"]], [item["budget_event_id"] for item in shown["budget_events"]])
         event_types = [event["event_type"] for event in shown["events"]]
         self.assertIn("task.progress", event_types)
         self.assertIn("task.blocked", event_types)
