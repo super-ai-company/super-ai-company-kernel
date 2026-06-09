@@ -6341,28 +6341,51 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertTrue(budget_events["ok"])
         self.assertEqual(["budget-event-ledger"], [item["budget_event_id"] for item in budget_events["budget_events"]])
 
+        status, api_budget = api_gateway.route_post(
+            "/v1/budget-events",
+            {
+                "budget_event_id": "budget-event-api-ledger",
+                "task_id": "task-budget-ledger",
+                "attempt_id": attempt_id,
+                "employee_id": "codex",
+                "cost_type": "tool_runtime",
+                "amount": 0.08,
+                "currency": "USD",
+                "token_input": 40,
+                "token_output": 20,
+                "model_name": "gpt-5",
+                "provider": "openai",
+                "runtime_seconds": 5,
+                "summary": "api budget cost",
+            },
+        )
+        self.assertEqual(HTTPStatus.CREATED, status, api_budget)
+        self.assertEqual("budget-event-api-ledger", api_budget["budget_event"]["budget_event_id"])
+        self.assertEqual(trace_id, api_budget["budget_event"]["trace_id"])
+
         status, budget_summary = api_gateway.route_get("/v1/budget-summary", {"task_id": ["task-budget-ledger"]})
         self.assertEqual(HTTPStatus.OK, status, budget_summary)
-        self.assertEqual(0.42, budget_summary["summary"]["total_amount"])
-        self.assertEqual({"codex": 0.42}, budget_summary["summary"]["by_employee"])
-        self.assertEqual({"task-budget-ledger": 0.42}, budget_summary["summary"]["by_task"])
-        self.assertEqual({"model_api": 0.42}, budget_summary["summary"]["by_cost_type"])
-        self.assertEqual({"gpt-5": 0.42}, budget_summary["summary"]["by_model"])
-        self.assertEqual({"openai": 0.42}, budget_summary["summary"]["by_provider"])
+        self.assertEqual(0.5, budget_summary["summary"]["total_amount"])
+        self.assertEqual({"codex": 0.5}, budget_summary["summary"]["by_employee"])
+        self.assertEqual({"task-budget-ledger": 0.5}, budget_summary["summary"]["by_task"])
+        self.assertEqual({"model_api": 0.42, "tool_runtime": 0.08}, budget_summary["summary"]["by_cost_type"])
+        self.assertEqual(0.08, budget_summary["summary"]["by_cost_type"]["tool_runtime"])
+        self.assertEqual({"gpt-5": 0.5}, budget_summary["summary"]["by_model"])
+        self.assertEqual({"openai": 0.5}, budget_summary["summary"]["by_provider"])
 
         status, trace = api_gateway.route_get(f"/v1/traces/{trace_id}/timeline", {})
         self.assertEqual(HTTPStatus.OK, status, trace)
-        self.assertEqual(1, trace["counts"]["budget_events"])
+        self.assertEqual(2, trace["counts"]["budget_events"])
         self.assertIn("budget_event", [item["kind"] for item in trace["timeline"]])
 
         status, cockpit = api_gateway.route_get("/v1/dashboard/cockpit", {})
         self.assertEqual(HTTPStatus.OK, status, cockpit)
-        self.assertEqual(1, cockpit["counts"]["budget_events"])
-        self.assertEqual(0.42, cockpit["budget_summary"]["total_amount"])
-        self.assertEqual(1200, cockpit["budget_summary"]["token_input"])
-        self.assertEqual(340, cockpit["budget_summary"]["token_output"])
-        self.assertEqual({"gpt-5": 0.42}, cockpit["budget_summary"]["by_model"])
-        self.assertEqual({"openai": 0.42}, cockpit["budget_summary"]["by_provider"])
+        self.assertEqual(2, cockpit["counts"]["budget_events"])
+        self.assertEqual(0.5, cockpit["budget_summary"]["total_amount"])
+        self.assertEqual(1240, cockpit["budget_summary"]["token_input"])
+        self.assertEqual(360, cockpit["budget_summary"]["token_output"])
+        self.assertEqual({"gpt-5": 0.5}, cockpit["budget_summary"]["by_model"])
+        self.assertEqual({"openai": 0.5}, cockpit["budget_summary"]["by_provider"])
 
     def test_budget_summary_reports_soft_and_hard_limit_status(self) -> None:
         with sqlite3.connect(self.root / "company.sqlite") as conn:
