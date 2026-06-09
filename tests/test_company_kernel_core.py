@@ -2738,6 +2738,56 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual(HTTPStatus.OK, status, shown_after_reject)
         self.assertEqual("rejected", shown_after_reject["completion_contract"]["acceptance_status"])
 
+    def test_cli_accepts_and_rejects_final_evidence_with_audit_trail(self) -> None:
+        code, created = run_cli("employee", "create", "--id", "main", "--name", "main", "--role", "operator", "--runtime", "openclaw", "--workspace", str(self.root / "workspace" / "main"))
+        self.assertEqual(0, code, created)
+        code, created = run_cli("employee", "create", "--id", "writer", "--name", "writer", "--role", "writer", "--runtime", "local", "--workspace", str(self.root / "workspace" / "writer"))
+        self.assertEqual(0, code, created)
+        self.mark_active("writer")
+        code, submitted = run_cli("task", "submit", "--from", "main", "--to", "writer", "--task-id", "task-cli-evidence-decision", "--title", "CLI evidence decision")
+        self.assertEqual(0, code, submitted)
+        code, run = run_cli("task", "run", "--task-id", "task-cli-evidence-decision", "--agent", "writer", "--by", "main")
+        self.assertEqual(0, code, run)
+        conn = companyctl.connect()
+        try:
+            workspace = companyctl.ensure_task_workspace(conn, "task-cli-evidence-decision")
+            final_path = Path(workspace["path"]) / "final" / "cli-delivery.md"
+            final_path.write_text("cli accepted delivery\n", encoding="utf-8")
+            artifact = companyctl.register_artifact_internal(
+                conn,
+                task_id="task-cli-evidence-decision",
+                employee_id="writer",
+                artifact_type="text",
+                path=str(final_path),
+                summary="cli accepted delivery",
+                stage="final",
+                is_final=True,
+            )["artifact"]
+            promoted = companyctl.promote_artifact_to_evidence_internal(conn, artifact_id=artifact["artifact_id"], by="writer", summary="cli final evidence", attempt_id=run["attempt"]["attempt_id"])
+        finally:
+            conn.close()
+        evidence_id = promoted["evidence"]["evidence_id"]
+
+        code, accepted = run_cli("task", "evidence", "accept", "--evidence-id", evidence_id, "--by", "main", "--summary", "CLI 验收通过")
+        self.assertEqual(0, code, accepted)
+        self.assertEqual("accepted", accepted["evidence"]["acceptance_decision"]["status"])
+        self.assertEqual("evidence.accepted", accepted["event"]["event_type"])
+        self.assertEqual("evidence.accept", accepted["audit"]["action"])
+
+        code, shown = run_cli("task", "show", "--task-id", "task-cli-evidence-decision")
+        self.assertEqual(0, code, shown)
+        self.assertEqual("accepted", shown["completion_contract"]["acceptance_status"])
+
+        code, rejected = run_cli("task", "evidence", "reject", "--evidence-id", evidence_id, "--by", "main", "--summary", "CLI 验收不通过", "--reason", "证据需要重做")
+        self.assertEqual(0, code, rejected)
+        self.assertEqual("rejected", rejected["evidence"]["acceptance_decision"]["status"])
+        self.assertEqual("evidence.rejected", rejected["event"]["event_type"])
+        self.assertEqual("evidence.reject", rejected["audit"]["action"])
+
+        code, shown_after_reject = run_cli("task", "show", "--task-id", "task-cli-evidence-decision")
+        self.assertEqual(0, code, shown_after_reject)
+        self.assertEqual("rejected", shown_after_reject["completion_contract"]["acceptance_status"])
+
     def test_api_gateway_lists_sanitized_artifacts_and_handoffs(self) -> None:
         for employee_id, role in [("main", "operator"), ("writer", "writer"), ("qa", "qa")]:
             code, created = run_cli("employee", "create", "--id", employee_id, "--name", employee_id, "--role", role, "--runtime", "local", "--workspace", str(self.root / "workspace" / employee_id))
@@ -8147,16 +8197,26 @@ class CompanyKernelCoreTest(unittest.TestCase):
                     "artifact": {"artifact_id": "artifact-local-smoke-skill"},
                     "evidence": {"evidence_id": "evidence-local-smoke-skill", "path_or_url": "final/listing-summary.md"},
                 })
+            elif "task" in cmd and "evidence" in cmd and "accept" in cmd:
+                result.stdout = json.dumps({
+                    "ok": True,
+                    "evidence": {
+                        "evidence_id": "evidence-local-smoke-skill",
+                        "acceptance_decision": {"status": "accepted", "by": "main"},
+                    },
+                    "event": {"event_type": "evidence.accepted"},
+                    "audit": {"action": "evidence.accept"},
+                })
             elif "task" in cmd and "show" in cmd:
                 result.stdout = json.dumps({
                     "ok": True,
                     "task": {"id": "task-local-smoke-skill", "status": "completed"},
-                    "completion_contract": {"valid": True, "final_evidence_count": 1},
+                    "completion_contract": {"valid": True, "final_evidence_count": 1, "accepted_final_evidence_count": 1, "acceptance_status": "accepted"},
                     "attempts": [{"attempt_id": "attempt-local-smoke-skill", "status": "success"}],
                     "runtime_sessions": [{"session_id": "skill-session-ecommerce-copy-skill-task-local-smoke-skill"}],
                     "tool_calls": [{"tool_call_id": "skill-tool-ecommerce-copy-skill-task-local-smoke-skill"}],
                     "budget_summary": {"event_count": 1, "total_amount": 10, "currency": "USD"},
-                    "evidence_records": [{"evidence_id": "evidence-local-smoke-skill"}],
+                    "evidence_records": [{"evidence_id": "evidence-local-smoke-skill", "acceptance_decision": {"status": "accepted", "by": "main"}}],
                     "handoffs": [{"handoff_id": "handoff-local-smoke-skill"}],
                 })
             elif "trace" in cmd and "timeline" in cmd:
@@ -8175,10 +8235,14 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual(1, result["counts"]["tool_calls"])
         self.assertEqual(1, result["counts"]["budget_events"])
         self.assertEqual(1, result["counts"]["evidence"])
+        self.assertEqual(1, result["counts"]["accepted_evidence"])
         self.assertEqual(1, result["counts"]["handoffs"])
         self.assertTrue(result["completion_contract"]["valid"])
+        self.assertEqual("accepted", result["completion_contract"]["acceptance_status"])
+        self.assertEqual("accepted", result["acceptance"]["status"])
         self.assertEqual(["budget_event", "evidence", "handoff", "tool_call"], result["trace_kinds"])
         self.assertTrue(any("company-skill-package-worker" in cmd[0] for cmd in calls))
+        self.assertTrue(any("task" in cmd and "evidence" in cmd and "accept" in cmd for cmd in calls))
 
     def test_api_gateway_exposes_health_tasks_messages_and_heartbeats(self) -> None:
         status, descriptor = api_gateway.route_get("/v1", {})

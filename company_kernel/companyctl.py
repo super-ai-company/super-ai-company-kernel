@@ -9204,6 +9204,20 @@ def cmd_task_evidence_promote(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_task_evidence_accept(args: argparse.Namespace) -> int:
+    conn = connect()
+    result = decide_evidence_internal(conn, evidence_id=args.evidence_id, by=args.by, status="accepted", summary=args.summary)
+    emit(result)
+    return 0 if result.get("ok") else 1
+
+
+def cmd_task_evidence_reject(args: argparse.Namespace) -> int:
+    conn = connect()
+    result = decide_evidence_internal(conn, evidence_id=args.evidence_id, by=args.by, status="rejected", summary=args.summary, reason=args.reason)
+    emit(result)
+    return 0 if result.get("ok") else 1
+
+
 def cmd_task_handoff_create(args: argparse.Namespace) -> int:
     conn = connect()
     from_employee = resolve_employee_alias(args.from_employee)
@@ -10973,6 +10987,17 @@ def build_parser() -> argparse.ArgumentParser:
     task_evidence_promote.add_argument("--summary", default="")
     task_evidence_promote.add_argument("--type", default="")
     task_evidence_promote.set_defaults(func=cmd_task_evidence_promote)
+    task_evidence_accept = task_evidence_sub.add_parser("accept")
+    task_evidence_accept.add_argument("--evidence-id", required=True)
+    task_evidence_accept.add_argument("--by", required=True)
+    task_evidence_accept.add_argument("--summary", default="")
+    task_evidence_accept.set_defaults(func=cmd_task_evidence_accept)
+    task_evidence_reject = task_evidence_sub.add_parser("reject")
+    task_evidence_reject.add_argument("--evidence-id", required=True)
+    task_evidence_reject.add_argument("--by", required=True)
+    task_evidence_reject.add_argument("--summary", default="")
+    task_evidence_reject.add_argument("--reason", default="")
+    task_evidence_reject.set_defaults(func=cmd_task_evidence_reject)
     task_handoff = task_sub.add_parser("handoff")
     task_handoff_sub = task_handoff.add_subparsers(dest="handoff_cmd", required=True)
     task_handoff_create = task_handoff_sub.add_parser("create")

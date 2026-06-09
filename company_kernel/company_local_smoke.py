@@ -201,14 +201,47 @@ def run_skill_closed_loop_smoke(source: str, agent: str, package: str, timeout: 
         else {"ok": False, "payload": {}, "stderr": "missing artifact_id"}
     )
     shown = run_cmd([str(ROOT / "bin" / "companyctl"), "task", "show", "--task-id", task_id], timeout=60)
-    trace = run_cmd([str(ROOT / "bin" / "companyctl"), "trace", "timeline", "--trace-id", trace_id], timeout=60) if trace_id else {"ok": False, "payload": {"timeline": []}, "stderr": "missing trace_id"}
     shown_payload = shown.get("payload") if isinstance(shown.get("payload"), dict) else {}
+    evidence = shown_payload.get("evidence_records", []) if isinstance(shown_payload.get("evidence_records"), list) else []
+    evidence_id = ""
+    if evidence and isinstance(evidence[0], dict):
+        evidence_id = str(evidence[0].get("evidence_id") or "")
+    if not evidence_id:
+        evidence_id = str((worker_payload.get("evidence") or {}).get("evidence_id") or "")
+    acceptance = (
+        run_cmd(
+            [
+                str(ROOT / "bin" / "companyctl"),
+                "task",
+                "evidence",
+                "accept",
+                "--evidence-id",
+                evidence_id,
+                "--by",
+                source,
+                "--summary",
+                "Local smoke owner accepted final evidence",
+            ],
+            timeout=60,
+        )
+        if evidence_id
+        else {"ok": False, "payload": {}, "stderr": "missing evidence_id"}
+    )
+    shown_after_accept = run_cmd([str(ROOT / "bin" / "companyctl"), "task", "show", "--task-id", task_id], timeout=60) if acceptance.get("ok") else shown
+    trace = run_cmd([str(ROOT / "bin" / "companyctl"), "trace", "timeline", "--trace-id", trace_id], timeout=60) if trace_id else {"ok": False, "payload": {"timeline": []}, "stderr": "missing trace_id"}
+    if isinstance(shown_after_accept.get("payload"), dict) and shown_after_accept.get("payload", {}).get("ok", True):
+        shown_payload = shown_after_accept.get("payload", {})
     task = shown_payload.get("task", {}) if isinstance(shown_payload.get("task"), dict) else {}
     completion_contract = shown_payload.get("completion_contract", {}) if isinstance(shown_payload.get("completion_contract"), dict) else {}
     attempts = shown_payload.get("attempts", []) if isinstance(shown_payload.get("attempts"), list) else []
     runtime_sessions = shown_payload.get("runtime_sessions", []) if isinstance(shown_payload.get("runtime_sessions"), list) else []
     tool_calls = shown_payload.get("tool_calls", []) if isinstance(shown_payload.get("tool_calls"), list) else []
     evidence = shown_payload.get("evidence_records", []) if isinstance(shown_payload.get("evidence_records"), list) else []
+    accepted_evidence = [
+        item
+        for item in evidence
+        if isinstance(item, dict) and isinstance(item.get("acceptance_decision"), dict) and item["acceptance_decision"].get("status") == "accepted"
+    ]
     handoffs = shown_payload.get("handoffs", []) if isinstance(shown_payload.get("handoffs"), list) else []
     budget_summary = shown_payload.get("budget_summary", {}) if isinstance(shown_payload.get("budget_summary"), dict) else {}
     timeline = trace.get("payload", {}).get("timeline", []) if isinstance(trace.get("payload"), dict) else []
@@ -220,14 +253,20 @@ def run_skill_closed_loop_smoke(source: str, agent: str, package: str, timeout: 
         "tool_calls": len(tool_calls),
         "budget_events": int(budget_summary.get("event_count") or 0),
         "evidence": len(evidence),
+        "accepted_evidence": len(accepted_evidence),
         "handoffs": int(trace_counts.get("handoffs") or len(handoffs)),
     }
+    acceptance_payload = acceptance.get("payload") if isinstance(acceptance.get("payload"), dict) else {}
+    acceptance_decision = (acceptance_payload.get("evidence") or {}).get("acceptance_decision") if isinstance(acceptance_payload.get("evidence"), dict) else {}
+    acceptance_status = str((acceptance_decision or {}).get("status") or "")
     ok = (
         bool(worker.get("ok") and worker_payload.get("ok"))
-        and bool(review_task.get("ok") and handoff.get("ok"))
+        and bool(review_task.get("ok") and handoff.get("ok") and acceptance.get("ok"))
         and str(task.get("status") or "") == "completed"
         and bool(completion_contract.get("valid"))
+        and str(completion_contract.get("acceptance_status") or "") == "accepted"
         and all(counts[key] > 0 for key in ["attempts", "runtime_sessions", "tool_calls", "budget_events", "evidence", "handoffs"])
+        and counts["accepted_evidence"] > 0
         and {"tool_call", "budget_event", "evidence", "handoff"}.issubset(set(trace_kinds))
     )
     return {
@@ -238,6 +277,7 @@ def run_skill_closed_loop_smoke(source: str, agent: str, package: str, timeout: 
         "completion_contract": completion_contract,
         "counts": counts,
         "trace_kinds": trace_kinds,
+        "acceptance": {"ok": bool(acceptance.get("ok")), "status": acceptance_status, "result": acceptance_payload},
         "worker": worker_payload,
         "review_task": review_task.get("payload", {}),
         "handoff": handoff.get("payload", {}),
@@ -248,7 +288,9 @@ def run_skill_closed_loop_smoke(source: str, agent: str, package: str, timeout: 
             "worker": worker.get("stderr", ""),
             "review_task": review_task.get("stderr", ""),
             "handoff": handoff.get("stderr", ""),
+            "acceptance": acceptance.get("stderr", ""),
             "show": shown.get("stderr", ""),
+            "show_after_accept": shown_after_accept.get("stderr", ""),
             "trace": trace.get("stderr", ""),
         },
     }
