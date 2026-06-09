@@ -69,6 +69,7 @@ API_ENDPOINTS = [
     {"method": "GET", "path": "/v1/runtimes", "summary": "List runtimes"},
     {"method": "POST", "path": "/v1/runtimes", "summary": "Register runtime", "body": {"runtime": "runtime id", "command": "command optional", "status": "registered/disabled optional", "notes": "string optional"}},
     {"method": "GET", "path": "/v1/runtime-sessions", "summary": "List managed runtime sessions", "query": {"employee_id": "employee optional", "task_id": "task optional", "trace_id": "trace optional", "limit": "integer optional"}},
+    {"method": "GET", "path": "/v1/runtime-sessions/{session_id}", "summary": "Show one runtime session with related task, attempt, tool calls, budget, evidence, and events"},
     {"method": "GET", "path": "/v1/tool-calls", "summary": "List structured agent tool calls", "query": {"employee_id": "employee optional", "task_id": "task optional", "trace_id": "trace optional", "attempt_id": "attempt optional", "session_id": "runtime session optional", "limit": "integer optional"}},
     {"method": "GET", "path": "/v1/tool-calls/{tool_call_id}", "summary": "Show one sanitized tool call with related task, attempt, runtime session, budget, evidence, and events"},
     {"method": "GET", "path": "/v1/budget-events", "summary": "List budget/cost ledger events", "query": {"employee_id": "employee optional", "task_id": "task optional", "trace_id": "trace optional", "attempt_id": "attempt optional", "limit": "integer optional"}},
@@ -571,6 +572,18 @@ def route_get(path: str, query: dict[str, list[str]]) -> tuple[int, dict]:
         finally:
             conn.close()
         return HTTPStatus.OK, {"ok": True, "source": "/v1/runtime-sessions", "runtime_sessions": sessions}
+    if path.startswith("/v1/runtime-sessions/"):
+        session_id = path.removeprefix("/v1/runtime-sessions/").strip("/")
+        conn = companyctl.connect_readonly()
+        try:
+            payload = companyctl.runtime_session_detail_bundle(conn, session_id)
+        finally:
+            conn.close()
+        if payload.get("error") == "runtime_session not found":
+            return HTTPStatus.NOT_FOUND, payload
+        if payload.get("error"):
+            return HTTPStatus.BAD_REQUEST, payload
+        return HTTPStatus.OK, payload
     if path == "/v1/tool-calls":
         conn = companyctl.connect_readonly()
         try:

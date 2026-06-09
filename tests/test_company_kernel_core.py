@@ -2922,6 +2922,133 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertNotIn("/Users/owner/.ssh", detail_json)
         self.assertFalse(detail["evidence_records"][0]["display"]["absolute_path_exposed"])
 
+    def test_api_gateway_exposes_single_runtime_session_detail_with_related_ledgers(self) -> None:
+        for employee_id, role in [("main", "operator"), ("codex", "developer")]:
+            code, created = run_cli("employee", "create", "--id", employee_id, "--name", employee_id, "--role", role, "--runtime", "local", "--workspace", str(self.root / "workspace" / employee_id))
+            self.assertEqual(0, code, created)
+            if employee_id != "main":
+                self.mark_active(employee_id)
+        code, submitted = run_cli("task", "submit", "--from", "main", "--to", "codex", "--task-id", "task-api-session-detail", "--title", "Session detail")
+        self.assertEqual(0, code, submitted)
+        code, run = run_cli("task", "run", "--task-id", "task-api-session-detail", "--agent", "codex", "--by", "hermes")
+        self.assertEqual(0, code, run)
+        attempt_id = run["attempt"]["attempt_id"]
+        trace_id = run["attempt"]["trace_id"]
+        code, session = run_cli(
+            "runtime",
+            "session",
+            "start",
+            "--session-id",
+            "session-api-runtime-detail",
+            "--employee",
+            "codex",
+            "--adapter-type",
+            "codex",
+            "--runtime-type",
+            "cli",
+            "--pid",
+            "4321",
+            "--task-id",
+            "task-api-session-detail",
+            "--attempt-id",
+            attempt_id,
+        )
+        self.assertEqual(0, code, session)
+        secret = "sk-session-detail-secret"
+        code, tool = run_cli(
+            "tool-call",
+            "start",
+            "--tool-call-id",
+            "tool-session-detail-shell",
+            "--task-id",
+            "task-api-session-detail",
+            "--attempt-id",
+            attempt_id,
+            "--employee",
+            "codex",
+            "--session-id",
+            "session-api-runtime-detail",
+            "--tool-name",
+            "shell",
+            "--tool-type",
+            "shell",
+            "--input-summary",
+            f"session command api_key={secret} /Users/owner/.ssh/id_rsa",
+        )
+        self.assertEqual(0, code, tool)
+        code, finished = run_cli("tool-call", "finish", "--tool-call-id", "tool-session-detail-shell", "--status", "success", "--output-summary", f"session output token={secret}")
+        self.assertEqual(0, code, finished)
+        code, budget = run_cli(
+            "budget",
+            "record",
+            "--budget-event-id",
+            "budget-api-session-detail",
+            "--task-id",
+            "task-api-session-detail",
+            "--attempt-id",
+            attempt_id,
+            "--employee",
+            "codex",
+            "--cost-type",
+            "model_api",
+            "--amount",
+            "0.4",
+            "--currency",
+            "USD",
+            "--token-input",
+            "1400",
+            "--token-output",
+            "350",
+            "--runtime-seconds",
+            "66",
+            "--summary",
+            "session detail cost",
+        )
+        self.assertEqual(0, code, budget)
+        conn = companyctl.connect()
+        try:
+            workspace = companyctl.ensure_task_workspace(conn, "task-api-session-detail", trace_id)
+            final_path = Path(workspace["path"]) / "final" / "session-detail.md"
+            final_path.write_text("session detail final evidence\n", encoding="utf-8")
+            artifact = companyctl.register_artifact_internal(
+                conn,
+                task_id="task-api-session-detail",
+                employee_id="codex",
+                path=str(final_path),
+                artifact_type="md",
+                name="session-detail.md",
+                stage="final",
+                summary="session detail final evidence",
+                is_final=True,
+            )
+            promoted = companyctl.promote_artifact_to_evidence_internal(
+                conn,
+                artifact_id=artifact["artifact"]["artifact_id"],
+                by="codex",
+                attempt_id=attempt_id,
+                summary="session detail final evidence",
+            )
+        finally:
+            conn.close()
+
+        status, detail = api_gateway.route_get("/v1/runtime-sessions/session-api-runtime-detail", {})
+        self.assertEqual(200, status, detail)
+        self.assertTrue(detail["ok"])
+        self.assertEqual("session-api-runtime-detail", detail["runtime_session"]["session_id"])
+        self.assertEqual("task-api-session-detail", detail["task"]["id"])
+        self.assertNotIn("evidence_path", detail["task"])
+        self.assertEqual(attempt_id, detail["attempt"]["attempt_id"])
+        self.assertEqual(["tool-session-detail-shell"], [item["tool_call_id"] for item in detail["tool_calls"]])
+        self.assertEqual(0.4, detail["budget_summary"]["total_amount"])
+        self.assertEqual(1400, detail["budget_summary"]["token_input"])
+        self.assertEqual(350, detail["budget_summary"]["token_output"])
+        self.assertEqual(promoted["evidence"]["evidence_id"], detail["evidence_records"][0]["evidence_id"])
+        detail_json = json.dumps(detail, ensure_ascii=False)
+        self.assertIn("api_key=[REDACTED]", detail_json)
+        self.assertNotIn(secret, detail_json)
+        self.assertNotIn("/Users/owner/.ssh", detail_json)
+        self.assertFalse(detail["evidence_records"][0]["display"]["absolute_path_exposed"])
+
     def test_cli_audit_ledgers_match_api_sanitized_records(self) -> None:
         for employee_id, role in [("main", "operator"), ("writer", "writer"), ("qa", "qa"), ("codex", "developer")]:
             code, created = run_cli("employee", "create", "--id", employee_id, "--name", employee_id, "--role", role, "--runtime", "local", "--workspace", str(self.root / "workspace" / employee_id))
@@ -4223,6 +4350,9 @@ class CompanyKernelCoreTest(unittest.TestCase):
             "budget.by_cost_type",
             "budget.by_model",
             "budget.by_provider",
+            "showRuntimeSessionDetails",
+            "/v1/runtime-sessions/${encodeURIComponent(sessionId)}",
+            "Runtime Session API detail loaded",
             "showToolCallDetails",
             "/v1/tool-calls/${encodeURIComponent(toolCallId)}",
             "Tool Call API detail loaded",

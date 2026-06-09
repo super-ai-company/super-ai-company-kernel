@@ -1465,6 +1465,65 @@ def list_runtime_sessions(conn: sqlite3.Connection, *, employee_id: str = "", ta
     return [hydrate_runtime_session(item) for item in rows_out]
 
 
+def runtime_session_detail_bundle(conn: sqlite3.Connection, session_id: str) -> dict:
+    safe_id = str(session_id or "").strip()
+    if not safe_id or "/" in safe_id:
+        return {"ok": False, "error": "invalid session_id", "session_id": safe_id}
+    raw_session = conn.execute("SELECT * FROM runtime_sessions WHERE session_id = ?", (safe_id,)).fetchone()
+    if not raw_session:
+        return {"ok": False, "error": "runtime_session not found", "session_id": safe_id}
+    session = hydrate_runtime_session(dict(raw_session))
+    task_id = str(session.get("task_id") or "")
+    attempt_id = str(session.get("attempt_id") or "")
+    trace_id = str(session.get("trace_id") or "")
+    employee_id = str(session.get("employee_id") or "")
+    task_row = conn.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone() if task_id else None
+    attempt_row = conn.execute("SELECT * FROM execution_attempts WHERE attempt_id = ?", (attempt_id,)).fetchone() if attempt_id else None
+    events = rows(
+        conn,
+        """
+        SELECT id, trace_id, event_type, source_agent, task_id, payload_json, created_at, processed_at
+        FROM company_events
+        WHERE payload_json LIKE ?
+        ORDER BY created_at ASC
+        LIMIT 50
+        """,
+        (f"%{safe_id}%",),
+    )
+    sanitized_events = []
+    for event in events:
+        raw_payload = event.get("payload_json", "")
+        try:
+            payload = json.loads(raw_payload or "{}")
+        except json.JSONDecodeError:
+            payload = {"raw": sanitize_log_text(raw_payload)}
+        clean_payload = sanitize_json_like(payload)
+        sanitized_events.append(
+            {
+                **event,
+                "payload": clean_payload,
+                "payload_json": json.dumps(clean_payload, ensure_ascii=False, sort_keys=True),
+            }
+        )
+    task_payload = dict(task_row) if task_row else {}
+    if task_payload:
+        raw_evidence_path = task_payload.pop("evidence_path", "")
+        task_payload["evidence"] = sanitize_evidence_path_for_display(raw_evidence_path)
+    return {
+        "ok": True,
+        "source": "/v1/runtime-sessions/{session_id}",
+        "runtime_session": session,
+        "task": task_payload,
+        "attempt": hydrate_execution_attempt(dict(attempt_row)) if attempt_row else {},
+        "tool_calls": list_tool_calls(conn, session_id=safe_id, limit=100),
+        "budget_summary": budget_summary(conn, task_id=task_id, employee_id=employee_id, trace_id=trace_id, attempt_id=attempt_id),
+        "budget_events": list_budget_events(conn, task_id=task_id, employee_id=employee_id, trace_id=trace_id, attempt_id=attempt_id, limit=50),
+        "evidence_records": task_evidence_records(conn, task_id) if task_id else [],
+        "events": sanitized_events,
+        "redaction_policy": sanitized_log_policy(),
+    }
+
+
 def start_runtime_session_internal(
     conn: sqlite3.Connection,
     *,

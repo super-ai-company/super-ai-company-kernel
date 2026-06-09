@@ -3915,11 +3915,12 @@
     const sessions = (cockpit && cockpit.runtime_sessions) || [];
     if (runtimeSessions) {
       runtimeSessions.innerHTML = sessions.length ? sessions.slice(0, 6).map(item => `
-        <div class="cockpit-row" ${item.task_id ? `onclick="openTaskDetailDrawer('${escapeHtml(item.task_id || '')}')"` : ''}>
+        <div class="cockpit-row" onclick="showRuntimeSessionDetails('${escapeHtml(item.session_id || '')}', ${escapeHtml(JSON.stringify(item))})">
           <div>
             <strong>${escapeHtml(item.session_id || '-')}</strong>
             <span>${escapeHtml(item.employee_id || '-')} · task=${escapeHtml(item.task_id || '-')} · attempt=${escapeHtml(item.attempt_id || '-')}</span>
             <span>adapter=${escapeHtml(item.adapter_type || '-')} · pid=${escapeHtml(item.pid || '-')} · heartbeat=${escapeHtml(item.last_heartbeat_at || '-')}</span>
+            <span>Click loads /v1/runtime-sessions/{session_id}: task, attempt, tool calls, budget, evidence, and sanitized events.</span>
           </div>
           <div class="long-task-state ${escapeHtml(item.status || 'running')}">${escapeHtml(item.status || 'running')}</div>
         </div>
@@ -4327,6 +4328,63 @@
     if (!employeeId) return rows;
     return rows.filter(item => String(item.employee_id || '') === String(employeeId));
   }
+
+  function showHydratedRuntimeSessionDetails(session) {
+    const row = session && typeof session === 'object' ? session : {};
+    showDetails(`Runtime Session: ${row.session_id || 'detail'}`, {
+      runtime_session: row,
+      fallback: true,
+      note: 'Runtime Session API detail failed or session_id was missing; showing hydrated cockpit row only.',
+    });
+  }
+
+  async function showRuntimeSessionDetails(sessionId, hydratedRow) {
+    const safeId = String(sessionId || '').trim();
+    if (!safeId) {
+      showHydratedRuntimeSessionDetails(hydratedRow || {});
+      return;
+    }
+    companyApiLog('SESSION', `Loading Runtime Session API detail ${safeId}`, 'normal');
+    try {
+      const payload = await companyApiGet(`/v1/runtime-sessions/${encodeURIComponent(sessionId)}`);
+      const session = payload.runtime_session || {};
+      const task = payload.task || {};
+      const attempt = payload.attempt || {};
+      const toolCalls = payload.tool_calls || [];
+      const budget = payload.budget_summary || {};
+      const evidence = payload.evidence_records || [];
+      const events = payload.events || [];
+      showDetails(`Runtime Session: ${session.session_id || safeId}`, {
+        ok: payload.ok,
+        source: payload.source,
+        runtime_session: session,
+        task,
+        attempt,
+        tool_calls: toolCalls,
+        budget_summary: budget,
+        budget_events: payload.budget_events || [],
+        evidence_records: evidence,
+        events,
+        redaction_policy: payload.redaction_policy || {},
+        owner_readable_summary: [
+          `session=${session.session_id || safeId}`,
+          `status=${session.status || '-'}`,
+          `employee=${session.employee_id || '-'}`,
+          `task=${session.task_id || task.id || '-'}`,
+          `attempt=${session.attempt_id || attempt.attempt_id || '-'}`,
+          `tool_calls=${toolCalls.length}`,
+          `budget=${budget.currency || 'USD'} ${budget.total_amount || 0}`,
+          `evidence=${evidence.length}`,
+          `events=${events.length}`,
+        ].join(' · '),
+      });
+      companyApiLog('SESSION', `Runtime Session API detail loaded: ${safeId} · task=${session.task_id || '-'} · tools=${toolCalls.length} · cost=${budget.currency || 'USD'} ${budget.total_amount || 0}`, 'success');
+    } catch (err) {
+      companyApiLog('SESSION', `Runtime Session API detail failed for ${safeId}: ${err.message}; using hydrated row fallback.`, 'warn');
+      showHydratedRuntimeSessionDetails(hydratedRow || {session_id: safeId, status: 'unknown'});
+    }
+  }
+  window.showRuntimeSessionDetails = showRuntimeSessionDetails;
 
   function showHydratedToolCallDetails(toolCall) {
     const row = toolCall && typeof toolCall === 'object' ? toolCall : {};
