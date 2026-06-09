@@ -6,6 +6,7 @@ import subprocess
 from datetime import datetime
 from pathlib import Path
 
+from . import api_gateway
 from . import company_service_smoke
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -40,6 +41,14 @@ def run_cmd(args: list[str], timeout: int = 180) -> dict:
         "payload": payload,
         "stderr": cp.stderr[-2000:],
     }
+
+
+def cockpit_snapshot() -> dict:
+    try:
+        status, payload = api_gateway.route_get("/v1/dashboard/cockpit", {})
+    except Exception as exc:  # pragma: no cover - defensive smoke reporting
+        return {"ok": False, "exit_code": 1, "payload": {}, "stderr": str(exc)}
+    return {"ok": 200 <= int(status) < 300 and bool(payload.get("ok", True)), "exit_code": 0 if 200 <= int(status) < 300 else 1, "payload": payload, "stderr": ""}
 
 
 def run_local_smoke(agents: str, source: str, direct_targets: str, reply_timeout: int) -> dict:
@@ -236,6 +245,7 @@ def run_skill_closed_loop_smoke(source: str, agent: str, package: str, timeout: 
     )
     shown_after_accept = run_cmd([str(ROOT / "bin" / "companyctl"), "task", "show", "--task-id", task_id], timeout=60) if acceptance.get("ok") else shown
     trace = run_cmd([str(ROOT / "bin" / "companyctl"), "trace", "timeline", "--trace-id", trace_id], timeout=60) if trace_id else {"ok": False, "payload": {"timeline": []}, "stderr": "missing trace_id"}
+    cockpit = cockpit_snapshot()
     if isinstance(shown_after_accept.get("payload"), dict) and shown_after_accept.get("payload", {}).get("ok", True):
         shown_payload = shown_after_accept.get("payload", {})
     task = shown_payload.get("task", {}) if isinstance(shown_payload.get("task"), dict) else {}
@@ -254,6 +264,49 @@ def run_skill_closed_loop_smoke(source: str, agent: str, package: str, timeout: 
     timeline = trace.get("payload", {}).get("timeline", []) if isinstance(trace.get("payload"), dict) else []
     trace_counts = trace.get("payload", {}).get("counts", {}) if isinstance(trace.get("payload"), dict) and isinstance(trace.get("payload", {}).get("counts", {}), dict) else {}
     trace_kinds = sorted({str(item.get("kind") or "") for item in timeline if isinstance(item, dict) and item.get("kind")})
+    cockpit_payload = cockpit.get("payload") if isinstance(cockpit.get("payload"), dict) else {}
+    cockpit_task_cards = cockpit_payload.get("task_cards", []) if isinstance(cockpit_payload.get("task_cards"), list) else []
+    cockpit_card = next((item for item in cockpit_task_cards if isinstance(item, dict) and str(item.get("task_id") or "") == task_id), {})
+    cockpit_tool_calls = [
+        item for item in (cockpit_payload.get("tool_calls", []) if isinstance(cockpit_payload.get("tool_calls"), list) else [])
+        if isinstance(item, dict) and str(item.get("task_id") or "") == task_id
+    ]
+    cockpit_budget_summary = cockpit_payload.get("budget_summary", {}) if isinstance(cockpit_payload.get("budget_summary"), dict) else {}
+    cockpit_recent_evidence = [
+        item for item in (cockpit_payload.get("recent_evidence", []) if isinstance(cockpit_payload.get("recent_evidence"), list) else [])
+        if isinstance(item, dict) and str(item.get("task_id") or "") == task_id
+    ]
+    cockpit_evidence_queue = [
+        item for item in (cockpit_payload.get("evidence_acceptance_queue", []) if isinstance(cockpit_payload.get("evidence_acceptance_queue"), list) else [])
+        if isinstance(item, dict) and str(item.get("task_id") or "") == task_id
+    ]
+    cockpit_legacy_evidence = [
+        item for item in (cockpit_payload.get("legacy_task_evidence", []) if isinstance(cockpit_payload.get("legacy_task_evidence"), list) else [])
+        if isinstance(item, dict) and str(item.get("task_id") or "") == task_id
+    ]
+    cockpit_card_tool = cockpit_card.get("tool_summary", {}) if isinstance(cockpit_card.get("tool_summary"), dict) else {}
+    cockpit_card_budget = cockpit_card.get("budget_summary", {}) if isinstance(cockpit_card.get("budget_summary"), dict) else {}
+    cockpit_card_evidence = cockpit_card.get("evidence_summary", {}) if isinstance(cockpit_card.get("evidence_summary"), dict) else {}
+    cockpit_budget_events = int(cockpit_card_budget.get("event_count") or 0)
+    if cockpit_budget_events <= 0 and isinstance(cockpit_budget_summary.get("by_task_event_count"), dict):
+        cockpit_budget_events = int(cockpit_budget_summary.get("by_task_event_count", {}).get(task_id, 0) or 0)
+    cockpit_tool_count = int(cockpit_card_tool.get("tool_call_count") or len(cockpit_tool_calls))
+    cockpit_evidence_count = int(cockpit_card_evidence.get("final_evidence_count") or len(cockpit_recent_evidence) or len(cockpit_evidence_queue) or len(cockpit_legacy_evidence))
+    cockpit_task_visible = bool(cockpit_card or cockpit_recent_evidence or cockpit_evidence_queue or cockpit_legacy_evidence)
+    cockpit_verification = {
+        "ok": bool(cockpit.get("ok") and cockpit_task_visible and cockpit_tool_count > 0 and cockpit_budget_events > 0 and cockpit_evidence_count > 0),
+        "task_id": task_id,
+        "task_visible": cockpit_task_visible,
+        "task_card_visible": bool(cockpit_card),
+        "recent_evidence_visible": bool(cockpit_recent_evidence),
+        "evidence_queue_visible": bool(cockpit_evidence_queue),
+        "legacy_evidence_visible": bool(cockpit_legacy_evidence),
+        "tool_call_count": cockpit_tool_count,
+        "budget_event_count": cockpit_budget_events,
+        "evidence_count": cockpit_evidence_count,
+        "ledger_gaps": cockpit_card.get("ledger_gaps", []) if isinstance(cockpit_card.get("ledger_gaps", []), list) else [],
+        "state": str(cockpit_card.get("state") or ""),
+    }
     counts = {
         "attempts": len(attempts),
         "runtime_sessions": len(runtime_sessions),
@@ -275,6 +328,7 @@ def run_skill_closed_loop_smoke(source: str, agent: str, package: str, timeout: 
         and all(counts[key] > 0 for key in ["attempts", "runtime_sessions", "tool_calls", "budget_events", "evidence", "handoffs"])
         and counts["accepted_evidence"] > 0
         and {"tool_call", "budget_event", "evidence", "handoff"}.issubset(set(trace_kinds))
+        and bool(cockpit_verification["ok"])
     )
     return {
         "ok": ok,
@@ -285,6 +339,7 @@ def run_skill_closed_loop_smoke(source: str, agent: str, package: str, timeout: 
         "counts": counts,
         "trace_kinds": trace_kinds,
         "acceptance": {"ok": bool(acceptance.get("ok")), "status": acceptance_status, "result": acceptance_payload},
+        "cockpit_verification": cockpit_verification,
         "worker": worker_payload,
         "review_task": review_task.get("payload", {}),
         "handoff": handoff.get("payload", {}),
@@ -299,6 +354,7 @@ def run_skill_closed_loop_smoke(source: str, agent: str, package: str, timeout: 
             "show": shown.get("stderr", ""),
             "show_after_accept": shown_after_accept.get("stderr", ""),
             "trace": trace.get("stderr", ""),
+            "cockpit": cockpit.get("stderr", ""),
         },
     }
 

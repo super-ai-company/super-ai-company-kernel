@@ -8769,6 +8769,7 @@ class CompanyKernelCoreTest(unittest.TestCase):
 
     def test_local_smoke_can_verify_skill_closed_loop_ledgers(self) -> None:
         calls = []
+        submitted_task_id = {"value": "task-local-smoke-skill"}
 
         def fake_run(cmd, cwd=None, text=None, capture_output=None, timeout=None):
             calls.append(cmd)
@@ -8814,10 +8815,37 @@ class CompanyKernelCoreTest(unittest.TestCase):
             elif "trace" in cmd and "timeline" in cmd:
                 result.stdout = json.dumps({"ok": True, "timeline": [{"kind": "tool_call"}, {"kind": "budget_event"}, {"kind": "evidence"}, {"kind": "handoff"}]})
             else:
+                if "task" in cmd and "submit" in cmd and "--task-id" in cmd:
+                    task_id_arg = cmd[cmd.index("--task-id") + 1]
+                    if task_id_arg.startswith("task-local-smoke-skill-") and not task_id_arg.endswith("-review"):
+                        submitted_task_id["value"] = task_id_arg
                 result.stdout = json.dumps({"ok": True, "task": {"id": "task-local-smoke-skill", "metadata": {"trace_id": "trace-local-smoke-skill"}}})
             return result
 
-        with mock.patch.object(company_local_smoke.subprocess, "run", side_effect=fake_run):
+        def fake_cockpit_snapshot():
+            task_id = submitted_task_id["value"]
+            return {
+                "ok": True,
+                "exit_code": 0,
+                "payload": {
+                    "ok": True,
+                    "task_cards": [{
+                        "task_id": task_id,
+                        "state": "done",
+                        "runtime_summary": {"session_count": 1},
+                        "tool_summary": {"tool_call_count": 1},
+                        "budget_summary": {"event_count": 1, "total_amount": 10, "currency": "USD"},
+                        "evidence_summary": {"final_evidence_count": 1},
+                    }],
+                    "tool_calls": [{"task_id": task_id, "tool_call_id": "skill-tool-ecommerce-copy-skill-task-local-smoke-skill"}],
+                    "budget_summary": {"by_task_event_count": {task_id: 1}, "by_task": {task_id: 10}},
+                    "recent_evidence": [{"task_id": task_id}],
+                    "counts": {"tool_calls": 1, "budget_events": 1, "recent_evidence": 1},
+                },
+                "stderr": "",
+            }
+
+        with mock.patch.object(company_local_smoke.subprocess, "run", side_effect=fake_run), mock.patch.object(company_local_smoke, "cockpit_snapshot", side_effect=fake_cockpit_snapshot):
             result = company_local_smoke.run_skill_closed_loop_smoke(source="main", agent="ecommerce-copy-skill", package="skill-packages/ecommerce-copy-demo/skill.json", timeout=30)
         self.assertTrue(result["ok"], result)
         self.assertTrue(result["task_id"].startswith("task-local-smoke-skill-"))
@@ -8833,6 +8861,13 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual("accepted", result["completion_contract"]["acceptance_status"])
         self.assertEqual("accepted", result["acceptance"]["status"])
         self.assertEqual(["budget_event", "evidence", "handoff", "tool_call"], result["trace_kinds"])
+        self.assertTrue(result["cockpit_verification"]["ok"], result["cockpit_verification"])
+        self.assertEqual(result["task_id"], result["cockpit_verification"]["task_id"])
+        self.assertTrue(result["cockpit_verification"]["task_visible"])
+        self.assertTrue(result["cockpit_verification"]["task_card_visible"])
+        self.assertEqual(1, result["cockpit_verification"]["tool_call_count"])
+        self.assertEqual(1, result["cockpit_verification"]["budget_event_count"])
+        self.assertEqual(1, result["cockpit_verification"]["evidence_count"])
         self.assertTrue(any("company-skill-package-worker" in cmd[0] for cmd in calls))
         self.assertTrue(any("task" in cmd and "evidence" in cmd and "accept" in cmd for cmd in calls))
 
