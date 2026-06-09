@@ -12388,6 +12388,10 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual("completed", result["status"])
         self.assertTrue(result["artifact"]["artifact_id"])
         self.assertTrue(result["evidence"]["evidence_id"])
+        self.assertEqual("skill_runtime", result["budget_event"]["cost_type"])
+        self.assertEqual(10.0, result["budget_event"]["amount"])
+        self.assertEqual("USD", result["budget_event"]["currency"])
+        self.assertGreaterEqual(result["budget_event"]["runtime_seconds"], 0)
 
         code, shown = run_cli("task", "show", "--task-id", task_id)
         self.assertEqual(0, code, shown)
@@ -12399,12 +12403,15 @@ class CompanyKernelCoreTest(unittest.TestCase):
             evidence_count = conn.execute("SELECT COUNT(*) FROM evidence WHERE task_id = ?", (task_id,)).fetchone()[0]
             tool_call_count = conn.execute("SELECT COUNT(*) FROM agent_tool_calls WHERE task_id = ? AND employee_id = ?", (task_id, "image-copy-skill")).fetchone()[0]
             budget_event_count = conn.execute("SELECT COUNT(*) FROM budget_events WHERE task_id = ? AND employee_id = ?", (task_id, "image-copy-skill")).fetchone()[0]
+            budget_row = dict(conn.execute("SELECT * FROM budget_events WHERE task_id = ? AND employee_id = ?", (task_id, "image-copy-skill")).fetchone())
         finally:
             conn.close()
         self.assertEqual(1, artifact_count)
         self.assertEqual(1, evidence_count)
         self.assertEqual(1, tool_call_count)
         self.assertEqual(1, budget_event_count)
+        self.assertEqual(result["budget_event"]["budget_event_id"], budget_row["budget_event_id"])
+        self.assertEqual(result["budget_event"]["runtime_seconds"], budget_row["runtime_seconds"])
         status, trace = api_gateway.route_get(f"/v1/traces/{submitted['task']['metadata']['trace_id']}/timeline", {})
         self.assertEqual(HTTPStatus.OK, status, trace)
         self.assertIn("tool_call", [item["kind"] for item in trace["timeline"]])
