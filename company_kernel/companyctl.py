@@ -2301,6 +2301,7 @@ def task_control_plane_timeline(
 
 
 CONTROL_EVENT_ACTIONS = {
+    "task.probe": "probe",
     "supervisor.correction_requested": "correction",
     "supervisor.cancel_requested": "cancel",
     "task.retrying": "retry",
@@ -2473,6 +2474,39 @@ def task_progress_events(events: list[dict]) -> list[dict]:
     return progress_events
 
 
+def record_task_probe_internal(
+    conn: sqlite3.Connection,
+    *,
+    task_id: str,
+    actor: str,
+    attempt_id: str = "",
+    message: str,
+    reason: str = "",
+) -> dict:
+    actor = resolve_employee_alias(actor)
+    require_employee(conn, actor)
+    task = require_task(conn, task_id)
+    attempt: dict = {}
+    trace_id = str(task.get("trace_id") or "")
+    if attempt_id:
+        attempt = row_by_id(conn, "execution_attempts", "attempt_id", attempt_id)
+        if attempt["task_id"] != task_id:
+            raise SystemExit("attempt does not belong to task")
+        trace_id = str(attempt.get("trace_id") or trace_id)
+    payload = {
+        "attempt_id": attempt_id,
+        "by": actor,
+        "message": message,
+        "reason": reason or "progress_probe",
+        "ledger_action": "task.probe",
+        "non_mutating": True,
+        "external_send": False,
+    }
+    event = record_event(conn, "task.probe", actor, task_id=task_id, trace_id=trace_id, payload=payload)
+    audit(conn, actor, "task.probe", task_id, {"attempt_id": attempt_id, "reason": payload["reason"], "message": message, "event_id": event["id"]})
+    return {"task_id": task_id, "attempt_id": attempt_id, "event_id": event["id"], "probe": payload, "attempt": attempt}
+
+
 def task_correction_events(events: list[dict]) -> list[dict]:
     correction_events = []
     for event in events:
@@ -2640,6 +2674,25 @@ def cmd_task_progress(args: argparse.Namespace) -> int:
         emit({"ok": False, "error": str(exc), "task_id": args.task_id, "agent": agent, "attempt_id": args.attempt_id})
         return 2
     emit({"ok": True, "task_id": args.task_id, "agent": agent, **result})
+    return 0
+
+
+def cmd_task_probe(args: argparse.Namespace) -> int:
+    conn = connect()
+    actor = resolve_employee_alias(args.by)
+    try:
+        result = record_task_probe_internal(
+            conn,
+            task_id=args.task_id,
+            actor=actor,
+            attempt_id=args.attempt_id,
+            message=args.message,
+            reason=args.reason,
+        )
+    except SystemExit as exc:
+        emit({"ok": False, "error": str(exc), "task_id": args.task_id, "by": actor, "attempt_id": args.attempt_id})
+        return 2
+    emit({"ok": True, "task_id": args.task_id, "by": actor, **result})
     return 0
 
 
@@ -11104,6 +11157,13 @@ def build_parser() -> argparse.ArgumentParser:
     task_progress.add_argument("--payload", default="")
     task_progress.add_argument("--at", default="")
     task_progress.set_defaults(func=cmd_task_progress)
+    task_probe = task_sub.add_parser("probe")
+    task_probe.add_argument("--task-id", required=True)
+    task_probe.add_argument("--by", required=True)
+    task_probe.add_argument("--attempt-id", default="")
+    task_probe.add_argument("--message", required=True)
+    task_probe.add_argument("--reason", default="progress_probe")
+    task_probe.set_defaults(func=cmd_task_probe)
     task_correct = task_sub.add_parser("correct")
     task_correct.add_argument("--task-id", required=True)
     task_correct.add_argument("--attempt-id", required=True)

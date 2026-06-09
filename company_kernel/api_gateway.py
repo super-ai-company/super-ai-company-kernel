@@ -89,6 +89,7 @@ API_ENDPOINTS = [
     {"method": "POST", "path": "/v1/tasks/{task_id}/reassign", "summary": "Reassign task to another employee", "body": {"by": "employee id", "to": "employee id", "reason": "string"}},
     {"method": "POST", "path": "/v1/tasks/{task_id}/run", "summary": "Start managed long-running attempt", "body": {"agent": "employee id", "by": "employee id", "max_runtime_seconds": "integer optional", "stale_after_seconds": "integer optional", "session_key": "string optional", "pid": "string optional"}},
     {"method": "POST", "path": "/v1/tasks/{task_id}/progress", "summary": "Record managed attempt progress and refresh stale clock", "body": {"agent": "employee id", "attempt_id": "attempt id optional", "state": "progress state optional", "message": "string", "progress": "integer optional", "payload": "object optional"}},
+    {"method": "POST", "path": "/v1/tasks/{task_id}/probe", "summary": "Record owner/supervisor progress probe without mutating worker attempt progress", "body": {"by": "employee id", "attempt_id": "attempt id optional", "message": "string", "reason": "string optional"}},
     {"method": "POST", "path": "/v1/tasks/{task_id}/correct", "summary": "Send supervisor correction or correction ack", "body": {"attempt_id": "attempt id", "by": "employee id", "message": "string", "ack": "bool optional"}},
     {"method": "POST", "path": "/v1/tasks/{task_id}/cancel", "summary": "Cancel managed long-running attempt", "body": {"attempt_id": "attempt id", "by": "employee id", "reason": "string"}},
     {"method": "GET", "path": "/v1/tasks/{task_id}/attempts", "summary": "List managed execution attempts"},
@@ -1438,6 +1439,23 @@ def route_post(path: str, body: dict) -> tuple[int, dict]:
             argv.extend(["--payload", json.dumps(payload_body, ensure_ascii=False) if isinstance(payload_body, dict) else str(payload_body)])
         code, payload = run_companyctl(argv)
         return (HTTPStatus.OK if code == 0 else HTTPStatus.BAD_REQUEST), {"exit_code": code, **payload}
+    if path.startswith("/v1/tasks/") and path.endswith("/probe"):
+        task_id = path.removeprefix("/v1/tasks/").removesuffix("/probe").strip("/")
+        argv = ["task", "probe", "--task-id", task_id, "--by", str(body.get("by", "")), "--message", str(body.get("message", ""))]
+        for key, flag in [("attempt_id", "--attempt-id"), ("reason", "--reason")]:
+            if body.get(key) not in {None, ""}:
+                argv.extend([flag, str(body[key])])
+        code, payload = run_companyctl(argv)
+        response = {"exit_code": code, **payload}
+        if code == 0:
+            response = with_control_action(
+                response,
+                action="task.probe",
+                event_type="task.probe",
+                requires_owner_approval=False,
+            )
+            response = attach_task_control_context(response, task_id)
+        return (HTTPStatus.OK if code == 0 else HTTPStatus.BAD_REQUEST), response
     if path.startswith("/v1/tasks/") and path.endswith("/cancel"):
         task_id = path.removeprefix("/v1/tasks/").removesuffix("/cancel").strip("/")
         if not truthy(body.get("execute")):

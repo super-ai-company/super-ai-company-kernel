@@ -2094,6 +2094,9 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertIn("viewTaskLogs(taskId)", html)
         self.assertIn("recordWaitDecision(taskId, attemptId)", html)
         self.assertIn("Waiting is recorded locally only; no external send is triggered.", html)
+        self.assertIn("sendStagnantProbe(taskId, attemptId)", html)
+        self.assertIn("/probe`, {attempt_id: attemptId || '', by: 'hermes', message, reason: 'progress_stagnant'}", html)
+        self.assertNotIn("/correct`, {attempt_id: attemptId || '', by: 'hermes', message}", html)
         self.assertIn("function isTerminalTaskState(task, attempt)", html)
         self.assertIn("function taskStateMetaSummary(task)", html)
         self.assertIn("final=${finalState} · evidence=${hasEvidence ? 'present' : 'missing'}", html)
@@ -2109,6 +2112,7 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertIn('data-ledger-action="task.correct"', html)
         self.assertIn('data-ledger-action="task.cancel"', html)
         self.assertIn('data-ledger-action="task.probe"', html)
+        self.assertIn('data-ledger-action="task.probe" data-requires-owner-approval="false"', html)
         self.assertIn('data-requires-owner-approval="true"', html)
         self.assertIn('data-dangerous="true"', html)
         self.assertIn("retryTask(taskId)", html)
@@ -7336,6 +7340,46 @@ class CompanyKernelCoreTest(unittest.TestCase):
         status, api_shown = api_gateway.route_get("/v1/tasks/task-progress-managed", {})
         self.assertEqual(200, status, api_shown)
         self.assertEqual(shown["progress_events"], api_shown["progress_events"])
+
+    def test_stagnant_probe_records_non_approval_ledger_progress_event(self) -> None:
+        for employee_id, role in [("main", "operator"), ("hermes", "supervisor"), ("codex", "developer")]:
+            code, created = run_cli("employee", "create", "--id", employee_id, "--name", employee_id, "--role", role, "--runtime", "local", "--workspace", str(self.root / "workspace" / employee_id))
+            self.assertEqual(0, code, created)
+        self.mark_active("codex")
+        code, submitted = run_cli("task", "submit", "--from", "main", "--to", "codex", "--task-id", "task-stagnant-probe", "--title", "Probe stagnant task")
+        self.assertEqual(0, code, submitted)
+        code, run = run_cli("task", "run", "--task-id", "task-stagnant-probe", "--agent", "codex", "--by", "hermes")
+        self.assertEqual(0, code, run)
+        attempt_id = run["attempt"]["attempt_id"]
+        status, probe = api_gateway.route_post(
+            "/v1/tasks/task-stagnant-probe/probe",
+            {
+                "attempt_id": attempt_id,
+                "by": "hermes",
+                "message": "Owner progress probe: report heartbeat, progress, blocker, or evidence.",
+                "reason": "progress_stagnant",
+            },
+        )
+        self.assertEqual(200, status, probe)
+        self.assertTrue(probe["ok"])
+        self.assertEqual("task.probe", probe["control_action"]["action"])
+        self.assertFalse(probe["control_action"]["requires_owner_approval"])
+        self.assertNotIn("approval", probe)
+        code, shown = run_cli("task", "show", "--task-id", "task-stagnant-probe")
+        self.assertEqual(0, code, shown)
+        self.assertEqual([], shown["progress_events"])
+        probe_event = next(item for item in shown["events"] if item["event_type"] == "task.probe")
+        probe_payload = json.loads(probe_event["payload_json"])
+        self.assertEqual(attempt_id, probe_payload["attempt_id"])
+        self.assertEqual("progress_stagnant", probe_payload["reason"])
+        self.assertEqual("Owner progress probe: report heartbeat, progress, blocker, or evidence.", probe_payload["message"])
+        with companyctl.connect() as conn:
+            audit_row = conn.execute(
+                "SELECT action, detail_json FROM audit_logs WHERE target = ? AND action = ? ORDER BY created_at DESC LIMIT 1",
+                ("task-stagnant-probe", "task.probe"),
+            ).fetchone()
+        self.assertEqual("task.probe", audit_row["action"])
+        self.assertEqual(probe["event_id"], json.loads(audit_row["detail_json"])["event_id"])
 
     def test_retry_after_stale_starts_new_managed_attempt_with_same_trace(self) -> None:
         for employee_id, role in [("main", "operator"), ("hermes", "supervisor"), ("codex", "developer")]:
