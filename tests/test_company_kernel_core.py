@@ -10980,8 +10980,20 @@ class CompanyKernelCoreTest(unittest.TestCase):
         code, task = run_cli("task", "show", "--task-id", task_id)
         self.assertEqual(code, 0, task)
         self.assertEqual("completed", task["task"]["status"])
-        self.assertEqual(executed["report"], task["task"]["evidence_path"])
+        self.assertNotEqual(executed["report"], task["task"]["evidence_path"])
+        self.assertIn("/evidence/", task["task"]["evidence_path"])
         self.assertIn("Submitted Company Kernel task to OpenClaw legacy bus", Path(executed["report"]).read_text(encoding="utf-8"))
+        self.assertTrue(executed["attempt"]["attempt_id"])
+        self.assertEqual("success", executed["attempt"]["status"])
+        self.assertEqual("stopped", executed["runtime_session"]["status"])
+        self.assertEqual("success", executed["tool_call"]["status"])
+        self.assertEqual("openclaw.bus.submit", executed["tool_call"]["tool_name"])
+        self.assertEqual("openclaw_bridge_runtime", executed["budget_event"]["cost_type"])
+        self.assertEqual([executed["runtime_session"]["session_id"]], [item["session_id"] for item in task["runtime_sessions"]])
+        self.assertEqual([executed["tool_call"]["tool_call_id"]], [item["tool_call_id"] for item in task["tool_calls"]])
+        self.assertEqual([executed["budget_event"]["budget_event_id"]], [item["budget_event_id"] for item in task["budget_events"]])
+        self.assertEqual(1, task["ceo_acceptance_contract"]["ledger_counts"]["tool_calls"])
+        self.assertEqual(1, task["ceo_acceptance_contract"]["ledger_counts"]["budget_events"])
 
     def test_openclaw_adapter_execute_uses_auto_approval_for_low_risk_data_fetch(self) -> None:
         (self.root / "config" / "policy.json").write_text(
@@ -11087,9 +11099,17 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual("blocked", result["status"])
         self.assertIn(str(missing_oc), result["blocker"])
         self.assertIn("OpenClaw executable not found", result["blocker"])
+        self.assertTrue(result["attempt"]["attempt_id"])
+        self.assertEqual("failed", result["attempt"]["status"])
+        self.assertEqual("failed", result["runtime_session"]["status"])
+        self.assertEqual("failed", result["tool_call"]["status"])
+        self.assertEqual("openclaw_bridge_runtime", result["budget_event"]["cost_type"])
         code, task = run_cli("task", "show", "--task-id", task_id)
         self.assertEqual(0, code, task)
         self.assertEqual("blocked", task["task"]["status"])
+        self.assertEqual([result["runtime_session"]["session_id"]], [item["session_id"] for item in task["runtime_sessions"]])
+        self.assertEqual([result["tool_call"]["tool_call_id"]], [item["tool_call_id"] for item in task["tool_calls"]])
+        self.assertEqual([result["budget_event"]["budget_event_id"]], [item["budget_event_id"] for item in task["budget_events"]])
 
     def test_codex_adapter_dry_run_writes_task_card_and_evidence(self) -> None:
         code, submitted = run_cli(
