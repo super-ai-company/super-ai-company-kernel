@@ -347,6 +347,7 @@ def control_action_approval_response(
     response["control_action"]["event_id"] = event_id
     response["control_action"]["approval_mode"] = "pending_owner_approval"
     response["control_action"]["audit"] = {"recorded": bool(event_id), "event_id": event_id, "ledger": "company_events"}
+    response = attach_task_control_context(response, task_id)
     return HTTPStatus.ACCEPTED, response
 
 
