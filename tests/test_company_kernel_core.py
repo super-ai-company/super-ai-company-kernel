@@ -1848,6 +1848,8 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertIn("/v1/messages/recent-direct", html)
         self.assertIn("Live SQLite + OpenClaw Runtime", html)
         self.assertIn("Company Event Ledger", html)
+        self.assertNotIn("\n  window.summaryData = window.kernelSummary;\n", html)
+        self.assertIn("if (!window.summaryData)", html)
         self.assertIn("/v1/events", html)
         self.assertIn("company-events-tbody", html)
         self.assertIn("window.showDetails", html)
@@ -7919,6 +7921,13 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertIn("Current Work", html)
         self.assertIn("Long Task", html)
         self.assertIn("Recommended Actions", html)
+        self.assertIn("employee-recommended-action", html)
+        self.assertIn("data-action-id=\"${escapeHtml(action.id || '')}\"", html)
+        self.assertIn("data-task-id=\"${escapeHtml(work.current_task_id || '')}\"", html)
+        self.assertIn("data-attempt-id=\"${escapeHtml(work.current_attempt_id || '')}\"", html)
+        self.assertIn("handleOwnerAttentionAction('${escapeHtml(work.current_task_id || '')}', '${escapeHtml(work.current_attempt_id || '')}', '', '${escapeHtml(action.id || '')}', '${escapeHtml(emp.id || work.employee_id || '')}')", html)
+        self.assertIn("actionId === 'request_correction'", html)
+        self.assertIn("actionId === 'cancel'", html)
 
     def test_agent_matrix_reports_employee_readiness_levels(self) -> None:
         for employee_id, role, runtime, status in [

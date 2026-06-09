@@ -4075,11 +4075,11 @@
       recordWaitDecision(taskId, attemptId);
       return;
     }
-    if (actionId === 'send_correction') {
+    if (actionId === 'send_correction' || actionId === 'request_correction') {
       correctTaskAttempt(taskId, attemptId);
       return;
     }
-    if (actionId === 'cancel_attempt') {
+    if (actionId === 'cancel_attempt' || actionId === 'cancel') {
       cancelTaskAttempt(taskId, attemptId);
       return;
     }
@@ -4517,6 +4517,26 @@
     const total = budget.total_amount || 0;
     const actions = Array.isArray(work.recommended_actions) ? work.recommended_actions : [];
     const actionSummary = actions.length ? actions.map(action => action.label || action.id).join(' · ') : 'none';
+    const actionButtons = actions.length ? actions.map(action => {
+      const safetyChips = [
+        action.method ? String(action.method).toUpperCase() : 'POST',
+        action.requires_owner_approval ? 'owner approval' : '',
+        action.dry_run_default === false ? 'live action' : 'dry-run default',
+        action.dangerous ? 'danger' : ''
+      ].filter(Boolean).join(' · ');
+      return `<button class="mini-btn owner-attention-action employee-recommended-action"
+        data-action-id="${escapeHtml(action.id || '')}"
+        data-task-id="${escapeHtml(work.current_task_id || '')}"
+        data-attempt-id="${escapeHtml(work.current_attempt_id || '')}"
+        data-approval-id=""
+        data-employee-id="${escapeHtml(emp.id || work.employee_id || '')}"
+        data-method="${escapeHtml(action.method || 'POST')}"
+        data-requires-owner-approval="${action.requires_owner_approval ? 'true' : 'false'}"
+        data-dry-run-default="${action.dry_run_default === false ? 'false' : 'true'}"
+        data-dangerous="${action.dangerous ? 'true' : 'false'}"
+        title="${escapeHtml(safetyChips)}"
+        onclick="event.stopPropagation(); handleOwnerAttentionAction('${escapeHtml(work.current_task_id || '')}', '${escapeHtml(work.current_attempt_id || '')}', '', '${escapeHtml(action.id || '')}', '${escapeHtml(emp.id || work.employee_id || '')}')">${escapeHtml(action.label || action.id || '')}<small>${escapeHtml(safetyChips)}</small></button>`;
+    }).join('') : '<span style="color:var(--text-muted);">none</span>';
     return `
       <div class="employee-meta employee-control-plane-summary" style="margin-top: 8px; font-size: 11px; border-top: 1px solid rgba(255,255,255,0.05); padding-top: 8px;">
         <div><strong>Current Work ·</strong> ${escapeHtml(work.current_task_title || emp.current_task_title || 'idle')} · task=${escapeHtml(work.current_task_id || emp.current_task_id || '-')} · state=${escapeHtml(work.current_state || emp.status || '-')}</div>
@@ -4527,6 +4547,7 @@
         <div><strong>Evidence · final=</strong>${escapeHtml(evidence.final_evidence_count || 0)} · total=${escapeHtml(evidence.evidence_count || 0)} · latest=${escapeHtml(evidence.latest_evidence_id || '-')}</div>
         <div><strong>Owner Next ·</strong> ${escapeHtml(work.owner_next_action || 'inspect employee detail before assigning work')}</div>
         <div><strong>Recommended Actions ·</strong> ${escapeHtml(actionSummary)}</div>
+        <div class="cockpit-action-list employee-recommended-actions">${actionButtons}</div>
       </div>
     `;
   }

@@ -3096,8 +3096,8 @@ def inject_advanced_dashboard(template: str, summary: dict, *, db_path: Path, ap
         f"  window.dbPath = {json.dumps(db_path.name, ensure_ascii=False)};\n"
         f"  window.companyApiBase = {json.dumps(api_base, ensure_ascii=False)};\n"
         f"  window.companyKernelRoot = '.';\n"
-        f"  window.summaryData = window.kernelSummary;\n"
-        f"  try {{ summaryData = window.kernelSummary; }} catch (_) {{}}\n"
+        f"  if (!window.summaryData) {{ window.summaryData = window.kernelSummary; }}\n"
+        f"  try {{ if (!summaryData) summaryData = window.summaryData || window.kernelSummary; }} catch (_) {{}}\n"
         f"</script>\n"
     )
 
