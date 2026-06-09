@@ -5268,6 +5268,29 @@
     }
   }
 
+  function showTaskControlContextDetails(title, payload) {
+    const context = payload && payload.control_context ? payload.control_context : {};
+    if (!context || !context.task) return;
+    const task = context.task || {};
+    const attempts = Array.isArray(context.attempts) ? context.attempts : [];
+    const events = Array.isArray(context.events) ? context.events : [];
+    const auditLogs = Array.isArray(context.audit_logs) ? context.audit_logs : [];
+    const budget = context.budget_summary || {};
+    const evidence = Array.isArray(context.evidence_records) ? context.evidence_records : [];
+    renderDetails(title || `Task Control: ${task.id || ''}`, [
+      ['Task', `${task.id || '-'} · ${task.title || '-'} · ${task.status || '-'}`],
+      ['Target', `${task.target_agent || '-'} · claimed_by=${task.claimed_by || '-'}`],
+      ['Blocker', task.blocker || '-'],
+      ['Attempts', attempts.length ? attempts.map(item => `${item.attempt_id || '-'} · ${item.employee_id || '-'} · ${item.status || '-'} · previous=${(item.metadata || {}).previous_attempt_id || '-'}`).join('\n') : '-'],
+      ['Events', events.length ? events.map(item => `${item.created_at || ''} ${item.event_type || '-'} ${item.id || ''}`).join('\n') : '-'],
+      ['Audit Logs', auditLogs.length ? auditLogs.map(item => `${item.created_at || ''} ${item.action || '-'} by ${item.actor || '-'}`).join('\n') : '-'],
+      ['Budget', budget && budget.event_count !== undefined ? `events=${budget.event_count || 0} · ${budget.currency || 'USD'} ${budget.total_amount || 0} · input=${budget.token_input || 0} · output=${budget.token_output || 0}` : '-'],
+      ['Evidence Records', evidenceRecordsSummary(evidence)],
+      ['Completion Contract', context.completion_contract || {}],
+      ['Redaction Policy', context.redaction_policy || {}]
+    ], payload);
+  }
+
   function showTraceDetails(trace) {
     renderDetails(`Trace: ${trace.trace_id || ''}`, [
       ['Title', trace.title || ''],
@@ -5687,8 +5710,9 @@
     try {
       if (ownerApproved === true) {
         companyApiLog('SYSTEM', `Owner-approved retry executing for ${taskId}...`, 'normal');
-        await companyApiPost(`/v1/tasks/${encodeURIComponent(taskId)}/retry`, {by: by || 'hermes', reason, execute: true});
+        const result = await companyApiPost(`/v1/tasks/${encodeURIComponent(taskId)}/retry`, {by: by || 'hermes', reason, execute: true});
         companyApiLog('SYSTEM', `Owner-approved retry executed for ${taskId}; retry attempt started.`, 'success');
+        showTaskControlContextDetails(`Retry Control: ${taskId}`, result);
       } else {
         companyApiLog('SYSTEM', `Requesting owner approval for retry ${taskId}; no retry is started yet.`, 'normal');
         const approval = await requestDashboardApproval('task.retry', taskId, '', by || 'hermes', reason, {risk: 'P1', retry_reason: reason});
@@ -5710,8 +5734,9 @@
     try {
       if (ownerApproved === true) {
         companyApiLog('SYSTEM', `Owner-approved reassign executing for ${taskId} to ${to}...`, 'normal');
-        await companyApiPost(`/v1/tasks/${encodeURIComponent(taskId)}/reassign`, {by: by || 'hermes', to, reason, execute: true});
+        const result = await companyApiPost(`/v1/tasks/${encodeURIComponent(taskId)}/reassign`, {by: by || 'hermes', to, reason, execute: true});
         companyApiLog('SYSTEM', `Owner-approved reassign executed for ${taskId}.`, 'success');
+        showTaskControlContextDetails(`Reassign Control: ${taskId}`, result);
       } else {
         companyApiLog('SYSTEM', `Requesting owner approval for reassign ${taskId}; no reassignment is sent yet.`, 'normal');
         const approval = await requestDashboardApproval('task.reassign', taskId, '', by || 'hermes', reason, {risk: 'P1', reassign_to: to});
@@ -6936,8 +6961,9 @@
     if (action === 'task.retry') {
       const reason = detail.retry_reason || requestDetail.retry_reason || requestDetail.reason || detail.reason || 'owner-approved dashboard retry';
       companyApiLog('SYSTEM', `Owner-approved retry dispatching to ledger: task=${taskId}`, 'normal');
-      await companyApiPost(`/v1/tasks/${encodeURIComponent(taskId)}/retry`, {by, reason});
+      const result = await companyApiPost(`/v1/tasks/${encodeURIComponent(taskId)}/retry`, {by, reason, execute: true});
       companyApiLog('SYSTEM', `Owner-approved retry recorded for ${taskId}.`, 'success');
+      showTaskControlContextDetails(`Approved Retry Control: ${taskId}`, result);
       return;
     }
     if (action === 'task.reassign') {
@@ -6948,8 +6974,9 @@
         return;
       }
       companyApiLog('SYSTEM', `Owner-approved reassign dispatching to ledger: task=${taskId} to=${to}`, 'normal');
-      await companyApiPost(`/v1/tasks/${encodeURIComponent(taskId)}/reassign`, {by, to, reason});
+      const result = await companyApiPost(`/v1/tasks/${encodeURIComponent(taskId)}/reassign`, {by, to, reason, execute: true});
       companyApiLog('SYSTEM', `Owner-approved reassign recorded for ${taskId}.`, 'success');
+      showTaskControlContextDetails(`Approved Reassign Control: ${taskId}`, result);
     }
   }
 

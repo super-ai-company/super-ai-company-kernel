@@ -8429,6 +8429,56 @@ def task_approvals(conn: sqlite3.Connection, task_id: str) -> list[dict]:
     return matched
 
 
+def task_control_context_bundle(conn: sqlite3.Connection, task_id: str) -> dict:
+    safe_task_id = str(task_id or "").strip()
+    if not safe_task_id or "/" in safe_task_id:
+        return {"ok": False, "error": "invalid task_id", "task_id": safe_task_id}
+    task = conn.execute("SELECT * FROM tasks WHERE id = ?", (safe_task_id,)).fetchone()
+    if not task:
+        return {"ok": False, "error": "task not found", "task_id": safe_task_id}
+    task_payload = dict(task)
+    raw_evidence_path = task_payload.pop("evidence_path", "")
+    task_payload["evidence"] = sanitize_evidence_path_for_display(raw_evidence_path)
+    event_rows = rows(conn, "SELECT id, trace_id, event_type, source_agent, task_id, payload_json, created_at, processed_at FROM company_events WHERE task_id = ? ORDER BY created_at ASC LIMIT 200", (safe_task_id,))
+    sanitized_events = []
+    for event in event_rows:
+        raw_payload = event.get("payload_json", "")
+        try:
+            payload = json.loads(raw_payload or "{}")
+        except json.JSONDecodeError:
+            payload = {"raw": sanitize_log_text(raw_payload)}
+        clean_payload = sanitize_json_like(payload)
+        sanitized_events.append({**event, "payload": clean_payload, "payload_json": json.dumps(clean_payload, ensure_ascii=False, sort_keys=True)})
+    audit_rows = rows(conn, "SELECT id, actor, action, target, detail_json, created_at FROM audit_logs WHERE target = ? ORDER BY created_at ASC LIMIT 200", (safe_task_id,))
+    sanitized_audit = []
+    for item in audit_rows:
+        raw_detail = item.pop("detail_json", "{}")
+        try:
+            parsed = json.loads(raw_detail or "{}")
+        except json.JSONDecodeError:
+            parsed = {"raw": sanitize_log_text(raw_detail)}
+        sanitized_audit.append({**item, "detail": sanitize_json_like(parsed)})
+    attempts = task_attempts(conn, safe_task_id)
+    trace_id = trace_id_for_task(conn, safe_task_id, "")
+    return {
+        "ok": True,
+        "source": "task_control_context",
+        "task": task_payload,
+        "attempts": attempts,
+        "attempt_history": task_attempt_history(attempts),
+        "runtime_sessions": list_runtime_sessions(conn, task_id=safe_task_id, limit=50),
+        "tool_calls": list_tool_calls(conn, task_id=safe_task_id, limit=100),
+        "events": sanitized_events,
+        "audit_logs": sanitized_audit,
+        "budget_summary": budget_summary(conn, task_id=safe_task_id, trace_id=trace_id),
+        "budget_events": list_budget_events(conn, task_id=safe_task_id, trace_id=trace_id, limit=100),
+        "evidence_records": task_evidence_records(conn, safe_task_id),
+        "completion_contract": task_completion_contract(task_payload, task_evidence_records(conn, safe_task_id)),
+        "approvals": task_approvals(conn, safe_task_id),
+        "redaction_policy": sanitized_log_policy(),
+    }
+
+
 def cmd_task_show(args: argparse.Namespace) -> int:
     conn = connect()
     task_id = args.task_id

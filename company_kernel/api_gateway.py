@@ -279,6 +279,17 @@ def with_control_action(
     }
 
 
+def attach_task_control_context(payload: dict, task_id: str) -> dict:
+    if not task_id:
+        return payload
+    conn = companyctl.connect()
+    try:
+        context = companyctl.task_control_context_bundle(conn, task_id)
+    finally:
+        conn.close()
+    return {**payload, "control_context": context}
+
+
 def control_action_approval_response(
     *,
     task_id: str,
@@ -1353,6 +1364,7 @@ def route_post(path: str, body: dict) -> tuple[int, dict]:
             response = with_control_action(response, action="retry", event_type="task.retrying")
             response["executed"] = True
             response["control_action"]["approval_mode"] = "owner_approved_execute"
+            response = attach_task_control_context(response, task_id)
         return (HTTPStatus.OK if code == 0 else HTTPStatus.BAD_REQUEST), response
     if path.startswith("/v1/tasks/") and path.endswith("/reassign"):
         task_id = path.removeprefix("/v1/tasks/").removesuffix("/reassign").strip("/")
@@ -1371,6 +1383,7 @@ def route_post(path: str, body: dict) -> tuple[int, dict]:
             response = with_control_action(response, action="reassign", event_type="task.reassigned")
             response["executed"] = True
             response["control_action"]["approval_mode"] = "owner_approved_execute"
+            response = attach_task_control_context(response, task_id)
         return (HTTPStatus.OK if code == 0 else HTTPStatus.BAD_REQUEST), response
     if path == "/v1/conversations":
         argv = [
