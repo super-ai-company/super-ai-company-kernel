@@ -885,6 +885,16 @@ def sanitize_log_text(raw: object, *, max_length: int = 1200) -> str:
     return text
 
 
+def sanitize_json_like(value: object) -> object:
+    if isinstance(value, dict):
+        return {str(key): sanitize_json_like(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [sanitize_json_like(item) for item in value]
+    if isinstance(value, str):
+        return sanitize_log_text(value)
+    return value
+
+
 def sha256_file(path: Path) -> str:
     if not path.exists() or not path.is_file():
         return ""
@@ -1418,6 +1428,690 @@ def finish_execution_attempt_internal(conn: sqlite3.Connection, *, attempt_id: s
     return {"attempt": row_by_id(conn, "execution_attempts", "attempt_id", attempt_id), "event_id": event["id"]}
 
 
+def runtime_session_row(conn: sqlite3.Connection, session_id: str) -> dict:
+    return row_by_id(conn, "runtime_sessions", "session_id", session_id)
+
+
+def hydrate_runtime_session(session: dict) -> dict:
+    item = dict(session)
+    try:
+        metadata = json.loads(item.get("metadata_json", "") or "{}")
+    except json.JSONDecodeError:
+        metadata = {}
+    item["metadata"] = metadata if isinstance(metadata, dict) else {}
+    item.pop("metadata_json", None)
+    return item
+
+
+def list_runtime_sessions(conn: sqlite3.Connection, *, employee_id: str = "", task_id: str = "", trace_id: str = "", limit: int = 50) -> list[dict]:
+    where = []
+    params: list[object] = []
+    if employee_id:
+        where.append("employee_id = ?")
+        params.append(employee_id)
+    if task_id:
+        where.append("task_id = ?")
+        params.append(task_id)
+    if trace_id:
+        where.append("trace_id = ?")
+        params.append(trace_id)
+    clause = f"WHERE {' AND '.join(where)}" if where else ""
+    safe_limit = max(1, min(int(limit or 50), 200))
+    rows_out = rows(
+        conn,
+        f"SELECT * FROM runtime_sessions {clause} ORDER BY COALESCE(last_heartbeat_at, started_at) DESC, started_at DESC LIMIT ?",
+        tuple([*params, safe_limit]),
+    )
+    return [hydrate_runtime_session(item) for item in rows_out]
+
+
+def runtime_session_detail_bundle(conn: sqlite3.Connection, session_id: str) -> dict:
+    safe_id = str(session_id or "").strip()
+    if not safe_id or "/" in safe_id:
+        return {"ok": False, "error": "invalid session_id", "session_id": safe_id}
+    raw_session = conn.execute("SELECT * FROM runtime_sessions WHERE session_id = ?", (safe_id,)).fetchone()
+    if not raw_session:
+        return {"ok": False, "error": "runtime_session not found", "session_id": safe_id}
+    session = hydrate_runtime_session(dict(raw_session))
+    task_id = str(session.get("task_id") or "")
+    attempt_id = str(session.get("attempt_id") or "")
+    trace_id = str(session.get("trace_id") or "")
+    employee_id = str(session.get("employee_id") or "")
+    task_row = conn.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone() if task_id else None
+    attempt_row = conn.execute("SELECT * FROM execution_attempts WHERE attempt_id = ?", (attempt_id,)).fetchone() if attempt_id else None
+    events = rows(
+        conn,
+        """
+        SELECT id, trace_id, event_type, source_agent, task_id, payload_json, created_at, processed_at
+        FROM company_events
+        WHERE payload_json LIKE ?
+        ORDER BY created_at ASC
+        LIMIT 50
+        """,
+        (f"%{safe_id}%",),
+    )
+    sanitized_events = []
+    for event in events:
+        raw_payload = event.get("payload_json", "")
+        try:
+            payload = json.loads(raw_payload or "{}")
+        except json.JSONDecodeError:
+            payload = {"raw": sanitize_log_text(raw_payload)}
+        clean_payload = sanitize_json_like(payload)
+        sanitized_events.append(
+            {
+                **event,
+                "payload": clean_payload,
+                "payload_json": json.dumps(clean_payload, ensure_ascii=False, sort_keys=True),
+            }
+        )
+    task_payload = dict(task_row) if task_row else {}
+    if task_payload:
+        raw_evidence_path = task_payload.pop("evidence_path", "")
+        task_payload["evidence"] = sanitize_evidence_path_for_display(raw_evidence_path)
+    return {
+        "ok": True,
+        "source": "/v1/runtime-sessions/{session_id}",
+        "runtime_session": session,
+        "task": task_payload,
+        "attempt": hydrate_execution_attempt(dict(attempt_row)) if attempt_row else {},
+        "tool_calls": list_tool_calls(conn, session_id=safe_id, limit=100),
+        "budget_summary": budget_summary(conn, task_id=task_id, employee_id=employee_id, trace_id=trace_id, attempt_id=attempt_id),
+        "budget_events": list_budget_events(conn, task_id=task_id, employee_id=employee_id, trace_id=trace_id, attempt_id=attempt_id, limit=50),
+        "evidence_records": task_evidence_records(conn, task_id) if task_id else [],
+        "events": sanitized_events,
+        "redaction_policy": sanitized_log_policy(),
+    }
+
+
+def start_runtime_session_internal(
+    conn: sqlite3.Connection,
+    *,
+    session_id: str = "",
+    employee_id: str,
+    adapter_type: str = "",
+    runtime_type: str = "",
+    pid: str = "",
+    session_key: str = "",
+    task_id: str = "",
+    attempt_id: str = "",
+    metadata: dict | None = None,
+) -> dict:
+    require_employee(conn, employee_id)
+    attempt = row_by_id(conn, "execution_attempts", "attempt_id", attempt_id) if attempt_id else {}
+    if task_id:
+        require_task(conn, task_id)
+    resolved_task_id = task_id or str(attempt.get("task_id", "") or "")
+    trace_id = trace_id_for_task(conn, resolved_task_id, str(attempt.get("trace_id", "") or ""))
+    ts = now()
+    session = {
+        "session_id": session_id or f"session-{datetime.now().strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:8]}",
+        "trace_id": trace_id,
+        "task_id": resolved_task_id,
+        "attempt_id": attempt_id,
+        "employee_id": employee_id,
+        "adapter_type": adapter_type or str(attempt.get("adapter_type", "") or ""),
+        "runtime_type": runtime_type,
+        "pid": str(pid or ""),
+        "session_key": str(session_key or attempt.get("session_key", "") or ""),
+        "status": "active",
+        "started_at": ts,
+        "last_heartbeat_at": ts,
+        "last_progress_at": "",
+        "stopped_at": "",
+        "metadata_json": json.dumps(metadata or {}, ensure_ascii=False),
+    }
+    conn.execute(
+        """
+        INSERT INTO runtime_sessions(
+          session_id, trace_id, task_id, attempt_id, employee_id, adapter_type, runtime_type,
+          pid, session_key, status, started_at, last_heartbeat_at, last_progress_at,
+          stopped_at, metadata_json
+        )
+        VALUES (
+          :session_id, :trace_id, :task_id, :attempt_id, :employee_id, :adapter_type, :runtime_type,
+          :pid, :session_key, :status, :started_at, :last_heartbeat_at, :last_progress_at,
+          :stopped_at, :metadata_json
+        )
+        ON CONFLICT(session_id) DO UPDATE SET
+          trace_id = excluded.trace_id,
+          task_id = excluded.task_id,
+          attempt_id = excluded.attempt_id,
+          employee_id = excluded.employee_id,
+          adapter_type = excluded.adapter_type,
+          runtime_type = excluded.runtime_type,
+          pid = excluded.pid,
+          session_key = excluded.session_key,
+          status = excluded.status,
+          last_heartbeat_at = excluded.last_heartbeat_at,
+          metadata_json = excluded.metadata_json
+        """,
+        session,
+    )
+    conn.commit()
+    event = record_event(conn, "runtime.session.started", employee_id, task_id=resolved_task_id, trace_id=trace_id, payload={"session_id": session["session_id"], "attempt_id": attempt_id, "adapter_type": session["adapter_type"], "runtime_type": runtime_type})
+    audit(conn, employee_id, "runtime.session.start", session["session_id"], {"task_id": resolved_task_id, "attempt_id": attempt_id, "event_id": event["id"]})
+    return {"session": hydrate_runtime_session(runtime_session_row(conn, session["session_id"])), "event_id": event["id"]}
+
+
+def heartbeat_runtime_session_internal(conn: sqlite3.Connection, *, session_id: str, status: str = "active", progress: bool = False) -> dict:
+    session = runtime_session_row(conn, session_id)
+    ts = now()
+    fields = ["status = ?", "last_heartbeat_at = ?"]
+    params: list[object] = [status, ts]
+    if progress:
+        fields.append("last_progress_at = ?")
+        params.append(ts)
+    params.append(session_id)
+    conn.execute(f"UPDATE runtime_sessions SET {', '.join(fields)} WHERE session_id = ?", tuple(params))
+    if session.get("attempt_id"):
+        attempt_fields = ["last_heartbeat_at = ?"]
+        attempt_params: list[object] = [ts]
+        if progress:
+            attempt_fields.append("last_progress_at = ?")
+            attempt_params.append(ts)
+        attempt_params.append(session["attempt_id"])
+        conn.execute(f"UPDATE execution_attempts SET {', '.join(attempt_fields)} WHERE attempt_id = ?", tuple(attempt_params))
+    conn.commit()
+    event_type = "runtime.session.progress" if progress else "runtime.session.heartbeat"
+    event = record_event(conn, event_type, session["employee_id"], task_id=session.get("task_id", ""), trace_id=session.get("trace_id", ""), payload={"session_id": session_id, "attempt_id": session.get("attempt_id", ""), "status": status})
+    return {"session": hydrate_runtime_session(runtime_session_row(conn, session_id)), "event_id": event["id"]}
+
+
+def stop_runtime_session_internal(conn: sqlite3.Connection, *, session_id: str, status: str = "stopped", error: str = "") -> dict:
+    if status not in {"stopped", "failed", "stale", "cancelled"}:
+        raise SystemExit("status must be stopped, failed, stale, or cancelled")
+    session = runtime_session_row(conn, session_id)
+    ts = now()
+    conn.execute("UPDATE runtime_sessions SET status = ?, stopped_at = ?, metadata_json = ? WHERE session_id = ?", (status, ts, json.dumps({**attempt_json_field(session, "metadata_json"), "stop_error": error}, ensure_ascii=False), session_id))
+    conn.commit()
+    event = record_event(conn, "runtime.session.stopped", session["employee_id"], task_id=session.get("task_id", ""), trace_id=session.get("trace_id", ""), payload={"session_id": session_id, "attempt_id": session.get("attempt_id", ""), "status": status, "error": error})
+    audit(conn, session["employee_id"], "runtime.session.stop", session_id, {"status": status, "error": error, "event_id": event["id"]})
+    return {"session": hydrate_runtime_session(runtime_session_row(conn, session_id)), "event_id": event["id"]}
+
+
+def tool_call_row(conn: sqlite3.Connection, tool_call_id: str) -> dict:
+    return row_by_id(conn, "agent_tool_calls", "tool_call_id", tool_call_id)
+
+
+def hydrate_tool_call(tool_call: dict) -> dict:
+    item = dict(tool_call)
+    for source_field, target_field in [("input_json", "input"), ("output_json", "output"), ("metadata_json", "metadata")]:
+        try:
+            parsed = json.loads(item.get(source_field, "") or "{}")
+        except json.JSONDecodeError:
+            parsed = {}
+        item[target_field] = parsed if isinstance(parsed, dict) else {}
+        item.pop(source_field, None)
+    item["input_summary"] = sanitize_log_text(item.get("input_summary", ""))
+    item["output_summary"] = sanitize_log_text(item.get("output_summary", ""))
+    item["error_message"] = sanitize_log_text(item.get("error_message", ""))
+    item["sanitized"] = True
+    item["raw_available"] = False
+    item["redaction_policy"] = {
+        **sanitized_log_policy(),
+        "summary": "raw tool payload hidden; input/output/error summaries are sanitized before dashboard/API display",
+    }
+    return item
+
+
+def list_tool_calls(conn: sqlite3.Connection, *, employee_id: str = "", task_id: str = "", trace_id: str = "", attempt_id: str = "", session_id: str = "", limit: int = 50) -> list[dict]:
+    where = []
+    params: list[object] = []
+    for column, value in [("employee_id", employee_id), ("task_id", task_id), ("trace_id", trace_id), ("attempt_id", attempt_id), ("session_id", session_id)]:
+        if value:
+            where.append(f"{column} = ?")
+            params.append(value)
+    clause = f"WHERE {' AND '.join(where)}" if where else ""
+    safe_limit = max(1, min(int(limit or 50), 200))
+    rows_out = rows(conn, f"SELECT * FROM agent_tool_calls {clause} ORDER BY started_at DESC, rowid DESC LIMIT ?", tuple([*params, safe_limit]))
+    return [hydrate_tool_call(item) for item in rows_out]
+
+
+def tool_call_detail_bundle(conn: sqlite3.Connection, tool_call_id: str) -> dict:
+    safe_id = str(tool_call_id or "").strip()
+    if not safe_id or "/" in safe_id:
+        return {"ok": False, "error": "invalid tool_call_id", "tool_call_id": safe_id}
+    raw_tool_call = conn.execute("SELECT * FROM agent_tool_calls WHERE tool_call_id = ?", (safe_id,)).fetchone()
+    if not raw_tool_call:
+        return {"ok": False, "error": "tool_call not found", "tool_call_id": safe_id}
+    tool_call = hydrate_tool_call(dict(raw_tool_call))
+    task_id = str(tool_call.get("task_id") or "")
+    attempt_id = str(tool_call.get("attempt_id") or "")
+    session_id = str(tool_call.get("session_id") or "")
+    trace_id = str(tool_call.get("trace_id") or "")
+    task_row = conn.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone() if task_id else None
+    attempt_row = conn.execute("SELECT * FROM execution_attempts WHERE attempt_id = ?", (attempt_id,)).fetchone() if attempt_id else None
+    session_row = conn.execute("SELECT * FROM runtime_sessions WHERE session_id = ?", (session_id,)).fetchone() if session_id else None
+    events = rows(
+        conn,
+        """
+        SELECT id, trace_id, event_type, source_agent, task_id, payload_json, created_at, processed_at
+        FROM company_events
+        WHERE payload_json LIKE ?
+        ORDER BY created_at ASC
+        LIMIT 50
+        """,
+        (f"%{safe_id}%",),
+    )
+    sanitized_events = []
+    for event in events:
+        raw_payload = event.get("payload_json", "")
+        try:
+            payload = json.loads(raw_payload or "{}")
+        except json.JSONDecodeError:
+            payload = {"raw": sanitize_log_text(raw_payload)}
+        sanitized_events.append(
+            {
+                **event,
+                "payload": sanitize_json_like(payload),
+                "payload_json": json.dumps(sanitize_json_like(payload), ensure_ascii=False, sort_keys=True),
+            }
+        )
+    evidence_records = task_evidence_records(conn, task_id) if task_id else []
+    task_payload = dict(task_row) if task_row else {}
+    if task_payload:
+        raw_evidence_path = task_payload.pop("evidence_path", "")
+        task_payload["evidence"] = sanitize_evidence_path_for_display(raw_evidence_path)
+    return {
+        "ok": True,
+        "source": "/v1/tool-calls/{tool_call_id}",
+        "tool_call": tool_call,
+        "task": task_payload,
+        "attempt": hydrate_execution_attempt(dict(attempt_row)) if attempt_row else {},
+        "runtime_session": hydrate_runtime_session(dict(session_row)) if session_row else {},
+        "budget_summary": budget_summary(conn, task_id=task_id, employee_id=str(tool_call.get("employee_id") or ""), trace_id=trace_id, attempt_id=attempt_id),
+        "budget_events": list_budget_events(conn, task_id=task_id, employee_id=str(tool_call.get("employee_id") or ""), trace_id=trace_id, attempt_id=attempt_id, limit=50),
+        "evidence_records": evidence_records,
+        "events": sanitized_events,
+        "redaction_policy": sanitized_log_policy(),
+    }
+
+
+def start_tool_call_internal(
+    conn: sqlite3.Connection,
+    *,
+    tool_call_id: str = "",
+    trace_id: str = "",
+    task_id: str = "",
+    attempt_id: str = "",
+    employee_id: str,
+    session_id: str = "",
+    tool_name: str,
+    tool_type: str = "other",
+    input_summary: str = "",
+    input_payload: dict | None = None,
+    risk_level: str = "",
+    approval_id: str = "",
+    metadata: dict | None = None,
+) -> dict:
+    require_employee(conn, employee_id)
+    if task_id:
+        require_task(conn, task_id)
+    attempt = row_by_id(conn, "execution_attempts", "attempt_id", attempt_id) if attempt_id else {}
+    resolved_task_id = task_id or str(attempt.get("task_id", "") or "")
+    resolved_trace_id = trace_id or trace_id_for_task(conn, resolved_task_id, str(attempt.get("trace_id", "") or ""))
+    ts = now()
+    tool_call = {
+        "tool_call_id": tool_call_id or f"tool-call-{datetime.now().strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:8]}",
+        "trace_id": resolved_trace_id,
+        "task_id": resolved_task_id,
+        "attempt_id": attempt_id,
+        "employee_id": employee_id,
+        "session_id": session_id,
+        "tool_name": tool_name,
+        "tool_type": tool_type,
+        "input_summary": input_summary,
+        "input_json": json.dumps(input_payload or {}, ensure_ascii=False),
+        "output_summary": "",
+        "output_json": "{}",
+        "status": "running",
+        "risk_level": risk_level,
+        "approval_id": approval_id,
+        "started_at": ts,
+        "finished_at": "",
+        "error_message": "",
+        "metadata_json": json.dumps(metadata or {}, ensure_ascii=False),
+    }
+    conn.execute(
+        """
+        INSERT INTO agent_tool_calls(
+          tool_call_id, trace_id, task_id, attempt_id, employee_id, session_id,
+          tool_name, tool_type, input_summary, input_json, output_summary, output_json,
+          status, risk_level, approval_id, started_at, finished_at, error_message, metadata_json
+        )
+        VALUES (
+          :tool_call_id, :trace_id, :task_id, :attempt_id, :employee_id, :session_id,
+          :tool_name, :tool_type, :input_summary, :input_json, :output_summary, :output_json,
+          :status, :risk_level, :approval_id, :started_at, :finished_at, :error_message, :metadata_json
+        )
+        """,
+        tool_call,
+    )
+    conn.commit()
+    event = record_event(conn, "tool.call.started", employee_id, task_id=resolved_task_id, trace_id=resolved_trace_id, payload={"tool_call_id": tool_call["tool_call_id"], "attempt_id": attempt_id, "session_id": session_id, "tool_name": tool_name, "tool_type": tool_type, "risk_level": risk_level})
+    audit(conn, employee_id, "tool.call.start", tool_call["tool_call_id"], {"task_id": resolved_task_id, "attempt_id": attempt_id, "session_id": session_id, "event_id": event["id"]})
+    return {"tool_call": hydrate_tool_call(tool_call_row(conn, tool_call["tool_call_id"])), "event_id": event["id"]}
+
+
+def finish_tool_call_internal(conn: sqlite3.Connection, *, tool_call_id: str, status: str, output_summary: str = "", output_payload: dict | None = None, error: str = "") -> dict:
+    if status not in {"success", "failed", "blocked", "cancelled"}:
+        raise SystemExit("status must be success, failed, blocked, or cancelled")
+    tool_call = tool_call_row(conn, tool_call_id)
+    ts = now()
+    conn.execute(
+        "UPDATE agent_tool_calls SET status = ?, output_summary = ?, output_json = ?, finished_at = ?, error_message = ? WHERE tool_call_id = ?",
+        (status, output_summary, json.dumps(output_payload or {}, ensure_ascii=False), ts, error, tool_call_id),
+    )
+    conn.commit()
+    event = record_event(conn, f"tool.call.{status}", tool_call["employee_id"], task_id=tool_call.get("task_id", ""), trace_id=tool_call.get("trace_id", ""), payload={"tool_call_id": tool_call_id, "attempt_id": tool_call.get("attempt_id", ""), "session_id": tool_call.get("session_id", ""), "status": status})
+    audit(conn, tool_call["employee_id"], "tool.call.finish", tool_call_id, {"status": status, "event_id": event["id"]})
+    return {"tool_call": hydrate_tool_call(tool_call_row(conn, tool_call_id)), "event_id": event["id"]}
+
+
+def hydrate_budget_event(event: dict) -> dict:
+    item = dict(event)
+    try:
+        metadata = json.loads(item.get("metadata_json", "") or "{}")
+    except json.JSONDecodeError:
+        metadata = {}
+    item["metadata"] = metadata if isinstance(metadata, dict) else {}
+    item.pop("metadata_json", None)
+    item["summary"] = sanitize_log_text(item.get("summary", ""))
+    item["amount"] = float(item.get("amount") or 0)
+    item["token_input"] = int(item.get("token_input") or 0)
+    item["token_output"] = int(item.get("token_output") or 0)
+    item["runtime_seconds"] = int(item.get("runtime_seconds") or 0)
+    return item
+
+
+def list_budget_events(conn: sqlite3.Connection, *, task_id: str = "", employee_id: str = "", trace_id: str = "", attempt_id: str = "", limit: int = 50) -> list[dict]:
+    where = []
+    params: list[object] = []
+    for column, value in [("task_id", task_id), ("employee_id", employee_id), ("trace_id", trace_id), ("attempt_id", attempt_id)]:
+        if value:
+            where.append(f"{column} = ?")
+            params.append(value)
+    clause = f"WHERE {' AND '.join(where)}" if where else ""
+    safe_limit = max(1, min(int(limit or 50), 500))
+    rows_out = rows(conn, f"SELECT * FROM budget_events {clause} ORDER BY created_at DESC LIMIT ?", tuple([*params, safe_limit]))
+    return [hydrate_budget_event(item) for item in rows_out]
+
+
+def budget_limit_summary(conn: sqlite3.Connection, *, task_id: str = "", employee_id: str = "", trace_id: str = "", attempt_id: str = "", total_amount: float = 0.0, currency: str = "USD") -> dict:
+    where = []
+    params: list[object] = []
+    if task_id:
+        where.append("(scope_type = 'task' AND scope_id = ?)")
+        params.append(task_id)
+    if employee_id:
+        where.append("(scope_type = 'employee' AND scope_id = ?)")
+        params.append(employee_id)
+    if trace_id:
+        where.append("(scope_type = 'trace' AND scope_id = ?)")
+        params.append(trace_id)
+    if attempt_id:
+        where.append("(scope_type = 'attempt' AND scope_id = ?)")
+        params.append(attempt_id)
+    if not where:
+        return {
+            "configured": False,
+            "scope_type": "",
+            "scope_id": "",
+            "currency": currency,
+            "soft_limit": 0,
+            "hard_limit": 0,
+            "remaining_to_soft": None,
+            "remaining_to_hard": None,
+            "status": "not_configured",
+        }
+    account_rows = rows(
+        conn,
+        f"SELECT * FROM budget_accounts WHERE status != 'archived' AND ({' OR '.join(where)}) ORDER BY updated_at DESC LIMIT 1",
+        tuple(params),
+    )
+    if not account_rows:
+        return {
+            "configured": False,
+            "scope_type": "",
+            "scope_id": "",
+            "currency": currency,
+            "soft_limit": 0,
+            "hard_limit": 0,
+            "remaining_to_soft": None,
+            "remaining_to_hard": None,
+            "status": "not_configured",
+        }
+    account = account_rows[0]
+    soft_limit = float(account.get("soft_limit") or 0)
+    hard_limit = float(account.get("hard_limit") or 0)
+    remaining_to_soft = round(soft_limit - total_amount, 6) if soft_limit else None
+    remaining_to_hard = round(hard_limit - total_amount, 6) if hard_limit else None
+    status = "within_limit"
+    if hard_limit and total_amount >= hard_limit:
+        status = "hard_exceeded"
+    elif soft_limit and total_amount >= soft_limit:
+        status = "soft_exceeded"
+    return {
+        "configured": True,
+        "budget_account_id": account.get("budget_account_id", ""),
+        "scope_type": account.get("scope_type", ""),
+        "scope_id": account.get("scope_id", ""),
+        "currency": account.get("currency") or currency,
+        "soft_limit": soft_limit,
+        "hard_limit": hard_limit,
+        "remaining_to_soft": remaining_to_soft,
+        "remaining_to_hard": remaining_to_hard,
+        "status": status,
+    }
+
+
+def budget_summary(conn: sqlite3.Connection, *, task_id: str = "", employee_id: str = "", trace_id: str = "", attempt_id: str = "") -> dict:
+    events = list_budget_events(conn, task_id=task_id, employee_id=employee_id, trace_id=trace_id, attempt_id=attempt_id, limit=500)
+    by_employee: dict[str, float] = {}
+    by_task: dict[str, float] = {}
+    by_project: dict[str, float] = {}
+    by_cost_type: dict[str, float] = {}
+    by_model: dict[str, float] = {}
+    by_provider: dict[str, float] = {}
+    by_currency: dict[str, float] = {}
+    by_employee_by_currency: dict[str, dict[str, float]] = {}
+    by_task_by_currency: dict[str, dict[str, float]] = {}
+    by_task_event_count: dict[str, int] = {}
+    by_task_token_input: dict[str, int] = {}
+    by_task_token_output: dict[str, int] = {}
+    by_task_runtime_seconds: dict[str, int] = {}
+    by_project_by_currency: dict[str, dict[str, float]] = {}
+    by_project_event_count: dict[str, int] = {}
+    by_project_token_input: dict[str, int] = {}
+    by_project_token_output: dict[str, int] = {}
+    by_project_runtime_seconds: dict[str, int] = {}
+    by_cost_type_by_currency: dict[str, dict[str, float]] = {}
+    task_project_ids: dict[str, list[str]] = {}
+    task_ids = sorted({str(item.get("task_id") or "") for item in events if str(item.get("task_id") or "")})
+    if task_ids:
+        placeholders = ",".join("?" for _ in task_ids)
+        for row in rows(conn, f"SELECT project_id, task_id FROM project_tasks WHERE task_id IN ({placeholders}) ORDER BY project_id ASC", tuple(task_ids)):
+            task_project_ids.setdefault(str(row["task_id"]), []).append(str(row["project_id"]))
+    currencies = sorted({str(item.get("currency") or "USD") for item in events})
+    for item in events:
+        amount = float(item.get("amount") or 0)
+        currency_key = str(item.get("currency") or "USD")
+        employee_key = str(item.get("employee_id") or "")
+        task_key = str(item.get("task_id") or "")
+        cost_key = str(item.get("cost_type") or "unknown")
+        model_key = str(item.get("model_name") or "")
+        provider_key = str(item.get("provider") or "")
+        token_input = int(item.get("token_input") or 0)
+        token_output = int(item.get("token_output") or 0)
+        runtime_seconds = int(item.get("runtime_seconds") or 0)
+        by_currency[currency_key] = round(by_currency.get(currency_key, 0.0) + amount, 6)
+        if employee_key:
+            by_employee[employee_key] = round(by_employee.get(employee_key, 0.0) + amount, 6)
+            employee_currency = by_employee_by_currency.setdefault(employee_key, {})
+            employee_currency[currency_key] = round(employee_currency.get(currency_key, 0.0) + amount, 6)
+        if task_key:
+            by_task[task_key] = round(by_task.get(task_key, 0.0) + amount, 6)
+            task_currency = by_task_by_currency.setdefault(task_key, {})
+            task_currency[currency_key] = round(task_currency.get(currency_key, 0.0) + amount, 6)
+            by_task_event_count[task_key] = by_task_event_count.get(task_key, 0) + 1
+            by_task_token_input[task_key] = by_task_token_input.get(task_key, 0) + token_input
+            by_task_token_output[task_key] = by_task_token_output.get(task_key, 0) + token_output
+            by_task_runtime_seconds[task_key] = by_task_runtime_seconds.get(task_key, 0) + runtime_seconds
+            for project_id in task_project_ids.get(task_key, []):
+                by_project[project_id] = round(by_project.get(project_id, 0.0) + amount, 6)
+                project_currency = by_project_by_currency.setdefault(project_id, {})
+                project_currency[currency_key] = round(project_currency.get(currency_key, 0.0) + amount, 6)
+                by_project_event_count[project_id] = by_project_event_count.get(project_id, 0) + 1
+                by_project_token_input[project_id] = by_project_token_input.get(project_id, 0) + token_input
+                by_project_token_output[project_id] = by_project_token_output.get(project_id, 0) + token_output
+                by_project_runtime_seconds[project_id] = by_project_runtime_seconds.get(project_id, 0) + runtime_seconds
+        by_cost_type[cost_key] = round(by_cost_type.get(cost_key, 0.0) + amount, 6)
+        cost_currency = by_cost_type_by_currency.setdefault(cost_key, {})
+        cost_currency[currency_key] = round(cost_currency.get(currency_key, 0.0) + amount, 6)
+        if model_key:
+            by_model[model_key] = round(by_model.get(model_key, 0.0) + amount, 6)
+        if provider_key:
+            by_provider[provider_key] = round(by_provider.get(provider_key, 0.0) + amount, 6)
+    total_amount = round(sum(float(item.get("amount") or 0) for item in events), 6)
+    currency = currencies[0] if len(currencies) == 1 else ("mixed" if currencies else "USD")
+    limits = budget_limit_summary(conn, task_id=task_id, employee_id=employee_id, trace_id=trace_id, attempt_id=attempt_id, total_amount=total_amount, currency=currency)
+    return {
+        "event_count": len(events),
+        "total_amount": total_amount,
+        "total_amounts_by_currency": by_currency,
+        "currency": currency,
+        "currencies": currencies,
+        "token_input": sum(int(item.get("token_input") or 0) for item in events),
+        "token_output": sum(int(item.get("token_output") or 0) for item in events),
+        "runtime_seconds": sum(int(item.get("runtime_seconds") or 0) for item in events),
+        "by_currency": by_currency,
+        "by_employee": by_employee,
+        "by_employee_by_currency": by_employee_by_currency,
+        "by_task": by_task,
+        "by_task_by_currency": by_task_by_currency,
+        "by_task_event_count": by_task_event_count,
+        "by_task_token_input": by_task_token_input,
+        "by_task_token_output": by_task_token_output,
+        "by_task_runtime_seconds": by_task_runtime_seconds,
+        "by_project": by_project,
+        "by_project_by_currency": by_project_by_currency,
+        "by_project_event_count": by_project_event_count,
+        "by_project_token_input": by_project_token_input,
+        "by_project_token_output": by_project_token_output,
+        "by_project_runtime_seconds": by_project_runtime_seconds,
+        "by_cost_type": by_cost_type,
+        "by_cost_type_by_currency": by_cost_type_by_currency,
+        "by_model": by_model,
+        "by_provider": by_provider,
+        "limit_status": limits["status"],
+        "budget_limits": limits,
+    }
+
+
+def record_budget_event_internal(
+    conn: sqlite3.Connection,
+    *,
+    budget_event_id: str = "",
+    budget_account_id: str = "",
+    trace_id: str = "",
+    task_id: str = "",
+    attempt_id: str = "",
+    employee_id: str,
+    cost_type: str,
+    amount: float,
+    currency: str = "USD",
+    token_input: int = 0,
+    token_output: int = 0,
+    model_name: str = "",
+    provider: str = "",
+    runtime_seconds: int = 0,
+    summary: str = "",
+    metadata: dict | None = None,
+) -> dict:
+    if task_id:
+        require_task(conn, task_id)
+    if employee_id:
+        require_employee(conn, employee_id)
+    attempt = row_by_id(conn, "execution_attempts", "attempt_id", attempt_id) if attempt_id else {}
+    resolved_task_id = task_id or str(attempt.get("task_id", "") or "")
+    resolved_trace_id = trace_id or trace_id_for_task(conn, resolved_task_id, str(attempt.get("trace_id", "") or ""))
+    ts = now()
+    item = {
+        "budget_event_id": budget_event_id or f"budget-event-{datetime.now().strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:8]}",
+        "budget_account_id": budget_account_id,
+        "trace_id": resolved_trace_id,
+        "task_id": resolved_task_id,
+        "attempt_id": attempt_id,
+        "employee_id": employee_id,
+        "cost_type": cost_type,
+        "amount": float(amount),
+        "currency": currency or "USD",
+        "token_input": int(token_input or 0),
+        "token_output": int(token_output or 0),
+        "model_name": model_name,
+        "provider": provider,
+        "runtime_seconds": int(runtime_seconds or 0),
+        "summary": summary,
+        "created_at": ts,
+        "metadata_json": json.dumps(metadata or {}, ensure_ascii=False),
+    }
+    conn.execute(
+        """
+        INSERT INTO budget_events(
+          budget_event_id, budget_account_id, trace_id, task_id, attempt_id, employee_id,
+          cost_type, amount, currency, token_input, token_output, model_name, provider,
+          runtime_seconds, summary, created_at, metadata_json
+        )
+        VALUES (
+          :budget_event_id, :budget_account_id, :trace_id, :task_id, :attempt_id, :employee_id,
+          :cost_type, :amount, :currency, :token_input, :token_output, :model_name, :provider,
+          :runtime_seconds, :summary, :created_at, :metadata_json
+        )
+        """,
+        item,
+    )
+    conn.commit()
+    event = record_event(conn, "budget.spent", employee_id, task_id=resolved_task_id, trace_id=resolved_trace_id, payload={"budget_event_id": item["budget_event_id"], "attempt_id": attempt_id, "amount": item["amount"], "currency": item["currency"], "cost_type": cost_type, "token_input": item["token_input"], "token_output": item["token_output"]})
+    audit(conn, employee_id, "budget.record", item["budget_event_id"], {"task_id": resolved_task_id, "attempt_id": attempt_id, "amount": item["amount"], "currency": item["currency"], "event_id": event["id"]})
+    current_summary = budget_summary(conn, task_id=resolved_task_id, employee_id=employee_id, trace_id=resolved_trace_id, attempt_id=attempt_id)
+    limits = current_summary.get("budget_limits", {}) if isinstance(current_summary.get("budget_limits"), dict) else {}
+    approval: dict = {}
+    approval_event: dict = {}
+    if str(limits.get("status") or "") in {"soft_exceeded", "hard_exceeded"}:
+        approval_id = f"budget-overrun-{resolved_task_id or item['budget_event_id']}"
+        approval_result = create_approval_internal(
+            conn,
+            source=employee_id,
+            action="budget_overrun",
+            reason=f"Budget {limits.get('status')} for task={resolved_task_id or '-'} amount={current_summary.get('total_amount')} {current_summary.get('currency')}",
+            target=employee_id,
+            risk="P0" if limits.get("status") == "hard_exceeded" else "P1",
+            approval_id=approval_id,
+            metadata={
+                "task_id": resolved_task_id,
+                "trace_id": resolved_trace_id,
+                "attempt_id": attempt_id,
+                "budget_event_id": item["budget_event_id"],
+                "budget_account_id": limits.get("budget_account_id", ""),
+                "budget_amount": current_summary.get("total_amount", 0),
+                "currency": current_summary.get("currency") or item["currency"],
+                "limit_status": limits.get("status", ""),
+                "soft_limit": limits.get("soft_limit", 0),
+                "hard_limit": limits.get("hard_limit", 0),
+            },
+        )
+        approval = approval_result.get("approval", {})
+        approval_event = approval_result.get("event", {})
+    return {
+        "budget_event": hydrate_budget_event(row_by_id(conn, "budget_events", "budget_event_id", item["budget_event_id"])),
+        "event_id": event["id"],
+        "budget_limits": limits,
+        "approval": approval,
+        "approval_event": approval_event,
+    }
+
+
 def task_attempts(conn: sqlite3.Connection, task_id: str) -> list[dict]:
     attempts = rows(conn, "SELECT * FROM execution_attempts WHERE task_id = ? ORDER BY started_at ASC", (task_id,))
     return [hydrate_execution_attempt(attempt) for attempt in attempts]
@@ -1471,7 +2165,413 @@ def task_evidence_records(conn: sqlite3.Connection, task_id: str) -> list[dict]:
     for record in records:
         raw_path = record.pop("path_or_url", "")
         record["display"] = sanitize_evidence_path_for_display(raw_path)
+        metadata = parse_json_arg(record.get("metadata_json", "{}") or "{}", {})
+        record["metadata"] = metadata if isinstance(metadata, dict) else {}
+        record["acceptance_decision"] = evidence_acceptance_decision(record)
     return records
+
+
+def task_control_plane_timeline(
+    *,
+    events: list[dict],
+    attempts: list[dict],
+    runtime_sessions: list[dict],
+    tool_calls: list[dict],
+    budget_events: list[dict],
+    evidence_records: list[dict],
+) -> list[dict]:
+    timeline: list[dict] = []
+
+    def add(item: dict) -> None:
+        timestamp = str(item.get("timestamp") or "")
+        if not timestamp:
+            return
+        timeline.append(item)
+
+    for event in events:
+        payload = parse_json_arg(event.get("payload_json", "{}") or "{}", {})
+        if not isinstance(payload, dict):
+            payload = {}
+        add(
+            {
+                "kind": "task_event",
+                "id": event.get("id", ""),
+                "event_id": event.get("id", ""),
+                "event_type": event.get("event_type", ""),
+                "ledger_action": payload.get("ledger_action", ""),
+                "task_id": event.get("task_id", ""),
+                "trace_id": event.get("trace_id", ""),
+                "employee_id": event.get("source_agent", ""),
+                "attempt_id": payload.get("attempt_id", ""),
+                "reason": payload.get("reason", ""),
+                "status": event.get("event_type", ""),
+                "timestamp": event.get("created_at", ""),
+                "summary": sanitize_log_text(str(payload.get("message") or payload.get("summary") or event.get("event_type") or "")),
+            }
+        )
+    for attempt in attempts:
+        add(
+            {
+                "kind": "attempt",
+                "id": attempt.get("attempt_id", ""),
+                "attempt_id": attempt.get("attempt_id", ""),
+                "task_id": attempt.get("task_id", ""),
+                "trace_id": attempt.get("trace_id", ""),
+                "employee_id": attempt.get("employee_id", ""),
+                "status": attempt.get("status", ""),
+                "timestamp": attempt.get("started_at", ""),
+                "summary": f"attempt {attempt.get('status', '')} via {attempt.get('adapter_type', '')}".strip(),
+            }
+        )
+        if attempt.get("finished_at"):
+            add(
+                {
+                    "kind": "attempt",
+                    "id": f"{attempt.get('attempt_id', '')}:finished",
+                    "attempt_id": attempt.get("attempt_id", ""),
+                    "task_id": attempt.get("task_id", ""),
+                    "trace_id": attempt.get("trace_id", ""),
+                    "employee_id": attempt.get("employee_id", ""),
+                    "status": attempt.get("status", ""),
+                    "timestamp": attempt.get("finished_at", ""),
+                    "summary": f"attempt finished: {attempt.get('status', '')}",
+                }
+            )
+    for session in runtime_sessions:
+        add(
+            {
+                "kind": "runtime_session",
+                "id": session.get("session_id", ""),
+                "session_id": session.get("session_id", ""),
+                "attempt_id": session.get("attempt_id", ""),
+                "task_id": session.get("task_id", ""),
+                "trace_id": session.get("trace_id", ""),
+                "employee_id": session.get("employee_id", ""),
+                "status": session.get("status", ""),
+                "timestamp": session.get("started_at", ""),
+                "summary": f"{session.get('runtime_type', '') or 'runtime'} session {session.get('status', '')}".strip(),
+            }
+        )
+    for tool_call in tool_calls:
+        add(
+            {
+                "kind": "tool_call",
+                "id": tool_call.get("tool_call_id", ""),
+                "tool_call_id": tool_call.get("tool_call_id", ""),
+                "attempt_id": tool_call.get("attempt_id", ""),
+                "session_id": tool_call.get("session_id", ""),
+                "task_id": tool_call.get("task_id", ""),
+                "trace_id": tool_call.get("trace_id", ""),
+                "employee_id": tool_call.get("employee_id", ""),
+                "status": tool_call.get("status", ""),
+                "timestamp": tool_call.get("started_at", ""),
+                "summary": sanitize_log_text(f"{tool_call.get('tool_name', '')}: {tool_call.get('output_summary') or tool_call.get('input_summary') or tool_call.get('error_message') or ''}"),
+            }
+        )
+    for item in budget_events:
+        add(
+            {
+                "kind": "budget_event",
+                "id": item.get("budget_event_id", ""),
+                "budget_event_id": item.get("budget_event_id", ""),
+                "attempt_id": item.get("attempt_id", ""),
+                "task_id": item.get("task_id", ""),
+                "trace_id": item.get("trace_id", ""),
+                "employee_id": item.get("employee_id", ""),
+                "status": item.get("cost_type", ""),
+                "timestamp": item.get("created_at", ""),
+                "summary": f"{item.get('amount', 0)} {item.get('currency', 'USD')} · input={item.get('token_input', 0)} output={item.get('token_output', 0)} · {item.get('summary', '')}".strip(),
+            }
+        )
+    for evidence in evidence_records:
+        display = evidence.get("display", {}) if isinstance(evidence.get("display"), dict) else {}
+        add(
+            {
+                "kind": "evidence",
+                "id": evidence.get("evidence_id", ""),
+                "evidence_id": evidence.get("evidence_id", ""),
+                "attempt_id": evidence.get("attempt_id", ""),
+                "task_id": evidence.get("task_id", ""),
+                "trace_id": evidence.get("trace_id", ""),
+                "employee_id": evidence.get("employee_id", ""),
+                "status": "final" if evidence.get("is_final") else "draft",
+                "timestamp": evidence.get("created_at", ""),
+                "summary": sanitize_log_text(str(evidence.get("summary") or display.get("relative_path") or evidence.get("evidence_id") or "")),
+            }
+        )
+    return sorted(timeline, key=lambda item: (str(item.get("timestamp") or ""), str(item.get("kind") or ""), str(item.get("id") or "")))
+
+
+CONTROL_EVENT_ACTIONS = {
+    "task.probe": "probe",
+    "supervisor.correction_requested": "correction",
+    "supervisor.cancel_requested": "cancel",
+    "task.retrying": "retry",
+    "task.reassigned": "reassign",
+    "task.reopened": "reopen",
+}
+
+
+def task_control_action_summary(*, approvals: list[dict], events: list[dict], attempts: list[dict]) -> dict:
+    pending_actions: set[str] = set()
+    pending_rows = []
+    for approval in approvals:
+        if str(approval.get("status") or "") != "pending":
+            continue
+        action = str(approval.get("action") or "")
+        normalized = action.removeprefix("task_control.").removeprefix("task.")
+        pending_actions.add(normalized)
+        detail = approval.get("detail", {}) if isinstance(approval.get("detail", {}), dict) else {}
+        metadata = detail.get("metadata", {}) if isinstance(detail.get("metadata", {}), dict) else {}
+        pending_rows.append(
+            {
+                "approval_id": approval.get("id", ""),
+                "action": normalized,
+                "raw_action": action,
+                "attempt_id": metadata.get("attempt_id", ""),
+                "risk": detail.get("risk", ""),
+                "reason": detail.get("request_reason") or detail.get("reason") or "",
+                "created_at": approval.get("created_at", ""),
+            }
+        )
+    executed_rows = []
+    for event in events:
+        event_type = str(event.get("event_type") or "")
+        action = CONTROL_EVENT_ACTIONS.get(event_type)
+        if not action:
+            continue
+        payload = parse_json_arg(event.get("payload_json", "{}") or "{}", {})
+        if not isinstance(payload, dict):
+            payload = {}
+        executed_rows.append(
+            {
+                "event_id": event.get("id", ""),
+                "event_type": event_type,
+                "action": action,
+                "attempt_id": payload.get("attempt_id", ""),
+                "by": event.get("source_agent", ""),
+                "reason": payload.get("reason") or payload.get("message") or "",
+                "created_at": event.get("created_at", ""),
+            }
+        )
+    executed_rows.sort(key=lambda item: str(item.get("created_at") or ""))
+    latest_executed = executed_rows[-1] if executed_rows else {}
+    latest_attempt = attempts[-1] if attempts else {}
+    latest_attempt_status = str(latest_attempt.get("status") or "")
+    owner_next_action = "monitor task progress and evidence"
+    if latest_executed.get("action") == "cancel" or latest_attempt_status == "cancelled":
+        owner_next_action = "old attempt is cancelled; retry or reassign only after owner decision"
+    elif pending_rows:
+        owner_next_action = "review pending owner approvals before executing controls"
+    elif latest_executed.get("action") == "correction":
+        owner_next_action = "wait for worker correction ack or fresh progress"
+    elif latest_executed.get("action") in {"retry", "reassign", "reopen"}:
+        owner_next_action = "monitor new attempt heartbeat, progress, and evidence"
+    return {
+        "pending_owner_approvals": len(pending_rows),
+        "pending_actions": sorted(pending_actions),
+        "pending": pending_rows,
+        "executed_control_actions": len(executed_rows),
+        "latest_executed_action": latest_executed.get("action", ""),
+        "latest_event_type": latest_executed.get("event_type", ""),
+        "latest_event_id": latest_executed.get("event_id", ""),
+        "latest_attempt_id": latest_attempt.get("attempt_id", ""),
+        "latest_attempt_status": latest_attempt_status,
+        "executed": executed_rows[-10:],
+        "owner_next_action": owner_next_action,
+        "summary": f"pending={len(pending_rows)} executed={len(executed_rows)} latest={latest_executed.get('action', '-') or '-'}",
+    }
+
+
+def owner_action_next_step(action: str, *, pending: bool = False) -> str:
+    if pending:
+        return "review owner approval request before real execution"
+    if action == "probe":
+        return "wait for worker response or escalate to Hermes correction if progress remains stagnant"
+    if action == "correction":
+        return "wait for worker correction ack or fresh progress"
+    if action == "cancel":
+        return "verify process stopped and ignore late evidence"
+    if action in {"retry", "reassign", "reopen"}:
+        return "monitor new attempt heartbeat, progress, and evidence"
+    return "monitor task progress and evidence"
+
+
+def task_owner_action_timeline(*, approvals: list[dict], events: list[dict]) -> list[dict]:
+    timeline: list[dict] = []
+    for approval in approvals:
+        detail = approval.get("detail", {}) if isinstance(approval.get("detail", {}), dict) else {}
+        metadata = detail.get("metadata", {}) if isinstance(detail.get("metadata", {}), dict) else {}
+        action = str(approval.get("action") or "").removeprefix("task_control.").removeprefix("task.")
+        timeline.append(
+            {
+                "kind": "pending_approval" if str(approval.get("status") or "") == "pending" else "approval",
+                "action": action,
+                "status": approval.get("status", ""),
+                "approval_id": approval.get("id", ""),
+                "task_id": metadata.get("task_id", ""),
+                "attempt_id": metadata.get("attempt_id", ""),
+                "actor": approval.get("source_agent", ""),
+                "event_type": "approval.requested",
+                "reason": detail.get("request_reason") or approval.get("reason", ""),
+                "created_at": approval.get("created_at", ""),
+                "requires_owner_approval": True,
+                "owner_next_action": owner_action_next_step(action, pending=True),
+            }
+        )
+    for event in events:
+        event_type = str(event.get("event_type") or "")
+        action = CONTROL_EVENT_ACTIONS.get(event_type)
+        if not action:
+            continue
+        payload = parse_json_arg(event.get("payload_json", "{}") or "{}", {})
+        if not isinstance(payload, dict):
+            payload = {}
+        requires_owner_approval = action in {"correction", "cancel", "retry", "reassign", "reopen"}
+        timeline.append(
+            {
+                "kind": "executed_control",
+                "action": action,
+                "status": "executed",
+                "event_id": event.get("id", ""),
+                "event_type": event_type,
+                "task_id": event.get("task_id", ""),
+                "attempt_id": payload.get("attempt_id", ""),
+                "actor": event.get("source_agent", ""),
+                "reason": payload.get("reason") or payload.get("message") or "",
+                "created_at": event.get("created_at", ""),
+                "requires_owner_approval": requires_owner_approval,
+                "owner_next_action": owner_action_next_step(action),
+            }
+        )
+    kind_order = {"pending_approval": 0, "approval": 1, "executed_control": 2}
+    return sorted(timeline, key=lambda item: (str(item.get("created_at") or ""), kind_order.get(str(item.get("kind") or ""), 9), str(item.get("action") or "")))
+
+
+def task_completion_contract(task: dict, evidence_records: list[dict]) -> dict:
+    status = str(task.get("status") or "").lower()
+    done_like = status in {"completed", "done", "success"}
+    final_records = [record for record in evidence_records if bool(record.get("is_final"))]
+    safe_final_records = [record for record in final_records if bool((record.get("display") or {}).get("allowed"))]
+    accepted_final_records = [record for record in safe_final_records if (record.get("acceptance_decision") or {}).get("status") == "accepted"]
+    rejected_final_records = [record for record in final_records if (record.get("acceptance_decision") or {}).get("status") == "rejected"]
+    legacy_evidence_path_present = bool(str(task.get("evidence_path") or "").strip())
+    if not done_like:
+        reason = "not_done"
+        valid = True
+        summary = "Task is not in a done-like state yet; final evidence is required before completion."
+    elif final_records:
+        reason = "final_evidence_present"
+        valid = True
+        summary = f"Task completion has {len(final_records)} task-bound final evidence record(s)."
+    else:
+        reason = "missing_final_evidence"
+        valid = False
+        summary = "Done-like task is invalid until task_id/attempt_id-bound final evidence is submitted."
+    return {
+        "done_like": done_like,
+        "valid": valid,
+        "reason": reason,
+        "final_evidence_count": len(final_records),
+        "safe_final_evidence_count": len(safe_final_records),
+        "accepted_final_evidence_count": len(accepted_final_records),
+        "rejected_final_evidence_count": len(rejected_final_records),
+        "acceptance_status": "accepted" if accepted_final_records else ("rejected" if rejected_final_records and not accepted_final_records else "pending"),
+        "legacy_evidence_path_present": legacy_evidence_path_present,
+        "summary": summary,
+    }
+
+
+def task_ceo_acceptance_contract(
+    *,
+    task: dict,
+    attempts: list[dict],
+    runtime_sessions: list[dict],
+    tool_calls: list[dict],
+    budget_events: list[dict],
+    evidence_records: list[dict],
+    completion_contract: dict,
+    approvals: list[dict],
+    events: list[dict],
+) -> dict:
+    latest_attempt = attempts[-1] if attempts else {}
+    if latest_attempt and not latest_attempt.get("long_task_state"):
+        latest_attempt = {**latest_attempt, **long_task_state_for_attempt(latest_attempt)}
+    metadata = parse_json_arg(task.get("metadata_json", "{}") or "{}", {})
+    if not isinstance(metadata, dict):
+        metadata = {}
+    latest_state = str(latest_attempt.get("long_task_state") or latest_attempt.get("status") or task.get("status") or "unknown")
+    done_like = bool(completion_contract.get("done_like"))
+    completion_valid = bool(completion_contract.get("valid"))
+    final_evidence_count = int(completion_contract.get("final_evidence_count") or 0)
+    pending_approvals = [item for item in approvals if str(item.get("status") or "") == "pending"]
+    failed_tools = [item for item in tool_calls if str(item.get("status") or "") in {"failed", "blocked", "cancelled"}]
+    blocking_reasons: list[str] = []
+    if done_like and not completion_valid:
+        blocking_reasons.append(str(completion_contract.get("reason") or "completion_invalid"))
+    if latest_state in {"blocked", "failed", "stale", "heartbeat_stale", "progress_stagnant", "cancelled"}:
+        blocking_reasons.append(latest_state)
+    if pending_approvals:
+        blocking_reasons.append("pending_owner_approval")
+    if failed_tools:
+        blocking_reasons.append("failed_or_blocked_tool_calls")
+    if task.get("id") and attempts and not runtime_sessions:
+        blocking_reasons.append("runtime_session_missing")
+    if attempts and not tool_calls and latest_state not in {"submitted", "queued", "claimed", "starting"}:
+        blocking_reasons.append("tool_call_ledger_missing")
+
+    status = "monitor"
+    owner_next_action = "monitor task heartbeat, progress, tool calls, budget, and evidence"
+    if done_like and completion_valid:
+        status = "ready_for_owner_acceptance"
+        owner_next_action = "review final evidence and accept delivery"
+    if latest_state in {"submitted", "queued", "claimed", "starting", "running", "correcting"}:
+        status = "needs_progress"
+        owner_next_action = "monitor progress; send probe or correction if it becomes stagnant"
+    if blocking_reasons:
+        status = "blocked"
+        owner_next_action = "resolve blocking reasons before accepting task"
+    if "missing_final_evidence" in blocking_reasons:
+        owner_next_action = "attach or promote task-bound final evidence before accepting completion"
+    elif "pending_owner_approval" in blocking_reasons:
+        owner_next_action = "review pending owner approvals before real execution"
+    elif latest_state in {"progress_stagnant", "heartbeat_stale"}:
+        owner_next_action = "send probe, inspect sanitized logs, or request Hermes correction"
+    elif latest_state in {"blocked", "failed", "stale"}:
+        owner_next_action = "review blocker, then retry, reassign, or request correction"
+    elif latest_state == "cancelled":
+        owner_next_action = "do not accept late evidence from cancelled attempt; retry or reassign if needed"
+
+    control_events = [item for item in events if CONTROL_EVENT_ACTIONS.get(str(item.get("event_type") or ""))]
+    return {
+        "task_id": task.get("id", ""),
+        "status": status,
+        "current_state": latest_state,
+        "current_attempt_id": latest_attempt.get("attempt_id", ""),
+        "trace_id": latest_attempt.get("trace_id", "") or metadata.get("trace_id", ""),
+        "ready_for_acceptance": status == "ready_for_owner_acceptance",
+        "blocking_reasons": list(dict.fromkeys(reason for reason in blocking_reasons if reason)),
+        "owner_next_action": owner_next_action,
+        "ledger_counts": {
+            "attempts": len(attempts),
+            "runtime_sessions": len(runtime_sessions),
+            "tool_calls": len(tool_calls),
+            "failed_tool_calls": len(failed_tools),
+            "budget_events": len(budget_events),
+            "evidence_records": len(evidence_records),
+            "final_evidence": final_evidence_count,
+            "pending_approvals": len(pending_approvals),
+            "control_events": len(control_events),
+        },
+        "truth_rules": {
+            "completion_requires_final_evidence": True,
+            "completion_requires_matching_task_id": True,
+            "heartbeat_is_completion": False,
+            "ack_is_completion": False,
+            "stdout_is_completion": False,
+            "cancelled_attempt_can_complete": False,
+        },
+    }
 
 
 def task_supervisor_state(attempts: list[dict]) -> tuple[dict, dict]:
@@ -1531,6 +2631,39 @@ def task_progress_events(events: list[dict]) -> list[dict]:
             }
         )
     return progress_events
+
+
+def record_task_probe_internal(
+    conn: sqlite3.Connection,
+    *,
+    task_id: str,
+    actor: str,
+    attempt_id: str = "",
+    message: str,
+    reason: str = "",
+) -> dict:
+    actor = resolve_employee_alias(actor)
+    require_employee(conn, actor)
+    task = require_task(conn, task_id)
+    attempt: dict = {}
+    trace_id = str(task.get("trace_id") or "")
+    if attempt_id:
+        attempt = row_by_id(conn, "execution_attempts", "attempt_id", attempt_id)
+        if attempt["task_id"] != task_id:
+            raise SystemExit("attempt does not belong to task")
+        trace_id = str(attempt.get("trace_id") or trace_id)
+    payload = {
+        "attempt_id": attempt_id,
+        "by": actor,
+        "message": message,
+        "reason": reason or "progress_probe",
+        "ledger_action": "task.probe",
+        "non_mutating": True,
+        "external_send": False,
+    }
+    event = record_event(conn, "task.probe", actor, task_id=task_id, trace_id=trace_id, payload=payload)
+    audit(conn, actor, "task.probe", task_id, {"attempt_id": attempt_id, "reason": payload["reason"], "message": message, "event_id": event["id"]})
+    return {"task_id": task_id, "attempt_id": attempt_id, "event_id": event["id"], "probe": payload, "attempt": attempt}
 
 
 def task_correction_events(events: list[dict]) -> list[dict]:
@@ -1700,6 +2833,25 @@ def cmd_task_progress(args: argparse.Namespace) -> int:
         emit({"ok": False, "error": str(exc), "task_id": args.task_id, "agent": agent, "attempt_id": args.attempt_id})
         return 2
     emit({"ok": True, "task_id": args.task_id, "agent": agent, **result})
+    return 0
+
+
+def cmd_task_probe(args: argparse.Namespace) -> int:
+    conn = connect()
+    actor = resolve_employee_alias(args.by)
+    try:
+        result = record_task_probe_internal(
+            conn,
+            task_id=args.task_id,
+            actor=actor,
+            attempt_id=args.attempt_id,
+            message=args.message,
+            reason=args.reason,
+        )
+    except SystemExit as exc:
+        emit({"ok": False, "error": str(exc), "task_id": args.task_id, "by": actor, "attempt_id": args.attempt_id})
+        return 2
+    emit({"ok": True, "task_id": args.task_id, "by": actor, **result})
     return 0
 
 
@@ -1943,6 +3095,39 @@ def auto_promote_workspace_evidence(conn: sqlite3.Connection, *, task_id: str, a
         metadata={"registered_by": "task.done.auto_promote"},
     )
     promoted = promote_artifact_to_evidence_internal(conn, artifact_id=artifact["artifact"]["artifact_id"], by=agent, summary=summary)
+    return promoted["evidence"]
+
+
+def ensure_final_evidence_for_existing_path(conn: sqlite3.Connection, *, task_id: str, agent: str, evidence_path: str, summary: str) -> dict | None:
+    path = Path(evidence_path)
+    if not evidence_path or not path.exists() or not path.is_file():
+        return None
+    existing = final_evidence_for_path(conn, task_id, str(path))
+    if existing:
+        return existing
+    promoted = auto_promote_workspace_evidence(conn, task_id=task_id, agent=agent, evidence_path=str(path), summary=summary)
+    if promoted:
+        return promoted
+    workspace_root = Path(task_workspace(conn, task_id)["path"]).resolve()
+    safe_name = safe_path_token(path.name or "runtime-verification-evidence.txt")
+    copied_path = workspace_root / "evidence" / safe_name
+    copied_path.parent.mkdir(parents=True, exist_ok=True)
+    if copied_path.resolve() != path.resolve():
+        copied_path.write_bytes(path.read_bytes())
+    path = copied_path
+    artifact = register_artifact_internal(
+        conn,
+        task_id=task_id,
+        employee_id=agent,
+        path=str(path),
+        artifact_type=path.suffix.lstrip(".") or "file",
+        name=path.name,
+        stage="final",
+        summary=summary or "runtime verification evidence",
+        is_final=True,
+        metadata={"registered_by": "runtime.verify_adapters.legacy_path", "original_path": str(Path(evidence_path))},
+    )
+    promoted = promote_artifact_to_evidence_internal(conn, artifact_id=artifact["artifact"]["artifact_id"], by=agent, summary=summary or "runtime verification evidence")
     return promoted["evidence"]
 
 
@@ -3063,6 +4248,13 @@ def latest_attempt_for_employee(conn: sqlite3.Connection, employee_id: str) -> d
     return dict(row) if row else {}
 
 
+def employee_has_fresh_heartbeat(conn: sqlite3.Connection, employee_id: str, *, stale_minutes: int = 15) -> bool:
+    row = conn.execute("SELECT last_seen_at FROM heartbeats WHERE agent_id = ?", (employee_id,)).fetchone()
+    if not row:
+        return False
+    return parse_time(row["last_seen_at"]) >= datetime.now(timezone.utc) - timedelta(minutes=stale_minutes)
+
+
 def classify_agent_matrix_row(conn: sqlite3.Connection, employee: dict, attendance: dict) -> dict:
     employee_id = employee["id"]
     runtime = str(employee.get("runtime") or "")
@@ -3070,25 +4262,32 @@ def classify_agent_matrix_row(conn: sqlite3.Connection, employee: dict, attendan
     runtime_ok = employee_has_runtime_evidence(employee_id, conn)
     direct_ok = employee_has_verified_direct_evidence(employee_id)
     latest_attempt = latest_attempt_for_employee(conn, employee_id)
+    has_task_attempt = bool(latest_attempt)
+    has_live_heartbeat = employee_has_fresh_heartbeat(conn, employee_id)
+    has_live_attendance = attendance_status == "online"
+    has_live_or_task_evidence = has_live_attendance or has_task_attempt
     employee_status = str(employee.get("status") or "")
     if employee_status == "missing":
         level = "no_reply"
         reason = "employee_not_registered"
+    elif employee_status == "candidate":
+        level = "candidate_only"
+        reason = "candidate_requires_structured_runtime_evidence_before_activation"
     elif runtime == "skill" and employee_status == "active" and runtime_ok:
         level = "active_ready"
         reason = "skill_runtime_evidence_no_direct_chat_required"
-    elif runtime != "openclaw" and employee_status == "active" and runtime_ok:
+    elif runtime != "openclaw" and employee_status == "active" and runtime_ok and has_live_or_task_evidence:
         level = "active_ready"
         reason = "adapter_runtime_evidence_no_openclaw_session_required"
+    elif runtime != "openclaw" and employee_status == "active" and runtime_ok:
+        level = "active_limited"
+        reason = "runtime_evidence_without_live_task_or_direct_attendance"
     elif runtime == "openclaw" and employee_status == "active" and (runtime_ok or direct_ok):
         level = "active_ready"
         reason = "openclaw_direct_or_runtime_evidence_verified"
     elif attendance_status != "online":
         level = "no_reply"
         reason = f"attendance_{attendance_status}"
-    elif employee_status == "candidate":
-        level = "candidate_only"
-        reason = "candidate_requires_structured_runtime_evidence_before_activation"
     elif latest_attempt.get("status") in {"failed", "stale"}:
         level = "unsafe"
         reason = f"latest_attempt_{latest_attempt['status']}"
@@ -3110,8 +4309,9 @@ def classify_agent_matrix_row(conn: sqlite3.Connection, employee: dict, attendan
         "reason": reason,
         "checks": {
             "attendance": attendance_status,
+            "heartbeat": "fresh" if has_live_heartbeat else "missing_or_stale",
             "direct": "verified" if direct_ok else "not_verified",
-            "runtime": "verified" if runtime_ok else "missing",
+            "runtime": "verified" if runtime_ok and (runtime == "skill" or runtime == "openclaw" or has_live_or_task_evidence) else ("verified_limited" if runtime_ok else "missing"),
             "task": "supported" if employee_status == "active" else "not_active",
             "progress": "observable" if latest_attempt else "not_checked",
             "evidence": "runtime_evidence" if runtime_ok else "missing",
@@ -3323,16 +4523,22 @@ def clamp_audit_limit(limit: int | str | None) -> int:
     return max(1, min(value, 200))
 
 
-def audit_evidence_records(conn: sqlite3.Connection, *, task_id: str = "", limit: int | str | None = 50) -> list[dict]:
+def audit_evidence_records(conn: sqlite3.Connection, *, task_id: str = "", employee_id: str = "", limit: int | str | None = 50) -> list[dict]:
     sql = """
         SELECT evidence_id, trace_id, task_id, attempt_id, employee_id, artifact_id,
                type, path_or_url, summary, checksum, is_final, metadata_json, created_at
         FROM evidence
     """
     params: list[object] = []
+    conditions = []
     if task_id:
-        sql += " WHERE task_id = ?"
+        conditions.append("task_id = ?")
         params.append(task_id)
+    if employee_id:
+        conditions.append("employee_id = ?")
+        params.append(employee_id)
+    if conditions:
+        sql += " WHERE " + " AND ".join(conditions)
     sql += " ORDER BY created_at DESC LIMIT ?"
     params.append(clamp_audit_limit(limit))
     evidence = rows(conn, sql, tuple(params))
@@ -3340,13 +4546,122 @@ def audit_evidence_records(conn: sqlite3.Connection, *, task_id: str = "", limit
         raw_path = item.pop("path_or_url", "")
         item["display"] = sanitize_evidence_path_for_display(raw_path)
         item["is_final"] = bool(item.get("is_final"))
+        metadata = parse_json_arg(item.get("metadata_json", "{}") or "{}", {})
+        item["metadata"] = metadata if isinstance(metadata, dict) else {}
+        item["acceptance_decision"] = evidence_acceptance_decision(item)
     return evidence
+
+
+def evidence_acceptance_decision(item: dict) -> dict:
+    metadata = item.get("metadata", {}) if isinstance(item.get("metadata", {}), dict) else parse_json_arg(str(item.get("metadata_json", "{}") or "{}"), {})
+    if not isinstance(metadata, dict):
+        metadata = {}
+    decision = metadata.get("acceptance", {}) if isinstance(metadata.get("acceptance", {}), dict) else {}
+    status = str(decision.get("status") or "pending")
+    return {
+        "status": status,
+        "by": str(decision.get("by") or ""),
+        "summary": sanitize_log_text(str(decision.get("summary") or "")),
+        "reason": sanitize_log_text(str(decision.get("reason") or "")),
+        "decided_at": str(decision.get("decided_at") or ""),
+        "event_id": str(decision.get("event_id") or ""),
+    }
+
+
+def evidence_acceptance_context(item: dict, display: dict) -> dict:
+    task_id = str(item.get("task_id") or "")
+    attempt_id = str(item.get("attempt_id") or "")
+    checksum = str(item.get("checksum") or "")
+    preview_allowed = bool(display.get("allowed"))
+    is_final = bool(item.get("is_final"))
+    task_bound = bool(task_id)
+    attempt_bound = bool(attempt_id)
+    can_accept = preview_allowed and task_bound and attempt_bound and is_final
+    decision = evidence_acceptance_decision(item)
+    if not preview_allowed:
+        state = "blocked_by_preview_policy"
+    elif not task_bound or not attempt_bound:
+        state = "missing_binding_context"
+    elif not is_final:
+        state = "unacceptable_draft"
+    else:
+        state = "reviewable_final_evidence"
+    return {
+        "evidence_id": str(item.get("evidence_id") or ""),
+        "trace_id": str(item.get("trace_id") or ""),
+        "task_id": task_id,
+        "attempt_id": attempt_id,
+        "employee_id": str(item.get("employee_id") or ""),
+        "artifact_id": str(item.get("artifact_id") or ""),
+        "is_final": is_final,
+        "preview_allowed": preview_allowed,
+        "task_bound": task_bound,
+        "attempt_bound": attempt_bound,
+        "checksum_status": "recorded" if checksum else "missing",
+        "can_accept": can_accept,
+        "state": state,
+        "decision": decision,
+        "accepted": decision.get("status") == "accepted",
+        "rejected": decision.get("status") == "rejected",
+        "summary": sanitize_log_text(str(item.get("summary") or "")),
+    }
+
+
+def decide_evidence_internal(conn: sqlite3.Connection, *, evidence_id: str, by: str, status: str, summary: str = "", reason: str = "") -> dict:
+    actor = resolve_employee_alias(by)
+    require_employee(conn, actor)
+    if status not in {"accepted", "rejected"}:
+        raise SystemExit("status must be accepted or rejected")
+    evidence = row_by_id(conn, "evidence", "evidence_id", evidence_id)
+    display = sanitize_evidence_path_for_display(str(evidence.get("path_or_url") or ""))
+    acceptance = evidence_acceptance_context(evidence, display)
+    if status == "accepted" and not acceptance.get("can_accept"):
+        return {"ok": False, "error": "evidence is not acceptable", "acceptance": acceptance, "evidence_id": evidence_id}
+    metadata = parse_json_arg(evidence.get("metadata_json", "{}") or "{}", {})
+    if not isinstance(metadata, dict):
+        metadata = {}
+    event_type = "evidence.accepted" if status == "accepted" else "evidence.rejected"
+    ts = now()
+    decision = {
+        "status": status,
+        "by": actor,
+        "summary": summary,
+        "reason": reason,
+        "decided_at": ts,
+    }
+    metadata["acceptance"] = decision
+    conn.execute("UPDATE evidence SET metadata_json = ? WHERE evidence_id = ?", (json.dumps(metadata, ensure_ascii=False), evidence_id))
+    conn.commit()
+    event = record_event(
+        conn,
+        event_type,
+        actor,
+        task_id=str(evidence.get("task_id") or ""),
+        trace_id=str(evidence.get("trace_id") or ""),
+        payload={"evidence_id": evidence_id, "attempt_id": evidence.get("attempt_id", ""), "summary": summary, "reason": reason},
+    )
+    decision["event_id"] = event["id"]
+    metadata["acceptance"] = decision
+    conn.execute("UPDATE evidence SET metadata_json = ? WHERE evidence_id = ?", (json.dumps(metadata, ensure_ascii=False), evidence_id))
+    audit(conn, actor, "evidence.accept" if status == "accepted" else "evidence.reject", evidence_id, {"task_id": evidence.get("task_id", ""), "attempt_id": evidence.get("attempt_id", ""), "event_id": event["id"], "summary": summary, "reason": reason})
+    audit_row = conn.execute("SELECT id, actor, action, target, detail_json, created_at FROM audit_logs WHERE target = ? ORDER BY id DESC LIMIT 1", (evidence_id,)).fetchone()
+    updated = row_by_id(conn, "evidence", "evidence_id", evidence_id)
+    raw_path = updated.pop("path_or_url", "")
+    updated["display"] = sanitize_evidence_path_for_display(raw_path)
+    updated["is_final"] = bool(updated.get("is_final"))
+    updated["metadata"] = metadata
+    updated["acceptance_decision"] = evidence_acceptance_decision(updated)
+    audit_payload = dict(audit_row) if audit_row else {}
+    if audit_payload:
+        audit_payload["detail"] = parse_json_arg(audit_payload.pop("detail_json", "{}") or "{}", {})
+    return {"ok": True, "evidence": updated, "event": event, "audit": audit_payload}
 
 
 def safe_evidence_content(conn: sqlite3.Connection, evidence_id: str, *, max_bytes: int = 65536) -> dict:
     safe_id = str(evidence_id or "").strip()
     if not safe_id or "/" in safe_id:
-        return {"ok": False, "error": "invalid evidence id", "evidence_id": safe_id, "display": sanitize_evidence_path_for_display(""), "content": {"text": ""}}
+        display = sanitize_evidence_path_for_display("")
+        return {"ok": False, "error": "invalid evidence id", "evidence_id": safe_id, "display": display, "acceptance": evidence_acceptance_context({"evidence_id": safe_id}, display), "content": {"text": ""}}
     record = conn.execute(
         """
         SELECT evidence_id, trace_id, task_id, attempt_id, employee_id, artifact_id,
@@ -3357,14 +4672,18 @@ def safe_evidence_content(conn: sqlite3.Connection, evidence_id: str, *, max_byt
         (safe_id,),
     ).fetchone()
     if not record:
-        return {"ok": False, "error": "evidence not found", "evidence_id": safe_id, "display": sanitize_evidence_path_for_display(""), "content": {"text": ""}}
+        display = sanitize_evidence_path_for_display("")
+        return {"ok": False, "error": "evidence not found", "evidence_id": safe_id, "display": display, "acceptance": evidence_acceptance_context({"evidence_id": safe_id}, display), "content": {"text": ""}}
     item = dict(record)
     raw_path = item.pop("path_or_url", "")
+    metadata = parse_json_arg(item.get("metadata_json", "{}") or "{}", {})
+    item["metadata"] = metadata if isinstance(metadata, dict) else {}
     display = sanitize_evidence_path_for_display(raw_path)
     payload = {
         "ok": bool(display.get("allowed")),
         "evidence": item,
         "display": display,
+        "acceptance": evidence_acceptance_context(item, display),
         "content": {
             "text": "",
             "truncated": False,
@@ -3694,7 +5013,7 @@ def audit_failure_records(conn: sqlite3.Connection, *, task_id: str = "", limit:
 def cmd_audit_evidence(args: argparse.Namespace) -> int:
     conn = connect_readonly()
     try:
-        evidence = audit_evidence_records(conn, task_id=args.task_id, limit=args.limit)
+        evidence = audit_evidence_records(conn, task_id=args.task_id, employee_id=args.employee_id, limit=args.limit)
     finally:
         conn.close()
     emit({"ok": True, "source": "companyctl audit evidence", "evidence": evidence})
@@ -3741,6 +5060,137 @@ def cmd_trace_timeline(args: argparse.Namespace) -> int:
     finally:
         conn.close()
     emit(company_trace.safe_trace_payload(trace))
+    return 0
+
+
+def cmd_runtime_session_start(args: argparse.Namespace) -> int:
+    conn = connect()
+    try:
+        payload = start_runtime_session_internal(
+            conn,
+            session_id=args.session_id,
+            employee_id=args.employee,
+            adapter_type=args.adapter_type,
+            runtime_type=args.runtime_type,
+            pid=args.pid,
+            session_key=args.session_key,
+            task_id=args.task_id,
+            attempt_id=args.attempt_id,
+        )
+    finally:
+        conn.close()
+    emit({"ok": True, **payload})
+    return 0
+
+
+def cmd_runtime_session_heartbeat(args: argparse.Namespace) -> int:
+    conn = connect()
+    try:
+        payload = heartbeat_runtime_session_internal(conn, session_id=args.session_id, status=args.status, progress=args.progress)
+    finally:
+        conn.close()
+    emit({"ok": True, **payload})
+    return 0
+
+
+def cmd_runtime_session_stop(args: argparse.Namespace) -> int:
+    conn = connect()
+    try:
+        payload = stop_runtime_session_internal(conn, session_id=args.session_id, status=args.status, error=args.error)
+    finally:
+        conn.close()
+    emit({"ok": True, **payload})
+    return 0
+
+
+def cmd_runtime_session_list(args: argparse.Namespace) -> int:
+    conn = connect_readonly()
+    try:
+        sessions = list_runtime_sessions(conn, employee_id=args.employee, task_id=args.task_id, trace_id=args.trace_id, limit=args.limit)
+    finally:
+        conn.close()
+    emit({"ok": True, "runtime_sessions": sessions})
+    return 0
+
+
+def cmd_tool_call_start(args: argparse.Namespace) -> int:
+    conn = connect()
+    try:
+        payload = start_tool_call_internal(
+            conn,
+            tool_call_id=args.tool_call_id,
+            trace_id=args.trace_id,
+            task_id=args.task_id,
+            attempt_id=args.attempt_id,
+            employee_id=args.employee,
+            session_id=args.session_id,
+            tool_name=args.tool_name,
+            tool_type=args.tool_type,
+            input_summary=args.input_summary,
+            risk_level=args.risk_level,
+            approval_id=args.approval_id,
+        )
+    finally:
+        conn.close()
+    emit({"ok": True, **payload})
+    return 0
+
+
+def cmd_tool_call_finish(args: argparse.Namespace) -> int:
+    conn = connect()
+    try:
+        payload = finish_tool_call_internal(conn, tool_call_id=args.tool_call_id, status=args.status, output_summary=args.output_summary, error=args.error)
+    finally:
+        conn.close()
+    emit({"ok": True, **payload})
+    return 0
+
+
+def cmd_tool_call_list(args: argparse.Namespace) -> int:
+    conn = connect_readonly()
+    try:
+        tool_calls = list_tool_calls(conn, employee_id=args.employee, task_id=args.task_id, trace_id=args.trace_id, attempt_id=args.attempt_id, session_id=args.session_id, limit=args.limit)
+    finally:
+        conn.close()
+    emit({"ok": True, "tool_calls": tool_calls})
+    return 0
+
+
+def cmd_budget_record(args: argparse.Namespace) -> int:
+    conn = connect()
+    try:
+        payload = record_budget_event_internal(
+            conn,
+            budget_event_id=args.budget_event_id,
+            budget_account_id=args.budget_account_id,
+            task_id=args.task_id,
+            trace_id=args.trace_id,
+            attempt_id=args.attempt_id,
+            employee_id=args.employee,
+            cost_type=args.cost_type,
+            amount=float(args.amount),
+            currency=args.currency,
+            token_input=args.token_input,
+            token_output=args.token_output,
+            model_name=args.model_name,
+            provider=args.provider,
+            runtime_seconds=args.runtime_seconds,
+            summary=args.summary,
+        )
+    finally:
+        conn.close()
+    emit({"ok": True, **payload})
+    return 0
+
+
+def cmd_budget_summary(args: argparse.Namespace) -> int:
+    conn = connect_readonly()
+    try:
+        summary = budget_summary(conn, task_id=args.task_id, employee_id=args.employee, trace_id=args.trace_id, attempt_id=args.attempt_id)
+        events = list_budget_events(conn, task_id=args.task_id, employee_id=args.employee, trace_id=args.trace_id, attempt_id=args.attempt_id, limit=args.limit)
+    finally:
+        conn.close()
+    emit({"ok": True, "summary": summary, "budget_events": events})
     return 0
 
 
@@ -3964,6 +5414,111 @@ def employee_sandbox_profile(employee: dict, permissions: dict, profile_name: st
     }
 
 
+def employee_ceo_work_contract(
+    *,
+    employee: dict,
+    current_activity: dict,
+    operational_summary: dict,
+    runtime_sessions: list[dict],
+    tool_calls: list[dict],
+    budget_summary: dict,
+    evidence_records: list[dict],
+) -> dict:
+    latest_session = runtime_sessions[0] if runtime_sessions else {}
+    latest_tool = tool_calls[0] if tool_calls else {}
+    latest_evidence = evidence_records[0] if evidence_records else {}
+    failed_or_blocked_tools = [
+        item
+        for item in tool_calls
+        if str(item.get("status") or "") in {"failed", "blocked", "cancelled"}
+    ]
+    final_evidence = [
+        item
+        for item in evidence_records
+        if bool(item.get("is_final")) or str(item.get("stage") or "") == "final"
+    ]
+    warnings: list[str] = []
+    current_state = str(operational_summary.get("current_state") or current_activity.get("long_task_state") or current_activity.get("task_status") or "idle")
+    if current_state in {"blocked", "failed", "stale", "heartbeat_stale", "progress_stagnant"}:
+        warnings.append(current_state)
+    if failed_or_blocked_tools:
+        warnings.append("failed_or_blocked_tool_calls")
+    if current_activity.get("task_id") and not tool_calls:
+        warnings.append("tool_call_ledger_missing")
+    if current_state in {"completed", "done", "success"} and not final_evidence:
+        warnings.append("completion_without_final_evidence")
+    if str(employee.get("status") or "") == "candidate":
+        warnings.append("candidate_not_active")
+
+    mode = "idle"
+    if current_activity.get("task_id"):
+        mode = "monitor"
+    if warnings:
+        mode = "owner_attention"
+    if current_state in {"blocked", "failed", "stale", "progress_stagnant", "heartbeat_stale"}:
+        mode = "intervene"
+
+    return {
+        "employee_id": employee.get("id", ""),
+        "employee_status": employee.get("status", ""),
+        "runtime": employee.get("runtime", ""),
+        "current_task": {
+            "task_id": current_activity.get("task_id", ""),
+            "title": current_activity.get("task_title", ""),
+            "state": current_state or "idle",
+            "task_status": current_activity.get("task_status", ""),
+            "attempt_id": current_activity.get("attempt_id", ""),
+            "attempt_status": current_activity.get("attempt_status", ""),
+            "trace_id": current_activity.get("trace_id", ""),
+            "session_id": latest_session.get("session_id", ""),
+            "heartbeat_state": current_activity.get("heartbeat_state", ""),
+            "progress_state": current_activity.get("progress_state", ""),
+            "progress_age_seconds": current_activity.get("progress_age_seconds", 0),
+            "latest_progress": current_activity.get("latest_progress", {}),
+        },
+        "runtime_sessions": {
+            "total": len(runtime_sessions),
+            "latest_session_id": latest_session.get("session_id", ""),
+            "latest_status": latest_session.get("status", ""),
+            "latest_runtime_type": latest_session.get("runtime_type", ""),
+        },
+        "tool_calls": {
+            "total": len(tool_calls),
+            "failed_or_blocked": len(failed_or_blocked_tools),
+            "latest_tool_call_id": latest_tool.get("tool_call_id", ""),
+            "latest_tool_name": latest_tool.get("tool_name", ""),
+            "latest_status": latest_tool.get("status", ""),
+        },
+        "budget": {
+            "event_count": budget_summary.get("event_count", 0),
+            "currency": budget_summary.get("currency", "USD"),
+            "total_amount": budget_summary.get("total_amount", 0),
+            "token_input": budget_summary.get("token_input", 0),
+            "token_output": budget_summary.get("token_output", 0),
+            "runtime_seconds": budget_summary.get("runtime_seconds", 0),
+            "limit_status": budget_summary.get("limit_status", "ok"),
+        },
+        "evidence": {
+            "total": len(evidence_records),
+            "final_count": len(final_evidence),
+            "latest_evidence_id": latest_evidence.get("evidence_id", ""),
+            "latest_summary": latest_evidence.get("summary", ""),
+        },
+        "owner_review": {
+            "mode": mode,
+            "warnings": warnings,
+            "next_action": operational_summary.get("owner_next_action", "inspect employee work before assigning more tasks"),
+        },
+        "truth_rules": {
+            "completion_requires_final_evidence": True,
+            "heartbeat_is_completion": False,
+            "chat_reply_is_completion": False,
+            "stdout_is_completion": False,
+            "candidate_can_auto_assign": False,
+        },
+    }
+
+
 def employee_file_bundle(conn: sqlite3.Connection, employee_id: str) -> dict:
     employee_id = resolve_employee_alias(employee_id)
     row = conn.execute("SELECT * FROM employees WHERE id = ?", (employee_id,)).fetchone()
@@ -3985,6 +5540,273 @@ def employee_file_bundle(conn: sqlite3.Connection, employee_id: str) -> dict:
     )
     heartbeat = load_json_or_default(paths["heartbeat"], {})
     sandbox_profile = employee_sandbox_profile(profile, permissions)
+    task_rows = rows(
+        conn,
+        """
+        SELECT *
+        FROM tasks
+        WHERE source_agent = ? OR target_agent = ? OR claimed_by = ?
+        ORDER BY
+          CASE
+            WHEN LOWER(status) IN ('submitted', 'claimed', 'running', 'waiting_approval', 'blocked', 'stale', 'retrying') THEN 0
+            ELSE 1
+          END ASC,
+          updated_at DESC,
+          created_at DESC
+        LIMIT 50
+        """,
+        (employee_id, employee_id, employee_id),
+    )
+    attempt_rows = [
+        hydrate_execution_attempt(item)
+        for item in rows(
+            conn,
+            "SELECT * FROM execution_attempts WHERE employee_id = ? ORDER BY started_at DESC, rowid DESC LIMIT 50",
+            (employee_id,),
+        )
+    ]
+    runtime_sessions = list_runtime_sessions(conn, employee_id=employee_id, limit=50)
+    tool_calls = list_tool_calls(conn, employee_id=employee_id, limit=100)
+    budget_events = list_budget_events(conn, employee_id=employee_id, limit=100)
+    employee_budget_summary = budget_summary(conn, employee_id=employee_id)
+    evidence_records = [item for item in audit_evidence_records(conn, limit=200) if item.get("employee_id") == employee_id][:50]
+    task_rollups: dict[str, dict] = {}
+    for task in task_rows:
+        task_id = str(task.get("id") or "")
+        task_rollups[task_id] = {
+            "attempt_count": 0,
+            "latest_attempt_id": "",
+            "latest_attempt_status": "",
+            "runtime_session_count": 0,
+            "tool_call_count": 0,
+            "failed_tool_call_count": 0,
+            "latest_tool_call_id": "",
+            "latest_tool_name": "",
+            "latest_tool_status": "",
+            "budget_event_count": 0,
+            "budget_total": 0.0,
+            "budget_currency": "",
+            "token_input": 0,
+            "token_output": 0,
+            "runtime_seconds": 0,
+            "evidence_count": 0,
+            "has_final_evidence": False,
+        }
+    for attempt in attempt_rows:
+        task_id = str(attempt.get("task_id") or "")
+        if task_id in task_rollups:
+            task_rollups[task_id]["attempt_count"] += 1
+            if not task_rollups[task_id]["latest_attempt_id"]:
+                task_rollups[task_id]["latest_attempt_id"] = str(attempt.get("attempt_id") or "")
+                task_rollups[task_id]["latest_attempt_status"] = str(attempt.get("status") or "")
+    for session in runtime_sessions:
+        task_id = str(session.get("task_id") or "")
+        if task_id in task_rollups:
+            task_rollups[task_id]["runtime_session_count"] += 1
+    for tool_call in tool_calls:
+        task_id = str(tool_call.get("task_id") or "")
+        if task_id in task_rollups:
+            task_rollups[task_id]["tool_call_count"] += 1
+            if str(tool_call.get("status") or "") in {"failed", "blocked", "cancelled"}:
+                task_rollups[task_id]["failed_tool_call_count"] += 1
+            if not task_rollups[task_id]["latest_tool_call_id"]:
+                task_rollups[task_id]["latest_tool_call_id"] = str(tool_call.get("tool_call_id") or "")
+                task_rollups[task_id]["latest_tool_name"] = str(tool_call.get("tool_name") or "")
+                task_rollups[task_id]["latest_tool_status"] = str(tool_call.get("status") or "")
+    for budget_event in budget_events:
+        task_id = str(budget_event.get("task_id") or "")
+        if task_id in task_rollups:
+            rollup = task_rollups[task_id]
+            rollup["budget_event_count"] += 1
+            rollup["budget_total"] = round(float(rollup["budget_total"]) + float(budget_event.get("amount") or 0), 10)
+            rollup["budget_currency"] = str(budget_event.get("currency") or rollup["budget_currency"] or "")
+            rollup["token_input"] += int(budget_event.get("token_input") or 0)
+            rollup["token_output"] += int(budget_event.get("token_output") or 0)
+            rollup["runtime_seconds"] += int(budget_event.get("runtime_seconds") or 0)
+    for evidence in evidence_records:
+        task_id = str(evidence.get("task_id") or "")
+        if task_id in task_rollups:
+            task_rollups[task_id]["evidence_count"] += 1
+            if bool(evidence.get("is_final")) or str(evidence.get("stage") or "") == "final":
+                task_rollups[task_id]["has_final_evidence"] = True
+
+    enriched_tasks = [{**dict(item), **task_rollups.get(str(item.get("id") or ""), {})} for item in task_rows]
+    status_counts: dict[str, int] = {}
+    def effective_task_status(task: dict) -> str:
+        attempt_status = str(task.get("latest_attempt_status") or "").lower()
+        if attempt_status in {"starting", "running", "correcting"}:
+            return "running"
+        if attempt_status in {"failed", "blocked", "stale", "cancelled", "success"}:
+            return "completed" if attempt_status == "success" else attempt_status
+        return str(task.get("status") or "unknown").lower() or "unknown"
+
+    for task in enriched_tasks:
+        status = effective_task_status(task)
+        status_counts[status] = status_counts.get(status, 0) + 1
+    def employee_task_owner_actions(task: dict) -> list[dict]:
+        task_id = str(task.get("id") or "")
+        attempt_id = str(task.get("latest_attempt_id") or "")
+        status = effective_task_status(task)
+
+        def action(action_id: str, label: str, api: str = "", *, method: str = "GET", requires_owner_approval: bool = False, dry_run_default: bool = True, dangerous: bool = False) -> dict:
+            return {
+                "id": action_id,
+                "label": label,
+                "api": api,
+                "method": method,
+                "task_id": task_id,
+                "attempt_id": attempt_id,
+                "requires_owner_approval": requires_owner_approval,
+                "dry_run_default": dry_run_default,
+                "dangerous": dangerous,
+            }
+
+        if status in {"submitted", "claimed", "running", "retrying"}:
+            return [
+                action("view_task", "View Task", f"/v1/tasks/{task_id}"),
+                action("view_trace", "View Trace"),
+            ]
+        if status in {"blocked", "stale", "waiting_approval"}:
+            return [
+                action("view_task", "View Task", f"/v1/tasks/{task_id}"),
+                action("request_correction", "Request Correction", f"/v1/tasks/{task_id}/correct", method="POST", requires_owner_approval=True),
+                action("retry", "Retry", f"/v1/tasks/{task_id}/retry", method="POST", requires_owner_approval=True),
+                action("reassign", "Reassign", f"/v1/tasks/{task_id}/reassign", method="POST", requires_owner_approval=True),
+            ]
+        if status in {"failed", "cancelled"}:
+            return [
+                action("view_task", "View Task", f"/v1/tasks/{task_id}"),
+                action("retry", "Retry", f"/v1/tasks/{task_id}/retry", method="POST", requires_owner_approval=True),
+                action("reassign", "Reassign", f"/v1/tasks/{task_id}/reassign", method="POST", requires_owner_approval=True),
+            ]
+        if status in {"completed", "done", "success"} and bool(task.get("has_final_evidence")):
+            return [
+                action("review_evidence", "Review Evidence", f"/v1/tasks/{task_id}"),
+                action("view_trace", "View Trace"),
+            ]
+        if status in {"completed", "done", "success"}:
+            return [
+                action("review_task", "Review Task", f"/v1/tasks/{task_id}"),
+                action("view_trace", "View Trace"),
+            ]
+        return [action("view_task", "View Task", f"/v1/tasks/{task_id}")]
+
+    for task in enriched_tasks:
+        task["owner_actions"] = employee_task_owner_actions(task)
+    attention_counts = {
+        "running_tasks": sum(1 for item in enriched_tasks if effective_task_status(item) in {"submitted", "claimed", "running", "retrying"}),
+        "blocked_tasks": sum(1 for item in enriched_tasks if effective_task_status(item) in {"blocked", "stale", "waiting_approval"}),
+        "failed_tasks": sum(1 for item in enriched_tasks if effective_task_status(item) in {"failed", "cancelled"}),
+        "failed_tool_calls": sum(int(item.get("failed_tool_call_count") or 0) for item in enriched_tasks),
+        "completion_invalid_tasks": sum(
+            1
+            for item in enriched_tasks
+            if effective_task_status(item) in {"completed", "done", "success"} and not bool(item.get("has_final_evidence"))
+        ),
+        "tasks_with_final_evidence": sum(1 for item in enriched_tasks if bool(item.get("has_final_evidence"))),
+    }
+    work_history_summary = (
+        f"{len(enriched_tasks)} tasks · {attention_counts['running_tasks']} running · "
+        f"{attention_counts['blocked_tasks']} blocked · {attention_counts['failed_tasks']} failed · "
+        f"{attention_counts['failed_tool_calls']} failed tool calls · {attention_counts['tasks_with_final_evidence']} final evidence"
+    )
+    current_tasks = [dict(item) for item in enriched_tasks if str(item.get("status", "")).lower() in {"submitted", "claimed", "running", "waiting_approval", "blocked", "stale", "retrying"}][:10]
+    recent_tasks = [dict(item) for item in enriched_tasks[:10]]
+    active_attempt_statuses = {"starting", "running", "correcting"}
+    current_attempt = next((dict(item) for item in attempt_rows if str(item.get("status") or "") in active_attempt_statuses), {})
+    current_task_id = str(current_attempt.get("task_id") or (current_tasks[0].get("id") if current_tasks else "") or "")
+    current_task = next((dict(item) for item in enriched_tasks if str(item.get("id") or "") == current_task_id), {})
+    latest_progress: dict = {}
+    if current_task_id:
+        progress_events = rows(
+            conn,
+            """
+            SELECT *
+            FROM company_events
+            WHERE task_id = ? AND event_type = 'task.progress'
+            ORDER BY created_at DESC
+            LIMIT 20
+            """,
+            (current_task_id,),
+        )
+        for event in progress_events:
+            try:
+                payload = json.loads(event.get("payload_json", "{}") or "{}")
+            except json.JSONDecodeError:
+                payload = {}
+            if not isinstance(payload, dict):
+                payload = {}
+            if current_attempt and str(payload.get("attempt_id") or "") != str(current_attempt.get("attempt_id") or ""):
+                continue
+            latest_progress = {
+                "event_id": event.get("id", ""),
+                "created_at": event.get("created_at", ""),
+                "attempt_id": payload.get("attempt_id", ""),
+                "progress_state": payload.get("progress_state", ""),
+                "progress_layer": payload.get("progress_layer", ""),
+                "progress_label": payload.get("progress_label", ""),
+                "message": payload.get("message", ""),
+                "progress": payload.get("progress"),
+            }
+            break
+    current_trace_id = ""
+    if current_attempt:
+        current_trace_id = str(current_attempt.get("trace_id") or "")
+    elif current_task_id:
+        current_trace_id = trace_id_for_task(conn, current_task_id)
+    current_activity = {
+        "employee_id": employee_id,
+        "task_id": current_task_id,
+        "task_title": str(current_task.get("title") or ""),
+        "task_status": str(current_task.get("status") or ""),
+        "attempt_id": str(current_attempt.get("attempt_id") or ""),
+        "attempt_status": str(current_attempt.get("status") or ""),
+        "trace_id": current_trace_id,
+        "active_task_count": len(current_tasks),
+        "latest_progress": latest_progress,
+    }
+    if current_attempt:
+        current_activity.update(long_task_state_for_attempt(current_attempt))
+    failed_tool_call_count = sum(1 for item in tool_calls if str(item.get("status") or "") in {"failed", "blocked", "cancelled"})
+    final_evidence_count = sum(1 for item in evidence_records if bool(item.get("is_final")) or str(item.get("stage") or "") == "final")
+    owner_next_action = "idle: assign a task when work is available"
+    if current_task_id:
+        owner_next_action = "monitor current task progress, tool calls, budget, and evidence"
+    current_state = str(current_activity.get("long_task_state") or current_activity.get("task_status") or current_activity.get("attempt_status") or "")
+    if current_state in {"blocked", "failed", "stale", "heartbeat_stale", "progress_stagnant"}:
+        owner_next_action = "review blocker, then correct, cancel, retry, or reassign"
+    operational_summary = {
+        "employee_id": employee_id,
+        "current_task_id": current_task_id,
+        "current_task_title": current_activity.get("task_title", ""),
+        "current_attempt_id": str(current_attempt.get("attempt_id") or ""),
+        "current_trace_id": current_trace_id,
+        "current_state": current_state or "idle",
+        "task_count": len(task_rows),
+        "current_task_count": len(current_tasks),
+        "attempt_count": len(attempt_rows),
+        "runtime_session_count": len(runtime_sessions),
+        "tool_call_count": len(tool_calls),
+        "failed_tool_call_count": failed_tool_call_count,
+        "budget_event_count": len(budget_events),
+        "budget_total": employee_budget_summary.get("total_amount", 0),
+        "budget_currency": employee_budget_summary.get("currency", "USD"),
+        "token_input": employee_budget_summary.get("token_input", 0),
+        "token_output": employee_budget_summary.get("token_output", 0),
+        "runtime_seconds": employee_budget_summary.get("runtime_seconds", 0),
+        "evidence_count": len(evidence_records),
+        "final_evidence_count": final_evidence_count,
+        "owner_next_action": owner_next_action,
+    }
+    ceo_work_contract = employee_ceo_work_contract(
+        employee=profile,
+        current_activity=current_activity,
+        operational_summary=operational_summary,
+        runtime_sessions=runtime_sessions,
+        tool_calls=tool_calls,
+        budget_summary=employee_budget_summary,
+        evidence_records=evidence_records,
+    )
     return {
         "employee": profile,
         "profile": file_profile,
@@ -3992,6 +5814,32 @@ def employee_file_bundle(conn: sqlite3.Connection, employee_id: str) -> dict:
         "permissions": permissions,
         "sandbox_profile": sandbox_profile,
         "heartbeat": heartbeat,
+        "work_history": {
+            "current_tasks": current_tasks,
+            "recent_tasks": recent_tasks,
+            "tasks": enriched_tasks,
+            "status_counts": status_counts,
+            "attention_counts": attention_counts,
+            "summary": work_history_summary,
+            "counts": {
+                "tasks": len(task_rows),
+                "current_tasks": len(current_tasks),
+                "attempts": len(attempt_rows),
+                "runtime_sessions": len(runtime_sessions),
+                "tool_calls": len(tool_calls),
+                "budget_events": len(budget_events),
+                "evidence_records": len(evidence_records),
+            },
+        },
+        "attempts": attempt_rows,
+        "current_activity": current_activity,
+        "operational_summary": operational_summary,
+        "ceo_work_contract": ceo_work_contract,
+        "runtime_sessions": runtime_sessions,
+        "tool_calls": tool_calls,
+        "budget_events": budget_events,
+        "budget_summary": employee_budget_summary,
+        "evidence_records": evidence_records,
         "files": {key: str(value) for key, value in paths.items()},
     }
 
@@ -6742,6 +8590,11 @@ def normalize_approval(row: sqlite3.Row | dict) -> dict:
     obj = dict(row)
     obj["detail"] = approval_detail(obj.pop("reason", ""))
     detail = obj["detail"] if isinstance(obj.get("detail"), dict) else {}
+    if detail.get("evidence"):
+        detail["evidence_display"] = sanitize_evidence_path_for_display(str(detail.get("evidence") or ""))
+        detail["evidence"] = sanitize_log_text(detail.get("evidence", ""))
+    if detail.get("request_reason"):
+        detail["request_reason"] = sanitize_log_text(detail.get("request_reason", ""))
     obj["safety"] = {
         "dry_run": bool(detail.get("dry_run", False)),
         "external_send_executed": bool(detail.get("external_send_executed", False)),
@@ -6750,6 +8603,86 @@ def normalize_approval(row: sqlite3.Row | dict) -> dict:
         "summary": str(detail.get("safety_note") or ("no external delivery executed" if detail.get("mock_resolve") else "owner approval required before real external delivery")),
     }
     return obj
+
+
+HIGH_RISK_APPROVAL_ACTIONS = {
+    "external_send",
+    "telegram_send",
+    "openclaw_send",
+    "rule_change",
+    "delete_file",
+    "sensitive_file",
+    "publish",
+    "payment",
+    "compensation",
+    "salary",
+    "penalty",
+    "budget_overrun",
+    "budget.overrun",
+}
+
+
+def approval_is_high_risk(approval: dict) -> bool:
+    action = str(approval.get("action") or "")
+    detail = approval.get("detail", {}) if isinstance(approval.get("detail", {}), dict) else {}
+    risk = str(detail.get("risk") or "").upper()
+    return action in HIGH_RISK_APPROVAL_ACTIONS or risk in {"P0", "P1"}
+
+
+def approval_control_summary(approvals: list[dict]) -> dict:
+    by_status: dict[str, int] = {}
+    by_action: dict[str, int] = {}
+    high_risk_actions: set[str] = set()
+    pending_high_risk_actions: set[str] = set()
+    real_execution_blockers: dict[str, int] = {}
+    dry_run_resolved = 0
+    external_send_executed = 0
+    for approval in approvals:
+        status = str(approval.get("status") or "")
+        action = str(approval.get("action") or "")
+        safety = approval.get("safety", {}) if isinstance(approval.get("safety", {}), dict) else {}
+        by_status[status] = by_status.get(status, 0) + 1
+        by_action[action] = by_action.get(action, 0) + 1
+        if approval_is_high_risk(approval):
+            high_risk_actions.add(action)
+            if status == "pending":
+                pending_high_risk_actions.add(action)
+        if safety.get("dry_run"):
+            dry_run_resolved += 1
+        if safety.get("external_send_executed"):
+            external_send_executed += 1
+        if action in {"external_send", "telegram_send", "openclaw_send"} and not safety.get("external_send_executed"):
+            real_execution_blockers["external_send"] = real_execution_blockers.get("external_send", 0) + 1
+        if action in {"budget_overrun", "budget.overrun"} and status == "pending":
+            real_execution_blockers["budget_overrun"] = real_execution_blockers.get("budget_overrun", 0) + 1
+    pending_owner_action_count = sum(
+        count for status, count in by_status.items() if status in {"pending", "requested", "waiting_approval"}
+    )
+    blocked_real_execution_count = sum(real_execution_blockers.values())
+    queue_health = "owner_action_required" if pending_owner_action_count or blocked_real_execution_count else "clear"
+    if queue_health == "owner_action_required":
+        blocker_rows = ", ".join(f"{kind}={count}" for kind, count in sorted(real_execution_blockers.items())) or "no real execution blockers"
+        pending_rows = ", ".join(sorted(pending_high_risk_actions)) or "no pending high-risk actions"
+        owner_next_action = f"review pending high-risk approvals ({pending_rows}); blocked real execution: {blocker_rows}"
+    else:
+        owner_next_action = "no pending owner approval actions; monitor queue"
+    return {
+        "total": len(approvals),
+        "by_status": by_status,
+        "by_action": by_action,
+        "high_risk_actions": sorted(high_risk_actions),
+        "pending_high_risk_actions": sorted(pending_high_risk_actions),
+        "pending_owner_action_count": pending_owner_action_count,
+        "blocked_real_execution_count": blocked_real_execution_count,
+        "queue_health": queue_health,
+        "owner_next_action": owner_next_action,
+        "default_policy": "dry_run_until_owner_approval",
+        "dry_run_resolved": dry_run_resolved,
+        "external_send_executed": external_send_executed,
+        "real_external_send_requires_owner_approval": True,
+        "real_execution_blockers": real_execution_blockers,
+        "summary": "Real external delivery is blocked until owner approval and an explicit delivery worker execution.",
+    }
 
 
 def write_approval_state(approval: dict) -> str:
@@ -6978,13 +8911,31 @@ def create_approval_internal(
     row = conn.execute("SELECT * FROM approvals WHERE id = ?", (aid,)).fetchone()
     approval = normalize_approval(row)
     path = write_approval_state(approval)
+    approval_event = record_event(
+        conn,
+        "approval.requested",
+        source,
+        task_id=str((metadata or {}).get("task_id", "") or ""),
+        trace_id=str((metadata or {}).get("trace_id", "") or ""),
+        payload={
+            "approval_id": aid,
+            "action": action,
+            "target": detail["target"],
+            "risk": risk,
+            "metadata": metadata or {},
+        },
+    )
+    approval_event_processed_at = now()
+    conn.execute("UPDATE company_events SET processed_at = ? WHERE id = ?", (approval_event_processed_at, approval_event["id"]))
+    conn.commit()
+    approval_event["processed_at"] = approval_event_processed_at
     audit(conn, source, "approval.request", aid, approval)
     notification = notification_send_result(
         kind="approval",
         subject=f"Company Kernel approval required: {aid}",
         message=f"source={source}\naction={action}\nrisk={risk or '-'}\ntarget={detail['target'] or '-'}\nreason={reason}\nevidence={evidence or '-'}",
     )
-    return {"approval": approval, "file": path, "notification": notification}
+    return {"approval": approval, "file": path, "notification": notification, "event": approval_event}
 
 
 def cmd_approval_list(args: argparse.Namespace) -> int:
@@ -7003,18 +8954,85 @@ def cmd_approval_list(args: argparse.Namespace) -> int:
     where = "WHERE " + " AND ".join(clauses) if clauses else ""
     params.append(args.limit)
     approvals = [normalize_approval(r) for r in conn.execute(f"SELECT * FROM approvals {where} ORDER BY updated_at DESC LIMIT ?", tuple(params)).fetchall()]
-    emit({"ok": True, "approvals": approvals})
+    emit({"ok": True, "approvals": approvals, "approval_control_summary": approval_control_summary(approvals)})
     return 0
+
+
+def approval_detail_bundle(conn: sqlite3.Connection, approval_id: str) -> dict:
+    safe_id = str(approval_id or "").strip()
+    if not safe_id or "/" in safe_id:
+        return {"ok": False, "error": "invalid approval_id", "approval_id": safe_id}
+    row = conn.execute("SELECT * FROM approvals WHERE id = ?", (safe_id,)).fetchone()
+    if not row:
+        return {"ok": False, "error": "approval not found", "approval_id": safe_id}
+    approval = normalize_approval(row)
+    detail = approval.get("detail", {}) if isinstance(approval.get("detail"), dict) else {}
+    metadata = detail.get("metadata", {}) if isinstance(detail.get("metadata"), dict) else {}
+    task_id = str(metadata.get("task_id") or "")
+    trace_id = str(metadata.get("trace_id") or "")
+    task_row = conn.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone() if task_id else None
+    task_payload = dict(task_row) if task_row else {}
+    if task_payload:
+        raw_evidence_path = task_payload.pop("evidence_path", "")
+        task_payload["evidence"] = sanitize_evidence_path_for_display(raw_evidence_path)
+        if not trace_id:
+            trace_id = trace_id_for_task(conn, task_id, "")
+    event_rows = rows(
+        conn,
+        """
+        SELECT id, trace_id, event_type, source_agent, task_id, payload_json, created_at, processed_at
+        FROM company_events
+        WHERE payload_json LIKE ? OR task_id = ?
+        ORDER BY created_at ASC
+        LIMIT 100
+        """,
+        (f"%{safe_id}%", task_id),
+    )
+    sanitized_events = []
+    for event in event_rows:
+        raw_payload = event.get("payload_json", "")
+        try:
+            payload = json.loads(raw_payload or "{}")
+        except json.JSONDecodeError:
+            payload = {"raw": sanitize_log_text(raw_payload)}
+        clean_payload = sanitize_json_like(payload)
+        sanitized_events.append(
+            {
+                **event,
+                "payload": clean_payload,
+                "payload_json": json.dumps(clean_payload, ensure_ascii=False, sort_keys=True),
+            }
+        )
+    audit_rows = rows(conn, "SELECT id, actor, action, target, detail_json, created_at FROM audit_logs WHERE target = ? ORDER BY created_at ASC LIMIT 100", (safe_id,))
+    sanitized_audit = []
+    for item in audit_rows:
+        raw_detail = item.pop("detail_json", "{}")
+        try:
+            parsed = json.loads(raw_detail or "{}")
+        except json.JSONDecodeError:
+            parsed = {"raw": sanitize_log_text(raw_detail)}
+        sanitized_audit.append({**item, "detail": sanitize_json_like(parsed)})
+    return {
+        "ok": True,
+        "source": "/v1/approvals/{approval_id}",
+        "approval": approval,
+        "task": task_payload,
+        "events": sanitized_events,
+        "audit_logs": sanitized_audit,
+        "approval_control_summary": approval_control_summary([approval]),
+        "evidence_records": task_evidence_records(conn, task_id) if task_id else [],
+        "budget_summary": budget_summary(conn, task_id=task_id, trace_id=trace_id),
+        "redaction_policy": sanitized_log_policy(),
+    }
 
 
 def cmd_approval_show(args: argparse.Namespace) -> int:
     conn = connect()
-    row = conn.execute("SELECT * FROM approvals WHERE id = ?", (args.approval_id,)).fetchone()
-    if not row:
-        emit({"ok": False, "error": "approval not found", "approval_id": args.approval_id})
+    payload = approval_detail_bundle(conn, args.approval_id)
+    if not payload.get("ok"):
+        emit(payload)
         return 1
-    approval = normalize_approval(row)
-    emit({"ok": True, "approval": approval})
+    emit(payload)
     return 0
 
 
@@ -7118,6 +9136,73 @@ def task_approvals(conn: sqlite3.Connection, task_id: str) -> list[dict]:
     return matched
 
 
+def task_control_context_bundle(conn: sqlite3.Connection, task_id: str) -> dict:
+    safe_task_id = str(task_id or "").strip()
+    if not safe_task_id or "/" in safe_task_id:
+        return {"ok": False, "error": "invalid task_id", "task_id": safe_task_id}
+    task = conn.execute("SELECT * FROM tasks WHERE id = ?", (safe_task_id,)).fetchone()
+    if not task:
+        return {"ok": False, "error": "task not found", "task_id": safe_task_id}
+    task_payload = dict(task)
+    raw_evidence_path = task_payload.pop("evidence_path", "")
+    task_payload["evidence"] = sanitize_evidence_path_for_display(raw_evidence_path)
+    event_rows = rows(conn, "SELECT id, trace_id, event_type, source_agent, task_id, payload_json, created_at, processed_at FROM company_events WHERE task_id = ? ORDER BY created_at ASC LIMIT 200", (safe_task_id,))
+    sanitized_events = []
+    for event in event_rows:
+        raw_payload = event.get("payload_json", "")
+        try:
+            payload = json.loads(raw_payload or "{}")
+        except json.JSONDecodeError:
+            payload = {"raw": sanitize_log_text(raw_payload)}
+        clean_payload = sanitize_json_like(payload)
+        sanitized_events.append({**event, "payload": clean_payload, "payload_json": json.dumps(clean_payload, ensure_ascii=False, sort_keys=True)})
+    audit_rows = rows(conn, "SELECT id, actor, action, target, detail_json, created_at FROM audit_logs WHERE target = ? ORDER BY created_at ASC LIMIT 200", (safe_task_id,))
+    sanitized_audit = []
+    for item in audit_rows:
+        raw_detail = item.pop("detail_json", "{}")
+        try:
+            parsed = json.loads(raw_detail or "{}")
+        except json.JSONDecodeError:
+            parsed = {"raw": sanitize_log_text(raw_detail)}
+        sanitized_audit.append({**item, "detail": sanitize_json_like(parsed)})
+    attempts = task_attempts(conn, safe_task_id)
+    trace_id = trace_id_for_task(conn, safe_task_id, "")
+    evidence_records = task_evidence_records(conn, safe_task_id)
+    completion_contract = task_completion_contract(task_payload, evidence_records)
+    runtime_sessions = list_runtime_sessions(conn, task_id=safe_task_id, limit=50)
+    tool_calls = list_tool_calls(conn, task_id=safe_task_id, limit=100)
+    budget_events = list_budget_events(conn, task_id=safe_task_id, trace_id=trace_id, limit=100)
+    approvals = task_approvals(conn, safe_task_id)
+    return {
+        "ok": True,
+        "source": "task_control_context",
+        "task": task_payload,
+        "attempts": attempts,
+        "attempt_history": task_attempt_history(attempts),
+        "runtime_sessions": runtime_sessions,
+        "tool_calls": tool_calls,
+        "events": sanitized_events,
+        "audit_logs": sanitized_audit,
+        "budget_summary": budget_summary(conn, task_id=safe_task_id, trace_id=trace_id),
+        "budget_events": budget_events,
+        "evidence_records": evidence_records,
+        "completion_contract": completion_contract,
+        "ceo_acceptance_contract": task_ceo_acceptance_contract(
+            task=task_payload,
+            attempts=attempts,
+            runtime_sessions=runtime_sessions,
+            tool_calls=tool_calls,
+            budget_events=budget_events,
+            evidence_records=evidence_records,
+            completion_contract=completion_contract,
+            approvals=approvals,
+            events=sanitized_events,
+        ),
+        "approvals": approvals,
+        "redaction_policy": sanitized_log_policy(),
+    }
+
+
 def cmd_task_show(args: argparse.Namespace) -> int:
     conn = connect()
     task_id = args.task_id
@@ -7169,6 +9254,20 @@ def cmd_task_show(args: argparse.Namespace) -> int:
     attempts = task_attempts(conn, task_id)
     attempt_history = task_attempt_history(attempts)
     evidence_records = task_evidence_records(conn, task_id)
+    completion_contract = task_completion_contract(task_obj, evidence_records)
+    runtime_sessions = list_runtime_sessions(conn, task_id=task_id, limit=50)
+    tool_calls = list_tool_calls(conn, task_id=task_id, limit=100)
+    budget_events = list_budget_events(conn, task_id=task_id, limit=100)
+    task_budget_summary = budget_summary(conn, task_id=task_id)
+    control_plane_timeline = task_control_plane_timeline(
+        events=events,
+        attempts=attempts,
+        runtime_sessions=runtime_sessions,
+        tool_calls=tool_calls,
+        budget_events=budget_events,
+        evidence_records=evidence_records,
+    )
+    projects = task_project_costs(conn, task_id)
     sanitized_logs = []
     log_policy = sanitized_log_policy()
     for run in rows(
@@ -7206,6 +9305,18 @@ def cmd_task_show(args: argparse.Namespace) -> int:
             }
         )
     supervisor_state, correction_summary = task_supervisor_state(attempts)
+    approvals = task_approvals(conn, task_id)
+    ceo_acceptance_contract = task_ceo_acceptance_contract(
+        task=task_obj,
+        attempts=attempts,
+        runtime_sessions=runtime_sessions,
+        tool_calls=tool_calls,
+        budget_events=budget_events,
+        evidence_records=evidence_records,
+        completion_contract=completion_contract,
+        approvals=approvals,
+        events=events,
+    )
     emit(
         {
             "ok": True,
@@ -7213,6 +9324,11 @@ def cmd_task_show(args: argparse.Namespace) -> int:
             "metadata": metadata,
             "evidence": evidence,
             "evidence_records": evidence_records,
+            "completion_contract": completion_contract,
+            "ceo_acceptance_contract": ceo_acceptance_contract,
+            "completion_invalid": bool(completion_contract.get("done_like")) and not bool(completion_contract.get("valid")),
+            "completion_invalid_reason": "" if bool(completion_contract.get("valid")) else str(completion_contract.get("reason", "")),
+            "final_evidence_count": int(completion_contract.get("final_evidence_count") or 0),
             "blocker": task_obj.get("blocker", ""),
             "parents": parents,
             "children": children,
@@ -7220,13 +9336,21 @@ def cmd_task_show(args: argparse.Namespace) -> int:
             "hook_runs": hook_runs,
             "attempts": attempts,
             "attempt_history": attempt_history,
+            "runtime_sessions": runtime_sessions,
+            "tool_calls": tool_calls,
+            "budget_events": budget_events,
+            "budget_summary": task_budget_summary,
+            "control_plane_timeline": control_plane_timeline,
+            "projects": projects,
             "conversation_summary": task_conversation_summary(conn, metadata),
             "progress_events": task_progress_events(events),
             "correction_events": task_correction_events(events),
             "sanitized_logs": sanitized_logs,
             "supervisor_state": supervisor_state,
             "correction_summary": correction_summary,
-            "approvals": task_approvals(conn, task_id),
+            "approvals": approvals,
+            "control_action_summary": task_control_action_summary(approvals=approvals, events=events, attempts=attempts),
+            "owner_action_timeline": task_owner_action_timeline(approvals=approvals, events=events),
             "lock": dict(lock) if lock else {},
             "audit_logs": audit_rows,
         }
@@ -7487,6 +9611,20 @@ def cmd_task_evidence_promote(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_task_evidence_accept(args: argparse.Namespace) -> int:
+    conn = connect()
+    result = decide_evidence_internal(conn, evidence_id=args.evidence_id, by=args.by, status="accepted", summary=args.summary)
+    emit(result)
+    return 0 if result.get("ok") else 1
+
+
+def cmd_task_evidence_reject(args: argparse.Namespace) -> int:
+    conn = connect()
+    result = decide_evidence_internal(conn, evidence_id=args.evidence_id, by=args.by, status="rejected", summary=args.summary, reason=args.reason)
+    emit(result)
+    return 0 if result.get("ok") else 1
+
+
 def cmd_task_handoff_create(args: argparse.Namespace) -> int:
     conn = connect()
     from_employee = resolve_employee_alias(args.from_employee)
@@ -7616,11 +9754,12 @@ def cmd_task_reopen(args: argparse.Namespace) -> int:
     )
     conn.execute("DELETE FROM locks WHERE resource_key = ?", (f"task:{args.task_id}",))
     synced_plan_items = sync_project_plan_for_task(conn, task_id=args.task_id, task_status=args.status, actor=actor)
+    event = record_event(conn, "task.reopened", actor, task_id=args.task_id, payload={"reason": args.reason, "status": args.status})
     conn.commit()
     updated = dict(conn.execute("SELECT * FROM tasks WHERE id = ?", (args.task_id,)).fetchone())
     task_file = write_task_inbox_file(updated)
-    audit(conn, actor, "task.reopen", args.task_id, {"reason": args.reason, "status": args.status, "file": task_file})
-    emit({"ok": True, "task": updated, "file": task_file, "synced_plan_items": synced_plan_items})
+    audit(conn, actor, "task.reopen", args.task_id, {"reason": args.reason, "status": args.status, "file": task_file, "event_id": event["id"]})
+    emit({"ok": True, "task": updated, "file": task_file, "synced_plan_items": synced_plan_items, "event_id": event["id"]})
     return 0
 
 
@@ -7638,6 +9777,9 @@ def cmd_task_reassign(args: argparse.Namespace) -> int:
         emit({"ok": False, "error": "actor cannot reassign task", "task_id": args.task_id, "by": actor})
         return 2
     policy = require_communication_allowed(actor, target, "task.submit")
+    previous_target = task["target_agent"]
+    previous_attempt = latest_attempt_for_task(conn, args.task_id)
+    previous_attempt_id = previous_attempt["attempt_id"] if previous_attempt else ""
     conn.execute(
         "UPDATE tasks SET target_agent = ?, status = 'submitted', claimed_by = '', blocker = '', updated_at = ? WHERE id = ?",
         (target, now(), args.task_id),
@@ -7646,10 +9788,25 @@ def cmd_task_reassign(args: argparse.Namespace) -> int:
     synced_plan_items = sync_project_plan_owner_for_task(conn, task_id=args.task_id, owner=target, actor=actor)
     conn.commit()
     updated = dict(conn.execute("SELECT * FROM tasks WHERE id = ?", (args.task_id,)).fetchone())
-    attempt = start_execution_attempt_internal(conn, task_id=args.task_id, employee_id=target, adapter_type="reassign", metadata={"reason": args.reason, "by": actor})
+    attempt_result = start_execution_attempt_internal(
+        conn,
+        task_id=args.task_id,
+        employee_id=target,
+        adapter_type="reassign",
+        metadata={"reason": args.reason, "by": actor, "previous_attempt_id": previous_attempt_id},
+    )
+    attempt = hydrate_execution_attempt(row_by_id(conn, "execution_attempts", "attempt_id", attempt_result["attempt"]["attempt_id"]))
+    event = record_event(
+        conn,
+        "task.reassigned",
+        actor,
+        task_id=args.task_id,
+        trace_id=attempt["trace_id"],
+        payload={"from": previous_target, "to": target, "reason": args.reason, "attempt_id": attempt["attempt_id"], "previous_attempt_id": previous_attempt_id},
+    )
     task_file = write_task_inbox_file({**updated, "metadata": task_metadata(conn, args.task_id), "communication_policy": policy})
-    audit(conn, actor, "task.reassign", args.task_id, {"to": target, "reason": args.reason, "file": task_file, "attempt_id": attempt["attempt"]["attempt_id"]})
-    emit({"ok": True, "task": updated, "file": task_file, "attempt": attempt["attempt"], "synced_plan_items": synced_plan_items})
+    audit(conn, actor, "task.reassign", args.task_id, {"from": previous_target, "to": target, "reason": args.reason, "file": task_file, "attempt_id": attempt["attempt_id"], "previous_attempt_id": previous_attempt_id, "event_id": event["id"]})
+    emit({"ok": True, "task": updated, "file": task_file, "attempt": attempt, "event_id": event["id"], "synced_plan_items": synced_plan_items})
     return 0
 
 
@@ -7872,6 +10029,43 @@ def project_tasks(conn: sqlite3.Connection, project_id: str) -> list[dict]:
         """,
         (project_id,),
     )
+
+
+def task_project_costs(conn: sqlite3.Connection, task_id: str) -> list[dict]:
+    projects = rows(
+        conn,
+        """
+        SELECT p.*
+        FROM project_tasks pt
+        JOIN projects p ON p.id = pt.project_id
+        WHERE pt.task_id = ?
+        ORDER BY p.updated_at DESC
+        """,
+        (task_id,),
+    )
+    summary = budget_summary(conn)
+    by_currency = summary.get("by_project_by_currency", {}) if isinstance(summary.get("by_project_by_currency"), dict) else {}
+    by_events = summary.get("by_project_event_count", {}) if isinstance(summary.get("by_project_event_count"), dict) else {}
+    by_input = summary.get("by_project_token_input", {}) if isinstance(summary.get("by_project_token_input"), dict) else {}
+    by_output = summary.get("by_project_token_output", {}) if isinstance(summary.get("by_project_token_output"), dict) else {}
+    by_runtime = summary.get("by_project_runtime_seconds", {}) if isinstance(summary.get("by_project_runtime_seconds"), dict) else {}
+    enriched = []
+    for project in projects:
+        project_id = str(project.get("id") or "")
+        project_currency = by_currency.get(project_id, {}) if isinstance(by_currency.get(project_id, {}), dict) else {}
+        enriched.append(
+            {
+                **project,
+                "budget_by_currency": project_currency,
+                "budget_total": round(sum(float(amount or 0) for amount in project_currency.values()), 6),
+                "budget_currency": next(iter(project_currency.keys()), "USD") if len(project_currency) <= 1 else "mixed",
+                "budget_event_count": int(by_events.get(project_id, 0) or 0),
+                "token_input": int(by_input.get(project_id, 0) or 0),
+                "token_output": int(by_output.get(project_id, 0) or 0),
+                "runtime_seconds": int(by_runtime.get(project_id, 0) or 0),
+            }
+        )
+    return enriched
 
 
 def project_plan_items(conn: sqlite3.Connection, project_id: str) -> list[dict]:
@@ -8683,10 +10877,32 @@ def cmd_runtime_verify_adapters(args: argparse.Namespace) -> int:
             cmd.extend(["--package", package])
         if args.execute:
             cmd.append("--execute")
+        active_attempt = conn.execute(
+            """
+            SELECT * FROM execution_attempts
+            WHERE task_id = ?
+              AND employee_id = ?
+              AND status IN ('starting', 'running', 'correcting')
+            ORDER BY started_at DESC
+            LIMIT 1
+            """,
+            (task_id, emp["id"]),
+        ).fetchone()
+        if not active_attempt:
+            active_attempt = start_execution_attempt_internal(
+                conn,
+                task_id=task_id,
+                employee_id=emp["id"],
+                adapter_type="runtime-verify",
+                metadata={"runtime_verify": True, "command": command},
+                status="running",
+            )["attempt"]
         cp = subprocess.run(cmd, cwd=str(ROOT), text=True, capture_output=True)
         current = conn.execute("SELECT status, evidence_path, blocker FROM tasks WHERE id = ?", (task_id,)).fetchone()
         hb = conn.execute("SELECT last_seen_at FROM heartbeats WHERE agent_id = ?", (emp["id"],)).fetchone()
         evidence = current["evidence_path"] if current else ""
+        final_evidence_record = ensure_final_evidence_for_existing_path(conn, task_id=task_id, agent=emp["id"], evidence_path=evidence, summary="runtime verification evidence") if current and evidence else None
+        final_evidence = bool(final_evidence_record)
         result.update(
             {
                 "exit_code": cp.returncode,
@@ -8695,11 +10911,13 @@ def cmd_runtime_verify_adapters(args: argparse.Namespace) -> int:
                 "task_status": current["status"] if current else "",
                 "evidence": evidence,
                 "evidence_exists": bool(evidence and Path(evidence).exists()),
+                "final_evidence": final_evidence,
+                "final_evidence_id": final_evidence_record.get("evidence_id", "") if isinstance(final_evidence_record, dict) else "",
                 "blocker": current["blocker"] if current else "",
                 "heartbeat": hb["last_seen_at"] if hb else "",
             }
         )
-        result["ok"] = cp.returncode == 0 and result["task_status"] == "completed" and result["evidence_exists"] and bool(result["heartbeat"])
+        result["ok"] = cp.returncode == 0 and result["task_status"] == "completed" and result["evidence_exists"] and final_evidence and bool(result["heartbeat"])
         results.append(result)
     scheduler_result = {}
     if args.run_scheduler:
@@ -9176,6 +11394,17 @@ def build_parser() -> argparse.ArgumentParser:
     task_evidence_promote.add_argument("--summary", default="")
     task_evidence_promote.add_argument("--type", default="")
     task_evidence_promote.set_defaults(func=cmd_task_evidence_promote)
+    task_evidence_accept = task_evidence_sub.add_parser("accept")
+    task_evidence_accept.add_argument("--evidence-id", required=True)
+    task_evidence_accept.add_argument("--by", required=True)
+    task_evidence_accept.add_argument("--summary", default="")
+    task_evidence_accept.set_defaults(func=cmd_task_evidence_accept)
+    task_evidence_reject = task_evidence_sub.add_parser("reject")
+    task_evidence_reject.add_argument("--evidence-id", required=True)
+    task_evidence_reject.add_argument("--by", required=True)
+    task_evidence_reject.add_argument("--summary", default="")
+    task_evidence_reject.add_argument("--reason", default="")
+    task_evidence_reject.set_defaults(func=cmd_task_evidence_reject)
     task_handoff = task_sub.add_parser("handoff")
     task_handoff_sub = task_handoff.add_subparsers(dest="handoff_cmd", required=True)
     task_handoff_create = task_handoff_sub.add_parser("create")
@@ -9232,6 +11461,13 @@ def build_parser() -> argparse.ArgumentParser:
     task_progress.add_argument("--payload", default="")
     task_progress.add_argument("--at", default="")
     task_progress.set_defaults(func=cmd_task_progress)
+    task_probe = task_sub.add_parser("probe")
+    task_probe.add_argument("--task-id", required=True)
+    task_probe.add_argument("--by", required=True)
+    task_probe.add_argument("--attempt-id", default="")
+    task_probe.add_argument("--message", required=True)
+    task_probe.add_argument("--reason", default="progress_probe")
+    task_probe.set_defaults(func=cmd_task_probe)
     task_correct = task_sub.add_parser("correct")
     task_correct.add_argument("--task-id", required=True)
     task_correct.add_argument("--attempt-id", required=True)
@@ -9587,6 +11823,7 @@ def build_parser() -> argparse.ArgumentParser:
     audit_sub = audit_parser.add_subparsers(dest="audit_cmd", required=True)
     audit_evidence = audit_sub.add_parser("evidence")
     audit_evidence.add_argument("--task-id", default="")
+    audit_evidence.add_argument("--employee-id", "--employee", default="")
     audit_evidence.add_argument("--limit", type=int, default=50)
     audit_evidence.set_defaults(func=cmd_audit_evidence)
     audit_artifacts = audit_sub.add_parser("artifacts")
@@ -9688,6 +11925,91 @@ def build_parser() -> argparse.ArgumentParser:
     runtime_retry_adapter_run.add_argument("--reason", required=True)
     runtime_retry_adapter_run.add_argument("--task-id", default="")
     runtime_retry_adapter_run.set_defaults(func=cmd_runtime_retry_adapter_run)
+    runtime_session = runtime_sub.add_parser("session")
+    runtime_session_sub = runtime_session.add_subparsers(dest="runtime_session_cmd", required=True)
+    runtime_session_start = runtime_session_sub.add_parser("start")
+    runtime_session_start.add_argument("--session-id", default="")
+    runtime_session_start.add_argument("--employee", required=True)
+    runtime_session_start.add_argument("--adapter-type", default="")
+    runtime_session_start.add_argument("--runtime-type", default="")
+    runtime_session_start.add_argument("--pid", default="")
+    runtime_session_start.add_argument("--session-key", default="")
+    runtime_session_start.add_argument("--task-id", default="")
+    runtime_session_start.add_argument("--attempt-id", default="")
+    runtime_session_start.set_defaults(func=cmd_runtime_session_start)
+    runtime_session_heartbeat = runtime_session_sub.add_parser("heartbeat")
+    runtime_session_heartbeat.add_argument("--session-id", required=True)
+    runtime_session_heartbeat.add_argument("--status", default="active")
+    runtime_session_heartbeat.add_argument("--progress", action="store_true")
+    runtime_session_heartbeat.set_defaults(func=cmd_runtime_session_heartbeat)
+    runtime_session_stop = runtime_session_sub.add_parser("stop")
+    runtime_session_stop.add_argument("--session-id", required=True)
+    runtime_session_stop.add_argument("--status", choices=["stopped", "failed", "stale", "cancelled"], default="stopped")
+    runtime_session_stop.add_argument("--error", default="")
+    runtime_session_stop.set_defaults(func=cmd_runtime_session_stop)
+    runtime_session_list = runtime_session_sub.add_parser("list")
+    runtime_session_list.add_argument("--employee", default="")
+    runtime_session_list.add_argument("--task-id", default="")
+    runtime_session_list.add_argument("--trace-id", default="")
+    runtime_session_list.add_argument("--limit", type=int, default=50)
+    runtime_session_list.set_defaults(func=cmd_runtime_session_list)
+
+    tool_call = sub.add_parser("tool-call")
+    tool_call_sub = tool_call.add_subparsers(dest="tool_call_cmd", required=True)
+    tool_call_start = tool_call_sub.add_parser("start")
+    tool_call_start.add_argument("--tool-call-id", default="")
+    tool_call_start.add_argument("--trace-id", default="")
+    tool_call_start.add_argument("--task-id", default="")
+    tool_call_start.add_argument("--attempt-id", default="")
+    tool_call_start.add_argument("--employee", required=True)
+    tool_call_start.add_argument("--session-id", default="")
+    tool_call_start.add_argument("--tool-name", required=True)
+    tool_call_start.add_argument("--tool-type", default="other")
+    tool_call_start.add_argument("--input-summary", default="")
+    tool_call_start.add_argument("--risk-level", default="")
+    tool_call_start.add_argument("--approval-id", default="")
+    tool_call_start.set_defaults(func=cmd_tool_call_start)
+    tool_call_finish = tool_call_sub.add_parser("finish")
+    tool_call_finish.add_argument("--tool-call-id", required=True)
+    tool_call_finish.add_argument("--status", choices=["success", "failed", "blocked", "cancelled"], required=True)
+    tool_call_finish.add_argument("--output-summary", default="")
+    tool_call_finish.add_argument("--error", default="")
+    tool_call_finish.set_defaults(func=cmd_tool_call_finish)
+    tool_call_list = tool_call_sub.add_parser("list")
+    tool_call_list.add_argument("--employee", default="")
+    tool_call_list.add_argument("--task-id", default="")
+    tool_call_list.add_argument("--trace-id", default="")
+    tool_call_list.add_argument("--attempt-id", default="")
+    tool_call_list.add_argument("--session-id", default="")
+    tool_call_list.add_argument("--limit", type=int, default=50)
+    tool_call_list.set_defaults(func=cmd_tool_call_list)
+
+    budget = sub.add_parser("budget")
+    budget_sub = budget.add_subparsers(dest="budget_cmd", required=True)
+    budget_record = budget_sub.add_parser("record")
+    budget_record.add_argument("--budget-event-id", default="")
+    budget_record.add_argument("--budget-account-id", default="")
+    budget_record.add_argument("--task-id", default="")
+    budget_record.add_argument("--trace-id", default="")
+    budget_record.add_argument("--attempt-id", default="")
+    budget_record.add_argument("--employee", required=True)
+    budget_record.add_argument("--cost-type", required=True)
+    budget_record.add_argument("--amount", required=True)
+    budget_record.add_argument("--currency", default="USD")
+    budget_record.add_argument("--token-input", type=int, default=0)
+    budget_record.add_argument("--token-output", type=int, default=0)
+    budget_record.add_argument("--model-name", default="")
+    budget_record.add_argument("--provider", default="")
+    budget_record.add_argument("--runtime-seconds", type=int, default=0)
+    budget_record.add_argument("--summary", default="")
+    budget_record.set_defaults(func=cmd_budget_record)
+    budget_summary_cmd = budget_sub.add_parser("summary")
+    budget_summary_cmd.add_argument("--task-id", default="")
+    budget_summary_cmd.add_argument("--trace-id", default="")
+    budget_summary_cmd.add_argument("--attempt-id", default="")
+    budget_summary_cmd.add_argument("--employee", default="")
+    budget_summary_cmd.add_argument("--limit", type=int, default=50)
+    budget_summary_cmd.set_defaults(func=cmd_budget_summary)
 
     doctor = sub.add_parser("doctor")
     doctor.add_argument("--summary", action="store_true", help="return compact health counts for low-token alert checks")

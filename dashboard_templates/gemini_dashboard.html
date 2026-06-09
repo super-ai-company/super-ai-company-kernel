@@ -315,6 +315,27 @@
       border-color: rgba(34, 197, 94, 0.28);
     }
 
+    .ledger-gap-list {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      margin-top: 7px;
+    }
+
+    .ledger-gap-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      padding: 4px 7px;
+      border-radius: 999px;
+      color: #fbbf24;
+      background: rgba(245, 158, 11, 0.12);
+      border: 1px solid rgba(245, 158, 11, 0.28);
+      font-size: 10px;
+      font-weight: 800;
+      letter-spacing: 0.02em;
+    }
+
     .readiness-badge {
       display: inline-flex;
       align-items: center;
@@ -2574,6 +2595,10 @@
               <div class="cockpit-list" id="cockpit-acceptance-signals">
                 <!-- Populated by JS -->
               </div>
+              <h3 style="font-size:13px;color:var(--text-secondary);margin:18px 0 10px;">Tool Calls</h3>
+              <div class="cockpit-list" id="cockpit-tool-calls">
+                <!-- Populated by JS -->
+              </div>
             </div>
             <div class="right-col">
               <h3 style="font-size:13px;color:var(--text-secondary);margin-bottom:10px;">Owner Attention</h3>
@@ -2596,6 +2621,14 @@
               </div>
               <h3 style="font-size:13px;color:var(--text-secondary);margin:18px 0 10px;">Recent Evidence</h3>
               <div class="cockpit-list" id="cockpit-recent-evidence">
+                <!-- Populated by JS -->
+              </div>
+              <h3 style="font-size:13px;color:var(--text-secondary);margin:18px 0 10px;">Runtime Sessions</h3>
+              <div class="cockpit-list" id="cockpit-runtime-sessions">
+                <!-- Populated by JS -->
+              </div>
+              <h3 style="font-size:13px;color:var(--text-secondary);margin:18px 0 10px;">Budget</h3>
+              <div class="cockpit-list" id="cockpit-budget-summary">
                 <!-- Populated by JS -->
               </div>
             </div>
@@ -2976,6 +3009,10 @@
         </div>
         <div class="section-card">
           <h2 data-i18n="pending_approvals_title"><i class="fa-solid fa-scale-balanced"></i> Pending approvals & Requests</h2>
+          <div id="approval-control-summary" class="cockpit-row" style="margin-bottom:12px;">
+            <div><strong>Approval Control Summary</strong><span>High-risk approvals, dry-run resolves, and external-send blockers will appear here.</span></div>
+            <div class="long-task-state running">loading</div>
+          </div>
           <div class="table-container">
             <table>
               <thead>
@@ -3669,6 +3706,7 @@
         events: events.events || [],
         adapter_runs: adapterRuns.adapter_runs || [],
         approvals: approvals.approvals || [],
+        approval_control_summary: approvals.approval_control_summary || currentSummaryFallback('approval_control_summary', {}),
         evidence_records: evidence.evidence || [],
         artifact_records: artifacts.artifacts || [],
         handoff_records: handoffs.handoffs || [],
@@ -3715,6 +3753,9 @@
     const attention = document.getElementById('cockpit-owner-attention');
     const supervisorActivity = document.getElementById('cockpit-supervisor-activity');
     const recentEvidence = document.getElementById('cockpit-recent-evidence');
+    const runtimeSessions = document.getElementById('cockpit-runtime-sessions');
+    const toolCalls = document.getElementById('cockpit-tool-calls');
+    const budgetSummary = document.getElementById('cockpit-budget-summary');
     if (!cards || !longTasks || !attention || !supervisorActivity || !recentEvidence) return;
     const counts = (cockpit && cockpit.counts) || {};
     const employeeStatusCounts = counts.employee_status_counts || {};
@@ -3724,11 +3765,24 @@
     const schedulableTotal = registryReconciliation.schedulable_total ?? counts.employees_total ?? counts.employees ?? 0;
     const excludedHumanOwners = registryReconciliation.excluded_human_owners ?? counts.excluded_human_owners ?? 0;
     const ledgerConsistency = ledgerConsistencySummary(cockpit && cockpit.ledger_consistency);
+    const doctor = (cockpit && cockpit.doctor) || {};
+    const healthBar = (cockpit && cockpit.health_bar) || {};
+    const doctorIssues = doctor.issue_count ?? counts.doctor_issues ?? (Array.isArray(doctor.issues) ? doctor.issues.length : 0);
+    const cockpitBudget = (cockpit && cockpit.budget_summary) || {};
+    const cockpitBudgetCurrency = cockpitBudget.currency || 'USD';
+    const cockpitBudgetAmount = cockpitBudget.total_amount || 0;
+    const cockpitBudgetCurrencyRows = budgetCurrencyRows(cockpitBudget);
+    const cockpitBudgetLimit = budgetLimitStatusSummary(cockpitBudget);
     cards.innerHTML = `
       <div class="cockpit-card">
         <h3>Ledger Consistency</h3>
         <div class="cockpit-value" style="color:var(--color-green)">1</div>
         <div class="cockpit-subtext">${escapeHtml(ledgerConsistency)}</div>
+      </div>
+      <div class="cockpit-card">
+        <h3>Health Bar</h3>
+        <div class="cockpit-value" style="color:${Number((healthBar.doctor_issue_count ?? doctorIssues) || 0) ? 'var(--color-amber)' : 'var(--color-green)'}">${escapeHtml(healthBar.doctor_issue_count ?? doctorIssues ?? 0)}</div>
+        <div class="cockpit-subtext">api=${escapeHtml(healthBar.api_status || 'online')} · doctor.ok=${escapeHtml(String(healthBar.doctor_ok ?? (doctor.ok !== false)))} · exit=${escapeHtml(healthBar.doctor_exit_code ?? doctor.exit_code ?? 0)} · poll=${escapeHtml(healthBar.poll_mode || '-')} ${escapeHtml(healthBar.poll_interval_seconds ?? '-')}s · data_age=${escapeHtml(healthBar.data_age_seconds ?? '-')}s · owner_next_action=${escapeHtml(healthBar.owner_next_action || '-')}</div>
       </div>
       <div class="cockpit-card">
         <h3>Employees Online</h3>
@@ -3739,6 +3793,21 @@
         <h3>Active Attempts</h3>
         <div class="cockpit-value">${escapeHtml(counts.active_attempts || 0)}</div>
         <div class="cockpit-subtext">managed by task_id + attempt_id, not a CLI timeout</div>
+      </div>
+      <div class="cockpit-card">
+        <h3>Runtime Sessions</h3>
+        <div class="cockpit-value" style="color:${Number(counts.active_runtime_sessions || 0) ? 'var(--color-blue)' : 'var(--text-primary)'}">${escapeHtml(counts.active_runtime_sessions || 0)}</div>
+        <div class="cockpit-subtext">${escapeHtml(counts.runtime_sessions || 0)} total sessions · CLI/GUI/script runs must bind employee_id + task_id + attempt_id</div>
+      </div>
+      <div class="cockpit-card">
+        <h3>Tool Calls</h3>
+        <div class="cockpit-value" style="color:${Number(counts.failed_tool_calls || 0) ? 'var(--color-rose)' : 'var(--text-primary)'}">${escapeHtml(counts.tool_calls || 0)}</div>
+        <div class="cockpit-subtext">${escapeHtml(counts.running_tool_calls || 0)} running · ${escapeHtml(counts.failed_tool_calls || 0)} failed · tools must be ledgered, not hidden in stdout</div>
+      </div>
+      <div class="cockpit-card">
+        <h3>Budget</h3>
+        <div class="cockpit-value" style="color:${Number(cockpitBudgetAmount || 0) ? 'var(--color-amber)' : 'var(--text-primary)'}">${escapeHtml(cockpitBudgetAmount)}</div>
+        <div class="cockpit-subtext">${escapeHtml(cockpitBudgetCurrency)} ledger · events ${escapeHtml(cockpitBudget.event_count || 0)} · input ${escapeHtml(cockpitBudget.token_input || counts.token_input || 0)} tokens · output ${escapeHtml(cockpitBudget.token_output || counts.token_output || 0)} tokens · runtime ${escapeHtml(cockpitBudget.runtime_seconds || 0)}s · ${escapeHtml(cockpitBudgetLimit)}${cockpitBudgetCurrencyRows ? ` · ${escapeHtml(cockpitBudgetCurrencyRows)}` : ''}</div>
       </div>
       <div class="cockpit-card">
         <h3>Running Tasks</h3>
@@ -3762,8 +3831,8 @@
       </div>
       <div class="cockpit-card">
         <h3>Done Tasks</h3>
-        <div class="cockpit-value" style="color:var(--color-green)">${escapeHtml(counts.done_tasks || 0)}</div>
-        <div class="cockpit-subtext">${escapeHtml(counts.recent_evidence || 0)} promoted evidence · ${escapeHtml(counts.legacy_task_evidence || 0)} legacy task evidence_path · ${escapeHtml(counts.evidence_issues || 0)} evidence issues</div>
+        <div class="cockpit-value" style="color:${Number(counts.completion_invalid_tasks || 0) ? 'var(--color-rose)' : 'var(--color-green)'}">${escapeHtml(counts.done_tasks || 0)}</div>
+        <div class="cockpit-subtext">${escapeHtml(counts.recent_evidence || 0)} promoted evidence · ${escapeHtml(counts.legacy_task_evidence || 0)} legacy task evidence_path · ${escapeHtml(counts.completion_invalid_tasks || 0)} completion_invalid_tasks · ${escapeHtml(counts.evidence_issues || 0)} evidence issues</div>
       </div>
       <div class="cockpit-card">
         <h3>Chat Signal</h3>
@@ -3772,19 +3841,43 @@
       </div>
     `;
     const stagnantGuidance = stagnantTaskGuidance();
-    const rows = (cockpit && cockpit.long_tasks) || [];
+    const rows = (cockpit && (cockpit.task_cards || cockpit.long_tasks)) || [];
+    function renderLedgerGapBadges(item) {
+      const ledger_gaps = Array.isArray(item.ledger_gaps) ? item.ledger_gaps : [];
+      if (!ledger_gaps.length) return '';
+      const labels = {
+        tool_call_ledger_missing: 'Tool-call ledger missing',
+        budget_ledger_missing: 'Cost ledger missing'
+      };
+      const badges = ledger_gaps.map(gap => `<span class="ledger-gap-badge"><i class="fa-solid fa-triangle-exclamation"></i>${escapeHtml(labels[gap] || gap)}</span>`).join('');
+      return `<div class="ledger-gap-list" title="Control-plane ledger gaps">${badges}<span>Control-plane ledger gaps</span></div>`;
+    }
     longTasks.innerHTML = rows.length ? rows.slice(0, 8).map(item => `
       <div class="cockpit-row" onclick="openTaskDetailDrawer('${escapeHtml(item.task_id || '')}')">
         <div>
+          ${(() => {
+            const runtime = item.runtime_summary || {};
+            const tools = item.tool_summary || {};
+            const budget = item.budget_summary || {};
+            const budgetCurrency = budget.currency || 'USD';
+            return `
           <strong>${escapeHtml(item.title || item.task_id || '-')}</strong>
-          <span>${escapeHtml(item.target_agent || '-')} · attempt=${escapeHtml(item.attempt_id || '-')} · progress_age=${escapeHtml(item.progress_age_seconds ?? '-')}s</span>
+          <span>${escapeHtml(item.employee_id || item.target_agent || '-')} · attempt=${escapeHtml(item.attempt_id || '-')} · progress_age=${escapeHtml(item.progress_age_seconds ?? '-')}s</span>
           <span>heartbeat=${escapeHtml(item.heartbeat_state || '-')} · progress_state=${escapeHtml(item.progress_state || '-')}</span>
+          <span>Runtime · sessions=${escapeHtml(runtime.session_count || 0)} · active=${escapeHtml(runtime.active_session_count || 0)} · latest=${escapeHtml(runtime.latest_runtime_type || '-')} ${escapeHtml(runtime.latest_status || '')}</span>
+          <span>Tools · calls=${escapeHtml(tools.tool_call_count || 0)} · failed=${escapeHtml(tools.failed_tool_call_count || 0)} · latest=${escapeHtml(tools.latest_tool_name || '-')} ${escapeHtml(tools.latest_tool_status || '')}</span>
+          <span>Budget · ${escapeHtml(budgetCurrency)} ${escapeHtml(budget.total_amount || 0)} · input=${escapeHtml(budget.token_input || 0)} · output=${escapeHtml(budget.token_output || 0)} · runtime=${escapeHtml(budget.runtime_seconds || 0)}s</span>
+            `;
+          })()}
           ${hasLatestProgress(item) ? `<span>Latest Progress · ${latestProgressSummary(item.latest_progress)}</span>` : ''}
+          ${item.completion_invalid ? `<span>Completion Invalid · ${escapeHtml(item.completion_invalid_reason || 'missing_final_evidence')}</span>` : ''}
+          ${item.blocker ? `<span>Blocker · ${escapeHtml(item.blocker)}</span>` : ''}
           ${item.progress_state === 'stagnant' ? `<span>${escapeHtml(stagnantGuidance)}</span>` : ''}
+          ${renderLedgerGapBadges(item)}
         </div>
-        <div class="long-task-state ${escapeHtml(item.long_task_state || 'running')}">${escapeHtml(item.long_task_state || 'running')}</div>
+        <div class="long-task-state ${escapeHtml(item.state || item.long_task_state || 'running')}">${escapeHtml(item.state || item.long_task_state || 'running')}</div>
       </div>
-    `).join('') : `<div class="cockpit-row"><div><strong>No managed long-running attempts</strong><span>Start one with task run or an adapter managed attempt.</span></div><div class="long-task-state success">idle</div></div>`;
+    `).join('') : `<div class="cockpit-row"><div><strong>No task cards need owner attention</strong><span>Running, blocked, stagnant, and completion-invalid task cards will appear here.</span></div><div class="long-task-state success">idle</div></div>`;
     const pending = (cockpit && cockpit.pending_approvals) || [];
     const evidence = (cockpit && cockpit.recent_evidence) || [];
     const ownerAttention = (cockpit && cockpit.owner_attention) || [];
@@ -3805,7 +3898,7 @@
         return `<button class="mini-btn owner-attention-action" data-action-id="${escapeHtml(action.id || '')}" data-task-id="${escapeHtml(item.task_id || '')}" data-attempt-id="${escapeHtml(item.attempt_id || '')}" data-approval-id="${escapeHtml(item.approval_id || '')}" data-employee-id="${escapeHtml(item.employee_id || item.target_agent || '')}" data-method="${escapeHtml(action.method || 'GET')}" data-requires-owner-approval="${action.requires_owner_approval ? 'true' : 'false'}" data-dry-run-default="${action.dry_run_default === false ? 'false' : 'true'}" data-dangerous="${action.dangerous ? 'true' : 'false'}" title="${escapeHtml(safetyChips)}" onclick="event.stopPropagation(); window.handleOwnerAttentionAction('${escapeHtml(item.task_id || '')}', '${escapeHtml(item.attempt_id || '')}', '${escapeHtml(item.approval_id || '')}', '${escapeHtml(action.id || '')}', '${escapeHtml(item.employee_id || item.target_agent || '')}')">${escapeHtml(action.label || action.id || '')}<small>${escapeHtml(safetyChips)}</small></button>`;
       });
       if (item.kind === 'stagnant_task') {
-        actionButtons.push(`<button class="mini-btn owner-attention-action" data-action-id="send_probe" data-task-id="${escapeHtml(item.task_id || '')}" data-attempt-id="${escapeHtml(item.attempt_id || '')}" data-approval-id="${escapeHtml(item.approval_id || '')}" data-employee-id="${escapeHtml(item.employee_id || item.target_agent || '')}" data-ledger-action="task.probe" data-requires-owner-approval="true" data-dangerous="false" title="${escapeHtml(stagnantGuidance)}">Send Probe<small>ledger correction · owner approval</small></button>`);
+        actionButtons.push(`<button class="mini-btn owner-attention-action" data-action-id="send_probe" data-task-id="${escapeHtml(item.task_id || '')}" data-attempt-id="${escapeHtml(item.attempt_id || '')}" data-approval-id="${escapeHtml(item.approval_id || '')}" data-employee-id="${escapeHtml(item.employee_id || item.target_agent || '')}" data-ledger-action="task.probe" data-requires-owner-approval="false" data-dangerous="false" title="${escapeHtml(stagnantGuidance)}">Send Probe<small>ledger only · no external send</small></button>`);
       }
       const summary = actions.length
         ? `${actions.length} safe action${actions.length === 1 ? '' : 's'} available · click row for detail`
@@ -3818,14 +3911,26 @@
         </details>
       `;
     }
-    attention.innerHTML = attentionRows.length ? attentionRows.map(item => `
+    const completionInvalidRows = (cockpit && cockpit.completion_invalid_tasks) || [];
+    const renderedAttentionRows = [...completionInvalidRows.map(item => ({
+      kind: 'completion_invalid',
+      state: 'blocked',
+      title: item.task_id,
+      task_id: item.task_id,
+      target_agent: item.target_agent,
+      message: `completion_invalid=${item.completion_invalid} · reason=${item.completion_invalid_reason || '-'} · final_evidence=${item.final_evidence_count || 0}`,
+      actions: item.actions || []
+    })), ...attentionRows];
+    attention.innerHTML = renderedAttentionRows.length ? renderedAttentionRows.map(item => `
       <div class="cockpit-row" ${item.task_id ? `onclick="openTaskDetailDrawer('${escapeHtml(item.task_id || '')}')"` : ''}>
         <div>
           ${(() => { const correction = item.correction || {}; return correction.needs_ack ? `<span>${escapeHtml(`correction pending ack · by=${correction.last_by || '-'} · ${correction.last_message || ''}`)}</span>` : ''; })()}
           <strong>${escapeHtml(item.kind)} · ${escapeHtml(item.title || '-')}</strong>
           ${item.display_name && item.display_name !== item.title ? `<span>display=${escapeHtml(item.display_name)}</span>` : ''}
-          <span>${escapeHtml([item.target_agent ? `target=${item.target_agent}` : '', item.task_id ? `task=${item.task_id}` : '', item.approval_id ? `approval=${item.approval_id}` : '', item.approval_action ? `action=${item.approval_action}` : '', item.risk ? `risk=${item.risk}` : ''].filter(Boolean).join(' · '))}</span>
+          <span>${escapeHtml([item.priority_label ? `priority=${item.priority_label}` : '', item.target_agent ? `target=${item.target_agent}` : '', item.task_id ? `task=${item.task_id}` : '', item.approval_id ? `approval=${item.approval_id}` : '', item.approval_action ? `action=${item.approval_action}` : '', item.risk ? `risk=${item.risk}` : ''].filter(Boolean).join(' · '))}</span>
           <span>${escapeHtml(item.message || item.meta || '')}</span>
+          <span>next=${escapeHtml(item.owner_next_action || '-')}</span>
+          ${renderLedgerGapBadges(item)}
           ${renderOwnerAttentionActions(item)}
         </div>
         <div class="long-task-state ${escapeHtml(item.state)}">${escapeHtml(item.state)}</div>
@@ -3833,15 +3938,76 @@
     `).join('') : `<div class="cockpit-row"><div><strong>No owner attention needed</strong><span>Pending approvals and recent final evidence will appear here.</span></div><div class="long-task-state success">clear</div></div>`;
     renderSupervisorActivity(cockpit.supervisor_activity || []);
     renderAcceptanceSignals();
-    recentEvidence.innerHTML = evidence.length ? evidence.slice(0, 5).map(item => `
+    const evidenceAcceptanceQueue = (cockpit && cockpit.evidence_acceptance_queue) || [];
+    const evidenceRows = evidenceAcceptanceQueue.length ? evidenceAcceptanceQueue : evidence;
+    recentEvidence.innerHTML = evidenceRows.length ? evidenceRows.slice(0, 5).map(item => `
       <div class="cockpit-row" onclick="openTaskDetailDrawer('${escapeHtml(item.task_id || '')}')">
         <div>
           <strong>${escapeHtml(item.title || item.task_id || '-')}</strong>
-          <span>${escapeHtml(item.target_agent || '-')} · ${escapeHtml((item.evidence && item.evidence.relative_path) || '')}</span>
+          <span>${escapeHtml(item.target_agent || '-')} · trace=${escapeHtml(item.trace_id || '-')} · ${escapeHtml((item.evidence && item.evidence.relative_path) || '')}</span>
+          <span>acceptance_status=${escapeHtml(item.acceptance_status || 'pending')} · acceptance_state=${escapeHtml(item.acceptance_state || '-')} · pending_final_evidence=${escapeHtml(((cockpit && cockpit.counts) || {}).pending_final_evidence || 0)}</span>
+          <span>review_state=${escapeHtml(item.review_state || '-')} · pending_age_minutes=${escapeHtml(item.pending_age_minutes ?? '-')} · review_sla_minutes=${escapeHtml(item.review_sla_minutes ?? '-')}</span>
+          <span>owner_next_action=${escapeHtml(item.owner_next_action || 'Review final evidence.')}</span>
         </div>
-        <div class="long-task-state success">evidence</div>
+        <div class="long-task-state ${escapeHtml((item.acceptance_status || 'pending') === 'pending' ? 'progress_stagnant' : 'success')}">${escapeHtml(item.acceptance_status || 'evidence')}</div>
       </div>
     `).join('') : `<div class="cockpit-row"><div><strong>No recent evidence</strong><span>Final evidence from completed work will appear here.</span></div><div class="long-task-state running">empty</div></div>`;
+    const sessions = (cockpit && cockpit.runtime_sessions) || [];
+    if (runtimeSessions) {
+      runtimeSessions.innerHTML = sessions.length ? sessions.slice(0, 6).map(item => `
+        <div class="cockpit-row" onclick="showRuntimeSessionDetails('${escapeHtml(item.session_id || '')}', ${escapeHtml(JSON.stringify(item))})">
+          <div>
+            <strong>${escapeHtml(item.session_id || '-')}</strong>
+            <span>${escapeHtml(item.employee_id || '-')} · task=${escapeHtml(item.task_id || '-')} · attempt=${escapeHtml(item.attempt_id || '-')}</span>
+            <span>adapter=${escapeHtml(item.adapter_type || '-')} · pid=${escapeHtml(item.pid || '-')} · heartbeat=${escapeHtml(item.last_heartbeat_at || '-')}</span>
+            <span>Click loads /v1/runtime-sessions/{session_id}: task, attempt, tool calls, budget, evidence, and sanitized events.</span>
+          </div>
+          <div class="long-task-state ${escapeHtml(item.status || 'running')}">${escapeHtml(item.status || 'running')}</div>
+        </div>
+      `).join('') : `<div class="cockpit-row"><div><strong>No runtime sessions</strong><span>CLI/GUI/script sessions will appear after an adapter starts a managed attempt. No kill or archive session action in MVP; use task/attempt cancel.</span></div><div class="long-task-state running">empty</div></div>`;
+    }
+    const calls = (cockpit && cockpit.tool_calls) || [];
+    if (toolCalls) {
+      toolCalls.innerHTML = calls.length ? calls.slice(0, 6).map(item => `
+        <div class="cockpit-row" onclick="showToolCallDetails('${escapeHtml(item.tool_call_id || '')}', ${escapeHtml(JSON.stringify(item))})">
+          <div>
+            <strong>${escapeHtml(item.tool_name || item.tool_call_id || '-')}</strong>
+            <span>${escapeHtml(item.employee_id || '-')} · ${escapeHtml(item.tool_type || '-')} · task=${escapeHtml(item.task_id || '-')}</span>
+            <span>${escapeHtml(item.input_summary || item.output_summary || item.error_message || 'No sanitized summary yet')}</span>
+            <span>Click loads /v1/tool-calls/{tool_call_id}: task, attempt, runtime session, budget, evidence, and sanitized events.</span>
+          </div>
+          <div class="long-task-state ${escapeHtml(item.status || 'running')}">${escapeHtml(item.status || 'running')}</div>
+        </div>
+      `).join('') : `<div class="cockpit-row"><div><strong>No tool calls</strong><span>Employee commands, APIs, browsers, and file operations must be recorded here.</span></div><div class="long-task-state running">empty</div></div>`;
+    }
+    const budget = (cockpit && cockpit.budget_summary) || {};
+    if (budgetSummary) {
+      const byEmployee = budget.by_employee || {};
+      const topEmployees = Object.entries(byEmployee).slice(0, 4).map(([employee, amount]) => `${employee}=${amount}`).join(' · ');
+      const mixedWarning = mixedCurrencyBudgetWarning(budget);
+      const currencyRows = budgetCurrencyRows(budget);
+      const topTasks = budgetBreakdownRows('by_task', budget.by_task);
+      const costTypes = budgetBreakdownRows('by_cost_type', budget.by_cost_type);
+      const models = budgetBreakdownRows('by_model', budget.by_model);
+      const providers = budgetBreakdownRows('by_provider', budget.by_provider);
+      budgetSummary.innerHTML = `
+        <div class="cockpit-row">
+          <div>
+            <strong>Estimated spend ${escapeHtml(budget.currency || 'USD')} ${escapeHtml(budget.total_amount || 0)}</strong>
+            <span>events=${escapeHtml(budget.event_count || 0)} · input=${escapeHtml(budget.token_input || 0)} · output=${escapeHtml(budget.token_output || 0)} · runtime=${escapeHtml(budget.runtime_seconds || 0)}s</span>
+            <span>${escapeHtml(budgetLimitStatusSummary(budget))}</span>
+            ${mixedWarning ? `<span>${escapeHtml(mixedWarning)}</span>` : ''}
+            ${currencyRows ? `<span>${escapeHtml(currencyRows)}</span>` : ''}
+            <span>${escapeHtml(topEmployees || 'No employee cost rows yet')}</span>
+            <span>${escapeHtml(topTasks)}</span>
+            <span>${escapeHtml(costTypes)}</span>
+            <span>${escapeHtml(models)}</span>
+            <span>${escapeHtml(providers)}</span>
+          </div>
+          <div class="long-task-state ${['soft_exceeded', 'hard_exceeded'].includes(budget.limit_status || '') ? 'blocked' : (Number(budget.total_amount || 0) ? 'progress_stagnant' : 'running')}">${escapeHtml(budget.limit_status || 'budget')}</div>
+        </div>
+      `;
+    }
   }
 
   function renderAcceptanceSignals() {
@@ -3851,6 +4017,9 @@
     const cockpit = summary.cockpit || {};
     const counts = cockpit.counts || summary.counts || {};
     const approvals = summary.approvals || [];
+    const approvalCenter = cockpit.approval_center_summary || summary.approval_control_summary || {};
+    const agentMatrix = cockpit.agent_matrix_summary || {};
+    const verification = cockpit.verification_summary || {};
     const traces = summary.traces || [];
     const attempts = attemptHistoryRows(summary);
     const evidence = summary.evidence_records || [];
@@ -3866,9 +4035,21 @@
         tab: 'tasks'
       },
       {
+        label: 'Local verification',
+        state: verification.ok ? 'ok' : 'blocked',
+        message: `${verification.status || 'missing_verification_reports'} · freshness=${verification.freshness || '-'} · max_age=${verification.max_report_age_minutes ?? '-'}m · coverage_gaps=${(verification.coverage_gaps || []).join(',') || '-'} · ${verification.summary || 'run local smoke and communication acceptance'} · ${verification.owner_next_action || 'rerun verification after backend changes'}`,
+        tab: 'tasks'
+      },
+      {
+        label: 'Agent readiness matrix',
+        state: Number(agentMatrix.owner_attention_required || 0) ? 'blocked' : 'ok',
+        message: `${agentMatrix.summary || 'readiness counts unavailable'} · owner_attention_required=${agentMatrix.owner_attention_required || 0} · ${agentMatrix.owner_next_action || 'review employee cards before assigning work'}`,
+        tab: 'employees'
+      },
+      {
         label: 'Approvals safe',
-        state: pendingApprovals ? 'blocked' : 'ok',
-        message: `${pendingApprovals} pending · ${closedApprovals} closed · approve/deny/mock resolve controls live in Audit tab; external_send remains dry-run until owner approval`,
+        state: approvalCenter.real_execution_blocked || pendingApprovals ? 'blocked' : 'ok',
+        message: `${pendingApprovals} pending · ${closedApprovals} closed · blocked_real_execution=${approvalCenter.blocked_real_execution_count || 0} · ${approvalCenter.owner_next_action || 'approve/deny/mock resolve controls live in Audit tab; external_send remains dry-run until owner approval'}`,
         tab: 'governance'
       },
       {
@@ -3949,11 +4130,11 @@
       recordWaitDecision(taskId, attemptId);
       return;
     }
-    if (actionId === 'send_correction') {
+    if (actionId === 'send_correction' || actionId === 'request_correction') {
       correctTaskAttempt(taskId, attemptId);
       return;
     }
-    if (actionId === 'cancel_attempt') {
+    if (actionId === 'cancel_attempt' || actionId === 'cancel') {
       cancelTaskAttempt(taskId, attemptId);
       return;
     }
@@ -4016,10 +4197,12 @@
     if (!evidenceId) return;
     companyApiLog('SYSTEM', `Loading safe evidence preview ${evidenceId}. Absolute paths and downloads stay disabled.`, 'normal');
     try {
-      const payload = await companyApiGet(`/v1/evidence/${encodeURIComponent(evidenceId)}/content`);
+      const payload = await companyApiGet(`/v1/evidence/${encodeURIComponent(evidenceId)}/safe-preview`);
       const evidence = payload.evidence || {};
       const display = payload.display || {};
       const content = payload.content || {};
+      const acceptance = payload.acceptance || {};
+      const decision = acceptance.decision || {};
       const location = display.relative_path || display.basename || '-';
       const text = content.text ? ` · preview=${shortText(content.text, 320)}` : '';
       const policy = display.policy || {};
@@ -4030,6 +4213,7 @@
         ['Employee', evidence.employee_id || '-'],
         ['Artifact ID', evidence.artifact_id || '-'],
         ['Final Evidence', String(!!evidence.is_final)],
+        ['Acceptance Decision', `${decision.status || 'pending'} · by=${decision.by || '-'} · at=${decision.decided_at || '-'}`],
         ['Relative Path', location],
         ['Exists', String(!!display.exists)],
         ['Allowed', String(!!display.allowed)],
@@ -4045,6 +4229,7 @@
         evidence,
         display,
         content: Object.assign({}, content, {text: content.text || ''}),
+        acceptance,
       });
       companyApiLog('EVIDENCE', `${evidenceId} · ${location} · bytes=${content.bytes || 0} · absolute_path_exposed=${display.absolute_path_exposed ? 'yes' : 'no'}${text}`, 'success');
     } catch (err) {
@@ -4059,6 +4244,34 @@
     }
   }
   window.viewEvidenceContent = viewEvidenceContent;
+
+  async function acceptEvidenceFromDashboard(evidenceId, taskId) {
+    if (!evidenceId) return;
+    const summary = prompt('Accept final evidence summary', 'owner accepted final evidence from dashboard') || 'owner accepted final evidence from dashboard';
+    try {
+      const result = await companyApiPost(`/v1/evidence/${encodeURIComponent(evidenceId)}/accept`, {by: HUMAN_OWNER_ID || 'main', summary});
+      companyApiLog('EVIDENCE', `Accepted evidence ${evidenceId}; event=${result.event && result.event.id || '-'}`, 'success');
+      if (taskId) openTaskDetailDrawer(taskId);
+      refreshLiveDashboardFromApi();
+    } catch (err) {
+      companyApiLog('ERROR', `Accept evidence failed for ${evidenceId}: ${err.message}`, 'error');
+    }
+  }
+  window.acceptEvidenceFromDashboard = acceptEvidenceFromDashboard;
+
+  async function rejectEvidenceFromDashboard(evidenceId, taskId) {
+    if (!evidenceId) return;
+    const reason = prompt('Reject final evidence reason', 'evidence does not match task acceptance criteria') || 'evidence does not match task acceptance criteria';
+    try {
+      const result = await companyApiPost(`/v1/evidence/${encodeURIComponent(evidenceId)}/reject`, {by: HUMAN_OWNER_ID || 'main', reason});
+      companyApiLog('EVIDENCE', `Rejected evidence ${evidenceId}; event=${result.event && result.event.id || '-'}`, 'warn');
+      if (taskId) openTaskDetailDrawer(taskId);
+      refreshLiveDashboardFromApi();
+    } catch (err) {
+      companyApiLog('ERROR', `Reject evidence failed for ${evidenceId}: ${err.message}`, 'error');
+    }
+  }
+  window.rejectEvidenceFromDashboard = rejectEvidenceFromDashboard;
 
   function recordWaitDecision(taskId, attemptId) {
     companyApiLog('SYSTEM', `Waiting is recorded locally only; no external send is triggered. task=${taskId || '-'} attempt=${attemptId || '-'}`, 'normal');
@@ -4196,6 +4409,145 @@
     return displayPath(raw);
   }
 
+  function employeeEvidenceClientSideFilter(records, employeeId) {
+    // Employee evidence history is backend-filtered by /v1/evidence?employee_id= when available.
+    const rows = Array.isArray(records) ? records : [];
+    if (!employeeId) return rows;
+    return rows.filter(item => String(item.employee_id || '') === String(employeeId));
+  }
+
+  function showHydratedRuntimeSessionDetails(session) {
+    const row = session && typeof session === 'object' ? session : {};
+    showDetails(`Runtime Session: ${row.session_id || 'detail'}`, {
+      runtime_session: row,
+      fallback: true,
+      note: 'Runtime Session API detail failed or session_id was missing; showing hydrated cockpit row only.',
+    });
+  }
+
+  async function showRuntimeSessionDetails(sessionId, hydratedRow) {
+    const safeId = String(sessionId || '').trim();
+    if (!safeId) {
+      showHydratedRuntimeSessionDetails(hydratedRow || {});
+      return;
+    }
+    companyApiLog('SESSION', `Loading Runtime Session API detail ${safeId}`, 'normal');
+    try {
+      const payload = await companyApiGet(`/v1/runtime-sessions/${encodeURIComponent(sessionId)}`);
+      const session = payload.runtime_session || {};
+      const task = payload.task || {};
+      const attempt = payload.attempt || {};
+      const toolCalls = payload.tool_calls || [];
+      const budget = payload.budget_summary || {};
+      const evidence = payload.evidence_records || [];
+      const events = payload.events || [];
+      showDetails(`Runtime Session: ${session.session_id || safeId}`, {
+        ok: payload.ok,
+        source: payload.source,
+        runtime_session: session,
+        task,
+        attempt,
+        tool_calls: toolCalls,
+        budget_summary: budget,
+        budget_events: payload.budget_events || [],
+        evidence_records: evidence,
+        events,
+        redaction_policy: payload.redaction_policy || {},
+        owner_readable_summary: [
+          `session=${session.session_id || safeId}`,
+          `status=${session.status || '-'}`,
+          `employee=${session.employee_id || '-'}`,
+          `task=${session.task_id || task.id || '-'}`,
+          `attempt=${session.attempt_id || attempt.attempt_id || '-'}`,
+          `tool_calls=${toolCalls.length}`,
+          `budget=${budget.currency || 'USD'} ${budget.total_amount || 0}`,
+          `evidence=${evidence.length}`,
+          `events=${events.length}`,
+        ].join(' · '),
+      });
+      companyApiLog('SESSION', `Runtime Session API detail loaded: ${safeId} · task=${session.task_id || '-'} · tools=${toolCalls.length} · cost=${budget.currency || 'USD'} ${budget.total_amount || 0}`, 'success');
+    } catch (err) {
+      companyApiLog('SESSION', `Runtime Session API detail failed for ${safeId}: ${err.message}; using hydrated row fallback.`, 'warn');
+      showHydratedRuntimeSessionDetails(hydratedRow || {session_id: safeId, status: 'unknown'});
+    }
+  }
+  window.showRuntimeSessionDetails = showRuntimeSessionDetails;
+
+  function showHydratedToolCallDetails(toolCall) {
+    const row = toolCall && typeof toolCall === 'object' ? toolCall : {};
+    const safe = row.sanitized === true;
+    const detail = safe ? row : {
+      tool_call_id: row.tool_call_id || '',
+      status: row.status || 'unknown',
+      warning: '[Raw output redacted for safety]',
+      note: 'Unsanitized tool-call detail was blocked in the CEO Cockpit.'
+    };
+    showDetails(`Tool Call: ${row.tool_call_id || row.tool_name || 'detail'}`, detail);
+  }
+
+  async function showToolCallDetails(toolCallId, hydratedRow) {
+    const safeId = String(toolCallId || '').trim();
+    if (!safeId) {
+      showHydratedToolCallDetails(hydratedRow || {});
+      return;
+    }
+    companyApiLog('TOOL', `Loading Tool Call API detail ${safeId}`, 'normal');
+    try {
+      const payload = await companyApiGet(`/v1/tool-calls/${encodeURIComponent(toolCallId)}`);
+      const toolCall = payload.tool_call || {};
+      const task = payload.task || {};
+      const attempt = payload.attempt || {};
+      const session = payload.runtime_session || {};
+      const budget = payload.budget_summary || {};
+      const evidence = payload.evidence_records || [];
+      const events = payload.events || [];
+      showDetails(`Tool Call: ${toolCall.tool_call_id || safeId}`, {
+        ok: payload.ok,
+        source: payload.source,
+        tool_call: toolCall,
+        task,
+        attempt,
+        runtime_session: session,
+        budget_summary: budget,
+        budget_events: payload.budget_events || [],
+        evidence_records: evidence,
+        events,
+        redaction_policy: payload.redaction_policy || {},
+        owner_readable_summary: [
+          `tool=${toolCall.tool_name || toolCall.tool_call_id || safeId}`,
+          `status=${toolCall.status || '-'}`,
+          `task=${toolCall.task_id || task.id || '-'}`,
+          `attempt=${toolCall.attempt_id || attempt.attempt_id || '-'}`,
+          `session=${toolCall.session_id || session.session_id || '-'}`,
+          `budget=${budget.currency || 'USD'} ${budget.total_amount || 0}`,
+          `evidence=${evidence.length}`,
+          `events=${events.length}`,
+          'raw_available=false',
+        ].join(' · '),
+      });
+      companyApiLog('TOOL', `Tool Call API detail loaded: ${safeId} · task=${toolCall.task_id || '-'} · cost=${budget.currency || 'USD'} ${budget.total_amount || 0} · evidence=${evidence.length}`, 'success');
+    } catch (err) {
+      companyApiLog('TOOL', `Tool Call API detail failed for ${safeId}: ${err.message}; using hydrated sanitized row fallback.`, 'warn');
+      showHydratedToolCallDetails(hydratedRow || {tool_call_id: safeId, status: 'unknown'});
+    }
+  }
+  window.showToolCallDetails = showToolCallDetails;
+
+  function mixedCurrencyBudgetWarning(summary) {
+    const item = summary || {};
+    if (item.currency !== 'mixed') return '';
+    return 'Mixed currencies: totals are ledger sums, not converted values. Use per-currency ledger rows.';
+  }
+
+  function budgetCurrencyRows(summary) {
+    const item = summary || {};
+    const rows = item.by_currency || item.total_amounts_by_currency || item.currency_totals || {};
+    if (rows && typeof rows === 'object' && !Array.isArray(rows) && Object.keys(rows).length) {
+      return Object.entries(rows).map(([currency, amount]) => `${currency}=${amount}`).join(' · ');
+    }
+    return item.currency === 'mixed' ? 'per-currency ledger rows unavailable; inspect Budget Events.' : '';
+  }
+
   function readinessBadge(employee) {
     const level = String(employee.readiness_level || employee.status || 'unknown');
     const safeLevel = level.replace(/[^a-zA-Z0-9_-]/g, '-');
@@ -4208,6 +4560,76 @@
     if (schedulable || level === 'active_ready') return 'Ready to schedule';
     if (['active-limited', 'online_only', 'candidate_only'].includes(level)) return 'Limited / review';
     return 'Not schedulable';
+  }
+
+  function employeeControlPlaneSummary(emp) {
+    const work = emp.work_status_summary || {};
+    const runtime = emp.runtime_summary || {};
+    const tools = emp.tool_summary || {};
+    const budget = emp.budget_summary || {};
+    const evidence = emp.evidence_summary || {};
+    const health = emp.work_health || work.work_health || {};
+    const currency = budget.currency || 'USD';
+    const total = budget.total_amount || 0;
+    const actions = Array.isArray(work.recommended_actions) ? work.recommended_actions : [];
+    const actionSummary = actions.length ? actions.map(action => action.label || action.id).join(' · ') : 'none';
+    const actionButtons = actions.length ? actions.map(action => {
+      const safetyChips = [
+        action.method ? String(action.method).toUpperCase() : 'POST',
+        action.requires_owner_approval ? 'owner approval' : '',
+        action.dry_run_default === false ? 'live action' : 'dry-run default',
+        action.dangerous ? 'danger' : ''
+      ].filter(Boolean).join(' · ');
+      return `<button class="mini-btn owner-attention-action employee-recommended-action"
+        data-action-id="${escapeHtml(action.id || '')}"
+        data-task-id="${escapeHtml(work.current_task_id || '')}"
+        data-attempt-id="${escapeHtml(work.current_attempt_id || '')}"
+        data-approval-id=""
+        data-employee-id="${escapeHtml(emp.id || work.employee_id || '')}"
+        data-method="${escapeHtml(action.method || 'POST')}"
+        data-requires-owner-approval="${action.requires_owner_approval ? 'true' : 'false'}"
+        data-dry-run-default="${action.dry_run_default === false ? 'false' : 'true'}"
+        data-dangerous="${action.dangerous ? 'true' : 'false'}"
+        title="${escapeHtml(safetyChips)}"
+        onclick="event.stopPropagation(); handleOwnerAttentionAction('${escapeHtml(work.current_task_id || '')}', '${escapeHtml(work.current_attempt_id || '')}', '', '${escapeHtml(action.id || '')}', '${escapeHtml(emp.id || work.employee_id || '')}')">${escapeHtml(action.label || action.id || '')}<small>${escapeHtml(safetyChips)}</small></button>`;
+    }).join('') : '<span style="color:var(--text-muted);">none</span>';
+    return `
+      <div class="employee-meta employee-control-plane-summary" style="margin-top: 8px; font-size: 11px; border-top: 1px solid rgba(255,255,255,0.05); padding-top: 8px;">
+        <div><strong>Current Work ·</strong> ${escapeHtml(work.current_task_title || emp.current_task_title || 'idle')} · task=${escapeHtml(work.current_task_id || emp.current_task_id || '-')} · state=${escapeHtml(work.current_state || emp.status || '-')}</div>
+        <div><strong>Trace ·</strong> trace=${escapeHtml(work.current_trace_id || '-')} · attempt=${escapeHtml(work.current_attempt_id || '-')} · session=${escapeHtml(runtime.latest_session_id || '-')}</div>
+        <div><strong>Long Task ·</strong> heartbeat=${escapeHtml(work.heartbeat_state || '-')} · progress=${escapeHtml(work.progress_state || '-')} · timeout_is_sync_wait_only=${escapeHtml(work.timeout_is_sync_wait_only === false ? 'false' : 'true')}</div>
+        <div><strong>Runtime · sessions=</strong>${escapeHtml(runtime.session_count || 0)} · active=${escapeHtml(runtime.active_session_count || 0)} · latest=${escapeHtml(runtime.latest_runtime_type || '-')} ${escapeHtml(runtime.latest_status || '')}</div>
+        <div><strong>Tools · calls=</strong>${escapeHtml(tools.tool_call_count || 0)} · failed=${escapeHtml(tools.failed_tool_call_count || 0)} · tool_call=${escapeHtml(tools.latest_tool_call_id || '-')} · latest=${escapeHtml(tools.latest_tool_name || '-')} ${escapeHtml(tools.latest_tool_status || '')}</div>
+        <div><strong>Budget ·</strong> ${escapeHtml(currency)} ${escapeHtml(total)} · budget_events=${escapeHtml(budget.event_count || 0)} · input=${escapeHtml(budget.token_input || 0)} · output=${escapeHtml(budget.token_output || 0)} · runtime=${escapeHtml(budget.runtime_seconds || 0)}s</div>
+        <div><strong>Evidence · final=</strong>${escapeHtml(evidence.final_evidence_count || 0)} · total=${escapeHtml(evidence.evidence_count || 0)} · latest=${escapeHtml(evidence.latest_evidence_id || '-')}</div>
+        <div><strong>Work Health ·</strong> ${escapeHtml(health.state || '-')} · ${escapeHtml(health.summary || '')}</div>
+        <div><strong>Owner Next ·</strong> ${escapeHtml(work.owner_next_action || 'inspect employee detail before assigning work')}</div>
+        <div><strong>Recommended Actions ·</strong> ${escapeHtml(actionSummary)}</div>
+        <div class="cockpit-action-list employee-recommended-actions">${actionButtons}</div>
+      </div>
+    `;
+  }
+
+  function employeeInteractionFooter(emp) {
+    const contract = emp.interaction_contract || {};
+    const taskButton = contract.show_task_button ? `
+            <button class="card-footer-action-btn" onclick="event.stopPropagation(); submitTaskToEmployee('${escapeHtml(emp.id)}')">
+              <i class="fa-solid fa-list-check"></i> Task
+            </button>
+      ` : '';
+    const chatButton = contract.show_chat_button ? `
+            <button class="card-footer-action-btn" onclick="event.stopPropagation(); directMessageEmployee('${escapeHtml(emp.id)}')">
+              <i class="fa-solid fa-comments"></i> Chat
+            </button>
+      ` : '';
+    const evidenceOnly = contract.show_evidence_monitor && !contract.show_chat_button
+      ? '<span class="muted" style="font-size: 11px;">No chat; task/evidence only</span>'
+      : '';
+    const observeOnly = !contract.show_task_button && !contract.show_chat_button && !contract.show_evidence_monitor
+      ? '<span class="muted" style="font-size: 11px;">Observe only; verify evidence before assigning</span>'
+      : '';
+    const reason = contract.reason ? `<span class="muted" style="font-size: 10px;" title="${escapeHtml(contract.reason)}">mode=${escapeHtml(contract.mode || 'unknown')}</span>` : '';
+    return `${taskButton}${chatButton}${evidenceOnly}${observeOnly}${reason}`;
   }
 
   function sandboxProfileChip(employee) {
@@ -4379,6 +4801,260 @@
     }).join('\n');
   }
 
+  function runtimeSessionsSummary(sessions) {
+    const rows = Array.isArray(sessions) ? sessions : [];
+    if (!rows.length) return 'No runtime sessions recorded for this task.';
+    return rows.slice(0, 8).map(item => {
+      return sanitizeDisplayText(`${item.status || '-'} · session=${item.session_id || '-'} · employee=${item.employee_id || '-'} · adapter=${item.adapter_type || '-'} · runtime=${item.runtime_type || '-'} · attempt=${item.attempt_id || '-'} · heartbeat=${item.last_heartbeat_at || '-'}`);
+    }).join('\n');
+  }
+
+  function toolCallsSummary(calls) {
+    const rows = Array.isArray(calls) ? calls : [];
+    if (!rows.length) return 'No tool calls recorded for this task.';
+    return rows.slice(0, 10).map(item => {
+      const policy = item.redaction_policy || {};
+      const sanitized = item.sanitized === true;
+      const detailPolicy = '/v1/tool-calls/{tool_call_id} detail API available; click Tool Calls row for task/attempt/session/budget/evidence/events.';
+      const summary = sanitized ? (item.output_summary || item.input_summary || item.error_message || '') : '[Raw output redacted for safety]';
+      return sanitizeDisplayText(`${item.status || '-'} · ${item.tool_name || item.tool_call_id || '-'} · type=${item.tool_type || '-'} · employee=${item.employee_id || '-'} · attempt=${item.attempt_id || '-'} · sanitized=${String(sanitized)} · raw_available=${String(!!item.raw_available)} · policy=${policy.mode || 'sanitized_only'} · ${detailPolicy} · ${summary}`);
+    }).join('\n');
+  }
+
+  function budgetSummaryDetail(summary) {
+    const item = summary || {};
+    const byEmployee = item.by_employee || {};
+    const employeeRows = Object.entries(byEmployee).slice(0, 6).map(([employee, amount]) => `${employee}=${amount}`).join(' · ');
+    return [
+      `events=${item.event_count || 0} · total=${item.currency || 'USD'} ${item.total_amount || 0}`,
+      mixedCurrencyBudgetWarning(item) || 'single currency ledger view',
+      budgetCurrencyRows(item) || 'per-currency ledger rows not required',
+      budgetLimitStatusSummary(item),
+      `tokens input=${item.token_input || 0} · output=${item.token_output || 0} · runtime=${item.runtime_seconds || 0}s`,
+      employeeRows || 'No employee cost rows yet.'
+    ].join('\n');
+  }
+
+  function budgetLimitStatusSummary(summary) {
+    const item = summary || {};
+    const limits = item.budget_limits || {};
+    const status = item.limit_status || limits.status || 'not_configured';
+    if (!limits.configured) return `limit=${status}`;
+    return `limit=${status} · soft=${limits.currency || item.currency || 'USD'} ${limits.soft_limit || 0} · hard=${limits.hard_limit || 0} · remaining_to_hard=${limits.remaining_to_hard ?? '-'}`;
+  }
+
+  function budgetEventsSummary(events) {
+    const rows = Array.isArray(events) ? events : [];
+    if (!rows.length) return 'No budget events recorded for this task.';
+    return rows.slice(0, 10).map(item => {
+      return sanitizeDisplayText(`${item.created_at || '-'} · ${item.cost_type || '-'} · ${item.currency || 'USD'} ${item.amount || 0} · employee=${item.employee_id || '-'} · attempt=${item.attempt_id || '-'} · tokens=${item.token_input || 0}/${item.token_output || 0} · ${item.summary || ''}`);
+    }).join('\n');
+  }
+
+  function taskOperationalLedgerSummary(payload, tracePayload) {
+    const source = payload || {};
+    const trace = tracePayload || {};
+    const task = source.task || {};
+    const attempts = Array.isArray(source.attempts) ? source.attempts : [];
+    const runtimeSessions = Array.isArray(source.runtime_sessions) ? source.runtime_sessions : [];
+    const toolCalls = Array.isArray(source.tool_calls) ? source.tool_calls : [];
+    const budgetSummary = source.budget_summary || {};
+    const budgetEvents = Array.isArray(source.budget_events) ? source.budget_events : [];
+    const evidenceRecords = Array.isArray(source.evidence_records) ? source.evidence_records : [];
+    const progressEvents = Array.isArray(source.progress_events) ? source.progress_events : [];
+    const timeline = Array.isArray(trace.timeline) ? trace.timeline : [];
+    const completionContract = source.completion_contract || {};
+    const failedTools = toolCalls.filter(item => ['failed', 'blocked', 'cancelled'].includes(String(item.status || ''))).length;
+    let nextAction = 'monitor next progress event';
+    const longState = String(task.long_task_state || task.status || '');
+    if (longState === 'progress_stagnant') nextAction = 'send probe or request Hermes correction';
+    if (['blocked', 'failed', 'stale'].includes(longState)) nextAction = 'review blocker, then request retry or reassign approval';
+    if (failedTools) nextAction = 'inspect failed or blocked tool calls before retry';
+    if (completionContract.valid === false) nextAction = 'block completion until final evidence is attached';
+    if (completionContract.valid !== false && completionContract.final_evidence_count) nextAction = 'review final evidence and accept delivery';
+    return [
+      `attempts=${attempts.length} · runtime_sessions=${runtimeSessions.length} · progress_events=${progressEvents.length}`,
+      `tool_calls=${toolCalls.length} · failed_tool_calls=${failedTools} · budget_events=${budgetEvents.length} · cost=${budgetSummary.currency || 'USD'} ${budgetSummary.total_amount || 0}`,
+      `tokens input=${budgetSummary.token_input || 0} · output=${budgetSummary.token_output || 0} · runtime=${budgetSummary.runtime_seconds || 0}s`,
+      `evidence=${evidenceRecords.length} · final_evidence=${completionContract.final_evidence_count || 0} · completion_valid=${String(completionContract.valid !== false)}`,
+      `timeline_events=${timeline.length} · trace=${trace.trace_id || task.trace_id || '-'}`,
+      `owner_readable_next_action=${nextAction}`
+    ].join('\n');
+  }
+
+  function ceoTraceBriefSummary(brief) {
+    const item = brief || {};
+    return [
+      `trace_headline=${item.headline || 'Trace brief unavailable.'}`,
+      `chain_state=${item.chain_state || '-'} · severity=${item.severity || '-'} · owner_next_action=${item.owner_next_action || '-'}`,
+      `missing=${(item.missing_required || []).join(' -> ') || '-'}`,
+      `tasks=${item.task_count || 0} · attempts=${item.attempt_count || 0} · sessions=${item.runtime_session_count || 0} · tools=${item.tool_call_count || 0}`,
+      `artifacts=${item.artifact_count || 0} · handoffs=${item.handoff_count || 0} · evidence=${item.evidence_count || 0} · final_evidence=${item.final_evidence_count || 0}`,
+      `budget_events=${item.budget_event_count || 0} · cost=${item.currency || 'USD'} ${item.estimated_cost || 0} · corrections=${item.correction_count || 0} · approvals=${item.approval_count || 0}`
+    ].join('\n');
+  }
+
+  function taskControlPlaneTimelineSummary(timeline) {
+    const rows = Array.isArray(timeline) ? timeline : [];
+    if (!rows.length) return 'control_plane_timeline empty: no task event/attempt/runtime/tool/budget/evidence rows yet.';
+    return rows.slice(0, 30).map(item => {
+      const id = item.tool_call_id || item.budget_event_id || item.evidence_id || item.session_id || item.attempt_id || item.event_id || item.id || '-';
+      return sanitizeDisplayText(`${item.timestamp || '-'} · ${item.kind || '-'} · ${item.status || '-'} · employee=${item.employee_id || '-'} · attempt=${item.attempt_id || '-'} · ${id} · ${item.summary || ''}`);
+    }).join('\n');
+  }
+
+  function controlActionSummaryDetail(summary) {
+    const item = summary || {};
+    const pending = Array.isArray(item.pending) ? item.pending : [];
+    const executed = Array.isArray(item.executed) ? item.executed : [];
+    const pendingRows = pending.slice(0, 8).map(row => sanitizeDisplayText(`${row.created_at || '-'} · ${row.action || '-'} · approval=${row.approval_id || '-'} · attempt=${row.attempt_id || '-'} · ${row.reason || ''}`)).join('\n');
+    const executedRows = executed.slice(-8).map(row => sanitizeDisplayText(`${row.created_at || '-'} · ${row.action || '-'} · event=${row.event_id || '-'} · attempt=${row.attempt_id || '-'} · ${row.reason || ''}`)).join('\n');
+    return [
+      `pending_owner_approvals=${item.pending_owner_approvals || 0} · pending_actions=${(item.pending_actions || []).join(',') || '-'}`,
+      `executed_control_actions=${item.executed_control_actions || 0} · latest=${item.latest_executed_action || '-'} · latest_attempt=${item.latest_attempt_id || '-'} ${item.latest_attempt_status || ''}`,
+      `owner_next_action=${item.owner_next_action || 'monitor task progress and evidence'}`,
+      pendingRows ? `pending:\n${pendingRows}` : 'pending: none',
+      executedRows ? `executed:\n${executedRows}` : 'executed: none'
+    ].join('\n');
+  }
+
+  function ownerActionTimelineSummary(timeline) {
+    const rows = Array.isArray(timeline) ? timeline : [];
+    if (!rows.length) return 'owner_action_timeline empty: no owner probe/correction/cancel/retry/reassign/approval actions yet.';
+    return rows.slice(-20).map(item => sanitizeDisplayText([
+      item.created_at || '-',
+      item.kind || '-',
+      item.action || '-',
+      `status=${item.status || '-'}`,
+      `actor=${item.actor || '-'}`,
+      `attempt=${item.attempt_id || '-'}`,
+      `requires_owner_approval=${String(!!item.requires_owner_approval)}`,
+      `reason=${item.reason || '-'}`,
+      `next=${item.owner_next_action || '-'}`
+    ].join(' · '))).join('\n');
+  }
+
+  function budgetBreakdownRows(label, values) {
+    const rows = values && typeof values === 'object' && !Array.isArray(values) ? Object.entries(values) : [];
+    if (!rows.length) return `${label}: none`;
+    return `${label}: ${rows.slice(0, 5).map(([key, amount]) => `${key || '-'}=${amount}`).join(' · ')}`;
+  }
+
+  function employeeWorkHistorySummary(workHistory) {
+    const source = workHistory || {};
+    const counts = source.counts || {};
+    const statusCounts = source.status_counts || {};
+    const attentionCounts = source.attention_counts || {};
+    const current = Array.isArray(source.current_tasks) ? source.current_tasks : [];
+    const recent = Array.isArray(source.recent_tasks) ? source.recent_tasks : [];
+    const taskActions = (item) => {
+      const actions = Array.isArray(item.owner_actions) ? item.owner_actions : [];
+      return actions.length ? ` · actions=${actions.map(action => action.id || action.label || '-').join('/')}` : '';
+    };
+    const currentRows = current.slice(0, 5).map(item => `${item.status || '-'} · ${item.id || '-'} · ${item.title || item.summary || ''}${taskActions(item)}`).join('\n');
+    const recentRows = recent.slice(0, 5).map(item => `${item.status || '-'} · ${item.id || '-'} · ${item.title || item.summary || ''}${taskActions(item)}`).join('\n');
+    return [
+      `tasks=${counts.tasks || 0} · current=${counts.current_tasks || 0} · attempts=${counts.attempts || 0}`,
+      `Work Summary · ${sanitizeDisplayText(source.summary || 'No work history summary from API')}`,
+      `status_counts running=${statusCounts.running || 0} · completed=${statusCounts.completed || 0} · blocked=${statusCounts.blocked || 0} · failed=${statusCounts.failed || 0} · stale=${statusCounts.stale || 0}`,
+      `attention_counts running_tasks=${attentionCounts.running_tasks || 0} · blocked_tasks=${attentionCounts.blocked_tasks || 0} · failed_tasks=${attentionCounts.failed_tasks || 0} · failed_tool_calls=${attentionCounts.failed_tool_calls || 0} · completion_invalid_tasks=${attentionCounts.completion_invalid_tasks || 0} · tasks_with_final_evidence=${attentionCounts.tasks_with_final_evidence || 0}`,
+      currentRows ? `Current:\n${sanitizeDisplayText(currentRows)}` : 'Current: idle',
+      recentRows ? `Recent:\n${sanitizeDisplayText(recentRows)}` : 'Recent: none'
+    ].join('\n');
+  }
+
+  function employeeOperationalSummary(summary) {
+    const item = summary || {};
+    return [
+      `employee=${item.employee_id || '-'} · current_task=${item.current_task_id || '-'} · attempt=${item.current_attempt_id || '-'} · state=${item.current_state || '-'}`,
+      `tasks=${item.task_count || 0} · current=${item.current_task_count || 0} · attempts=${item.attempt_count || 0} · runtime_sessions=${item.runtime_session_count || 0}`,
+      `tool_calls=${item.tool_call_count || 0} · failed_tool_calls=${item.failed_tool_call_count || 0} · budget=${item.budget_currency || 'USD'} ${item.budget_total || 0} · tokens=${item.token_input || 0}/${item.token_output || 0}`,
+      `evidence=${item.evidence_count || 0} · final_evidence=${item.final_evidence_count || 0} · owner_next_action=${item.owner_next_action || 'inspect employee work history'}`
+    ].join('\n');
+  }
+
+  function employeeCurrentActivitySummary(currentActivity) {
+    const item = currentActivity || {};
+    const latest = item.latest_progress || {};
+    const taskId = item.task_id || '-';
+    const attemptId = item.attempt_id || '-';
+    const taskTitle = item.task_title || '';
+    const longTaskState = item.long_task_state || item.task_status || item.attempt_status || 'idle';
+    const progressState = item.progress_state || latest.progress_state || '-';
+    const heartbeatState = item.heartbeat_state || '-';
+    const latestMessage = latest.message || 'No progress event recorded for the current attempt.';
+    const progress = latest.progress === undefined || latest.progress === null ? '-' : latest.progress;
+    let action = 'idle: no current task assigned.';
+    if (taskId !== '-') action = 'monitor heartbeat/progress; use task detail for correction, cancel, retry, or evidence review.';
+    if (longTaskState === 'progress_stagnant' || progressState === 'stagnant') action = 'employee is online but progress is stagnant; send probe or request Hermes correction.';
+    if (longTaskState === 'heartbeat_stale' || heartbeatState === 'stale') action = 'heartbeat is stale; verify session, then retry/reassign/cancel.';
+    if (['blocked', 'failed', 'stale'].includes(String(longTaskState))) action = 'review blocker and evidence before retry or reassign.';
+    if (['done', 'success', 'completed'].includes(String(longTaskState))) action = 'review task-bound final evidence before accepting delivery.';
+    return [
+      `active_task_count=${item.active_task_count || 0}`,
+      `task=${taskId} · title=${taskTitle || '-'} · task_status=${item.task_status || '-'}`,
+      `attempt=${attemptId} · attempt_status=${item.attempt_status || '-'} · trace=${item.trace_id || '-'}`,
+      `long_task_state=${longTaskState} · heartbeat=${heartbeatState} · progress_state=${progressState}`,
+      `latest_progress=${latest.progress_state || '-'} · ${progress}% · ${sanitizeDisplayText(latestMessage)}`,
+      `timeout_is_sync_wait_only=${String(item.timeout_is_sync_wait_only !== false)} · action=${action}`
+    ].join('\n');
+  }
+
+  function employeeCeoWorkContractSummary(contract) {
+    const item = contract || {};
+    const task = item.current_task || {};
+    const sessions = item.runtime_sessions || {};
+    const tools = item.tool_calls || {};
+    const budget = item.budget || {};
+    const evidence = item.evidence || {};
+    const review = item.owner_review || {};
+    const rules = item.truth_rules || {};
+    const warnings = Array.isArray(review.warnings) ? review.warnings.join(',') : '';
+    return [
+      `employee=${item.employee_id || '-'} · runtime=${item.runtime || '-'} · status=${item.employee_status || '-'}`,
+      `current_task=${task.task_id || '-'} · state=${task.state || '-'} · attempt=${task.attempt_id || '-'} · session=${task.session_id || '-'}`,
+      `heartbeat=${task.heartbeat_state || '-'} · progress=${task.progress_state || '-'} · progress_age=${task.progress_age_seconds || 0}s`,
+      `runtime_sessions=${sessions.total || 0} · latest_session=${sessions.latest_session_id || '-'} ${sessions.latest_status || ''}`,
+      `tool_calls=${tools.total || 0} · failed_or_blocked=${tools.failed_or_blocked || 0} · latest=${tools.latest_tool_call_id || '-'} ${tools.latest_status || ''}`,
+      `budget=${budget.currency || 'USD'} ${budget.total_amount || 0} · events=${budget.event_count || 0} · tokens=${budget.token_input || 0}/${budget.token_output || 0} · runtime=${budget.runtime_seconds || 0}s`,
+      `evidence=${evidence.total || 0} · final=${evidence.final_count || 0} · latest=${evidence.latest_evidence_id || '-'}`,
+      `owner_review=${review.mode || 'inspect'} · warnings=${warnings || '-'} · next=${review.next_action || 'inspect employee work before assigning more tasks'}`,
+      `truth_rules completion_requires_final_evidence=${String(!!rules.completion_requires_final_evidence)} · heartbeat_is_completion=${String(!!rules.heartbeat_is_completion)} · chat_reply_is_completion=${String(!!rules.chat_reply_is_completion)} · stdout_is_completion=${String(!!rules.stdout_is_completion)}`
+    ].map(sanitizeDisplayText).join('\n');
+  }
+
+  function employeeBudgetSummary(summary) {
+    const item = summary || {};
+    return [
+      `events=${item.event_count || 0} · total=${item.currency || 'USD'} ${item.total_amount || 0}`,
+      mixedCurrencyBudgetWarning(item) || 'single currency ledger view',
+      budgetCurrencyRows(item) || 'per-currency ledger rows not required',
+      budgetLimitStatusSummary(item),
+      `tokens input=${item.token_input || 0} · output=${item.token_output || 0} · runtime=${item.runtime_seconds || 0}s`
+    ].join('\n');
+  }
+
+  function employeeToolCallsSummary(calls) {
+    const rows = Array.isArray(calls) ? calls : [];
+    if (!rows.length) return 'No tool calls recorded for this employee.';
+    return rows.slice(0, 8).map(item => {
+      const policy = item.redaction_policy || {};
+      const sanitized = item.sanitized === true;
+      const summary = sanitized ? (item.output_summary || item.input_summary || item.error_message || '') : '[Raw output redacted for safety]';
+      return sanitizeDisplayText(`${item.status || '-'} · ${item.tool_name || item.tool_call_id || '-'} · task=${item.task_id || '-'} · attempt=${item.attempt_id || '-'} · session=${item.session_id || '-'} · sanitized=${String(sanitized)} · raw_available=${String(!!item.raw_available)} · policy=${policy.mode || 'sanitized_only'} · /v1/tool-calls/{tool_call_id} detail API available · ${summary}`);
+    }).join('\n');
+  }
+
+  function employeeEvidenceSummary(records) {
+    const rows = employeeEvidenceClientSideFilter(records, '');
+    if (!rows.length) return 'No evidence recorded for this employee.';
+    return rows.slice(0, 8).map(item => {
+      const display = item.display || {};
+      const path = display.relative_path || display.basename || item.path_or_url || '-';
+      return sanitizeDisplayText(`${item.evidence_id || '-'} · task=${item.task_id || '-'} · attempt=${item.attempt_id || '-'} · employee=${item.employee_id || '-'} · final=${item.is_final} · backend evidence filter supports employee_id · ${path} · ${item.summary || ''}`);
+    }).join('\n');
+  }
+
   function adapterRunLogPolicySummary(run) {
     const policy = (run && run.log_policy) || {};
     return `${policy.mode || 'sanitized_only'} · ${policy.summary || 'raw stdout/stderr hidden'}`;
@@ -4436,19 +5112,94 @@
     const progressState = sourceTask.progress_state || sourceAttempt.progress_state || '';
     const heartbeatState = sourceTask.heartbeat_state || sourceAttempt.heartbeat_state || '';
     const evidence = sourcePayload.evidence || {};
+    const completionContract = sourcePayload.completion_contract || {};
     const blocker = sourcePayload.blocker || sourceTask.blocker || sourceAttempt.error_message || '';
     let action = 'wait for progress';
     if (longTaskState === 'progress_stagnant' || progressState === 'stagnant') action = 'send probe, view sanitized logs, or request Hermes correction';
     if (longTaskState === 'correcting' || sourceAttempt.status === 'correcting') action = 'wait for correction acknowledgement or send another bounded correction';
     if (longTaskState === 'heartbeat_stale' || heartbeatState === 'stale') action = 'check employee heartbeat, then retry, reassign, or cancel';
     if (['blocked', 'failed', 'stale'].includes(longTaskState) || blocker) action = 'review blocker, then retry, reassign, or request owner approval';
-    if (['done', 'success', 'completed'].includes(longTaskState) || sourceTask.status === 'completed') action = evidence.allowed ? 'review final evidence and accept delivery' : 'block completion until final evidence is attached';
+    if (['done', 'success', 'completed'].includes(longTaskState) || sourceTask.status === 'completed') action = completionContract.valid === false ? 'block completion until final evidence is attached' : 'review final evidence and accept delivery';
     if (['cancelled', 'cancelling'].includes(longTaskState) || sourceAttempt.status === 'cancelled') action = 'do not accept late progress or late evidence from this attempt';
     return [
       `Recommended action: ${action}.`,
       `state=${longTaskState || '-'} · heartbeat=${heartbeatState || '-'} · progress=${progressState || '-'} · blocker=${blocker || '-'}`,
-      `Done is valid only with task_id/attempt_id bound final evidence. evidence_allowed=${String(!!evidence.allowed)}`
+      `Done is valid only with task_id/attempt_id bound final evidence. completion_valid=${String(completionContract.valid !== false)} · reason=${completionContract.reason || '-'} · evidence_allowed=${String(!!evidence.allowed)}`
     ].join('\n');
+  }
+
+  function completionContractSummary(contract) {
+    const item = contract || {};
+    const status = item.valid === false ? 'invalid' : 'valid';
+    return [
+      `completion=${status} · reason=${item.reason || '-'}`,
+      `done_like=${String(!!item.done_like)} · final_evidence=${item.final_evidence_count || 0} · safe_final=${item.safe_final_evidence_count || 0}`,
+      item.summary || 'Done requires task_id/attempt_id-bound final evidence.'
+    ].join('\n');
+  }
+
+  function ceoAcceptanceContractSummary(contract) {
+    const item = contract || {};
+    const counts = item.ledger_counts || {};
+    const rules = item.truth_rules || {};
+    const blockers = Array.isArray(item.blocking_reasons) ? item.blocking_reasons.join(',') : '';
+    return [
+      `status=${item.status || '-'} · state=${item.current_state || '-'} · ready_for_acceptance=${String(!!item.ready_for_acceptance)}`,
+      `task=${item.task_id || '-'} · attempt=${item.current_attempt_id || '-'} · trace=${item.trace_id || '-'}`,
+      `blockers=${blockers || '-'} · owner_next_action=${item.owner_next_action || 'monitor task ledger'}`,
+      `ledger attempts=${counts.attempts || 0} · sessions=${counts.runtime_sessions || 0} · tools=${counts.tool_calls || 0} · failed_tools=${counts.failed_tool_calls || 0} · budget_events=${counts.budget_events || 0} · evidence=${counts.evidence_records || 0} · final=${counts.final_evidence || 0} · pending_approvals=${counts.pending_approvals || 0} · controls=${counts.control_events || 0}`,
+      `truth_rules completion_requires_final_evidence=${String(!!rules.completion_requires_final_evidence)} · matching_task_id=${String(!!rules.completion_requires_matching_task_id)} · heartbeat_is_completion=${String(!!rules.heartbeat_is_completion)} · ack_is_completion=${String(!!rules.ack_is_completion)} · stdout_is_completion=${String(!!rules.stdout_is_completion)} · cancelled_attempt_can_complete=${String(!!rules.cancelled_attempt_can_complete)}`
+    ].map(sanitizeDisplayText).join('\n');
+  }
+
+  function evidenceAcceptanceSummary(records, contract) {
+    const rows = Array.isArray(records) ? records : [];
+    const item = contract || {};
+    const safeRows = rows.filter(row => {
+      const display = row.display || {};
+      return display.allowed === true && display.absolute_path_exposed !== true;
+    });
+    const finalRows = rows.filter(row => row.is_final === true || row.is_final === 1 || row.is_final === '1');
+    const previewableRows = safeRows.filter(row => {
+      const display = row.display || {};
+      return display.preview_allowed !== false && display.allowed === true;
+    });
+    const unsafeRows = rows.filter(row => {
+      const display = row.display || {};
+      return display.allowed === false || display.absolute_path_exposed === true || display.unsafe === true;
+    });
+    const missingRows = rows.filter(row => {
+      const display = row.display || {};
+      return display.exists === false || row.missing === true;
+    });
+    const acceptedRows = rows.filter(row => (row.acceptance_decision || {}).status === 'accepted');
+    const rejectedRows = rows.filter(row => (row.acceptance_decision || {}).status === 'rejected');
+    let action = 'wait for task-bound final evidence';
+    if (item.valid === false) action = 'block completion until safe final evidence is attached';
+    if (item.valid !== false && (item.final_evidence_count || finalRows.length)) action = 'review safe final evidence and accept delivery';
+    if (unsafeRows.length || missingRows.length) action = 'reject unsafe or missing evidence, then reopen or request corrected evidence';
+    if (acceptedRows.length) action = 'final evidence accepted; delivery can be closed if task output matches';
+    if (rejectedRows.length && !acceptedRows.length) action = 'final evidence rejected; reopen, retry, or request corrected evidence';
+    return [
+      `records=${rows.length} · final_evidence=${item.final_evidence_count || finalRows.length || 0} · safe_records=${safeRows.length} · previewable=${previewableRows.length} · acceptance_status=${item.acceptance_status || 'pending'}`,
+      `completion_valid=${String(item.valid !== false)} · reason=${item.reason || '-'} · safe_final=${item.safe_final_evidence_count || 0} · accepted_final_evidence_count=${item.accepted_final_evidence_count || acceptedRows.length || 0} · rejected_final_evidence_count=${item.rejected_final_evidence_count || rejectedRows.length || 0}`,
+      `unsafe=${unsafeRows.length} · missing=${missingRows.length} · preview_policy=safe-preview-only`,
+      `owner_acceptance_action=${action}`,
+      evidenceDecisionRows(rows)
+    ].join('\n');
+  }
+
+  function evidenceDecisionRows(records) {
+    const rows = Array.isArray(records) ? records : [];
+    if (!rows.length) return 'evidence_decisions: none';
+    return rows.slice(0, 12).map(row => {
+      const decision = row.acceptance_decision || {};
+      const evidenceId = row.evidence_id || '-';
+      const taskId = row.task_id || '-';
+      const status = decision.status || 'pending';
+      const actions = row.is_final ? `actions=acceptEvidenceFromDashboard('${escapeHtml(evidenceId)}','${escapeHtml(taskId)}') / rejectEvidenceFromDashboard('${escapeHtml(evidenceId)}','${escapeHtml(taskId)}')` : 'actions=preview_only';
+      return sanitizeDisplayText(`${evidenceId} · final=${String(!!row.is_final)} · decision=${status} · by=${decision.by || '-'} · ${actions}`);
+    }).join('\n');
   }
 
   function currentTaskAttempt(task) {
@@ -4503,7 +5254,7 @@
       `<button class="filter-tab" onclick="event.stopPropagation(); openTaskDetailDrawer('${escapeHtml(taskId)}')">Detail</button>`
     ];
     if (isObservable && !isDone && !isCancelled) {
-      buttons.push(`<button class="filter-tab" data-ledger-action="task.probe" data-requires-owner-approval="true" onclick="event.stopPropagation(); recordWaitDecision('${escapeHtml(taskId)}', '${escapeHtml(attemptId)}')">Send Probe <small>ledger only</small></button>`);
+      buttons.push(`<button class="filter-tab" data-ledger-action="task.probe" data-requires-owner-approval="false" onclick="event.stopPropagation(); sendStagnantProbe('${escapeHtml(taskId)}', '${escapeHtml(attemptId)}')">Send Probe <small>ledger only</small></button>`);
       buttons.push(`<button class="filter-tab" onclick="event.stopPropagation(); viewTaskLogs('${escapeHtml(taskId)}')">View Logs</button>`);
       buttons.push(`<button class="filter-tab" data-ledger-action="task.correct" data-requires-owner-approval="true" onclick="event.stopPropagation(); correctTaskAttempt('${escapeHtml(taskId)}', '${escapeHtml(attemptId)}')">Correct <small>owner approval</small></button>`);
       buttons.push(`<button class="filter-tab" data-ledger-action="task.cancel" data-requires-owner-approval="true" data-dangerous="true" onclick="event.stopPropagation(); cancelTaskAttempt('${escapeHtml(taskId)}', '${escapeHtml(attemptId)}')">Cancel <small>danger</small></button>`);
@@ -4538,7 +5289,10 @@
       target: detail.target || requestDetail.target || approval.target || '',
       risk: detail.risk || requestDetail.risk || approval.risk || '',
       evidence: detail.evidence || requestDetail.evidence || '',
-      task_id: metadata.task_id || requestDetail.task_id || ''
+      task_id: metadata.task_id || requestDetail.task_id || '',
+      attempt_id: metadata.attempt_id || requestDetail.attempt_id || '',
+      control_action: metadata.control_action || requestDetail.action || '',
+      execute_requires: metadata.execute_requires || requestDetail.execute_requires || ''
     };
   }
 
@@ -4554,6 +5308,50 @@
   function approvalTableSafetySummary(app) {
     const safety = (app && app.safety) || {};
     return `mode=${escapeHtml(safety.resolution_mode || '-')} · dry_run=${String(!!safety.dry_run)} · external_send_executed=${String(!!safety.external_send_executed)} · ${escapeHtml(safety.summary || 'owner approval required before real external delivery')}`;
+  }
+
+  function approvalTaskControlSummary(app) {
+    const control = approvalSummary(app);
+    if (!String(app.action || '').startsWith('task_control.') && !control.control_action && !control.attempt_id) {
+      return '';
+    }
+    return `Task Control Detail · task=${escapeHtml(control.task_id || '-')} · attempt=${escapeHtml(control.attempt_id || '-')} · control_action=${escapeHtml(control.control_action || '-')} · execute_requires=${escapeHtml(control.execute_requires || '-')}`;
+  }
+
+  function realExecutionBlockerRows(blockers) {
+    const rows = blockers && typeof blockers === 'object' && !Array.isArray(blockers) ? Object.entries(blockers) : [];
+    if (!rows.length) return 'none';
+    return rows.map(([kind, count]) => `${kind || '-'}=${count || 0}`).join(' · ');
+  }
+
+  function approvalControlSummary(controlSummary) {
+    const summary = controlSummary && typeof controlSummary === 'object' && !Array.isArray(controlSummary) ? controlSummary : {};
+    const byStatus = summary.by_status || {};
+    const highRisk = Array.isArray(summary.high_risk_actions) ? summary.high_risk_actions : [];
+    const pendingHighRisk = Array.isArray(summary.pending_high_risk_actions) ? summary.pending_high_risk_actions : [];
+    const blockers = summary.real_execution_blockers || {};
+    const blockerCount = Object.values(blockers).reduce((total, value) => total + Number(value || 0), 0);
+    const blockerRows = realExecutionBlockerRows(blockers);
+    const state = blockerCount || pendingHighRisk.length ? 'blocked' : 'success';
+    const text = [
+      `total=${summary.total || 0}`,
+      `pending=${byStatus.pending || 0}`,
+      `resolved=${byStatus.resolved || 0}`,
+      `high_risk=${highRisk.join(',') || '-'}`,
+      `pending_high_risk_actions=${pendingHighRisk.join(',') || '-'}`,
+      `pending_owner_action_count=${summary.pending_owner_action_count || 0}`,
+      `blocked_real_execution_count=${summary.blocked_real_execution_count || 0}`,
+      `queue_health=${summary.queue_health || '-'}`,
+      `default_policy=${summary.default_policy || 'dry_run_until_owner_approval'}`,
+      `owner_next_action=${summary.owner_next_action || 'review pending approvals before real execution'}`,
+      `dry_run_resolved=${summary.dry_run_resolved || 0}`,
+      `external_send_executed=${summary.external_send_executed || 0}`,
+      `real_execution_blockers=${blockerCount}`,
+      `blocker_rows=${blockerRows}`,
+      'tracked_blocker_types=external_send,budget_overrun',
+      summary.summary || 'real external delivery blocked until owner approval'
+    ].join(' · ');
+    return `<div><strong>Approval Control Summary</strong><span>${escapeHtml(text)}</span></div><div class="long-task-state ${state}">${state === 'blocked' ? 'owner gate' : 'clear'}</div>`;
   }
 
   function evidenceRecordsSummary(records) {
@@ -4686,20 +5484,79 @@
   function showApprovalDetails(approval) {
     const detail = approvalDetail(approval);
     const summary = approvalSummary(approval);
+    const taskControl = approvalTaskControlSummary(approval);
+    const task = approval.task || {};
+    const events = Array.isArray(approval.events) ? approval.events : [];
+    const auditLogs = Array.isArray(approval.audit_logs) ? approval.audit_logs : [];
+    const evidenceRecords = Array.isArray(approval.evidence_records) ? approval.evidence_records : [];
+    const budget = approval.budget_summary || {};
     renderDetails(`Approval: ${approval.id || ''}`, [
       ['Status', approval.status || ''],
       ['Action', approval.action || ''],
       ['Source', approval.source_agent || ''],
       ['Target', summary.target || '-'],
       ['Risk', summary.risk || '-'],
-      ['Task ID', summary.task_id || '-'],
+      ['Task ID', summary.task_id || task.id || '-'],
+      ['Attempt ID', summary.attempt_id || '-'],
+      ['Task Control Detail', taskControl || '-'],
       ['Reason', summary.request_reason || '-'],
       ['Evidence', summary.evidence || '-'],
       ['Approval Safety', approvalSafetySummary([approval])],
+      ['Bound Task', task.id ? `${task.id} · ${task.title || '-'} · ${task.status || '-'}` : '-'],
+      ['Related Events', events.length ? events.map(event => `${event.created_at || ''} ${event.event_type || '-'} ${event.id || ''}`).join('\n') : '-'],
+      ['Audit Logs', auditLogs.length ? auditLogs.map(item => `${item.created_at || ''} ${item.action || '-'} by ${item.actor || '-'}`).join('\n') : '-'],
+      ['Budget', budget && budget.event_count !== undefined ? `events=${budget.event_count || 0} · ${budget.currency || 'USD'} ${budget.total_amount || 0} · input=${budget.token_input || 0} · output=${budget.token_output || 0}` : '-'],
+      ['Evidence Records', evidenceRecordsSummary(evidenceRecords)],
       ['Updated', formatDate(approval.updated_at || '')],
       ['Decision By', detail.decided_by || detail.decision_by || '-'],
       ['Decision Reason', detail.decision_reason || '-']
     ], approval);
+  }
+
+  async function showApprovalApiDetails(approvalId, fallbackApproval) {
+    const safeId = String(approvalId || '');
+    if (!safeId) return showApprovalDetails(fallbackApproval || {});
+    companyApiLog('SYSTEM', `Loading approval detail ${safeId}: task, events, audit, budget, and evidence context.`, 'normal');
+    try {
+      const payload = await companyApiGet(`/v1/approvals/${encodeURIComponent(safeId)}`);
+      const approval = Object.assign({}, payload.approval || {}, {
+        task: payload.task || {},
+        events: payload.events || [],
+        audit_logs: payload.audit_logs || [],
+        approval_control_summary: payload.approval_control_summary || {},
+        evidence_records: payload.evidence_records || [],
+        budget_summary: payload.budget_summary || {},
+        redaction_policy: payload.redaction_policy || {}
+      });
+      showApprovalDetails(approval);
+      companyApiLog('SYSTEM', `Approval API detail loaded: ${safeId} events=${(payload.events || []).length} audit=${(payload.audit_logs || []).length}.`, 'success');
+    } catch (err) {
+      companyApiLog('ERROR', `Approval detail load failed for ${safeId}: ${err.message}; showing cached row.`, 'warn');
+      showApprovalDetails(fallbackApproval || {id: safeId});
+    }
+  }
+
+  function showTaskControlContextDetails(title, payload) {
+    const context = payload && payload.control_context ? payload.control_context : {};
+    if (!context || !context.task) return;
+    const task = context.task || {};
+    const attempts = Array.isArray(context.attempts) ? context.attempts : [];
+    const events = Array.isArray(context.events) ? context.events : [];
+    const auditLogs = Array.isArray(context.audit_logs) ? context.audit_logs : [];
+    const budget = context.budget_summary || {};
+    const evidence = Array.isArray(context.evidence_records) ? context.evidence_records : [];
+    renderDetails(title || `Task Control: ${task.id || ''}`, [
+      ['Task', `${task.id || '-'} · ${task.title || '-'} · ${task.status || '-'}`],
+      ['Target', `${task.target_agent || '-'} · claimed_by=${task.claimed_by || '-'}`],
+      ['Blocker', task.blocker || '-'],
+      ['Attempts', attempts.length ? attempts.map(item => `${item.attempt_id || '-'} · ${item.employee_id || '-'} · ${item.status || '-'} · previous=${(item.metadata || {}).previous_attempt_id || '-'}`).join('\n') : '-'],
+      ['Events', events.length ? events.map(item => `${item.created_at || ''} ${item.event_type || '-'} ${item.id || ''}`).join('\n') : '-'],
+      ['Audit Logs', auditLogs.length ? auditLogs.map(item => `${item.created_at || ''} ${item.action || '-'} by ${item.actor || '-'}`).join('\n') : '-'],
+      ['Budget', budget && budget.event_count !== undefined ? `events=${budget.event_count || 0} · ${budget.currency || 'USD'} ${budget.total_amount || 0} · input=${budget.token_input || 0} · output=${budget.token_output || 0}` : '-'],
+      ['Evidence Records', evidenceRecordsSummary(evidence)],
+      ['Completion Contract', context.completion_contract || {}],
+      ['Redaction Policy', context.redaction_policy || {}]
+    ], payload);
   }
 
   function showTraceDetails(trace) {
@@ -4722,6 +5579,36 @@
       const display = item.display && item.display.relative_path ? ` · ${displayPath(item.display.relative_path)}` : '';
       const log = item.sanitized_log ? ` · ${sanitizeDisplayText(item.sanitized_log)}` : '';
       return sanitizeDisplayText(`${item.at || '-'} · ${item.kind || '-'} · ${item.status || '-'} · ${item.task_id || '-'} · ${item.label || id}${display}${log}`);
+    }).join('\n');
+  }
+
+  function traceStorySummary(story) {
+    const item = story || {};
+    return [
+      `state=${item.state || '-'} · failure_or_recovery=${String(!!item.has_failure_or_recovery)}`,
+      `observed=${(item.observed_stages || []).join(' -> ') || '-'}`,
+      `missing=${(item.missing_required || []).join(' -> ') || '-'}`,
+      item.summary || 'Trace story unavailable.'
+    ].join('\n');
+  }
+
+  function ceoStageSummary(summary) {
+    const item = summary || {};
+    const stages = Array.isArray(item.stages) ? item.stages : [];
+    const stageRows = stages.map(stage => `${stage.stage || '-'} · ${stage.status || '-'} · ${stage.severity || '-'} · action=${stage.recommended_owner_action || '-'}`).join('\n');
+    return [
+      `chain_state=${item.chain_state || '-'} · severity=${item.severity || '-'} · critical=${item.critical_count || 0} · attention=${item.attention_count || 0}`,
+      `missing=${(item.missing_required || []).join(' -> ') || '-'}`,
+      `owner_action=${item.recommended_owner_action || '-'}`,
+      stageRows || 'No stage coverage available.'
+    ].join('\n');
+  }
+
+  function ceoTimelineSummary(timeline) {
+    const rows = Array.isArray(timeline) ? timeline : [];
+    if (!rows.length) return 'No CEO timeline available for this trace.';
+    return rows.map(item => {
+      return sanitizeDisplayText(`${item.at || '-'} · ${item.severity || '-'} · ${item.title || item.stage || item.kind || '-'} · task=${item.task_id || '-'} · action=${item.recommended_action || '-'} · ${item.summary || ''}`);
     }).join('\n');
   }
 
@@ -4774,6 +5661,9 @@
       renderDetails(`Trace Timeline: ${traceId}`, [
         ['Trace ID', payload.trace_id || traceId],
         ['Counts', payload.counts || {}],
+        ['Trace Story', traceStorySummary(payload.trace_story || {})],
+        ['CEO Stage Summary', ceoStageSummary(payload.ceo_stage_summary || {})],
+        ['CEO Timeline', ceoTimelineSummary(payload.ceo_timeline || [])],
         ['Tasks', (payload.tasks || []).map(task => `${task.id || '-'} · ${task.status || '-'} · ${task.target_agent || '-'}`).join('\n') || '-'],
         ['Attempts', traceObjectSummary(payload.execution_attempts || [], item => `${item.attempt_id || '-'} · ${item.status || '-'} · ${item.employee_id || '-'} · ${item.adapter_type || '-'} · started=${item.started_at || '-'}`)],
         ['Artifacts', traceObjectSummary(payload.artifacts || [], item => `${item.artifact_id || '-'} · ${item.task_id || '-'} · ${item.employee_id || '-'} · ${item.stage || '-'} · ${item.status || '-'} · ${(item.display || {}).relative_path || (item.display || {}).basename || '-'}`)],
@@ -4862,6 +5752,15 @@
       const sanitizedLogs = payload.sanitized_logs || [];
       const approvals = payload.approvals || [];
       const evidenceRecords = payload.evidence_records || [];
+      const runtimeSessions = payload.runtime_sessions || [];
+      const toolCalls = payload.tool_calls || [];
+      const budgetSummary = payload.budget_summary || {};
+      const budgetEvents = payload.budget_events || [];
+      const controlPlaneTimeline = payload.control_plane_timeline || [];
+      const controlActionSummary = payload.control_action_summary || {};
+      const ownerActionTimeline = payload.owner_action_timeline || [];
+      const completionContract = payload.completion_contract || {};
+      const ceoAcceptanceContract = payload.ceo_acceptance_contract || {};
       const supervisorState = payload.supervisor_state || {};
       const correctionSummary = payload.correction_summary || {};
       const attemptHistory = payload.attempt_history || {};
@@ -4886,8 +5785,21 @@
         ['Long Task State', task.long_task_state || latestAttempt.long_task_state || task.status || '-'],
         ['Status Contract', longTaskStatusContractSummary(task, latestAttempt)],
         ['Task Decision', taskDecisionSummary(task, latestAttempt, payload)],
+        ['Task Operational Ledger', taskOperationalLedgerSummary(payload, taskTracePayload)],
+        ['CEO Trace Brief', ceoTraceBriefSummary(taskTracePayload.ceo_trace_brief || {})],
+        ['CEO Acceptance Contract', ceoAcceptanceContractSummary(ceoAcceptanceContract)],
+        ['Task Control Plane Timeline', taskControlPlaneTimelineSummary(controlPlaneTimeline)],
+        ['Owner Action Timeline', ownerActionTimelineSummary(ownerActionTimeline)],
+        ['Control Action Summary', controlActionSummaryDetail(controlActionSummary)],
         ['Latest Attempt Summary', latestAttemptSummary(latestAttempt)],
         ['Attempt History Summary', attemptHistoryContractSummary(attemptHistory, attempts)],
+        ['Runtime Sessions', runtimeSessionsSummary(runtimeSessions)],
+        ['Tool Calls', toolCallsSummary(toolCalls)],
+        ['Budget Summary', budgetSummaryDetail(budgetSummary)],
+        ['Budget Events', budgetEventsSummary(budgetEvents)],
+        ['Completion Contract', completionContractSummary(completionContract)],
+        ['Owner Control Contract', 'Correction: POST /v1/tasks/{task_id}/correct · Cancel: POST /v1/tasks/{task_id}/cancel · Retry: POST /v1/tasks/{task_id}/retry · Reassign: POST /v1/tasks/{task_id}/reassign · Reject/Reopen: POST /v1/tasks/{task_id}/reopen with by=owner-shift and status=submitted.'],
+        ['Evidence Acceptance', evidenceAcceptanceSummary(evidenceRecords, completionContract)],
         ['Evidence Records Summary', evidenceRecordsSummary(evidenceRecords)],
         ['Sanitized Logs Summary', sanitizedLogsSummary(sanitizedLogs)],
         ['Heartbeat State', task.heartbeat_state || latestAttempt.heartbeat_state || '-'],
@@ -4918,6 +5830,60 @@
   }
   window.openTaskDetailDrawer = openTaskDetailDrawer;
 
+  async function openEmployeeDetailDrawer(employeeId, fallbackKey) {
+    if (!employeeId) return;
+    companyApiLog('SYSTEM', `Loading employee detail ${employeeId}...`, 'normal');
+    try {
+      const payload = await companyApiGet(`/v1/employees/${encodeURIComponent(employeeId)}`);
+      let workPayload = payload;
+      try {
+        workPayload = await companyApiGet(`/v1/employees/${encodeURIComponent(employeeId)}/work-history`);
+      } catch (workErr) {
+        companyApiLog('SYSTEM', `Employee work-history fallback ${employeeId}: ${workErr.message}`, 'warn');
+      }
+      const employee = payload.employee || {};
+      const profile = payload.profile || {};
+      const heartbeat = payload.heartbeat || {};
+      const workHistory = workPayload.work_history || payload.work_history || {};
+      const currentActivity = workPayload.current_activity || payload.current_activity || {};
+      const attempts = workPayload.attempts || payload.attempts || [];
+      const runtimeSessions = workPayload.runtime_sessions || payload.runtime_sessions || [];
+      const toolCalls = workPayload.tool_calls || payload.tool_calls || [];
+      const budgetSummary = workPayload.budget_summary || payload.budget_summary || {};
+      const budgetEvents = workPayload.budget_events || payload.budget_events || [];
+      const evidenceRecords = workPayload.evidence_records || payload.evidence_records || [];
+      const operationalSummary = workPayload.operational_summary || payload.operational_summary || {};
+      const ceoWorkContract = workPayload.ceo_work_contract || payload.ceo_work_contract || {};
+      renderDetails(`Employee Detail: ${employeeId}`, [
+        ['Status', employee.status || profile.status || '-'],
+        ['Runtime', employee.runtime || profile.runtime || '-'],
+        ['Role', employee.role || profile.role || '-'],
+        ['Heartbeat', heartbeat.status || heartbeat.state || heartbeat.last_seen_at || '-'],
+        ['CEO Work Contract', employeeCeoWorkContractSummary(ceoWorkContract)],
+        ['Operational Summary', employeeOperationalSummary(operationalSummary)],
+        ['Current Activity', employeeCurrentActivitySummary(currentActivity)],
+        ['Work History', employeeWorkHistorySummary(workHistory)],
+        ['Runtime Sessions', runtimeSessionsSummary(runtimeSessions)],
+        ['Attempts', attemptHistorySummary(attempts)],
+        ['Tool Calls', employeeToolCallsSummary(toolCalls)],
+        ['Budget Summary', employeeBudgetSummary(budgetSummary)],
+        ['Budget Events', budgetEventsSummary(budgetEvents)],
+        ['Evidence Records', employeeEvidenceSummary(evidenceRecords)],
+        ['Capabilities', payload.capabilities || {}],
+        ['Permissions', payload.permissions || {}],
+        ['Sandbox', payload.sandbox_profile || {}],
+        ['Work History API', workPayload.source || '/v1/employees/{employee_id}'],
+        ['Raw', { profile: payload, work: workPayload }],
+      ], { profile: payload, work: workPayload });
+    } catch (err) {
+      companyApiLog('ERROR', `Employee detail ${employeeId} failed: ${err.message}`, 'error');
+      if (fallbackKey) {
+        showStoredDetails(`Employee details: ${employeeId}`, fallbackKey);
+      }
+    }
+  }
+  window.openEmployeeDetailDrawer = openEmployeeDetailDrawer;
+
   window.correctTaskAttempt = async function(taskId, attemptId, ownerApproved) {
     const by = prompt(`Supervisor correcting ${taskId}`, 'hermes');
     if (by === null) return;
@@ -4926,8 +5892,8 @@
     try {
       if (ownerApproved === true) {
         companyApiLog('SYSTEM', `Owner-approved correction executing for ${taskId}...`, 'normal');
-        await companyApiPost(`/v1/tasks/${encodeURIComponent(taskId)}/correct`, {attempt_id: attemptId || '', by: by || 'hermes', message});
-        companyApiLog('SYSTEM', `Correction sent for ${taskId}.`, 'success');
+        await companyApiPost(`/v1/tasks/${encodeURIComponent(taskId)}/correct`, {attempt_id: attemptId || '', by: by || 'hermes', message, execute: true});
+        companyApiLog('SYSTEM', `Owner-approved correction executed for ${taskId}.`, 'success');
       } else {
         companyApiLog('SYSTEM', `Requesting owner approval for correction ${taskId}; no correction is sent yet.`, 'normal');
         const approval = await requestDashboardApproval('task.correct', taskId, attemptId, by || 'hermes', message, {risk: 'P1', correction_message: message});
@@ -4944,7 +5910,7 @@
     const message = `${stagnantTaskGuidance()} 请在当前 task_id/attempt_id 下回复 heartbeat、progress、blocker 或 evidence 状态。`;
     companyApiLog('SYSTEM', `Sending stagnant probe for ${taskId}...`, 'normal');
     try {
-      await companyApiPost(`/v1/tasks/${encodeURIComponent(taskId)}/correct`, {attempt_id: attemptId || '', by: 'hermes', message});
+      await companyApiPost(`/v1/tasks/${encodeURIComponent(taskId)}/probe`, {attempt_id: attemptId || '', by: 'hermes', message, reason: 'progress_stagnant'});
       companyApiLog('SYSTEM', `Stagnant probe recorded for ${taskId}.`, 'success');
       await refreshLiveDashboardFromApi();
     } catch (err) {
@@ -5022,8 +5988,8 @@
       if (ownerApproved === true) {
         if (!confirm(`Cancel attempt ${attemptId || '-'} for task ${taskId}?`)) return;
         companyApiLog('SYSTEM', `Owner-approved cancellation executing for ${taskId}...`, 'normal');
-        await companyApiPost(`/v1/tasks/${encodeURIComponent(taskId)}/cancel`, {attempt_id: attemptId || '', by: by || 'hermes', reason});
-        companyApiLog('SYSTEM', `Cancelled ${taskId}.`, 'success');
+        await companyApiPost(`/v1/tasks/${encodeURIComponent(taskId)}/cancel`, {attempt_id: attemptId || '', by: by || 'hermes', reason, execute: true});
+        companyApiLog('SYSTEM', `Owner-approved cancellation executed for ${taskId}.`, 'success');
       } else {
         companyApiLog('SYSTEM', `Requesting owner approval for cancellation ${taskId}; no cancel is sent yet.`, 'normal');
         const approval = await requestDashboardApproval('task.cancel', taskId, attemptId, by || 'hermes', reason, {risk: 'P0', cancel_reason: reason});
@@ -5043,8 +6009,9 @@
     try {
       if (ownerApproved === true) {
         companyApiLog('SYSTEM', `Owner-approved retry executing for ${taskId}...`, 'normal');
-        await companyApiPost(`/v1/tasks/${encodeURIComponent(taskId)}/retry`, {by: by || 'hermes', reason});
-        companyApiLog('SYSTEM', `Retry attempt started for ${taskId}.`, 'success');
+        const result = await companyApiPost(`/v1/tasks/${encodeURIComponent(taskId)}/retry`, {by: by || 'hermes', reason, execute: true});
+        companyApiLog('SYSTEM', `Owner-approved retry executed for ${taskId}; retry attempt started.`, 'success');
+        showTaskControlContextDetails(`Retry Control: ${taskId}`, result);
       } else {
         companyApiLog('SYSTEM', `Requesting owner approval for retry ${taskId}; no retry is started yet.`, 'normal');
         const approval = await requestDashboardApproval('task.retry', taskId, '', by || 'hermes', reason, {risk: 'P1', retry_reason: reason});
@@ -5066,8 +6033,9 @@
     try {
       if (ownerApproved === true) {
         companyApiLog('SYSTEM', `Owner-approved reassign executing for ${taskId} to ${to}...`, 'normal');
-        await companyApiPost(`/v1/tasks/${encodeURIComponent(taskId)}/reassign`, {by: by || 'hermes', to, reason});
-        companyApiLog('SYSTEM', `Reassigned ${taskId}.`, 'success');
+        const result = await companyApiPost(`/v1/tasks/${encodeURIComponent(taskId)}/reassign`, {by: by || 'hermes', to, reason, execute: true});
+        companyApiLog('SYSTEM', `Owner-approved reassign executed for ${taskId}.`, 'success');
+        showTaskControlContextDetails(`Reassign Control: ${taskId}`, result);
       } else {
         companyApiLog('SYSTEM', `Requesting owner approval for reassign ${taskId}; no reassignment is sent yet.`, 'normal');
         const approval = await requestDashboardApproval('task.reassign', taskId, '', by || 'hermes', reason, {risk: 'P1', reassign_to: to});
@@ -5198,37 +6166,6 @@
   });
 
   // Safe Dialog Input Transitions
-  window.routeDirectMessageToChat = async function(agentId) {
-    switchTab('chat-hub');
-    const summary = getDashboardSummary();
-    let thread = (summary.conversations || []).find(c => {
-      const parts = conversationParticipants(c);
-      return parts.includes(agentId) && parts.length === 2;
-    });
-
-    if (!thread) {
-      companyApiLog('SYSTEM', `Initializing direct session with @${agentId}...`, 'normal');
-      try {
-        const result = await companyApiPost('/v1/conversations', {
-          from: HUMAN_OWNER_ID,
-          participants: [HUMAN_OWNER_ID, agentId].join(','),
-          title: `Direct Session with ${agentId}`,
-          body: `Direct channel opened with ${agentId}.`
-        });
-        thread = upsertConversationFromApi(result);
-      } catch (err) {
-        companyApiLog('ERROR', `Failed to open direct session: ${err.message}`, 'error');
-        return;
-      }
-    }
-
-    if (thread) {
-      window.activeThreadId = thread.id;
-      populateChatHub();
-      renderRealChatMessages();
-    }
-  };
-
   // Interception status & claims coordinator
   window.toggleInterceptionMode = async function() {
     const threadId = getActiveConversationId();
@@ -5899,18 +6836,6 @@
     closeRecruiterDrawer();
   };
 
-  async function realDirectEmployeeMessage(id, source, body) {
-    companyApiLog('SYSTEM', `Calling Company Kernel API direct message '${source}' -> '${id}'...`, 'normal');
-    try {
-      const result = await companyApiPost('/v1/messages/direct', {from: source || 'main', to: id, body});
-      companyApiLog('SYSTEM', `Direct reply from '${id}': ${result.reply || '(empty)'}; evidence=${result.file || 'n/a'}`, 'success');
-      return result;
-    } catch (err) {
-      companyApiLog('ERROR', `Direct message failed: ${err.message}`, 'error');
-      return null;
-    }
-  }
-
   async function realUpdateEmployeeProfile(id, payload) {
     companyApiLog('SYSTEM', `Calling Company Kernel API to update '${id}'...`, 'normal');
     try {
@@ -6104,12 +7029,17 @@
 
   function refreshGovernanceTables() {
     const summary = getDashboardSummary();
+    const approvalControlEl = document.getElementById('approval-control-summary');
+    if (approvalControlEl) {
+      approvalControlEl.innerHTML = approvalControlSummary(summary.approval_control_summary || {});
+    }
     const approvalsTbody = document.getElementById('approvals-tbody');
     if (approvalsTbody) {
       const approvals = summary.approvals || [];
       approvalsTbody.innerHTML = approvals.length ? approvals.map((app, index) => {
         const detail = approvalSummary(app);
         const safetySummary = approvalTableSafetySummary(app);
+        const taskControlSummary = approvalTaskControlSummary(app);
         return `
           <tr data-record-row="true" data-approval-index="${index}">
             <td style="font-family: monospace; max-width: 260px;">${escapeHtml(app.id || '')}</td>
@@ -6121,6 +7051,7 @@
               <div style="margin-top:4px;color:var(--text-muted);font-size:11px;">
                 target=${escapeHtml(detail.target || '-')} · risk=${escapeHtml(detail.risk || '-')}${detail.task_id ? ` · task=${escapeHtml(detail.task_id)}` : ''}
               </div>
+              ${taskControlSummary ? `<div style="margin-top:4px;color:#c7d2fe;font-size:11px;">${taskControlSummary}</div>` : ''}
               <div style="margin-top:4px;color:var(--text-muted);font-size:11px;">
                 safety=${safetySummary}
               </div>
@@ -6137,7 +7068,10 @@
         `;
       }).join('') : '<tr data-empty-row="true"><td colspan="7" style="color:var(--text-muted);text-align:center;padding:24px;">No approvals.</td></tr>';
       approvalsTbody.querySelectorAll('tr[data-approval-index]').forEach(row => {
-        row.addEventListener('click', () => showApprovalDetails(approvals[Number(row.dataset.approvalIndex)]));
+        row.addEventListener('click', () => {
+          const approval = approvals[Number(row.dataset.approvalIndex)] || {};
+          showApprovalApiDetails(approval.id || approval.approval_id || '', approval);
+        });
       });
     }
     refreshAuditEvidenceTable(summary.evidence_records || []);
@@ -6326,8 +7260,9 @@
     if (action === 'task.retry') {
       const reason = detail.retry_reason || requestDetail.retry_reason || requestDetail.reason || detail.reason || 'owner-approved dashboard retry';
       companyApiLog('SYSTEM', `Owner-approved retry dispatching to ledger: task=${taskId}`, 'normal');
-      await companyApiPost(`/v1/tasks/${encodeURIComponent(taskId)}/retry`, {by, reason});
+      const result = await companyApiPost(`/v1/tasks/${encodeURIComponent(taskId)}/retry`, {by, reason, execute: true});
       companyApiLog('SYSTEM', `Owner-approved retry recorded for ${taskId}.`, 'success');
+      showTaskControlContextDetails(`Approved Retry Control: ${taskId}`, result);
       return;
     }
     if (action === 'task.reassign') {
@@ -6338,8 +7273,9 @@
         return;
       }
       companyApiLog('SYSTEM', `Owner-approved reassign dispatching to ledger: task=${taskId} to=${to}`, 'normal');
-      await companyApiPost(`/v1/tasks/${encodeURIComponent(taskId)}/reassign`, {by, to, reason});
+      const result = await companyApiPost(`/v1/tasks/${encodeURIComponent(taskId)}/reassign`, {by, to, reason, execute: true});
       companyApiLog('SYSTEM', `Owner-approved reassign recorded for ${taskId}.`, 'success');
+      showTaskControlContextDetails(`Approved Reassign Control: ${taskId}`, result);
     }
   }
 
@@ -6789,21 +7725,8 @@
       const skills = emp.skills || '';
       const skillsPills = skills ? skills.split(',').map(s => `<span class="capability-tag" style="font-size: 9px; padding: 2px 5px; margin-top: 4px;">${escapeHtml(s.trim())}</span>`).join(' ') : '';
       const detailKey = storeDashboardDetail(`employee:${emp.id || '-'}`, emp);
-      const runtime = emp.runtime || '';
-      const canDirect = runtime !== 'skill' && runtime !== 'human';
-      const taskButton = emp.schedulable ? `
-            <button class="card-footer-action-btn" onclick="event.stopPropagation(); submitTaskToEmployee('${escapeHtml(emp.id)}')">
-              <i class="fa-solid fa-list-check"></i> Task
-            </button>
-      ` : '';
-      const directButton = canDirect ? `
-            <button class="card-footer-action-btn" onclick="event.stopPropagation(); routeDirectMessageToChat('${escapeHtml(emp.id)}')">
-              <i class="fa-solid fa-paper-plane"></i> Send Message
-            </button>
-      ` : `<span class="muted" style="font-size: 11px;">No chat; task/evidence only</span>`;
-
       return `
-        <div class="employee-card" onclick="showStoredDetails('Employee details: ${escapeHtml(emp.id)}', '${escapeHtml(detailKey)}')">
+        <div class="employee-card" onclick="openEmployeeDetailDrawer('${escapeHtml(emp.id)}', '${escapeHtml(detailKey)}')">
           <div class="employee-card-header">
             <div class="employee-identity">
               <div class="employee-avatar"><i class="fa-solid fa-robot"></i></div>
@@ -6840,12 +7763,12 @@
               <div style="margin-bottom: 4px;"><strong>Schedulable:</strong> ${emp.schedulable ? 'yes' : 'no'} · <span title="${escapeHtml(emp.readiness_reason || '')}">readiness_reason=${escapeHtml(emp.readiness_reason || '-')}</span></div>
               <div><strong>Last Active:</strong> ${formatDate(emp.last_seen_at) || 'Never'}</div>
             </div>
+          ${employeeControlPlaneSummary(emp)}
           <div style="display: flex; flex-wrap: wrap; gap: 4px; margin-top: 10px; border-top: 1px solid rgba(255,255,255,0.05); padding-top: 8px;">
             ${skillsPills}
           </div>
           <div class="employee-card-footer">
-            ${taskButton}
-            ${directButton}
+            ${employeeInteractionFooter(emp)}
           </div>
         </div>
       `;
@@ -6861,7 +7784,7 @@
         const sandboxBadge = sandboxProfileChip(emp);
         const detailKey = storeDashboardDetail(`candidate:${emp.id || '-'}`, emp);
         return `
-          <div class="employee-card" onclick="showStoredDetails('Candidate employee: ${escapeHtml(emp.id)}', '${escapeHtml(detailKey)}')">
+          <div class="employee-card" onclick="openEmployeeDetailDrawer('${escapeHtml(emp.id)}', '${escapeHtml(detailKey)}')">
             <div class="employee-card-header">
               <div class="employee-identity">
                 <div class="employee-avatar"><i class="fa-solid fa-user-clock"></i></div>
@@ -6890,6 +7813,7 @@
               <div style="margin-bottom: 4px;"><strong>Schedulable:</strong> ${emp.schedulable ? 'yes' : 'no'} · <span title="${escapeHtml(emp.readiness_reason || '')}">readiness_reason=${escapeHtml(emp.readiness_reason || '-')}</span></div>
               <div><strong>Last Active:</strong> ${formatDate(emp.last_seen_at) || 'Never'}</div>
             </div>
+            ${employeeControlPlaneSummary(emp)}
             <div style="display: flex; flex-wrap: wrap; gap: 4px; margin-top: 10px; border-top: 1px solid rgba(255,255,255,0.05); padding-top: 8px;">
               ${skillsPills}
             </div>
