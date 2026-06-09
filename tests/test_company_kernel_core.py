@@ -2545,7 +2545,10 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual(3000, long_card["budget_summary"]["token_input"])
         self.assertEqual(700, long_card["budget_summary"]["token_output"])
         self.assertEqual(120, long_card["budget_summary"]["runtime_seconds"])
-        self.assertEqual(["send_correction", "view_logs", "wait", "cancel_attempt"], [action["id"] for action in long_card["actions"]])
+        self.assertEqual(["send_probe", "send_correction", "view_logs", "wait", "cancel_attempt"], [action["id"] for action in long_card["actions"]])
+        self.assertFalse(long_card["actions"][0]["requires_owner_approval"])
+        self.assertEqual("POST", long_card["actions"][0]["method"])
+        self.assertIn("/progress", long_card["actions"][0]["api"])
         self.assertIn("wait for correction ack", long_card["owner_next_action"])
         blocked_card = task_cards["task-cockpit-blocked"]
         self.assertEqual("blocked", blocked_card["state"])
@@ -2617,10 +2620,12 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual(attempt_id, supervisor_item["attempt_id"])
         self.assertIn("请收口 evidence", supervisor_item["message"])
         self.assertEqual(
-            ["send_correction", "view_logs", "wait", "cancel_attempt"],
+            ["send_probe", "send_correction", "view_logs", "wait", "cancel_attempt"],
             [action["id"] for action in attention["actions"]],
         )
         action_meta = {action["id"]: action for action in attention["actions"]}
+        self.assertEqual("POST", action_meta["send_probe"]["method"])
+        self.assertFalse(action_meta["send_probe"]["requires_owner_approval"])
         self.assertEqual("POST", action_meta["send_correction"]["method"])
         self.assertTrue(action_meta["send_correction"]["requires_owner_approval"])
         self.assertEqual("GET", action_meta["view_logs"]["method"])
@@ -7977,13 +7982,15 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertTrue(work["progress_age_seconds"] >= 1)
         self.assertIn("inspect logs", work["owner_next_action"])
         self.assertIn("request correction", work["owner_next_action"])
-        self.assertEqual(["view_logs", "request_correction", "wait", "cancel"], [action["id"] for action in work["recommended_actions"]])
+        self.assertEqual(["send_probe", "view_logs", "request_correction", "wait", "cancel"], [action["id"] for action in work["recommended_actions"]])
+        self.assertFalse(work["recommended_actions"][0]["requires_owner_approval"])
+        self.assertEqual("POST", work["recommended_actions"][0]["method"])
 
         status, employees_payload = api_gateway.route_get("/v1/employees", {})
         self.assertEqual(HTTPStatus.OK, status, employees_payload)
         api_codex = next(item for item in employees_payload["employees"] if item["id"] == "codex")
         self.assertEqual("progress_stagnant", api_codex["work_status_summary"]["current_state"])
-        self.assertEqual(["view_logs", "request_correction", "wait", "cancel"], [action["id"] for action in api_codex["work_status_summary"]["recommended_actions"]])
+        self.assertEqual(["send_probe", "view_logs", "request_correction", "wait", "cancel"], [action["id"] for action in api_codex["work_status_summary"]["recommended_actions"]])
 
     def test_dashboard_employee_view_models_include_readiness_badges(self) -> None:
         for employee_id, role, runtime in [
@@ -8180,6 +8187,9 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertIn("const isDone = isTerminalTaskState(task, attempt)", html)
         self.assertIn("const isObservable = isRunning || ['heartbeat_stale', 'progress_stagnant', 'stale', 'correcting'].includes(longTaskState);", html)
         self.assertIn("if (isObservable && !isDone && !isCancelled)", html)
+        self.assertIn("data-ledger-action=\"task.probe\"", html)
+        self.assertIn("Send Probe <small>ledger only</small>", html)
+        self.assertIn("recordWaitDecision('${escapeHtml(taskId)}', '${escapeHtml(attemptId)}')", html)
         self.assertIn("if (isRecoverable && !isDone)", html)
         self.assertIn("handleOwnerAttentionAction('${escapeHtml(taskId)}', '${escapeHtml(attemptId)}', '', 'review_evidence')", html)
         self.assertIn("viewTaskTrace('", html)

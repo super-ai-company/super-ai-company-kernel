@@ -639,6 +639,7 @@ def build_cockpit_summary(summary: dict) -> dict:
             }
         if kind == "stagnant_task":
             return [
+                action("send_probe", "Send progress probe", f"/v1/tasks/{task_id}/progress", method="POST"),
                 action("send_correction", "Request Hermes correction", f"/v1/tasks/{task_id}/correct", method="POST", requires_owner_approval=True),
                 action("view_logs", "View sanitized logs", f"/v1/tasks/{task_id}"),
                 action("wait", "Keep waiting", "", method="none"),
@@ -2543,8 +2544,9 @@ def employee_view_models(summary: dict) -> list[dict]:
                     {"id": "view_trace", "label": "View Trace", "method": "GET", "requires_owner_approval": False},
                 ]
             if current_state in {"progress_stagnant", "heartbeat_stale"}:
-                owner_next_action = "employee may still be online; inspect logs, request correction, wait, or cancel"
+                owner_next_action = "employee may still be online; send a probe, inspect logs, request correction, wait, or cancel"
                 recommended_actions = [
+                    {"id": "send_probe", "label": "Send Probe", "method": "POST", "requires_owner_approval": False, "api": f"/v1/tasks/{current_task_id}/progress"},
                     {"id": "view_logs", "label": "View Logs", "method": "GET", "requires_owner_approval": False},
                     {"id": "request_correction", "label": "Request Correction", "method": "POST", "requires_owner_approval": True, "dry_run_default": True},
                     {"id": "wait", "label": "Keep Waiting", "method": "none", "requires_owner_approval": False},
