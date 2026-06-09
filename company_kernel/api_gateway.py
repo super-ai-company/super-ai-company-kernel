@@ -49,6 +49,7 @@ API_ENDPOINTS = [
     {"method": "POST", "path": "/v1/employees", "summary": "Create employee", "body": {"id": "employee id", "name": "display name", "role": "role", "runtime": "runtime id", "workspace": "path"}},
     {"method": "POST", "path": "/v1/employees/onboard", "summary": "Onboard employee with capabilities, permissions, communication, optional scaffold, and optional test task", "body": {"id": "employee id", "name": "display name", "role": "role", "runtime": "runtime id", "workspace": "path", "alias": "alias optional", "skills": "comma-separated optional", "tools": "comma-separated optional", "task_types": "comma-separated optional", "can_talk_to": "comma-separated optional", "can_assign_to": "comma-separated optional", "open_communication": "bool optional", "channel": "channel optional", "default_user_reply_channel": "string optional", "default_user_reply_account": "string optional", "default_user_reply_to": "string optional", "default_user_reply_deliver": "bool optional", "create_test_task": "bool optional"}},
     {"method": "GET", "path": "/v1/employees/{employee_id}", "summary": "Show employee profile, capabilities, permissions, heartbeat, and files"},
+    {"method": "GET", "path": "/v1/employees/{employee_id}/work-history", "summary": "Show employee work history, current activity, attempts, tool calls, budget, and evidence for the CEO cockpit"},
     {"method": "PATCH", "path": "/v1/employees/{employee_id}", "summary": "Update employee profile fields through companyctl", "body": {"name": "display name optional", "role": "role optional", "runtime": "runtime id optional", "workspace": "path optional", "status": "active/candidate/archived optional", "default_user_reply_channel": "string optional", "default_user_reply_account": "string optional", "default_user_reply_to": "string optional", "default_user_reply_deliver": "bool optional", "dry_run": "bool optional"}},
     {"method": "DELETE", "path": "/v1/employees/{employee_id}", "summary": "Offboard employee with dry-run, soft archive, or guarded hard delete", "body": {"hard_delete": "bool optional", "dry_run": "bool optional"}},
     {"method": "POST", "path": "/v1/employees/{employee_id}/profile", "summary": "Update employee profile fields through companyctl", "body": {"name": "display name optional", "role": "role optional", "runtime": "runtime id optional", "workspace": "path optional", "status": "active/candidate/archived optional", "default_user_reply_channel": "string optional", "default_user_reply_account": "string optional", "default_user_reply_to": "string optional", "default_user_reply_deliver": "bool optional", "dry_run": "bool optional"}},
@@ -480,6 +481,28 @@ def route_get(path: str, query: dict[str, list[str]]) -> tuple[int, dict]:
         return HTTPStatus.OK, companyctl.skill_registry()
     if path == "/v1/settings/notification":
         return HTTPStatus.OK, companyctl.notification_settings()
+    if path.startswith("/v1/employees/") and path.endswith("/work-history"):
+        employee_id = path.removeprefix("/v1/employees/").removesuffix("/work-history").strip("/")
+        conn = companyctl.connect()
+        try:
+            bundle = companyctl.employee_file_bundle(conn, employee_id)
+        finally:
+            conn.close()
+        return HTTPStatus.OK, {
+            "ok": True,
+            "source": "/v1/employees/{employee_id}/work-history",
+            "employee_id": employee_id,
+            "employee": bundle.get("employee", {}),
+            "current_activity": bundle.get("current_activity", {}),
+            "operational_summary": bundle.get("operational_summary", {}),
+            "work_history": bundle.get("work_history", {}),
+            "attempts": bundle.get("attempts", []),
+            "runtime_sessions": bundle.get("runtime_sessions", []),
+            "tool_calls": bundle.get("tool_calls", []),
+            "budget_summary": bundle.get("budget_summary", {}),
+            "budget_events": bundle.get("budget_events", []),
+            "evidence_records": bundle.get("evidence_records", []),
+        }
     if path.startswith("/v1/employees/"):
         employee_id = path.removeprefix("/v1/employees/").strip("/")
         code, payload = run_companyctl(["employee", "show", "--id", employee_id])

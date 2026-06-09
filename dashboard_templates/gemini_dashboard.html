@@ -4839,8 +4839,12 @@
     const attentionCounts = source.attention_counts || {};
     const current = Array.isArray(source.current_tasks) ? source.current_tasks : [];
     const recent = Array.isArray(source.recent_tasks) ? source.recent_tasks : [];
-    const currentRows = current.slice(0, 5).map(item => `${item.status || '-'} · ${item.id || '-'} · ${item.title || item.summary || ''}`).join('\n');
-    const recentRows = recent.slice(0, 5).map(item => `${item.status || '-'} · ${item.id || '-'} · ${item.title || item.summary || ''}`).join('\n');
+    const taskActions = (item) => {
+      const actions = Array.isArray(item.owner_actions) ? item.owner_actions : [];
+      return actions.length ? ` · actions=${actions.map(action => action.id || action.label || '-').join('/')}` : '';
+    };
+    const currentRows = current.slice(0, 5).map(item => `${item.status || '-'} · ${item.id || '-'} · ${item.title || item.summary || ''}${taskActions(item)}`).join('\n');
+    const recentRows = recent.slice(0, 5).map(item => `${item.status || '-'} · ${item.id || '-'} · ${item.title || item.summary || ''}${taskActions(item)}`).join('\n');
     return [
       `tasks=${counts.tasks || 0} · current=${counts.current_tasks || 0} · attempts=${counts.attempts || 0}`,
       `Work Summary · ${sanitizeDisplayText(source.summary || 'No work history summary from API')}`,
@@ -5681,18 +5685,24 @@
     companyApiLog('SYSTEM', `Loading employee detail ${employeeId}...`, 'normal');
     try {
       const payload = await companyApiGet(`/v1/employees/${encodeURIComponent(employeeId)}`);
+      let workPayload = payload;
+      try {
+        workPayload = await companyApiGet(`/v1/employees/${encodeURIComponent(employeeId)}/work-history`);
+      } catch (workErr) {
+        companyApiLog('SYSTEM', `Employee work-history fallback ${employeeId}: ${workErr.message}`, 'warn');
+      }
       const employee = payload.employee || {};
       const profile = payload.profile || {};
       const heartbeat = payload.heartbeat || {};
-      const workHistory = payload.work_history || {};
-      const currentActivity = payload.current_activity || {};
-      const attempts = payload.attempts || [];
-      const runtimeSessions = payload.runtime_sessions || [];
-      const toolCalls = payload.tool_calls || [];
-      const budgetSummary = payload.budget_summary || {};
-      const budgetEvents = payload.budget_events || [];
-      const evidenceRecords = payload.evidence_records || [];
-      const operationalSummary = payload.operational_summary || {};
+      const workHistory = workPayload.work_history || payload.work_history || {};
+      const currentActivity = workPayload.current_activity || payload.current_activity || {};
+      const attempts = workPayload.attempts || payload.attempts || [];
+      const runtimeSessions = workPayload.runtime_sessions || payload.runtime_sessions || [];
+      const toolCalls = workPayload.tool_calls || payload.tool_calls || [];
+      const budgetSummary = workPayload.budget_summary || payload.budget_summary || {};
+      const budgetEvents = workPayload.budget_events || payload.budget_events || [];
+      const evidenceRecords = workPayload.evidence_records || payload.evidence_records || [];
+      const operationalSummary = workPayload.operational_summary || payload.operational_summary || {};
       renderDetails(`Employee Detail: ${employeeId}`, [
         ['Status', employee.status || profile.status || '-'],
         ['Runtime', employee.runtime || profile.runtime || '-'],
@@ -5710,8 +5720,9 @@
         ['Capabilities', payload.capabilities || {}],
         ['Permissions', payload.permissions || {}],
         ['Sandbox', payload.sandbox_profile || {}],
-        ['Raw', payload],
-      ], payload);
+        ['Work History API', workPayload.source || '/v1/employees/{employee_id}'],
+        ['Raw', { profile: payload, work: workPayload }],
+      ], { profile: payload, work: workPayload });
     } catch (err) {
       companyApiLog('ERROR', `Employee detail ${employeeId} failed: ${err.message}`, 'error');
       if (fallbackKey) {

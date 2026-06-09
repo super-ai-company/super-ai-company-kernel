@@ -5326,6 +5326,56 @@ def employee_file_bundle(conn: sqlite3.Connection, employee_id: str) -> dict:
     for task in enriched_tasks:
         status = effective_task_status(task)
         status_counts[status] = status_counts.get(status, 0) + 1
+    def employee_task_owner_actions(task: dict) -> list[dict]:
+        task_id = str(task.get("id") or "")
+        attempt_id = str(task.get("latest_attempt_id") or "")
+        status = effective_task_status(task)
+
+        def action(action_id: str, label: str, api: str = "", *, method: str = "GET", requires_owner_approval: bool = False, dry_run_default: bool = True, dangerous: bool = False) -> dict:
+            return {
+                "id": action_id,
+                "label": label,
+                "api": api,
+                "method": method,
+                "task_id": task_id,
+                "attempt_id": attempt_id,
+                "requires_owner_approval": requires_owner_approval,
+                "dry_run_default": dry_run_default,
+                "dangerous": dangerous,
+            }
+
+        if status in {"submitted", "claimed", "running", "retrying"}:
+            return [
+                action("view_task", "View Task", f"/v1/tasks/{task_id}"),
+                action("view_trace", "View Trace"),
+            ]
+        if status in {"blocked", "stale", "waiting_approval"}:
+            return [
+                action("view_task", "View Task", f"/v1/tasks/{task_id}"),
+                action("request_correction", "Request Correction", f"/v1/tasks/{task_id}/correct", method="POST", requires_owner_approval=True),
+                action("retry", "Retry", f"/v1/tasks/{task_id}/retry", method="POST", requires_owner_approval=True),
+                action("reassign", "Reassign", f"/v1/tasks/{task_id}/reassign", method="POST", requires_owner_approval=True),
+            ]
+        if status in {"failed", "cancelled"}:
+            return [
+                action("view_task", "View Task", f"/v1/tasks/{task_id}"),
+                action("retry", "Retry", f"/v1/tasks/{task_id}/retry", method="POST", requires_owner_approval=True),
+                action("reassign", "Reassign", f"/v1/tasks/{task_id}/reassign", method="POST", requires_owner_approval=True),
+            ]
+        if status in {"completed", "done", "success"} and bool(task.get("has_final_evidence")):
+            return [
+                action("review_evidence", "Review Evidence", f"/v1/tasks/{task_id}"),
+                action("view_trace", "View Trace"),
+            ]
+        if status in {"completed", "done", "success"}:
+            return [
+                action("review_task", "Review Task", f"/v1/tasks/{task_id}"),
+                action("view_trace", "View Trace"),
+            ]
+        return [action("view_task", "View Task", f"/v1/tasks/{task_id}")]
+
+    for task in enriched_tasks:
+        task["owner_actions"] = employee_task_owner_actions(task)
     attention_counts = {
         "running_tasks": sum(1 for item in enriched_tasks if effective_task_status(item) in {"submitted", "claimed", "running", "retrying"}),
         "blocked_tasks": sum(1 for item in enriched_tasks if effective_task_status(item) in {"blocked", "stale", "waiting_approval"}),
