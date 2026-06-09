@@ -2158,6 +2158,41 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual(contract, api_skill["interaction_contract"])
 
     def test_cockpit_api_sanitizes_evidence_and_exposes_long_task_state(self) -> None:
+        local_smoke_dir = self.root / "state" / "local-smoke"
+        local_smoke_dir.mkdir(parents=True, exist_ok=True)
+        (local_smoke_dir / "latest.json").write_text(
+            json.dumps(
+                {
+                    "ok": True,
+                    "smoke_id": "local-smoke-test",
+                    "generated_at": "2026-06-09T12:00:00+07:00",
+                    "attendance": {"ok": True},
+                    "direct_matrix": [{"agent_id": "codex", "direct_status": "ok"}],
+                    "skill_closed_loop": {"ok": True, "task_id": "task-local-smoke-skill"},
+                    "summary": "local smoke passed",
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        comm_dir = self.root / "reports" / "communication-acceptance"
+        comm_dir.mkdir(parents=True, exist_ok=True)
+        (comm_dir / "latest.json").write_text(
+            json.dumps(
+                {
+                    "ok": True,
+                    "mechanism_ok": True,
+                    "real_execution": True,
+                    "mode": "live",
+                    "run_id": "comm-test",
+                    "generated_at": "2026-06-09T12:10:00+07:00",
+                    "metrics": {"continuity_total": 10, "continuity_passed": 10, "continuity_success_rate": 1.0},
+                    "summary": "communication acceptance passed",
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
         code, created = run_cli("employee", "create", "--id", "main", "--name", "main", "--role", "operator", "--runtime", "openclaw", "--workspace", str(self.root / "workspace" / "main"))
         self.assertEqual(0, code, created)
         code, created = run_cli("employee", "create", "--id", "codex-cockpit", "--name", "codex-cockpit", "--role", "engineer", "--runtime", "codex", "--workspace", str(self.root / "workspace" / "codex-cockpit"))
@@ -2412,6 +2447,18 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual(2, cockpit["counts"]["done_tasks"])
         self.assertEqual(1, cockpit["counts"]["evidence_issues"])
         self.assertEqual(2, cockpit["counts"]["awaiting_approval_tasks"])
+        verification_summary = cockpit["verification_summary"]
+        self.assertTrue(verification_summary["ok"])
+        self.assertEqual("all_recent_verifications_green", verification_summary["status"])
+        self.assertEqual("local-smoke-test", verification_summary["local_smoke"]["id"])
+        self.assertEqual("comm-test", verification_summary["communication_acceptance"]["id"])
+        self.assertEqual("10/10", verification_summary["communication_acceptance"]["continuity"])
+        self.assertTrue(verification_summary["local_smoke"]["direct_checked"])
+        self.assertTrue(verification_summary["local_smoke"]["direct_ok"])
+        self.assertTrue(verification_summary["local_smoke"]["skill_closed_loop_checked"])
+        self.assertTrue(verification_summary["local_smoke"]["skill_closed_loop_ok"])
+        self.assertIn("local smoke passed", verification_summary["summary"])
+        self.assertIn("communication acceptance passed", verification_summary["summary"])
         matrix_summary = cockpit["agent_matrix_summary"]
         self.assertEqual(cockpit["counts"]["readiness_counts"], matrix_summary["counts"])
         self.assertEqual(1, matrix_summary["active_ready"])
@@ -4571,6 +4618,9 @@ class CompanyKernelCoreTest(unittest.TestCase):
             "Agent readiness matrix",
             "cockpit.agent_matrix_summary",
             "owner_attention_required=${agentMatrix.owner_attention_required || 0}",
+            "Local verification",
+            "cockpit.verification_summary",
+            "missing_verification_reports",
         ]:
             self.assertIn(snippet, html)
 

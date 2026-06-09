@@ -3982,6 +3982,7 @@
     const approvals = summary.approvals || [];
     const approvalCenter = cockpit.approval_center_summary || summary.approval_control_summary || {};
     const agentMatrix = cockpit.agent_matrix_summary || {};
+    const verification = cockpit.verification_summary || {};
     const traces = summary.traces || [];
     const attempts = attemptHistoryRows(summary);
     const evidence = summary.evidence_records || [];
@@ -3994,6 +3995,12 @@
         label: 'Ledger parity',
         state: 'ok',
         message: `API/CLI/Dashboard share one ledger · tasks=${summary.tasks ? summary.tasks.length : 0} · employees=${counts.employees || 0}`,
+        tab: 'tasks'
+      },
+      {
+        label: 'Local verification',
+        state: verification.ok ? 'ok' : 'blocked',
+        message: `${verification.status || 'missing_verification_reports'} · ${verification.summary || 'run local smoke and communication acceptance'} · ${verification.owner_next_action || 'rerun verification after backend changes'}`,
         tab: 'tasks'
       },
       {
