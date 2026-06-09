@@ -1126,6 +1126,27 @@ def build_cockpit_summary(summary: dict) -> dict:
         if str(item.get("status") or "") in {"active-limited", "candidate"}
         or str(item.get("readiness_level") or "") in {"candidate_only", "online_only", "task_unsupported", "unsafe", "no_reply"}
     }
+    attention_levels = ["active_limited", "candidate_only", "online_only", "task_unsupported", "no_reply", "unsafe"]
+    owner_attention_required = sum(int(readiness_counts.get(level, 0) or 0) for level in attention_levels)
+    agent_matrix_summary = {
+        "source": "cockpit.employee_view_models",
+        "counts": readiness_counts,
+        "active_ready": int(readiness_counts.get("active_ready", 0) or 0),
+        "active_limited": int(readiness_counts.get("active_limited", 0) or 0),
+        "candidate_only": int(readiness_counts.get("candidate_only", 0) or 0),
+        "online_only": int(readiness_counts.get("online_only", 0) or 0),
+        "task_unsupported": int(readiness_counts.get("task_unsupported", 0) or 0),
+        "no_reply": int(readiness_counts.get("no_reply", 0) or 0),
+        "unsafe": int(readiness_counts.get("unsafe", 0) or 0),
+        "owner_attention_required": owner_attention_required,
+        "attention_levels": [level for level in attention_levels if int(readiness_counts.get(level, 0) or 0)],
+        "rule": "online is not active_ready; active_ready requires structured runtime/task/evidence readiness",
+        "owner_next_action": "review employee_readiness rows and run /v1/agent-matrix for any non-active_ready employee" if owner_attention_required else "all visible employees are active_ready or idle; monitor tasks",
+    }
+    agent_matrix_summary["summary"] = " · ".join(
+        f"{level}={int(agent_matrix_summary.get(level, 0) or 0)}"
+        for level in ["active_ready", "active_limited", "candidate_only", "online_only", "task_unsupported", "no_reply", "unsafe"]
+    )
     employee_counts = {
         "total": employees_total,
         "online": employees_online,
@@ -1222,6 +1243,7 @@ def build_cockpit_summary(summary: dict) -> dict:
             "chat_handshake_or_idle": chat_counts["handshake_or_idle"],
         },
         "employee_counts": employee_counts,
+        "agent_matrix_summary": agent_matrix_summary,
         "registry_reconciliation": registry_reconciliation,
         "doctor": doctor,
         "employees": employee_states,
