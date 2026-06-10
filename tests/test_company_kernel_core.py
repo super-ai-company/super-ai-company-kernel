@@ -4758,8 +4758,13 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertIn('id="approval-control-summary"', html)
         self.assertIn("approvalControlSummary(summary.approval_control_summary", html)
         self.assertIn("approval_control_summary: approvals.approval_control_summary", html)
+        self.assertIn("/v1/approvals?status=pending&limit=20", html)
+        self.assertIn("/v1/approvals?status=all&limit=20", html)
+        self.assertIn("approval_history", html)
+        self.assertIn("No pending approvals.", html)
+        self.assertIn("Recent approval history", html)
         self.assertIn("cockpit.approval_center_summary || summary.approval_control_summary", html)
-        self.assertIn("blocked_real_execution=${approvalCenter.blocked_real_execution_count || 0}", html)
+        self.assertIn("pending_owner_action_count=${approvalCenter.pending_owner_action_count || 0}", html)
         self.assertIn("pending_high_risk_actions", html)
         self.assertIn("real_execution_blockers", html)
         self.assertIn("realExecutionBlockerRows", html)
@@ -4779,7 +4784,7 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertIn("owner_next_action", html)
         self.assertIn("default_policy", html)
         self.assertIn("budget_overrun", html)
-        self.assertIn("blocked until owner approval", html)
+        self.assertIn("historical dry-run/mock-resolved approvals are audit history", html)
 
     def test_dashboard_owner_attention_actions_render_safety_metadata(self) -> None:
         template = Path(__file__).resolve().parents[1] / "dashboard_templates" / "gemini_dashboard.html"
@@ -5086,17 +5091,56 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual(["budget_overrun", "external_send", "rule_change"], summary["pending_high_risk_actions"])
         self.assertEqual(1, summary["dry_run_resolved"])
         self.assertEqual(0, summary["external_send_executed"])
-        self.assertEqual(2, summary["real_execution_blockers"]["external_send"])
+        self.assertEqual(1, summary["real_execution_blockers"]["external_send"])
         self.assertEqual(1, summary["real_execution_blockers"]["budget_overrun"])
         self.assertTrue(summary["real_external_send_requires_owner_approval"])
         self.assertEqual(3, summary["pending_owner_action_count"])
-        self.assertEqual(3, summary["blocked_real_execution_count"])
+        self.assertEqual(2, summary["blocked_real_execution_count"])
         self.assertEqual("owner_action_required", summary["queue_health"])
         self.assertEqual("dry_run_until_owner_approval", summary["default_policy"])
         self.assertIn("review pending high-risk approvals", summary["owner_next_action"])
-        self.assertIn("external_send=2", summary["owner_next_action"])
+        self.assertIn("external_send=1", summary["owner_next_action"])
         self.assertIn("budget_overrun=1", summary["owner_next_action"])
-        self.assertIn("blocked until owner approval", summary["summary"])
+        self.assertIn("historical dry-run/mock-resolved approvals are audit history", summary["summary"])
+
+    def test_approval_summary_does_not_treat_closed_external_send_as_current_blocker(self) -> None:
+        code, requested = run_cli(
+            "approval",
+            "request",
+            "--from",
+            "ops",
+            "--action",
+            "external_send",
+            "--reason",
+            "historical dry-run external send",
+            "--target",
+            "maker",
+            "--risk",
+            "P1",
+            "--approval-id",
+            "approval-closed-external-send",
+        )
+        self.assertEqual(0, code, requested)
+        code, resolved = run_cli("approval", "resolve", "--approval-id", "approval-closed-external-send", "--by", "ops", "--reason", "mock closed", "--mock")
+        self.assertEqual(0, code, resolved)
+
+        status, pending = api_gateway.route_get("/v1/approvals", {"status": ["pending"], "limit": ["10"]})
+        self.assertEqual(HTTPStatus.OK, status, pending)
+        self.assertEqual([], pending["approvals"])
+        self.assertEqual(0, pending["approval_control_summary"]["pending_owner_action_count"])
+        self.assertEqual(0, pending["approval_control_summary"]["blocked_real_execution_count"])
+        self.assertEqual({}, pending["approval_control_summary"]["real_execution_blockers"])
+        self.assertEqual("clear", pending["approval_control_summary"]["queue_health"])
+        self.assertIn("no pending owner approval actions", pending["approval_control_summary"]["owner_next_action"])
+
+        status, history = api_gateway.route_get("/v1/approvals", {"status": ["all"], "limit": ["10"]})
+        self.assertEqual(HTTPStatus.OK, status, history)
+        self.assertEqual(1, len(history["approvals"]))
+        self.assertEqual("resolved", history["approvals"][0]["status"])
+        self.assertEqual(0, history["approval_control_summary"]["pending_owner_action_count"])
+        self.assertEqual(0, history["approval_control_summary"]["blocked_real_execution_count"])
+        self.assertEqual({}, history["approval_control_summary"]["real_execution_blockers"])
+        self.assertEqual("clear", history["approval_control_summary"]["queue_health"])
 
     def test_dashboard_renders_project_goal_acceptance_review_and_retro(self) -> None:
         code, project = run_cli(
