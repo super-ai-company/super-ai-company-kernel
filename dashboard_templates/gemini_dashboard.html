@@ -3008,7 +3008,7 @@
           </div>
         </div>
         <div class="section-card">
-          <h2 data-i18n="pending_approvals_title"><i class="fa-solid fa-scale-balanced"></i> Pending approvals & Requests</h2>
+          <h2 data-i18n="pending_approvals_title"><i class="fa-solid fa-scale-balanced"></i> Pending owner approvals</h2>
           <div id="approval-control-summary" class="cockpit-row" style="margin-bottom:12px;">
             <div><strong>Approval Control Summary</strong><span>High-risk approvals, dry-run resolves, and external-send blockers will appear here.</span></div>
             <div class="long-task-state running">loading</div>
@@ -3030,6 +3030,12 @@
                 <!-- Populated by JS -->
               </tbody>
             </table>
+          </div>
+          <div style="margin-top:14px;">
+            <h3 style="font-size:13px;color:var(--text-secondary);text-transform:uppercase;letter-spacing:0.08em;margin-bottom:8px;">Recent approval history</h3>
+            <div id="approval-history-list" class="cockpit-list">
+              <div class="cockpit-row"><div><strong>Loading approval history</strong><span>Closed approvals are audit history, not current owner action.</span></div><div class="long-task-state running">loading</div></div>
+            </div>
           </div>
         </div>
 
@@ -3686,7 +3692,8 @@
       const recentDirect = await companyApiGetOptional('/v1/messages/recent-direct?limit=20', {direct_messages_recent: currentSummaryFallback('direct_messages_recent', [])});
       const events = await companyApiGetOptional('/v1/events?limit=20', {events: currentSummaryFallback('events', [])});
       const adapterRuns = await companyApiGetOptional('/v1/adapter-runs?limit=20', {adapter_runs: currentSummaryFallback('adapter_runs', [])});
-      const approvals = await companyApiGetOptional('/v1/approvals?limit=20', {approvals: currentSummaryFallback('approvals', [])});
+      const approvals = await companyApiGetOptional('/v1/approvals?status=pending&limit=20', {approvals: currentSummaryFallback('approvals', [])});
+      const approvalHistory = await companyApiGetOptional('/v1/approvals?status=all&limit=20', {approvals: currentSummaryFallback('approval_history', [])});
       const evidence = await companyApiGetOptional('/v1/evidence?limit=50', {evidence: currentSummaryFallback('evidence_records', [])});
       const artifacts = await companyApiGetOptional('/v1/artifacts?limit=50', {artifacts: currentSummaryFallback('artifact_records', [])});
       const handoffs = await companyApiGetOptional('/v1/handoffs?limit=50', {handoffs: currentSummaryFallback('handoff_records', [])});
@@ -3706,7 +3713,9 @@
         events: events.events || [],
         adapter_runs: adapterRuns.adapter_runs || [],
         approvals: approvals.approvals || [],
+        approval_history: approvalHistory.approvals || [],
         approval_control_summary: approvals.approval_control_summary || currentSummaryFallback('approval_control_summary', {}),
+        approval_history_summary: approvalHistory.approval_control_summary || currentSummaryFallback('approval_history_summary', {}),
         evidence_records: evidence.evidence || [],
         artifact_records: artifacts.artifacts || [],
         handoff_records: handoffs.handoffs || [],
@@ -4049,7 +4058,7 @@
       {
         label: 'Approvals safe',
         state: approvalCenter.real_execution_blocked || pendingApprovals ? 'blocked' : 'ok',
-        message: `${pendingApprovals} pending · ${closedApprovals} closed · blocked_real_execution=${approvalCenter.blocked_real_execution_count || 0} · ${approvalCenter.owner_next_action || 'approve/deny/mock resolve controls live in Audit tab; external_send remains dry-run until owner approval'}`,
+        message: `${pendingApprovals} pending · ${closedApprovals} closed · pending_owner_action_count=${approvalCenter.pending_owner_action_count || 0} · current_blocked_real_execution=${approvalCenter.blocked_real_execution_count || 0} · ${approvalCenter.owner_next_action || 'approve/deny/mock resolve controls live in Audit tab; external_send remains dry-run until owner approval'}`,
         tab: 'governance'
       },
       {
@@ -7066,10 +7075,36 @@
             </td>
           </tr>
         `;
-      }).join('') : '<tr data-empty-row="true"><td colspan="7" style="color:var(--text-muted);text-align:center;padding:24px;">No approvals.</td></tr>';
+      }).join('') : '<tr data-empty-row="true"><td colspan="7" style="color:var(--text-muted);text-align:center;padding:24px;">No pending approvals.</td></tr>';
       approvalsTbody.querySelectorAll('tr[data-approval-index]').forEach(row => {
         row.addEventListener('click', () => {
           const approval = approvals[Number(row.dataset.approvalIndex)] || {};
+          showApprovalApiDetails(approval.id || approval.approval_id || '', approval);
+        });
+      });
+    }
+    const approvalHistoryEl = document.getElementById('approval-history-list');
+    if (approvalHistoryEl) {
+      const approvalHistory = (summary.approval_history || [])
+        .filter(app => String(app.status || '').toLowerCase() !== 'pending')
+        .slice(0, 8);
+      approvalHistoryEl.innerHTML = approvalHistory.length ? approvalHistory.map((app, index) => {
+        const detail = approvalSummary(app);
+        const safetySummary = approvalTableSafetySummary(app);
+        return `
+          <div class="cockpit-row" data-approval-history-index="${index}">
+            <div>
+              <strong>${escapeHtml(app.id || app.approval_id || '-')}</strong>
+              <span>${escapeHtml(app.status || '-')} · ${escapeHtml(app.action || '-')} · ${escapeHtml(shortText(detail.request_reason, 120))}</span>
+              <span>historical dry-run/mock-resolved approvals are audit history · safety=${safetySummary}</span>
+            </div>
+            <div class="long-task-state success">closed</div>
+          </div>
+        `;
+      }).join('') : '<div class="cockpit-row"><div><strong>No closed approval history</strong><span>Resolved, approved, and denied approvals will appear here after decisions.</span></div><div class="long-task-state success">clear</div></div>';
+      approvalHistoryEl.querySelectorAll('[data-approval-history-index]').forEach(row => {
+        row.addEventListener('click', () => {
+          const approval = approvalHistory[Number(row.dataset.approvalHistoryIndex)] || {};
           showApprovalApiDetails(approval.id || approval.approval_id || '', approval);
         });
       });
@@ -8700,7 +8735,7 @@
       "synthesized_specs_title": "AI Synthesized Specs",
       "permissions_json_label": "Generated Permissions & Rules (JSON)",
       "approve_onboard_btn": "Approve & Onboard to Workspace",
-      "pending_approvals_title": "Pending approvals & Requests",
+      "pending_approvals_title": "Pending owner approvals",
       "rfc_governance_title": "RFC Governance",
       "chat_hub_title": "AI Conversation Chat Hub",
       "chat_threads_title": "Conversations",
@@ -8764,7 +8799,7 @@
       "synthesized_specs_title": "AI 智能合成属性",
       "permissions_json_label": "生成的权限与规则清单 (JSON)",
       "approve_onboard_btn": "批准并入职到工作空间",
-      "pending_approvals_title": "待处理审批与请求",
+      "pending_approvals_title": "待老板处理审批",
       "rfc_governance_title": "RFC 治理提案",
       "chat_hub_title": "AI 雇员会话中心",
       "chat_threads_title": "活跃会话",

@@ -8651,7 +8651,11 @@ def approval_control_summary(approvals: list[dict]) -> dict:
             dry_run_resolved += 1
         if safety.get("external_send_executed"):
             external_send_executed += 1
-        if action in {"external_send", "telegram_send", "openclaw_send"} and not safety.get("external_send_executed"):
+        if (
+            status in {"pending", "requested", "waiting_approval"}
+            and action in {"external_send", "telegram_send", "openclaw_send"}
+            and not safety.get("external_send_executed")
+        ):
             real_execution_blockers["external_send"] = real_execution_blockers.get("external_send", 0) + 1
         if action in {"budget_overrun", "budget.overrun"} and status == "pending":
             real_execution_blockers["budget_overrun"] = real_execution_blockers.get("budget_overrun", 0) + 1
@@ -8681,7 +8685,10 @@ def approval_control_summary(approvals: list[dict]) -> dict:
         "external_send_executed": external_send_executed,
         "real_external_send_requires_owner_approval": True,
         "real_execution_blockers": real_execution_blockers,
-        "summary": "Real external delivery is blocked until owner approval and an explicit delivery worker execution.",
+        "summary": (
+            "Pending high-risk approvals block real execution; "
+            "historical dry-run/mock-resolved approvals are audit history."
+        ),
     }
 
 
