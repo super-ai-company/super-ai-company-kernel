@@ -3967,6 +3967,7 @@ def openclaw_native_dispatch_plan(
     next_command: str,
     expected_evidence: str,
     rollback: str,
+    task_id: str = "",
 ) -> dict:
     source = source.strip()
     target = target.strip()
@@ -3976,6 +3977,7 @@ def openclaw_native_dispatch_plan(
     next_command = next_command.strip()
     expected_evidence = expected_evidence.strip()
     rollback = rollback.strip()
+    task_id = task_id.strip()
     missing = [
         name
         for name, value in {
@@ -4010,6 +4012,8 @@ def openclaw_native_dispatch_plan(
         },
         "rollback": rollback,
     }
+    if task_id:
+        payload["payload"]["kernel_task_id"] = task_id
     submit_command_preview = (
         "python3 /Users/shift/openclaw/scripts/ops_task_bus.py submit "
         f"--source-agent {source} --target-agent {target} --type {task_type} --priority {priority} "
@@ -4049,6 +4053,7 @@ def openclaw_native_dispatch_execute(
     expected_evidence: str,
     rollback: str,
     approval_id: str = "",
+    task_id: str = "",
 ) -> dict:
     plan = openclaw_native_dispatch_plan(
         source=source,
@@ -4059,6 +4064,7 @@ def openclaw_native_dispatch_execute(
         next_command=next_command,
         expected_evidence=expected_evidence,
         rollback=rollback,
+        task_id=task_id,
     )
     if not plan.get("ok"):
         return plan
@@ -9804,6 +9810,7 @@ def cmd_openclaw_dispatch_plan(args: argparse.Namespace) -> int:
         next_command=args.next_command,
         expected_evidence=args.expected_evidence,
         rollback=args.rollback,
+        task_id=args.task_id,
     )
     emit(result)
     return 0 if result.get("ok") else 1
@@ -9820,6 +9827,7 @@ def cmd_openclaw_dispatch_execute(args: argparse.Namespace) -> int:
         expected_evidence=args.expected_evidence,
         rollback=args.rollback,
         approval_id=args.approval_id,
+        task_id=args.task_id,
     )
     emit(result)
     return 0 if result.get("ok") else 1
@@ -11613,6 +11621,7 @@ def build_parser() -> argparse.ArgumentParser:
     openclaw_dispatch.add_argument("--next-command", required=True)
     openclaw_dispatch.add_argument("--expected-evidence", required=True)
     openclaw_dispatch.add_argument("--rollback", required=True)
+    openclaw_dispatch.add_argument("--task-id", default="")
     openclaw_dispatch.set_defaults(func=cmd_openclaw_dispatch_plan)
     openclaw_execute = openclaw_sub.add_parser("dispatch-execute")
     openclaw_execute.add_argument("--source", required=True)
@@ -11624,6 +11633,7 @@ def build_parser() -> argparse.ArgumentParser:
     openclaw_execute.add_argument("--expected-evidence", required=True)
     openclaw_execute.add_argument("--rollback", required=True)
     openclaw_execute.add_argument("--approval-id", default="")
+    openclaw_execute.add_argument("--task-id", default="")
     openclaw_execute.set_defaults(func=cmd_openclaw_dispatch_execute)
     openclaw_import = openclaw_sub.add_parser("import-results")
     openclaw_import.add_argument("--limit", type=int, default=50)

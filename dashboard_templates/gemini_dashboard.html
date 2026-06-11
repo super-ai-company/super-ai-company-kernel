@@ -2933,6 +2933,7 @@
               <input id="openclaw-dispatch-next-command" class="form-input" style="margin-top:8px;width:100%;" value="python3 safe_check.py --dry-run" placeholder="next command required">
               <input id="openclaw-dispatch-evidence" class="form-input" style="margin-top:8px;width:100%;" value="bus done receipt and supervisor evidence" placeholder="expected evidence required">
               <input id="openclaw-dispatch-rollback" class="form-input" style="margin-top:8px;width:100%;" value="archive stale request; do not send Telegram" placeholder="rollback required">
+              <input id="openclaw-dispatch-task-id" class="form-input" style="margin-top:8px;width:100%;" value="" placeholder="kernel task_id optional; enables result import">
               <input id="openclaw-dispatch-approval-id" class="form-input" style="margin-top:8px;width:100%;" value="" placeholder="approval_id required for real bus write">
               <pre id="openclaw-dispatch-plan-output" style="margin-top:8px;white-space:pre-wrap;color:var(--text-secondary);font-size:11px;">No dry-run dispatch plan generated yet.</pre>
             </div>
@@ -7525,7 +7526,8 @@
       goal: valueOf('openclaw-dispatch-goal'),
       next_command: valueOf('openclaw-dispatch-next-command'),
       expected_evidence: valueOf('openclaw-dispatch-evidence'),
-      rollback: valueOf('openclaw-dispatch-rollback')
+      rollback: valueOf('openclaw-dispatch-rollback'),
+      task_id: valueOf('openclaw-dispatch-task-id')
     };
     if (output) output.textContent = 'Planning dry-run dispatch...';
     try {
@@ -7554,6 +7556,7 @@
       next_command: valueOf('openclaw-dispatch-next-command'),
       expected_evidence: valueOf('openclaw-dispatch-evidence'),
       rollback: valueOf('openclaw-dispatch-rollback'),
+      task_id: valueOf('openclaw-dispatch-task-id'),
       approval_id: valueOf('openclaw-dispatch-approval-id')
     };
     if (output) output.textContent = 'Executing approved OpenClaw dispatch through owner gate...';
