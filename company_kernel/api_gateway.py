@@ -872,7 +872,10 @@ def route_get(path: str, query: dict[str, list[str]]) -> tuple[int, dict]:
     if path == "/v1/openclaw/runtime-inventory":
         conn = companyctl.connect_readonly()
         try:
-            return HTTPStatus.OK, {"ok": True, **companyctl.openclaw_runtime_inventory(conn)}
+            inventory = {"ok": True, **companyctl.openclaw_runtime_inventory(conn)}
+            if truthy(query_value(query, "summary")):
+                return HTTPStatus.OK, companyctl.openclaw_runtime_inventory_summary(inventory)
+            return HTTPStatus.OK, inventory
         finally:
             conn.close()
     if path == "/v1/openclaw/native-status":

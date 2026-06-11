@@ -3728,7 +3728,7 @@
       const workspacePrune = await companyApiGetOptional('/v1/workspaces/prune?dry_run=true&older_than_days=30&limit=50', currentSummaryFallback('workspace_prune_preview', {}));
       const telemetry = await companyApiGetOptional('/v1/telemetry/traces?limit=20', {traces: currentSummaryFallback('traces', [])});
       const employees = await companyApiGetOptional('/v1/employees', {employees: currentSummaryFallback('employees', [])});
-      const openclawInventory = await companyApiGetOptional('/v1/openclaw/runtime-inventory', currentSummaryFallback('openclaw_runtime_inventory', {}));
+      const openclawInventory = await companyApiGetOptional('/v1/openclaw/runtime-inventory?summary=true', currentSummaryFallback('openclaw_runtime_inventory', {}));
       const openclawNativeStatus = await companyApiGetOptional('/v1/openclaw/native-status?summary=true', currentSummaryFallback('openclaw_native_status', {}));
       const taskRows = tasks.tasks || tasks.items || [];
       const stalledTasks = taskRows.filter(task => ['stale', 'blocked', 'failed'].includes(String(task.status || '').toLowerCase()) || task.blocker);
@@ -7417,6 +7417,8 @@
     const container = document.getElementById('openclaw-runtime-inventory-container');
     if (!container) return;
     const counts = inventory.counts || {};
+    const actions = Array.isArray(inventory.recommended_actions) ? inventory.recommended_actions : [];
+    const health = inventory.health || ((counts.missing_registered || 0) > 0 ? 'attention_required' : 'green');
     const missing = inventory.missing_registered || [];
     const agentDirs = Object.values(inventory.agent_dirs || {});
     const spools = Object.values(inventory.telegram_spools || {});
@@ -7450,18 +7452,22 @@
         <td>${escapeHtml(row.queue)}</td>
         <td style="font-size: 10px; color: var(--text-muted);">${escapeHtml(shortText(row.path, 96))}</td>
       </tr>
-    `).join('') : `<tr><td colspan="6" style="color: var(--text-muted); text-align:center;">No OpenClaw runtime directories found.</td></tr>`;
+    `).join('') : `<tr><td colspan="6" style="color: var(--text-muted); text-align:center;">Summary mode hides raw runtime rows. Use /v1/openclaw/runtime-inventory without summary for full read-only details.</td></tr>`;
     container.innerHTML = `
       <div class="cockpit-row" style="margin-bottom: 12px;">
         <div>
           <strong>OpenClaw Runtime Inventory</strong>
-          <span>source=/v1/openclaw/runtime-inventory · read-only · no OpenClaw bus mutation</span>
+          <span>source=/v1/openclaw/runtime-inventory?summary=true · read-only · no OpenClaw bus mutation</span>
+          <span>health=${escapeHtml(health)} · mutates_openclaw=${String(!!inventory.mutates_openclaw)} · recommended_actions=${escapeHtml(actions.join(', ') || 'no_action_required')}</span>
         </div>
-        <div class="long-task-state success">inventory</div>
+        <div class="long-task-state ${health === 'green' ? 'success' : 'progress_stagnant'}">${escapeHtml(health)}</div>
       </div>
       <div class="metrics-grid" style="grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); margin-bottom: 12px;">
         <div class="metric-card"><div class="metric-label">Agent Dirs</div><div class="metric-value">${escapeHtml(String(counts.agent_dirs || 0))}</div></div>
         <div class="metric-card"><div class="metric-label">Telegram Spools</div><div class="metric-value">${escapeHtml(String(counts.telegram_spools || 0))}</div></div>
+        <div class="metric-card"><div class="metric-label">Sessions</div><div class="metric-value">${escapeHtml(String(counts.sessions || 0))}</div></div>
+        <div class="metric-card"><div class="metric-label">spool_pending</div><div class="metric-value">${escapeHtml(String(counts.spool_pending || 0))}</div></div>
+        <div class="metric-card"><div class="metric-label">spool_processing</div><div class="metric-value">${escapeHtml(String(counts.spool_processing || 0))}</div></div>
         <div class="metric-card"><div class="metric-label">Kernel Registered</div><div class="metric-value">${escapeHtml(String(counts.registered || 0))}</div><div style="font-size:11px;color:var(--text-secondary);margin-top:6px;">Includes human owner records such as owner-shift.</div></div>
         <div class="metric-card"><div class="metric-label">Missing Registered</div><div class="metric-value">${escapeHtml(String(counts.missing_registered || 0))}</div></div>
       </div>

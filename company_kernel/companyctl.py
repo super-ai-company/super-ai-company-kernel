@@ -3849,6 +3849,44 @@ def openclaw_runtime_inventory(conn: sqlite3.Connection | None = None) -> dict:
     }
 
 
+def openclaw_runtime_inventory_summary(inventory: dict) -> dict:
+    agent_dirs = inventory.get("agent_dirs") or {}
+    telegram_spools = inventory.get("telegram_spools") or {}
+    missing_registered = list(inventory.get("missing_registered") or [])
+    session_total = sum(int(item.get("session_count") or 0) for item in agent_dirs.values() if isinstance(item, dict))
+    spool_pending = sum(int(item.get("pending") or 0) for item in telegram_spools.values() if isinstance(item, dict))
+    spool_processing = sum(int(item.get("processing") or 0) for item in telegram_spools.values() if isinstance(item, dict))
+    stale_processing = sum(int(item.get("stale_processing") or 0) for item in telegram_spools.values() if isinstance(item, dict))
+    recommended_actions = []
+    if missing_registered:
+        recommended_actions.append("register_discovered_openclaw_agents")
+    if stale_processing:
+        recommended_actions.append("inspect_stale_telegram_spool_processing")
+    if spool_pending or spool_processing:
+        recommended_actions.append("monitor_openclaw_telegram_spools")
+    health = "attention_required" if recommended_actions else "green"
+    return {
+        "ok": True,
+        "mode": "read_only",
+        "health": health,
+        "openclaw_root": inventory.get("openclaw_root", ""),
+        "mutates_openclaw": False,
+        "counts": {
+            "agent_dirs": int((inventory.get("counts") or {}).get("agent_dirs") or len(agent_dirs)),
+            "telegram_spools": int((inventory.get("counts") or {}).get("telegram_spools") or len(telegram_spools)),
+            "registered": int((inventory.get("counts") or {}).get("registered") or len(inventory.get("registered_employee_ids") or [])),
+            "missing_registered": len(missing_registered),
+            "sessions": session_total,
+            "spool_pending": spool_pending,
+            "spool_processing": spool_processing,
+            "stale_processing": stale_processing,
+        },
+        "missing_registered": missing_registered[:20],
+        "recommended_actions": recommended_actions or ["no_action_required"],
+        "note": "Owner-readable OpenClaw runtime summary. Full details are available without --summary.",
+    }
+
+
 def _openclaw_json_sample(path: Path) -> dict:
     payload = load_json_or_default(path, {})
     if not isinstance(payload, dict):

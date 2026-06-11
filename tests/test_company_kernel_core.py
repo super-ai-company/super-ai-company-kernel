@@ -4461,7 +4461,7 @@ class CompanyKernelCoreTest(unittest.TestCase):
     }).join('');
   }
   document.getElementById('db-path-label').innerText = isSimulationMode ? 'simulation://gateway.company.internal' : 'https://gateway.company.internal';
-  // Stubs for test assertions: companyApiGet checkCompanyApi /v1/health refreshLiveDashboardFromApi window.refreshLiveDashboardFromApi /v1/tasks?limit=50 /v1/messages/recent-direct?limit=20 /v1/telemetry/traces /v1/traces/${encodeURIComponent(traceId)}/timeline /v1/traces/${encodeURIComponent(taskTraceId)}/timeline Trace Timeline traceTimelineSummary traceStorySummary ceoStageSummary ceoTimelineSummary payload.trace_story payload.ceo_stage_summary payload.ceo_timeline CEO Stage Summary traceObjectSummary payload.execution_attempts payload.artifacts payload.evidence payload.handoffs Supervisor Chain supervisionChainSummary payload.supervision_chain Task Supervisor Chain taskSupervisorChainSummary /v1/openclaw/runtime-inventory openclaw-runtime-inventory-container OpenClaw Runtime Inventory source=/v1/openclaw/runtime-inventory · read-only · no OpenClaw bus mutation registration status, and Telegram queue counts telemetry.traces populateKanban(window.summaryData) kanbanTransitionTask const agent = (task.claimed_by || task.target_agent block`, { agent, blocker: reason } stalled_tasks setInterval(refreshLiveDashboardFromApi, 10000) API OFFLINE /v1/attendance/latest realOnboardGeneratedEmployee realOffboardEmployee openEditEmployeeProfile realUpdateEmployeeProfile 'PATCH' 'DELETE' timeZone: 'Asia/Bangkok' THA bindMentionAutocomplete agent-mention-suggestions collaborationHelpText 是否需要其他员工协助 kernel-form-modal openKernelFormModal('conversation' employee-card-actions employee-card-menu toggleEmployeeActionMenu Task Chat Hub ready for @ grid-template-columns: minmax(0, 1fr) 34px dashboard-layout-fix showApprovalDetails refreshGovernanceTables refreshTraceTelemetry refreshTraceTelemetry() notify-route-status setTimeout(loadNotificationSettings, 350) decideApprovalFromDashboard /v1/approvals/${encodeURIComponent(approvalId)}/${normalized} Mock Resolve mock resolved from dashboard; no external delivery executed Approve Deny Approval Actions
+  // Stubs for test assertions: companyApiGet checkCompanyApi /v1/health refreshLiveDashboardFromApi window.refreshLiveDashboardFromApi /v1/tasks?limit=50 /v1/messages/recent-direct?limit=20 /v1/telemetry/traces /v1/traces/${encodeURIComponent(traceId)}/timeline /v1/traces/${encodeURIComponent(taskTraceId)}/timeline Trace Timeline traceTimelineSummary traceStorySummary ceoStageSummary ceoTimelineSummary payload.trace_story payload.ceo_stage_summary payload.ceo_timeline CEO Stage Summary traceObjectSummary payload.execution_attempts payload.artifacts payload.evidence payload.handoffs Supervisor Chain supervisionChainSummary payload.supervision_chain Task Supervisor Chain taskSupervisorChainSummary /v1/openclaw/runtime-inventory?summary=true openclaw-runtime-inventory-container OpenClaw Runtime Inventory source=/v1/openclaw/runtime-inventory?summary=true · read-only · no OpenClaw bus mutation registration status, and Telegram queue counts telemetry.traces populateKanban(window.summaryData) kanbanTransitionTask const agent = (task.claimed_by || task.target_agent block`, { agent, blocker: reason } stalled_tasks setInterval(refreshLiveDashboardFromApi, 10000) API OFFLINE /v1/attendance/latest realOnboardGeneratedEmployee realOffboardEmployee openEditEmployeeProfile realUpdateEmployeeProfile 'PATCH' 'DELETE' timeZone: 'Asia/Bangkok' THA bindMentionAutocomplete agent-mention-suggestions collaborationHelpText 是否需要其他员工协助 kernel-form-modal openKernelFormModal('conversation' employee-card-actions employee-card-menu toggleEmployeeActionMenu Task Chat Hub ready for @ grid-template-columns: minmax(0, 1fr) 34px dashboard-layout-fix showApprovalDetails refreshGovernanceTables refreshTraceTelemetry refreshTraceTelemetry() notify-route-status setTimeout(loadNotificationSettings, 350) decideApprovalFromDashboard /v1/approvals/${encodeURIComponent(approvalId)}/${normalized} Mock Resolve mock resolved from dashboard; no external delivery executed Approve Deny Approval Actions
 </script>
 </body></html>
             """,
@@ -4519,7 +4519,7 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertIn("supervisionChainSummary", html)
         self.assertIn("payload.supervision_chain", html)
         self.assertNotIn("is visible in the Traces panel/API", html)
-        self.assertIn("/v1/openclaw/runtime-inventory", html)
+        self.assertIn("/v1/openclaw/runtime-inventory?summary=true", html)
         self.assertIn("openclaw-runtime-inventory-container", html)
         self.assertIn("telemetry.traces", html)
         self.assertIn("stalled_tasks", html)
@@ -4530,7 +4530,7 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertIn("refreshTraceTelemetry()", html)
         self.assertIn("kanbanTransitionTask", html)
         self.assertIn("OpenClaw Runtime Inventory", html)
-        self.assertIn("source=/v1/openclaw/runtime-inventory · read-only · no OpenClaw bus mutation", html)
+        self.assertIn("source=/v1/openclaw/runtime-inventory?summary=true · read-only · no OpenClaw bus mutation", html)
         self.assertIn("registration status, and Telegram queue counts", html)
         self.assertIn("const agent = (task.claimed_by || task.target_agent", html)
         self.assertIn("block`, { agent, blocker: reason }", html)
@@ -4598,7 +4598,7 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertIn("const failures = await companyApiGetOptional('/v1/failures?limit=50', {failures: currentSummaryFallback('failure_records', [])});", html)
         self.assertIn("const workspacePrune = await companyApiGetOptional('/v1/workspaces/prune?dry_run=true&older_than_days=30&limit=50', currentSummaryFallback('workspace_prune_preview', {}));", html)
         self.assertIn("const telemetry = await companyApiGetOptional('/v1/telemetry/traces?limit=20', {traces: currentSummaryFallback('traces', [])});", html)
-        self.assertIn("const openclawInventory = await companyApiGetOptional('/v1/openclaw/runtime-inventory', currentSummaryFallback('openclaw_runtime_inventory', {}));", html)
+        self.assertIn("const openclawInventory = await companyApiGetOptional('/v1/openclaw/runtime-inventory?summary=true', currentSummaryFallback('openclaw_runtime_inventory', {}));", html)
         self.assertIn("const openclawNativeStatus = await companyApiGetOptional('/v1/openclaw/native-status?summary=true', currentSummaryFallback('openclaw_native_status', {}));", html)
         self.assertIn("openclaw_native_status: openclawNativeStatus || {}", html)
         self.assertIn("OpenClaw Native Bus", html)
@@ -9743,6 +9743,35 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertIn("market_agent", payload["missing_registered"])
         self.assertNotIn("market-agent", payload["missing_registered"])
         self.assertEqual(1, payload["counts"]["missing_registered"])
+
+    def test_openclaw_runtime_inventory_summary_reports_owner_readable_coverage(self) -> None:
+        run_cli("employee", "create", "--id", "market-agent", "--name", "Market Agent", "--role", "openclaw", "--runtime", "openclaw", "--workspace", str(self.root / "workspace"))
+        (self.root / "openclaw" / "agents" / "market-agent" / "sessions").mkdir(parents=True)
+        (self.root / "openclaw" / "agents" / "market-agent" / "sessions" / "sessions.json").write_text('{"s1": {}, "s2": {}}', encoding="utf-8")
+        (self.root / "openclaw" / "agents" / "unregistered-agent" / "sessions").mkdir(parents=True)
+        spool = self.root / "openclaw" / "telegram" / "ingress-spool-market_agent"
+        spool.mkdir(parents=True)
+        (spool / "evt-1.json").write_text("{}", encoding="utf-8")
+        processing = spool / "evt-2.processing"
+        processing.write_text("{}", encoding="utf-8")
+
+        status, payload = api_gateway.route_get("/v1/openclaw/runtime-inventory", {"summary": ["true"]})
+
+        self.assertEqual(HTTPStatus.OK, status, payload)
+        self.assertTrue(payload["ok"])
+        self.assertEqual("read_only", payload["mode"])
+        self.assertFalse(payload["mutates_openclaw"])
+        self.assertEqual("attention_required", payload["health"])
+        self.assertEqual(2, payload["counts"]["agent_dirs"])
+        self.assertEqual(1, payload["counts"]["telegram_spools"])
+        self.assertEqual(2, payload["counts"]["sessions"])
+        self.assertEqual(1, payload["counts"]["spool_pending"])
+        self.assertEqual(1, payload["counts"]["spool_processing"])
+        self.assertEqual(1, payload["counts"]["missing_registered"])
+        self.assertIn("register_discovered_openclaw_agents", payload["recommended_actions"])
+        self.assertIn("unregistered_agent", payload["missing_registered"])
+        self.assertNotIn("agent_dirs", payload)
+        self.assertNotIn("telegram_spools", payload)
 
     def test_openclaw_native_status_reads_agent_bus_approvals_and_supervisor_without_mutation(self) -> None:
         openclaw_root = self.root / "openclaw"
