@@ -4759,6 +4759,8 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertIn("executeOpenClawNativeDispatch", html)
         self.assertIn("/v1/openclaw/dispatch-execute", html)
         self.assertIn("Approved dispatch blocked by owner gate", html)
+        self.assertIn("importOpenClawNativeResults", html)
+        self.assertIn("/v1/openclaw/import-results", html)
         self.assertIn("Plan Dry-run", html)
 
     def test_dashboard_approvals_table_exposes_task_control_traceability(self) -> None:
@@ -9960,6 +9962,123 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertFalse(api_blocked["ok"])
         self.assertEqual("owner approval required", api_blocked["error"])
         self.assertFalse(api_blocked["mutates_openclaw"])
+
+    def test_openclaw_native_import_results_maps_done_and_failed_to_kernel_ledger(self) -> None:
+        openclaw_root = self.root / "openclaw"
+        done_dir = openclaw_root / "ops" / "agent_bus" / "done" / "main"
+        failed_dir = openclaw_root / "ops" / "agent_bus" / "failed" / "main"
+        done_dir.mkdir(parents=True, exist_ok=True)
+        failed_dir.mkdir(parents=True, exist_ok=True)
+        conn = companyctl.connect()
+        try:
+            for employee_id, role in [("main", "owner"), ("nestcar", "worker"), ("invest", "worker")]:
+                conn.execute(
+                    """
+                    INSERT INTO employees(id, name, role, runtime, workspace, status, created_at, updated_at)
+                    VALUES (?, ?, ?, 'openclaw', ?, 'active', ?, ?)
+                    ON CONFLICT(id) DO UPDATE SET status = 'active', runtime = 'openclaw', updated_at = excluded.updated_at
+                    """,
+                    (employee_id, employee_id, role, str(self.root / "workspaces" / employee_id), companyctl.now(), companyctl.now()),
+                )
+            conn.commit()
+        finally:
+            conn.close()
+
+        code, submitted_done = run_cli(
+            "task",
+            "submit",
+            "--from",
+            "main",
+            "--to",
+            "nestcar",
+            "--task-id",
+            "task-openclaw-native-done",
+            "--title",
+            "OpenClaw native done import",
+        )
+        self.assertEqual(0, code, submitted_done)
+        code, submitted_failed = run_cli(
+            "task",
+            "submit",
+            "--from",
+            "main",
+            "--to",
+            "invest",
+            "--task-id",
+            "task-openclaw-native-failed",
+            "--title",
+            "OpenClaw native failed import",
+        )
+        self.assertEqual(0, code, submitted_failed)
+
+        done_file = done_dir / "kernel-dispatch-done.json"
+        done_file.write_text(
+            json.dumps(
+                {
+                    "source_agent": "nestcar",
+                    "target_agent": "main",
+                    "type": "receipt",
+                    "payload": {
+                        "kernel_task_id": "task-openclaw-native-done",
+                        "summary": "OpenClaw main delivered native receipt",
+                        "evidence_path": str(openclaw_root / "reports" / "native-done.md"),
+                    },
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        failed_file = failed_dir / "kernel-dispatch-failed.json"
+        failed_file.write_text(
+            json.dumps(
+                {
+                    "source_agent": "invest",
+                    "target_agent": "main",
+                    "type": "receipt",
+                    "payload": {
+                        "kernel_task_id": "task-openclaw-native-failed",
+                        "blocker": "OpenClaw worker reported captcha required",
+                    },
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+
+        code, imported = run_cli("openclaw", "import-results", "--limit", "10")
+
+        self.assertEqual(0, code, imported)
+        self.assertTrue(imported["ok"])
+        self.assertEqual(2, imported["counts"]["processed"])
+        self.assertEqual(1, imported["counts"]["completed"])
+        self.assertEqual(1, imported["counts"]["blocked"])
+        self.assertTrue(imported["read_only_openclaw"])
+        self.assertFalse(imported["mutates_openclaw"])
+
+        conn = companyctl.connect_readonly()
+        try:
+            done_task = conn.execute("SELECT * FROM tasks WHERE id = 'task-openclaw-native-done'").fetchone()
+            failed_task = conn.execute("SELECT * FROM tasks WHERE id = 'task-openclaw-native-failed'").fetchone()
+            evidence_count = conn.execute("SELECT COUNT(*) FROM evidence WHERE task_id = 'task-openclaw-native-done' AND is_final = 1").fetchone()[0]
+            event_types = [
+                row["event_type"]
+                for row in conn.execute("SELECT event_type FROM company_events WHERE task_id IN ('task-openclaw-native-done', 'task-openclaw-native-failed') ORDER BY created_at")
+            ]
+        finally:
+            conn.close()
+        self.assertEqual("completed", done_task["status"])
+        self.assertIn("native-done.md", done_task["evidence_path"])
+        self.assertEqual("blocked", failed_task["status"])
+        self.assertIn("captcha required", failed_task["blocker"])
+        self.assertEqual(1, evidence_count)
+        self.assertIn("openclaw_native.result_imported", event_types)
+        self.assertIn("task.blocked", event_types)
+
+        status, api_imported = api_gateway.route_post("/v1/openclaw/import-results", {"limit": 10})
+        self.assertEqual(HTTPStatus.OK, status)
+        self.assertTrue(api_imported["ok"])
+        self.assertTrue(api_imported["read_only_openclaw"])
+        self.assertFalse(api_imported["mutates_openclaw"])
 
     def test_employee_sync_openclaw_runtime_registers_config_agents_and_runtime_candidates(self) -> None:
         config = self.root / "openclaw" / "openclaw.json"
