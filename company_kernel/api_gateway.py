@@ -876,7 +876,10 @@ def route_get(path: str, query: dict[str, list[str]]) -> tuple[int, dict]:
         finally:
             conn.close()
     if path == "/v1/openclaw/native-status":
-        return HTTPStatus.OK, companyctl.openclaw_native_status()
+        status = companyctl.openclaw_native_status()
+        if truthy(query_value(query, "summary")):
+            return HTTPStatus.OK, companyctl.openclaw_native_status_summary(status)
+        return HTTPStatus.OK, status
     if path == "/v1/agent-matrix":
         argv = ["agent-matrix"]
         agents = query_value(query, "agents")
