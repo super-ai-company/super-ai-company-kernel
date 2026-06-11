@@ -3729,7 +3729,7 @@
       const telemetry = await companyApiGetOptional('/v1/telemetry/traces?limit=20', {traces: currentSummaryFallback('traces', [])});
       const employees = await companyApiGetOptional('/v1/employees', {employees: currentSummaryFallback('employees', [])});
       const openclawInventory = await companyApiGetOptional('/v1/openclaw/runtime-inventory', currentSummaryFallback('openclaw_runtime_inventory', {}));
-      const openclawNativeStatus = await companyApiGetOptional('/v1/openclaw/native-status', currentSummaryFallback('openclaw_native_status', {}));
+      const openclawNativeStatus = await companyApiGetOptional('/v1/openclaw/native-status?summary=true', currentSummaryFallback('openclaw_native_status', {}));
       const taskRows = tasks.tasks || tasks.items || [];
       const stalledTasks = taskRows.filter(task => ['stale', 'blocked', 'failed'].includes(String(task.status || '').toLowerCase()) || task.blocker);
       mergeLiveSummaryPatch({
@@ -7482,29 +7482,32 @@
     if (!container) return;
     const counts = nativeStatus.counts || {};
     const supervisor = nativeStatus.supervisor || {};
-    const pendingNativeWork = Number(counts.bus_inbox || 0) + Number(counts.bus_running || 0) + Number(counts.approval_pending || 0) + Number(counts.approval_notify_pending || 0);
-    const state = pendingNativeWork ? 'running' : 'success';
+    const recommendedActions = Array.isArray(nativeStatus.recommended_actions) ? nativeStatus.recommended_actions : [];
+    const pendingNativeWork = Number(counts.bus_inbox || 0) + Number(counts.bus_running || 0) + Number(counts.bus_failed || 0) + Number(counts.approval_pending || 0) + Number(counts.approval_notify_pending || 0) + Number(counts.approval_notify_failed || 0);
+    const health = nativeStatus.health || (pendingNativeWork ? 'attention_required' : 'green');
+    const state = health === 'green' ? 'success' : 'progress_stagnant';
     container.innerHTML = `
       <div class="cockpit-row" style="margin-bottom: 12px;">
         <div>
           <strong>OpenClaw Native Bus</strong>
-          <span>source=/v1/openclaw/native-status · read-only · follows agent_bus / approvals / supervisor handover · no callback/watchdog mutation</span>
-          <span>dispatch_policy=${escapeHtml((nativeStatus.safety || {}).dispatch_policy || 'future dispatch must use ops_task_bus.py submit')}</span>
+          <span>source=/v1/openclaw/native-status?summary=true · read-only · follows agent_bus / approvals / supervisor handover · no callback/watchdog mutation</span>
+          <span>health=${escapeHtml(health)} · mutates_openclaw=${String(!!nativeStatus.mutates_openclaw)}</span>
+          <span>recommended_actions=${escapeHtml(recommendedActions.join(', ') || 'no_action_required')}</span>
         </div>
-        <div class="long-task-state ${state}">${state === 'running' ? 'native work' : 'clear'}</div>
+        <div class="long-task-state ${state}">${escapeHtml(health)}</div>
       </div>
       <div class="metrics-grid" style="grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); margin-bottom: 12px;">
         <div class="metric-card"><div class="metric-label">bus_inbox</div><div class="metric-value">${escapeHtml(String(counts.bus_inbox || 0))}</div></div>
         <div class="metric-card"><div class="metric-label">bus_running</div><div class="metric-value">${escapeHtml(String(counts.bus_running || 0))}</div></div>
-        <div class="metric-card"><div class="metric-label">bus_done</div><div class="metric-value">${escapeHtml(String(counts.bus_done || 0))}</div></div>
         <div class="metric-card"><div class="metric-label">bus_failed</div><div class="metric-value">${escapeHtml(String(counts.bus_failed || 0))}</div></div>
         <div class="metric-card"><div class="metric-label">approval_pending</div><div class="metric-value">${escapeHtml(String(counts.approval_pending || 0))}</div></div>
         <div class="metric-card"><div class="metric-label">approval_notify_pending</div><div class="metric-value">${escapeHtml(String(counts.approval_notify_pending || 0))}</div></div>
+        <div class="metric-card"><div class="metric-label">approval_notify_failed</div><div class="metric-value">${escapeHtml(String(counts.approval_notify_failed || 0))}</div></div>
       </div>
       <div class="cockpit-row">
         <div>
           <strong>OpenClaw Supervisor</strong>
-          <span>exists=${String(!!supervisor.exists)} · ok=${String(!!supervisor.ok)} · last_run_at=${escapeHtml(supervisor.last_run_at || '-')}</span>
+          <span>ok=${String(!!supervisor.ok)} · last_run_at=${escapeHtml(supervisor.last_run_at || '-')}</span>
         </div>
         <div class="long-task-state ${supervisor.ok ? 'success' : 'blocked'}">${supervisor.ok ? 'ok' : 'check'}</div>
       </div>
