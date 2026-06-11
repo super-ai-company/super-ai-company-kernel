@@ -2933,9 +2933,13 @@
               <input id="openclaw-dispatch-next-command" class="form-input" style="margin-top:8px;width:100%;" value="python3 safe_check.py --dry-run" placeholder="next command required">
               <input id="openclaw-dispatch-evidence" class="form-input" style="margin-top:8px;width:100%;" value="bus done receipt and supervisor evidence" placeholder="expected evidence required">
               <input id="openclaw-dispatch-rollback" class="form-input" style="margin-top:8px;width:100%;" value="archive stale request; do not send Telegram" placeholder="rollback required">
+              <input id="openclaw-dispatch-approval-id" class="form-input" style="margin-top:8px;width:100%;" value="" placeholder="approval_id required for real bus write">
               <pre id="openclaw-dispatch-plan-output" style="margin-top:8px;white-space:pre-wrap;color:var(--text-secondary);font-size:11px;">No dry-run dispatch plan generated yet.</pre>
             </div>
-            <button class="mini-btn" onclick="planOpenClawNativeDispatch(event)">Plan Dry-run<small>no bus write</small></button>
+            <div style="display:flex;flex-direction:column;gap:8px;">
+              <button class="mini-btn" onclick="planOpenClawNativeDispatch(event)">Plan Dry-run<small>no bus write</small></button>
+              <button class="mini-btn" onclick="executeOpenClawNativeDispatch(event)">Execute Approved<small>owner gate</small></button>
+            </div>
           </div>
           <div id="openclaw-runtime-inventory-container">
             <!-- Populated by JS -->
@@ -7530,6 +7534,36 @@
     } catch (err) {
       if (output) output.textContent = `OpenClaw dispatch plan failed: ${err.message}`;
       companyApiLog('OPENCLAW', `Dry-run dispatch plan failed: ${err.message}`, 'error');
+    }
+  }
+
+  async function executeOpenClawNativeDispatch(event) {
+    if (event) event.preventDefault();
+    const output = document.getElementById('openclaw-dispatch-plan-output');
+    const valueOf = (id) => {
+      const el = document.getElementById(id);
+      return el ? String(el.value || '').trim() : '';
+    };
+    const payload = {
+      source: valueOf('openclaw-dispatch-source'),
+      target: valueOf('openclaw-dispatch-target'),
+      type: valueOf('openclaw-dispatch-type'),
+      priority: valueOf('openclaw-dispatch-priority') || 'P2',
+      goal: valueOf('openclaw-dispatch-goal'),
+      next_command: valueOf('openclaw-dispatch-next-command'),
+      expected_evidence: valueOf('openclaw-dispatch-evidence'),
+      rollback: valueOf('openclaw-dispatch-rollback'),
+      approval_id: valueOf('openclaw-dispatch-approval-id')
+    };
+    if (output) output.textContent = 'Executing approved OpenClaw dispatch through owner gate...';
+    try {
+      const result = await companyApiPost('/v1/openclaw/dispatch-execute', payload);
+      if (output) output.textContent = JSON.stringify(result, null, 2);
+      companyApiLog('OPENCLAW', `Approved OpenClaw agent_bus write completed: ${result.file || '-'}`, 'success');
+      await renderOpenClawNativeStatus();
+    } catch (err) {
+      if (output) output.textContent = `OpenClaw approved dispatch blocked: ${err.message}`;
+      companyApiLog('OPENCLAW', `Approved dispatch blocked by owner gate: ${err.message}`, 'error');
     }
   }
 

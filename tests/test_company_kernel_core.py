@@ -4752,6 +4752,15 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertIn("external_send_executed=${String(!!safety.external_send_executed)}", html)
         self.assertIn("owner approval required before real external delivery", html)
 
+    def test_dashboard_openclaw_dispatch_execute_is_owner_gate_only(self) -> None:
+        template = Path(__file__).resolve().parents[1] / "dashboard_templates" / "gemini_dashboard.html"
+        html = template.read_text(encoding="utf-8")
+        self.assertIn('id="openclaw-dispatch-approval-id"', html)
+        self.assertIn("executeOpenClawNativeDispatch", html)
+        self.assertIn("/v1/openclaw/dispatch-execute", html)
+        self.assertIn("Approved dispatch blocked by owner gate", html)
+        self.assertIn("Plan Dry-run", html)
+
     def test_dashboard_approvals_table_exposes_task_control_traceability(self) -> None:
         template = Path(__file__).resolve().parents[1] / "dashboard_templates" / "gemini_dashboard.html"
         html = template.read_text(encoding="utf-8")
@@ -9860,6 +9869,97 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertTrue(payload["ok"])
         self.assertTrue(payload["dry_run"])
         self.assertFalse(payload["mutates_openclaw"])
+
+    def test_openclaw_native_execute_requires_kernel_owner_approval_before_bus_write(self) -> None:
+        openclaw_root = self.root / "openclaw"
+        bus_inbox = openclaw_root / "ops" / "agent_bus" / "inbox" / "main"
+        bus_inbox.mkdir(parents=True, exist_ok=True)
+        before_files = sorted(path.name for path in bus_inbox.glob("*.json"))
+        base_args = [
+            "openclaw",
+            "dispatch-execute",
+            "--source",
+            "nestcar",
+            "--target",
+            "main",
+            "--type",
+            "debug_request",
+            "--priority",
+            "P1",
+            "--goal",
+            "检查 OpenClaw 原生员工链路",
+            "--next-command",
+            "python3 safe_check.py --dry-run",
+            "--expected-evidence",
+            "bus done receipt",
+            "--rollback",
+            "archive stale request",
+        ]
+
+        code, blocked = run_cli(*base_args)
+
+        self.assertEqual(1, code, blocked)
+        self.assertFalse(blocked["ok"])
+        self.assertEqual("owner approval required", blocked["error"])
+        self.assertEqual("openclaw_native_dispatch", blocked["approval_action"])
+        self.assertFalse(blocked["mutates_openclaw"])
+        self.assertTrue(blocked["dry_run"])
+        self.assertEqual(before_files, sorted(path.name for path in bus_inbox.glob("*.json")))
+
+        approval_id = "approval-openclaw-native-dispatch"
+        code, requested = run_cli(
+            "approval",
+            "request",
+            "--from",
+            "nestcar",
+            "--action",
+            "openclaw_native_dispatch",
+            "--reason",
+            "allow one OpenClaw native agent_bus submit",
+            "--target",
+            "main",
+            "--risk",
+            "P1",
+            "--approval-id",
+            approval_id,
+        )
+        self.assertEqual(0, code, requested)
+        code, approved = run_cli("approval", "approve", "--approval-id", approval_id, "--by", "openclaw-main", "--reason", "approved owner gate")
+        self.assertEqual(0, code, approved)
+
+        code, executed = run_cli(*base_args, "--approval-id", approval_id)
+
+        self.assertEqual(0, code, executed)
+        self.assertTrue(executed["ok"])
+        self.assertFalse(executed["dry_run"])
+        self.assertTrue(executed["mutates_openclaw"])
+        self.assertEqual("ops_task_bus_file_write", executed["execution_mode"])
+        after_files = sorted(bus_inbox.glob("*.json"))
+        self.assertEqual(1, len(after_files))
+        written = json.loads(after_files[0].read_text(encoding="utf-8"))
+        self.assertEqual("nestcar", written["source_agent"])
+        self.assertEqual("main", written["target_agent"])
+        self.assertEqual("debug_request", written["type"])
+        self.assertEqual("python3 safe_check.py --dry-run", written["payload"]["next_command"])
+        self.assertEqual(approval_id, written["payload"]["kernel_approval_id"])
+
+        status, api_blocked = api_gateway.route_post(
+            "/v1/openclaw/dispatch-execute",
+            {
+                "source": "nestcar",
+                "target": "main",
+                "type": "debug_request",
+                "priority": "P1",
+                "goal": "检查 OpenClaw 原生员工链路",
+                "next_command": "python3 safe_check.py --dry-run",
+                "expected_evidence": "bus done receipt",
+                "rollback": "archive stale request",
+            },
+        )
+        self.assertEqual(HTTPStatus.BAD_REQUEST, status)
+        self.assertFalse(api_blocked["ok"])
+        self.assertEqual("owner approval required", api_blocked["error"])
+        self.assertFalse(api_blocked["mutates_openclaw"])
 
     def test_employee_sync_openclaw_runtime_registers_config_agents_and_runtime_candidates(self) -> None:
         config = self.root / "openclaw" / "openclaw.json"

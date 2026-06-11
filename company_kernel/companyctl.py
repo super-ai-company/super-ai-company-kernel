@@ -4038,6 +4038,77 @@ def openclaw_native_dispatch_plan(
     }
 
 
+def openclaw_native_dispatch_execute(
+    *,
+    source: str,
+    target: str,
+    task_type: str,
+    priority: str,
+    goal: str,
+    next_command: str,
+    expected_evidence: str,
+    rollback: str,
+    approval_id: str = "",
+) -> dict:
+    plan = openclaw_native_dispatch_plan(
+        source=source,
+        target=target,
+        task_type=task_type,
+        priority=priority,
+        goal=goal,
+        next_command=next_command,
+        expected_evidence=expected_evidence,
+        rollback=rollback,
+    )
+    if not plan.get("ok"):
+        return plan
+    approval_action = "openclaw_native_dispatch"
+    conn = connect()
+    try:
+        gate = approved_gate(conn, approval_id, approval_action, source.strip(), target.strip())
+    finally:
+        conn.close()
+    if not gate.get("allowed"):
+        return {
+            "ok": False,
+            "dry_run": True,
+            "mutates_openclaw": False,
+            "error": "owner approval required",
+            "approval_action": approval_action,
+            "approval_id": approval_id,
+            "gate": gate,
+            "plan": plan,
+        }
+
+    payload = json.loads(json.dumps(plan["payload"], ensure_ascii=False))
+    dispatch_id = f"kernel-openclaw-dispatch-{datetime.now().strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:8]}"
+    created_at = datetime.now(timezone.utc).isoformat()
+    payload["payload"]["kernel_approval_id"] = approval_id
+    payload["payload"]["kernel_dispatch_id"] = dispatch_id
+    payload["payload"]["kernel_created_at"] = created_at
+    inbox = openclaw_root() / "ops" / "agent_bus" / "inbox" / target.strip()
+    inbox.mkdir(parents=True, exist_ok=True)
+    path = inbox / f"{dispatch_id}.json"
+    payload["created_at"] = created_at
+    payload["kernel_origin"] = "company_kernel_openclaw_native_adapter"
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    return {
+        "ok": True,
+        "dry_run": False,
+        "mutates_openclaw": True,
+        "execution_mode": "ops_task_bus_file_write",
+        "approval_id": approval_id,
+        "file": str(path),
+        "payload": payload,
+        "plan": plan,
+        "safety": {
+            "used_owner_approval": True,
+            "does_not_call_openclaw_deliver": True,
+            "does_not_touch_callback_or_watcher": True,
+        },
+    }
+
+
 def openclaw_guard_health(conn: sqlite3.Connection | None = None) -> dict:
     root = openclaw_root()
     telegram_dir = root / "telegram"
@@ -9581,6 +9652,22 @@ def cmd_openclaw_dispatch_plan(args: argparse.Namespace) -> int:
     return 0 if result.get("ok") else 1
 
 
+def cmd_openclaw_dispatch_execute(args: argparse.Namespace) -> int:
+    result = openclaw_native_dispatch_execute(
+        source=args.source,
+        target=args.target,
+        task_type=args.type,
+        priority=args.priority,
+        goal=args.goal,
+        next_command=args.next_command,
+        expected_evidence=args.expected_evidence,
+        rollback=args.rollback,
+        approval_id=args.approval_id,
+    )
+    emit(result)
+    return 0 if result.get("ok") else 1
+
+
 def parse_split_item(raw: str) -> dict:
     parts = raw.split("|", 3)
     if len(parts) < 2:
@@ -11364,6 +11451,17 @@ def build_parser() -> argparse.ArgumentParser:
     openclaw_dispatch.add_argument("--expected-evidence", required=True)
     openclaw_dispatch.add_argument("--rollback", required=True)
     openclaw_dispatch.set_defaults(func=cmd_openclaw_dispatch_plan)
+    openclaw_execute = openclaw_sub.add_parser("dispatch-execute")
+    openclaw_execute.add_argument("--source", required=True)
+    openclaw_execute.add_argument("--target", required=True)
+    openclaw_execute.add_argument("--type", required=True)
+    openclaw_execute.add_argument("--priority", default="P2")
+    openclaw_execute.add_argument("--goal", required=True)
+    openclaw_execute.add_argument("--next-command", required=True)
+    openclaw_execute.add_argument("--expected-evidence", required=True)
+    openclaw_execute.add_argument("--rollback", required=True)
+    openclaw_execute.add_argument("--approval-id", default="")
+    openclaw_execute.set_defaults(func=cmd_openclaw_dispatch_execute)
 
     emp = sub.add_parser("employee")
     emp_sub = emp.add_subparsers(dest="employee_cmd", required=True)
