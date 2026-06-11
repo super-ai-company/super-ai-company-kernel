@@ -3957,6 +3957,43 @@ def openclaw_native_status() -> dict:
     }
 
 
+def openclaw_native_status_summary(status: dict) -> dict:
+    counts = dict(status.get("counts") or {})
+    attention_keys = [
+        "bus_inbox",
+        "bus_running",
+        "bus_failed",
+        "approval_pending",
+        "approval_notify_pending",
+        "approval_notify_failed",
+    ]
+    attention_total = sum(int(counts.get(key) or 0) for key in attention_keys)
+    recommended_actions: list[str] = []
+    if attention_total:
+        recommended_actions.append("drain_openclaw_pending_items")
+    if int(counts.get("approval_pending") or 0):
+        recommended_actions.append("review_owner_approvals")
+    if int(counts.get("approval_notify_pending") or 0) or int(counts.get("approval_notify_failed") or 0):
+        recommended_actions.append("check_async_approval_notifications")
+    if not recommended_actions:
+        recommended_actions.append("no_action_required")
+    supervisor = status.get("supervisor") if isinstance(status.get("supervisor"), dict) else {}
+    return {
+        "ok": bool(status.get("ok")),
+        "mode": status.get("mode", "read_only"),
+        "health": "attention_required" if attention_total else "green",
+        "openclaw_root": status.get("openclaw_root", ""),
+        "mutates_openclaw": bool(((status.get("safety") or {}).get("mutates_openclaw"))),
+        "counts": {key: int(counts.get(key) or 0) for key in attention_keys},
+        "supervisor": {
+            "ok": bool(supervisor.get("ok")),
+            "last_run_at": str(supervisor.get("last_run_at") or ""),
+        },
+        "recommended_actions": recommended_actions,
+        "note": "Owner-readable OpenClaw native queue summary. Full details are available without --summary.",
+    }
+
+
 def openclaw_native_dispatch_plan(
     *,
     source: str,
@@ -9824,7 +9861,8 @@ def cmd_task_children(args: argparse.Namespace) -> int:
 
 
 def cmd_openclaw_native_status(args: argparse.Namespace) -> int:
-    emit(openclaw_native_status())
+    status = openclaw_native_status()
+    emit(openclaw_native_status_summary(status) if args.summary else status)
     return 0
 
 
@@ -11639,6 +11677,7 @@ def build_parser() -> argparse.ArgumentParser:
     openclaw_cmd = sub.add_parser("openclaw")
     openclaw_sub = openclaw_cmd.add_subparsers(dest="openclaw_cmd", required=True)
     openclaw_native = openclaw_sub.add_parser("native-status")
+    openclaw_native.add_argument("--summary", action="store_true")
     openclaw_native.set_defaults(func=cmd_openclaw_native_status)
     openclaw_dispatch = openclaw_sub.add_parser("dispatch-plan")
     openclaw_dispatch.add_argument("--source", required=True)

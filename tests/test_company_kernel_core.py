@@ -9810,6 +9810,40 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertTrue(payload["ok"])
         self.assertEqual(1, payload["counts"]["bus_inbox"])
 
+    def test_openclaw_native_status_summary_reports_owner_readable_health(self) -> None:
+        openclaw_root = self.root / "openclaw"
+        bus_root = openclaw_root / "ops" / "agent_bus"
+        approvals_root = openclaw_root / "ops" / "approvals"
+        for state in ["inbox", "running", "done", "failed"]:
+            (bus_root / state / "main").mkdir(parents=True, exist_ok=True)
+        for state in ["pending", "approved", "denied", "archived", "notify_pending", "notify_done", "notify_failed"]:
+            (approvals_root / state).mkdir(parents=True, exist_ok=True)
+        (bus_root / "inbox" / "main" / "needs-main.json").write_text('{"source_agent":"invest","target_agent":"main"}', encoding="utf-8")
+        (bus_root / "running" / "main" / "running.json").write_text('{"source_agent":"main","target_agent":"nestcar"}', encoding="utf-8")
+        (bus_root / "failed" / "main" / "failed.json").write_text('{"source_agent":"invest","target_agent":"main","status":"failed"}', encoding="utf-8")
+        (approvals_root / "pending" / "approval.json").write_text('{"source_agent":"invest","status":"pending"}', encoding="utf-8")
+        (approvals_root / "notify_pending" / "notify.json").write_text('{"source_agent":"invest","decision":"approved"}', encoding="utf-8")
+        supervisor_path = openclaw_root / "reports" / "openclaw-agent-supervisor-state.json"
+        supervisor_path.parent.mkdir(parents=True, exist_ok=True)
+        supervisor_path.write_text('{"ok": true, "last_run_at": "2026-06-11T12:30:00+07:00"}', encoding="utf-8")
+
+        code, summary = run_cli("openclaw", "native-status", "--summary")
+
+        self.assertEqual(0, code, summary)
+        self.assertTrue(summary["ok"])
+        self.assertEqual("read_only", summary["mode"])
+        self.assertFalse(summary["mutates_openclaw"])
+        self.assertEqual("attention_required", summary["health"])
+        self.assertEqual(1, summary["counts"]["bus_inbox"])
+        self.assertEqual(1, summary["counts"]["bus_running"])
+        self.assertEqual(1, summary["counts"]["bus_failed"])
+        self.assertEqual(1, summary["counts"]["approval_pending"])
+        self.assertEqual(1, summary["counts"]["approval_notify_pending"])
+        self.assertEqual("2026-06-11T12:30:00+07:00", summary["supervisor"]["last_run_at"])
+        self.assertIn("drain_openclaw_pending_items", summary["recommended_actions"])
+        self.assertNotIn("agent_bus", summary)
+        self.assertNotIn("approvals", summary)
+
     def test_openclaw_native_dispatch_plan_is_dry_run_and_uses_agent_bus_contract(self) -> None:
         openclaw_root = self.root / "openclaw"
         bus_inbox = openclaw_root / "ops" / "agent_bus" / "inbox" / "main"
