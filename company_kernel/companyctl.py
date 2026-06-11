@@ -3957,6 +3957,87 @@ def openclaw_native_status() -> dict:
     }
 
 
+def openclaw_native_dispatch_plan(
+    *,
+    source: str,
+    target: str,
+    task_type: str,
+    priority: str,
+    goal: str,
+    next_command: str,
+    expected_evidence: str,
+    rollback: str,
+) -> dict:
+    source = source.strip()
+    target = target.strip()
+    task_type = task_type.strip()
+    priority = (priority.strip() or "P2").upper()
+    goal = goal.strip()
+    next_command = next_command.strip()
+    expected_evidence = expected_evidence.strip()
+    rollback = rollback.strip()
+    missing = [
+        name
+        for name, value in {
+            "source": source,
+            "target": target,
+            "type": task_type,
+            "goal": goal,
+            "next_command": next_command,
+            "expected_evidence": expected_evidence,
+            "rollback": rollback,
+        }.items()
+        if not value
+    ]
+    if missing:
+        return {
+            "ok": False,
+            "dry_run": True,
+            "mutates_openclaw": False,
+            "error": "missing required OpenClaw agent_bus dispatch fields",
+            "missing": missing,
+        }
+    payload = {
+        "source_agent": source,
+        "target_agent": target,
+        "type": task_type,
+        "priority": priority,
+        "payload": {
+            "goal": goal,
+            "next_command": next_command,
+            "expected_evidence": expected_evidence,
+            "origin": "company_kernel_openclaw_native_adapter",
+        },
+        "rollback": rollback,
+    }
+    submit_command_preview = (
+        "python3 /Users/shift/openclaw/scripts/ops_task_bus.py submit "
+        f"--source-agent {source} --target-agent {target} --type {task_type} --priority {priority} "
+        "--payload '<payload-json>' --rollback '<rollback-text>'"
+    )
+    return {
+        "ok": True,
+        "dry_run": True,
+        "mutates_openclaw": False,
+        "openclaw_root": str(openclaw_root()),
+        "payload": payload,
+        "dispatch_contract": {
+            "command": "ops_task_bus.py submit",
+            "bus": "agent_bus",
+            "allowed_execution": "owner_approved_only",
+            "default_mode": "dry_run",
+        },
+        "submit_command_preview": submit_command_preview,
+        "safety": {
+            "does_not_write_bus": True,
+            "does_not_call_openclaw_deliver": True,
+            "does_not_touch_callback_or_watcher": True,
+            "requires_owner_approval_for_execute": True,
+        },
+        "note": "Dry-run dispatch plan only. It prepares the official OpenClaw agent_bus submit contract but does not write OpenClaw files.",
+    }
+
+
 def openclaw_guard_health(conn: sqlite3.Connection | None = None) -> dict:
     root = openclaw_root()
     telegram_dir = root / "telegram"
@@ -9485,6 +9566,21 @@ def cmd_openclaw_native_status(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_openclaw_dispatch_plan(args: argparse.Namespace) -> int:
+    result = openclaw_native_dispatch_plan(
+        source=args.source,
+        target=args.target,
+        task_type=args.type,
+        priority=args.priority,
+        goal=args.goal,
+        next_command=args.next_command,
+        expected_evidence=args.expected_evidence,
+        rollback=args.rollback,
+    )
+    emit(result)
+    return 0 if result.get("ok") else 1
+
+
 def parse_split_item(raw: str) -> dict:
     parts = raw.split("|", 3)
     if len(parts) < 2:
@@ -11258,6 +11354,16 @@ def build_parser() -> argparse.ArgumentParser:
     openclaw_sub = openclaw_cmd.add_subparsers(dest="openclaw_cmd", required=True)
     openclaw_native = openclaw_sub.add_parser("native-status")
     openclaw_native.set_defaults(func=cmd_openclaw_native_status)
+    openclaw_dispatch = openclaw_sub.add_parser("dispatch-plan")
+    openclaw_dispatch.add_argument("--source", required=True)
+    openclaw_dispatch.add_argument("--target", required=True)
+    openclaw_dispatch.add_argument("--type", required=True)
+    openclaw_dispatch.add_argument("--priority", default="P2")
+    openclaw_dispatch.add_argument("--goal", required=True)
+    openclaw_dispatch.add_argument("--next-command", required=True)
+    openclaw_dispatch.add_argument("--expected-evidence", required=True)
+    openclaw_dispatch.add_argument("--rollback", required=True)
+    openclaw_dispatch.set_defaults(func=cmd_openclaw_dispatch_plan)
 
     emp = sub.add_parser("employee")
     emp_sub = emp.add_subparsers(dest="employee_cmd", required=True)

@@ -4604,6 +4604,10 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertIn("OpenClaw Native Bus", html)
         self.assertIn("bus_inbox", html)
         self.assertIn("approval_notify_pending", html)
+        self.assertIn("OpenClaw Dispatch Plan", html)
+        self.assertIn("planOpenClawNativeDispatch", html)
+        self.assertIn("companyApiPost('/v1/openclaw/dispatch-plan'", html)
+        self.assertIn("Dry-run only; does not write OpenClaw agent_bus", html)
         self.assertIn("window.dashboardOptionalApiWarnings = window.dashboardOptionalApiWarnings || [];", html)
         self.assertIn("Live refresh partial:", html)
         self.assertNotIn("Optional API ${path} failed: ${err.message}; continuing refresh.", html)
@@ -9793,6 +9797,69 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual(HTTPStatus.OK, api_status)
         self.assertTrue(payload["ok"])
         self.assertEqual(1, payload["counts"]["bus_inbox"])
+
+    def test_openclaw_native_dispatch_plan_is_dry_run_and_uses_agent_bus_contract(self) -> None:
+        openclaw_root = self.root / "openclaw"
+        bus_inbox = openclaw_root / "ops" / "agent_bus" / "inbox" / "main"
+        bus_inbox.mkdir(parents=True, exist_ok=True)
+        before_files = sorted(path.name for path in bus_inbox.glob("*.json"))
+
+        code, planned = run_cli(
+            "openclaw",
+            "dispatch-plan",
+            "--source",
+            "invest",
+            "--target",
+            "main",
+            "--type",
+            "debug_request",
+            "--priority",
+            "P1",
+            "--goal",
+            "检查 Thailand REI 日报发送链路",
+            "--next-command",
+            "python3 /Users/shift/openclaw/skills/thailand-real-estate-investor/scripts/daily_new_listing_monitor.py --dry-run",
+            "--expected-evidence",
+            "bus done receipt and no empty report send",
+            "--rollback",
+            "archive stale request and do not send Telegram",
+        )
+
+        self.assertEqual(0, code, planned)
+        self.assertTrue(planned["ok"])
+        self.assertTrue(planned["dry_run"])
+        self.assertFalse(planned["mutates_openclaw"])
+        self.assertEqual("ops_task_bus.py submit", planned["dispatch_contract"]["command"])
+        self.assertEqual("invest", planned["payload"]["source_agent"])
+        self.assertEqual("main", planned["payload"]["target_agent"])
+        self.assertEqual("debug_request", planned["payload"]["type"])
+        self.assertEqual("P1", planned["payload"]["priority"])
+        self.assertEqual("检查 Thailand REI 日报发送链路", planned["payload"]["payload"]["goal"])
+        self.assertIn("daily_new_listing_monitor.py --dry-run", planned["payload"]["payload"]["next_command"])
+        self.assertEqual("bus done receipt and no empty report send", planned["payload"]["payload"]["expected_evidence"])
+        self.assertEqual("archive stale request and do not send Telegram", planned["payload"]["rollback"])
+        self.assertIn("--source-agent invest", planned["submit_command_preview"])
+        self.assertIn("--target-agent main", planned["submit_command_preview"])
+        after_files = sorted(path.name for path in bus_inbox.glob("*.json"))
+        self.assertEqual(before_files, after_files)
+
+        status, payload = api_gateway.route_post(
+            "/v1/openclaw/dispatch-plan",
+            {
+                "source": "invest",
+                "target": "main",
+                "type": "debug_request",
+                "priority": "P1",
+                "goal": "检查 Thailand REI 日报发送链路",
+                "next_command": "python3 safe_check.py --dry-run",
+                "expected_evidence": "bus receipt",
+                "rollback": "archive stale request",
+            },
+        )
+        self.assertEqual(HTTPStatus.OK, status)
+        self.assertTrue(payload["ok"])
+        self.assertTrue(payload["dry_run"])
+        self.assertFalse(payload["mutates_openclaw"])
 
     def test_employee_sync_openclaw_runtime_registers_config_agents_and_runtime_candidates(self) -> None:
         config = self.root / "openclaw" / "openclaw.json"
