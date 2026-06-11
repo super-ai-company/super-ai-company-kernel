@@ -4109,6 +4109,163 @@ def openclaw_native_dispatch_execute(
     }
 
 
+def _openclaw_native_result_task_id(payload: dict) -> str:
+    nested = payload.get("payload", {}) if isinstance(payload.get("payload", {}), dict) else {}
+    for key in ("kernel_task_id", "task_id"):
+        value = str(nested.get(key) or payload.get(key) or "").strip()
+        if value:
+            return value
+    return ""
+
+
+def _openclaw_native_result_agent(payload: dict, fallback: str = "") -> str:
+    for key in ("source_agent", "employee_id", "agent"):
+        value = str(payload.get(key) or "").strip()
+        if value:
+            return value
+    nested = payload.get("payload", {}) if isinstance(payload.get("payload", {}), dict) else {}
+    for key in ("source_agent", "employee_id", "agent"):
+        value = str(nested.get(key) or "").strip()
+        if value:
+            return value
+    return fallback
+
+
+def _openclaw_native_result_summary(payload: dict, state: str) -> str:
+    nested = payload.get("payload", {}) if isinstance(payload.get("payload", {}), dict) else {}
+    for key in ("summary", "message", "result", "receipt"):
+        value = str(nested.get(key) or payload.get(key) or "").strip()
+        if value:
+            return value
+    return f"OpenClaw native {state} result imported"
+
+
+def _openclaw_native_result_evidence(payload: dict, source_file: Path) -> str:
+    nested = payload.get("payload", {}) if isinstance(payload.get("payload", {}), dict) else {}
+    for key in ("evidence_path", "evidence", "report_path", "path"):
+        value = str(nested.get(key) or payload.get(key) or "").strip()
+        if value:
+            return value
+    return str(source_file)
+
+
+def _openclaw_native_result_blocker(payload: dict) -> str:
+    nested = payload.get("payload", {}) if isinstance(payload.get("payload", {}), dict) else {}
+    for key in ("blocker", "error", "reason", "message"):
+        value = str(nested.get(key) or payload.get(key) or "").strip()
+        if value:
+            return value
+    return "OpenClaw native failed result imported"
+
+
+def openclaw_native_import_results(*, limit: int = 50, agent: str = "") -> dict:
+    root = openclaw_root()
+    bus_root = root / "ops" / "agent_bus"
+    candidates: list[tuple[str, str, Path]] = []
+    for state in ("done", "failed"):
+        state_root = bus_root / state
+        if not state_root.exists():
+            continue
+        agent_dirs = [state_root / agent] if agent else sorted(path for path in state_root.iterdir() if path.is_dir())
+        for agent_dir in agent_dirs:
+            if not agent_dir.exists():
+                continue
+            for path in sorted(agent_dir.glob("*.json")):
+                candidates.append((state, agent_dir.name, path))
+    processed: list[dict] = []
+    skipped: list[dict] = []
+    counts = {"processed": 0, "completed": 0, "blocked": 0, "skipped": 0}
+    conn = connect()
+    try:
+        for state, result_agent, path in candidates[: max(0, int(limit))]:
+            try:
+                payload = json.loads(path.read_text(encoding="utf-8"))
+            except json.JSONDecodeError as exc:
+                skipped.append({"file": str(path), "reason": f"invalid json: {exc}"})
+                counts["skipped"] += 1
+                continue
+            if not isinstance(payload, dict):
+                skipped.append({"file": str(path), "reason": "payload is not object"})
+                counts["skipped"] += 1
+                continue
+            task_id = _openclaw_native_result_task_id(payload)
+            if not task_id:
+                skipped.append({"file": str(path), "reason": "missing kernel_task_id"})
+                counts["skipped"] += 1
+                continue
+            task = conn.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
+            if not task:
+                skipped.append({"file": str(path), "reason": "kernel task not found", "task_id": task_id})
+                counts["skipped"] += 1
+                continue
+            employee_id = _openclaw_native_result_agent(payload, result_agent)
+            trace_id = trace_id_for_task(conn, task_id)
+            existing = conn.execute(
+                "SELECT evidence_id FROM evidence WHERE task_id = ? AND metadata_json LIKE ?",
+                (task_id, f"%{str(path)}%"),
+            ).fetchone()
+            if state == "done":
+                summary = _openclaw_native_result_summary(payload, state)
+                evidence_path = _openclaw_native_result_evidence(payload, path)
+                if not existing:
+                    evidence_id = f"evidence-openclaw-native-{datetime.now().strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:8]}"
+                    conn.execute(
+                        """
+                        INSERT INTO evidence(evidence_id, trace_id, task_id, attempt_id, employee_id, artifact_id, type, path_or_url, summary, checksum, is_final, metadata_json, created_at)
+                        VALUES (?, ?, ?, '', ?, '', 'openclaw_native_result', ?, ?, '', 1, ?, ?)
+                        """,
+                        (
+                            evidence_id,
+                            trace_id,
+                            task_id,
+                            employee_id,
+                            evidence_path,
+                            summary,
+                            json.dumps({"openclaw_result_file": str(path), "openclaw_state": state, "raw": payload}, ensure_ascii=False),
+                            now(),
+                        ),
+                    )
+                conn.execute(
+                    "UPDATE tasks SET status = 'completed', claimed_by = CASE WHEN claimed_by = '' THEN ? ELSE claimed_by END, summary = ?, evidence_path = ?, blocker = '', updated_at = ? WHERE id = ?",
+                    (employee_id, summary, evidence_path, now(), task_id),
+                )
+                event_type = "openclaw_native.result_imported"
+                counts["completed"] += 1
+            else:
+                blocker = _openclaw_native_result_blocker(payload)
+                conn.execute(
+                    "UPDATE tasks SET status = 'blocked', claimed_by = CASE WHEN claimed_by = '' THEN ? ELSE claimed_by END, blocker = ?, updated_at = ? WHERE id = ?",
+                    (employee_id, blocker, now(), task_id),
+                )
+                record_event(conn, "task.blocked", employee_id, task_id=task_id, trace_id=trace_id, payload={"blocker": blocker, "openclaw_result_file": str(path)})
+                event_type = "openclaw_native.result_imported"
+                counts["blocked"] += 1
+            event = record_event(
+                conn,
+                event_type,
+                employee_id,
+                task_id=task_id,
+                trace_id=trace_id,
+                payload={"state": state, "file": str(path), "payload": payload, "read_only_openclaw": True},
+            )
+            audit(conn, employee_id, event_type, task_id, {"state": state, "file": str(path), "event_id": event["id"]})
+            conn.commit()
+            counts["processed"] += 1
+            processed.append({"task_id": task_id, "state": state, "employee_id": employee_id, "file": str(path), "event_id": event["id"]})
+    finally:
+        conn.close()
+    return {
+        "ok": True,
+        "openclaw_root": str(root),
+        "read_only_openclaw": True,
+        "mutates_openclaw": False,
+        "counts": counts,
+        "processed": processed,
+        "skipped": skipped,
+        "note": "Imports OpenClaw native done/failed result files into Company Kernel ledger without moving or editing OpenClaw files.",
+    }
+
+
 def openclaw_guard_health(conn: sqlite3.Connection | None = None) -> dict:
     root = openclaw_root()
     telegram_dir = root / "telegram"
@@ -9668,6 +9825,12 @@ def cmd_openclaw_dispatch_execute(args: argparse.Namespace) -> int:
     return 0 if result.get("ok") else 1
 
 
+def cmd_openclaw_import_results(args: argparse.Namespace) -> int:
+    result = openclaw_native_import_results(limit=args.limit, agent=args.agent)
+    emit(result)
+    return 0 if result.get("ok") else 1
+
+
 def parse_split_item(raw: str) -> dict:
     parts = raw.split("|", 3)
     if len(parts) < 2:
@@ -11462,6 +11625,10 @@ def build_parser() -> argparse.ArgumentParser:
     openclaw_execute.add_argument("--rollback", required=True)
     openclaw_execute.add_argument("--approval-id", default="")
     openclaw_execute.set_defaults(func=cmd_openclaw_dispatch_execute)
+    openclaw_import = openclaw_sub.add_parser("import-results")
+    openclaw_import.add_argument("--limit", type=int, default=50)
+    openclaw_import.add_argument("--agent", default="")
+    openclaw_import.set_defaults(func=cmd_openclaw_import_results)
 
     emp = sub.add_parser("employee")
     emp_sub = emp.add_subparsers(dest="employee_cmd", required=True)

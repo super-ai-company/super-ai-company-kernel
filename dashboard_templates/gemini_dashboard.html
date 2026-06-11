@@ -2939,6 +2939,7 @@
             <div style="display:flex;flex-direction:column;gap:8px;">
               <button class="mini-btn" onclick="planOpenClawNativeDispatch(event)">Plan Dry-run<small>no bus write</small></button>
               <button class="mini-btn" onclick="executeOpenClawNativeDispatch(event)">Execute Approved<small>owner gate</small></button>
+              <button class="mini-btn" onclick="importOpenClawNativeResults(event)">Import Results<small>done/failed</small></button>
             </div>
           </div>
           <div id="openclaw-runtime-inventory-container">
@@ -7564,6 +7565,22 @@
     } catch (err) {
       if (output) output.textContent = `OpenClaw approved dispatch blocked: ${err.message}`;
       companyApiLog('OPENCLAW', `Approved dispatch blocked by owner gate: ${err.message}`, 'error');
+    }
+  }
+
+  async function importOpenClawNativeResults(event) {
+    if (event) event.preventDefault();
+    const output = document.getElementById('openclaw-dispatch-plan-output');
+    if (output) output.textContent = 'Importing OpenClaw native done/failed results into Kernel ledger...';
+    try {
+      const result = await companyApiPost('/v1/openclaw/import-results', {limit: 50});
+      if (output) output.textContent = JSON.stringify(result, null, 2);
+      companyApiLog('OPENCLAW', `Imported OpenClaw native results: processed=${(result.counts || {}).processed || 0}`, 'success');
+      await renderOpenClawNativeStatus();
+      await refreshAllData();
+    } catch (err) {
+      if (output) output.textContent = `OpenClaw result import failed: ${err.message}`;
+      companyApiLog('OPENCLAW', `OpenClaw result import failed: ${err.message}`, 'error');
     }
   }
 
