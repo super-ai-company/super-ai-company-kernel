@@ -836,7 +836,15 @@ def route_get(path: str, query: dict[str, list[str]]) -> tuple[int, dict]:
                 "counts": doctor_payload.get("counts", {}),
                 "heartbeat": doctor_payload.get("heartbeat", {}),
             }
-            return HTTPStatus.OK, company_dashboard.build_cockpit_summary({**summary, "employees": employees, "all_employees": summary.get("employees", []), "doctor": doctor})
+            return HTTPStatus.OK, company_dashboard.build_cockpit_summary(
+                {
+                    **summary,
+                    "employees": employees,
+                    "all_employees": summary.get("employees", []),
+                    "doctor": doctor,
+                    "openclaw_native_status": companyctl.openclaw_native_status(),
+                }
+            )
         finally:
             conn.close()
     if path == "/v1/telemetry/traces":

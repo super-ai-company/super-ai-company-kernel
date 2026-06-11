@@ -1471,6 +1471,20 @@ def build_cockpit_summary(summary: dict) -> dict:
         "status": health_bar_status,
         "owner_next_action": health_owner_next_action,
     }
+    raw_openclaw_inventory = summary.get("openclaw_runtime_inventory")
+    if not isinstance(raw_openclaw_inventory, dict) or not raw_openclaw_inventory:
+        raw_openclaw_inventory = summary.get("runtime_health", {}).get("openclaw_inventory", {})
+    openclaw_runtime_summary = (
+        companyctl.openclaw_runtime_inventory_summary(raw_openclaw_inventory)
+        if isinstance(raw_openclaw_inventory, dict) and raw_openclaw_inventory
+        else {}
+    )
+    raw_openclaw_native = summary.get("openclaw_native_status")
+    openclaw_native_summary = (
+        companyctl.openclaw_native_status_summary(raw_openclaw_native)
+        if isinstance(raw_openclaw_native, dict) and raw_openclaw_native
+        else {}
+    )
     owner_attention = annotate_owner_attention(owner_attention)
     task_card_states = [str(item.get("state") or "") for item in task_cards]
     long_task_states = [str(item.get("long_task_state") or "") for item in long_tasks]
@@ -1492,6 +1506,8 @@ def build_cockpit_summary(summary: dict) -> dict:
             "progress_stagnant": "heartbeat fresh but no progress beyond stale_after_seconds; do not auto-cancel",
             "correction_binding": "task_id + attempt_id",
         },
+        "openclaw_runtime_inventory": openclaw_runtime_summary,
+        "openclaw_native_status": openclaw_native_summary,
         "counts": {
             "employees": employees_total,
             "employees_total": employees_total,

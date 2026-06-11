@@ -2532,6 +2532,12 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual("single_company_kernel_ledger", cockpit["ledger_consistency"]["source"])
         self.assertEqual(["api", "cli", "dashboard"], cockpit["ledger_consistency"]["surfaces"])
         self.assertEqual("API / CLI / Dashboard read the same Company Kernel ledger", cockpit["ledger_consistency"]["summary"])
+        self.assertIn("openclaw_runtime_inventory", cockpit)
+        self.assertEqual("read_only", cockpit["openclaw_runtime_inventory"]["mode"])
+        self.assertFalse(cockpit["openclaw_runtime_inventory"]["mutates_openclaw"])
+        self.assertIn("openclaw_native_status", cockpit)
+        self.assertEqual("read_only", cockpit["openclaw_native_status"]["mode"])
+        self.assertFalse(cockpit["openclaw_native_status"]["mutates_openclaw"])
         cockpit_employees = {item["id"]: item for item in cockpit["employees"]}
         self.assertEqual("busy", cockpit_employees["codex-cockpit"]["status"])
         self.assertEqual("active_ready", cockpit_employees["codex-cockpit"]["readiness_level"])
@@ -13471,6 +13477,10 @@ class CompanyKernelCoreTest(unittest.TestCase):
             api["ProgramArguments"],
         )
         self.assertEqual(["__COMPANY_KERNEL_ROOT__/bin/company-dashboard-server"], dashboard["ProgramArguments"])
+        dashboard_server = (Path(__file__).resolve().parents[1] / "bin" / "company-dashboard-server").read_text(encoding="utf-8")
+        self.assertIn("Cache-Control", dashboard_server)
+        self.assertIn("no-store", dashboard_server)
+        self.assertNotIn("python3 -m http.server", dashboard_server)
         self.assertTrue(api["KeepAlive"])
         self.assertTrue(dashboard["KeepAlive"])
         self.assertTrue(api["RunAtLoad"])
