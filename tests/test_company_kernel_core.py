@@ -4755,6 +4755,7 @@ class CompanyKernelCoreTest(unittest.TestCase):
     def test_dashboard_openclaw_dispatch_execute_is_owner_gate_only(self) -> None:
         template = Path(__file__).resolve().parents[1] / "dashboard_templates" / "gemini_dashboard.html"
         html = template.read_text(encoding="utf-8")
+        self.assertIn('id="openclaw-dispatch-task-id"', html)
         self.assertIn('id="openclaw-dispatch-approval-id"', html)
         self.assertIn("executeOpenClawNativeDispatch", html)
         self.assertIn("/v1/openclaw/dispatch-execute", html)
@@ -9896,6 +9897,8 @@ class CompanyKernelCoreTest(unittest.TestCase):
             "bus done receipt",
             "--rollback",
             "archive stale request",
+            "--task-id",
+            "task-openclaw-native-bound",
         ]
 
         code, blocked = run_cli(*base_args)
@@ -9944,6 +9947,7 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual("debug_request", written["type"])
         self.assertEqual("python3 safe_check.py --dry-run", written["payload"]["next_command"])
         self.assertEqual(approval_id, written["payload"]["kernel_approval_id"])
+        self.assertEqual("task-openclaw-native-bound", written["payload"]["kernel_task_id"])
 
         status, api_blocked = api_gateway.route_post(
             "/v1/openclaw/dispatch-execute",
@@ -9956,6 +9960,7 @@ class CompanyKernelCoreTest(unittest.TestCase):
                 "next_command": "python3 safe_check.py --dry-run",
                 "expected_evidence": "bus done receipt",
                 "rollback": "archive stale request",
+                "task_id": "task-openclaw-native-bound",
             },
         )
         self.assertEqual(HTTPStatus.BAD_REQUEST, status)
