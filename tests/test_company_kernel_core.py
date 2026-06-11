@@ -10085,6 +10085,83 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertTrue(api_imported["read_only_openclaw"])
         self.assertFalse(api_imported["mutates_openclaw"])
 
+    def test_openclaw_native_import_results_is_idempotent_per_result_file(self) -> None:
+        openclaw_root = self.root / "openclaw"
+        done_dir = openclaw_root / "ops" / "agent_bus" / "done" / "main"
+        done_dir.mkdir(parents=True, exist_ok=True)
+        conn = companyctl.connect()
+        try:
+            for employee_id, role in [("main", "owner"), ("nestcar", "worker")]:
+                conn.execute(
+                    """
+                    INSERT INTO employees(id, name, role, runtime, workspace, status, created_at, updated_at)
+                    VALUES (?, ?, ?, 'openclaw', ?, 'active', ?, ?)
+                    ON CONFLICT(id) DO UPDATE SET status = 'active', runtime = 'openclaw', updated_at = excluded.updated_at
+                    """,
+                    (employee_id, employee_id, role, str(self.root / "workspaces" / employee_id), companyctl.now(), companyctl.now()),
+                )
+            conn.commit()
+        finally:
+            conn.close()
+
+        code, submitted = run_cli(
+            "task",
+            "submit",
+            "--from",
+            "main",
+            "--to",
+            "nestcar",
+            "--task-id",
+            "task-openclaw-native-idempotent",
+            "--title",
+            "OpenClaw native idempotent import",
+        )
+        self.assertEqual(0, code, submitted)
+
+        result_file = done_dir / "kernel-dispatch-idempotent.json"
+        result_file.write_text(
+            json.dumps(
+                {
+                    "source_agent": "nestcar",
+                    "target_agent": "main",
+                    "type": "receipt",
+                    "payload": {
+                        "kernel_task_id": "task-openclaw-native-idempotent",
+                        "summary": "OpenClaw native result imported once",
+                        "evidence_path": str(openclaw_root / "reports" / "native-idempotent.md"),
+                    },
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+
+        code, first = run_cli("openclaw", "import-results", "--limit", "10")
+        self.assertEqual(0, code, first)
+        self.assertEqual(1, first["counts"]["processed"])
+        self.assertEqual(1, first["counts"]["completed"])
+
+        code, second = run_cli("openclaw", "import-results", "--limit", "10")
+        self.assertEqual(0, code, second)
+        self.assertEqual(0, second["counts"]["processed"])
+        self.assertEqual(0, second["counts"]["completed"])
+        self.assertEqual(1, second["counts"]["already_imported"])
+
+        conn = companyctl.connect_readonly()
+        try:
+            evidence_count = conn.execute("SELECT COUNT(*) FROM evidence WHERE task_id = 'task-openclaw-native-idempotent'").fetchone()[0]
+            imported_event_count = conn.execute(
+                "SELECT COUNT(*) FROM company_events WHERE task_id = 'task-openclaw-native-idempotent' AND event_type = 'openclaw_native.result_imported'"
+            ).fetchone()[0]
+            audit_count = conn.execute(
+                "SELECT COUNT(*) FROM audit_logs WHERE target = 'task-openclaw-native-idempotent' AND action = 'openclaw_native.result_imported'"
+            ).fetchone()[0]
+        finally:
+            conn.close()
+        self.assertEqual(1, evidence_count)
+        self.assertEqual(1, imported_event_count)
+        self.assertEqual(1, audit_count)
+
     def test_employee_sync_openclaw_runtime_registers_config_agents_and_runtime_candidates(self) -> None:
         config = self.root / "openclaw" / "openclaw.json"
         config.parent.mkdir(parents=True, exist_ok=True)

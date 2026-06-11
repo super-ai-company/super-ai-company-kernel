@@ -4164,6 +4164,28 @@ def _openclaw_native_result_blocker(payload: dict) -> str:
     return "OpenClaw native failed result imported"
 
 
+def _openclaw_native_imported_event(conn: sqlite3.Connection, path: Path) -> sqlite3.Row | None:
+    needle = str(path)
+    rows = conn.execute(
+        """
+        SELECT *
+        FROM company_events
+        WHERE event_type = 'openclaw_native.result_imported'
+          AND payload_json LIKE ?
+        ORDER BY created_at DESC
+        """,
+        (f"%{needle}%",),
+    ).fetchall()
+    for row in rows:
+        try:
+            payload = json.loads(row["payload_json"] or "{}")
+        except json.JSONDecodeError:
+            continue
+        if payload.get("file") == needle:
+            return row
+    return None
+
+
 def openclaw_native_import_results(*, limit: int = 50, agent: str = "") -> dict:
     root = openclaw_root()
     bus_root = root / "ops" / "agent_bus"
@@ -4180,7 +4202,7 @@ def openclaw_native_import_results(*, limit: int = 50, agent: str = "") -> dict:
                 candidates.append((state, agent_dir.name, path))
     processed: list[dict] = []
     skipped: list[dict] = []
-    counts = {"processed": 0, "completed": 0, "blocked": 0, "skipped": 0}
+    counts = {"processed": 0, "completed": 0, "blocked": 0, "skipped": 0, "already_imported": 0}
     conn = connect()
     try:
         for state, result_agent, path in candidates[: max(0, int(limit))]:
@@ -4203,6 +4225,12 @@ def openclaw_native_import_results(*, limit: int = 50, agent: str = "") -> dict:
             if not task:
                 skipped.append({"file": str(path), "reason": "kernel task not found", "task_id": task_id})
                 counts["skipped"] += 1
+                continue
+            imported_event = _openclaw_native_imported_event(conn, path)
+            if imported_event:
+                skipped.append({"file": str(path), "reason": "already_imported", "task_id": task_id, "event_id": imported_event["id"]})
+                counts["skipped"] += 1
+                counts["already_imported"] += 1
                 continue
             employee_id = _openclaw_native_result_agent(payload, result_agent)
             trace_id = trace_id_for_task(conn, task_id)
