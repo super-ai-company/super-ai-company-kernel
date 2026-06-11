@@ -67,6 +67,7 @@ API_ENDPOINTS = [
     {"method": "GET", "path": "/v1/progress/notifications", "summary": "Read pending or recent progress transition notifications", "query": {"pending_only": "bool optional", "limit": "integer optional"}},
     {"method": "GET", "path": "/v1/openclaw/runtime-inventory", "summary": "Read-only discovered OpenClaw agents, sessions, Telegram spools, and Company Kernel registration gaps"},
     {"method": "GET", "path": "/v1/openclaw/native-status", "summary": "Read-only OpenClaw native agent_bus, approvals, and supervisor status mapped for Company Kernel observability"},
+    {"method": "POST", "path": "/v1/openclaw/dispatch-plan", "summary": "Dry-run an official OpenClaw agent_bus submit payload without mutating OpenClaw", "body": {"source": "OpenClaw source agent", "target": "OpenClaw target agent", "type": "agent_bus task type", "priority": "P0/P1/P2/P3 optional", "goal": "task goal", "next_command": "required safe next command", "expected_evidence": "required acceptance evidence", "rollback": "required rollback plan"}},
     {"method": "GET", "path": "/v1/supervisor/delivery-loop", "summary": "Read latest autonomous supervisor delivery-loop result"},
     {"method": "POST", "path": "/v1/supervisor/delivery-loop", "summary": "Run autonomous supervisor delivery-loop once", "body": {"limit": "integer optional", "by": "actor optional"}},
     {"method": "POST", "path": "/v1/policy-blocks/report", "summary": "Report non-popup tool-policy blockers and notify operator", "body": {"source": "employee optional", "target": "employee optional", "tool": "tool name optional", "operation": "operation optional", "error": "error text required", "dry_run": "bool optional"}},
@@ -1073,6 +1074,18 @@ def route_delete(path: str, body: dict) -> tuple[int, dict]:
 
 
 def route_post(path: str, body: dict) -> tuple[int, dict]:
+    if path == "/v1/openclaw/dispatch-plan":
+        result = companyctl.openclaw_native_dispatch_plan(
+            source=str(body.get("source", "") or ""),
+            target=str(body.get("target", "") or ""),
+            task_type=str(body.get("type", body.get("task_type", "")) or ""),
+            priority=str(body.get("priority", "P2") or "P2"),
+            goal=str(body.get("goal", "") or ""),
+            next_command=str(body.get("next_command", "") or ""),
+            expected_evidence=str(body.get("expected_evidence", "") or ""),
+            rollback=str(body.get("rollback", "") or ""),
+        )
+        return (HTTPStatus.OK if result.get("ok") else HTTPStatus.BAD_REQUEST), result
     if path == "/v1/settings/notification":
         payload = companyctl.update_notification_settings(body)
         return (HTTPStatus.OK if payload.get("ok") else HTTPStatus.BAD_REQUEST), payload

@@ -2919,6 +2919,24 @@
           <div id="openclaw-native-status-container" style="margin-bottom:12px;">
             <!-- Populated by JS -->
           </div>
+          <div class="cockpit-row" style="margin-bottom:12px; align-items:start;">
+            <div>
+              <strong>OpenClaw Dispatch Plan</strong>
+              <span>Dry-run only; does not write OpenClaw agent_bus. Real dispatch must go through owner approval and ops_task_bus.py submit.</span>
+              <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:8px;margin-top:10px;">
+                <input id="openclaw-dispatch-source" class="form-input" value="invest" placeholder="source agent">
+                <input id="openclaw-dispatch-target" class="form-input" value="main" placeholder="target agent">
+                <input id="openclaw-dispatch-type" class="form-input" value="debug_request" placeholder="task type">
+                <input id="openclaw-dispatch-priority" class="form-input" value="P1" placeholder="priority">
+              </div>
+              <input id="openclaw-dispatch-goal" class="form-input" style="margin-top:8px;width:100%;" value="检查 OpenClaw 原生员工链路" placeholder="goal">
+              <input id="openclaw-dispatch-next-command" class="form-input" style="margin-top:8px;width:100%;" value="python3 safe_check.py --dry-run" placeholder="next command required">
+              <input id="openclaw-dispatch-evidence" class="form-input" style="margin-top:8px;width:100%;" value="bus done receipt and supervisor evidence" placeholder="expected evidence required">
+              <input id="openclaw-dispatch-rollback" class="form-input" style="margin-top:8px;width:100%;" value="archive stale request; do not send Telegram" placeholder="rollback required">
+              <pre id="openclaw-dispatch-plan-output" style="margin-top:8px;white-space:pre-wrap;color:var(--text-secondary);font-size:11px;">No dry-run dispatch plan generated yet.</pre>
+            </div>
+            <button class="mini-btn" onclick="planOpenClawNativeDispatch(event)">Plan Dry-run<small>no bus write</small></button>
+          </div>
           <div id="openclaw-runtime-inventory-container">
             <!-- Populated by JS -->
           </div>
@@ -7485,6 +7503,34 @@
         <div class="long-task-state ${supervisor.ok ? 'success' : 'blocked'}">${supervisor.ok ? 'ok' : 'check'}</div>
       </div>
     `;
+  }
+
+  async function planOpenClawNativeDispatch(event) {
+    if (event) event.preventDefault();
+    const output = document.getElementById('openclaw-dispatch-plan-output');
+    const valueOf = (id) => {
+      const el = document.getElementById(id);
+      return el ? String(el.value || '').trim() : '';
+    };
+    const payload = {
+      source: valueOf('openclaw-dispatch-source'),
+      target: valueOf('openclaw-dispatch-target'),
+      type: valueOf('openclaw-dispatch-type'),
+      priority: valueOf('openclaw-dispatch-priority') || 'P2',
+      goal: valueOf('openclaw-dispatch-goal'),
+      next_command: valueOf('openclaw-dispatch-next-command'),
+      expected_evidence: valueOf('openclaw-dispatch-evidence'),
+      rollback: valueOf('openclaw-dispatch-rollback')
+    };
+    if (output) output.textContent = 'Planning dry-run dispatch...';
+    try {
+      const result = await companyApiPost('/v1/openclaw/dispatch-plan', payload);
+      if (output) output.textContent = JSON.stringify(result, null, 2);
+      companyApiLog('OPENCLAW', 'Dry-run dispatch plan generated. No OpenClaw agent_bus write executed.', 'success');
+    } catch (err) {
+      if (output) output.textContent = `OpenClaw dispatch plan failed: ${err.message}`;
+      companyApiLog('OPENCLAW', `Dry-run dispatch plan failed: ${err.message}`, 'error');
+    }
   }
 
   function refreshDashboardPresentation() {
