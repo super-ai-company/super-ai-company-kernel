@@ -9844,6 +9844,16 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertNotIn("agent_bus", summary)
         self.assertNotIn("approvals", summary)
 
+        api_status, api_summary = api_gateway.route_get("/v1/openclaw/native-status", {"summary": ["true"]})
+        self.assertEqual(HTTPStatus.OK, api_status)
+        self.assertTrue(api_summary["ok"])
+        self.assertEqual("attention_required", api_summary["health"])
+        self.assertEqual(1, api_summary["counts"]["bus_failed"])
+        self.assertEqual(1, api_summary["counts"]["approval_pending"])
+        self.assertFalse(api_summary["mutates_openclaw"])
+        self.assertNotIn("agent_bus", api_summary)
+        self.assertNotIn("approvals", api_summary)
+
     def test_openclaw_native_dispatch_plan_is_dry_run_and_uses_agent_bus_contract(self) -> None:
         openclaw_root = self.root / "openclaw"
         bus_inbox = openclaw_root / "ops" / "agent_bus" / "inbox" / "main"
