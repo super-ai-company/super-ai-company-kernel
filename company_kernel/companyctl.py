@@ -3849,6 +3849,114 @@ def openclaw_runtime_inventory(conn: sqlite3.Connection | None = None) -> dict:
     }
 
 
+def _openclaw_json_sample(path: Path) -> dict:
+    payload = load_json_or_default(path, {})
+    if not isinstance(payload, dict):
+        return {"file": str(path), "parse_error": "json_root_not_object"}
+    return {
+        "file": str(path),
+        "source_agent": str(payload.get("source_agent") or payload.get("source") or ""),
+        "target_agent": str(payload.get("target_agent") or payload.get("target") or ""),
+        "type": str(payload.get("type") or payload.get("task_type") or ""),
+        "priority": str(payload.get("priority") or ""),
+        "status": str(payload.get("status") or ""),
+        "action": str(payload.get("action") or ""),
+        "updated_at": str(payload.get("updated_at") or payload.get("created_at") or ""),
+    }
+
+
+def _openclaw_agent_bus_state(root: Path, *, sample_limit: int = 5) -> dict:
+    bus_root = root / "ops" / "agent_bus"
+    states: dict[str, dict] = {}
+    counts: dict[str, int] = {}
+    for state in ["inbox", "running", "done", "failed"]:
+        state_root = bus_root / state
+        agents: dict[str, dict] = {}
+        total = 0
+        if state_root.exists():
+            for agent_dir in sorted(path for path in state_root.iterdir() if path.is_dir()):
+                files = sorted(agent_dir.glob("*.json"))
+                total += len(files)
+                agents[agent_dir.name] = {
+                    "count": len(files),
+                    "samples": [_openclaw_json_sample(path) for path in files[:sample_limit]],
+                }
+        states[state] = agents
+        counts[f"bus_{state}"] = total
+    return {
+        "root": str(bus_root),
+        "exists": bus_root.exists(),
+        "states": states,
+        "counts": counts,
+    }
+
+
+def _openclaw_approval_state(root: Path, *, sample_limit: int = 5) -> dict:
+    approvals_root = root / "ops" / "approvals"
+    states: dict[str, dict] = {}
+    counts: dict[str, int] = {}
+    for state in ["pending", "approved", "denied", "archived", "notify_pending", "notify_done", "notify_failed"]:
+        state_root = approvals_root / state
+        files = sorted(state_root.glob("*.json")) if state_root.exists() else []
+        states[state] = {
+            "count": len(files),
+            "samples": [_openclaw_json_sample(path) for path in files[:sample_limit]],
+        }
+        counts[f"approval_{state}"] = len(files)
+    return {
+        "root": str(approvals_root),
+        "exists": approvals_root.exists(),
+        "states": states,
+        "counts": counts,
+    }
+
+
+def openclaw_native_status() -> dict:
+    root = openclaw_root()
+    bus = _openclaw_agent_bus_state(root)
+    approvals = _openclaw_approval_state(root)
+    supervisor_path = root / "reports" / "openclaw-agent-supervisor-state.json"
+    supervisor_payload = load_json_or_default(supervisor_path, {})
+    supervisor = {
+        "path": str(supervisor_path),
+        "exists": supervisor_path.exists(),
+        "ok": bool(supervisor_payload.get("ok")) if isinstance(supervisor_payload, dict) else False,
+        "last_run_at": str(supervisor_payload.get("last_run_at") or supervisor_payload.get("at") or "") if isinstance(supervisor_payload, dict) else "",
+        "agents": supervisor_payload.get("agents", {}) if isinstance(supervisor_payload, dict) else {},
+        "summary": supervisor_payload.get("summary", {}) if isinstance(supervisor_payload, dict) else {},
+    }
+    counts = {}
+    counts.update(bus["counts"])
+    counts.update(approvals["counts"])
+    return {
+        "ok": True,
+        "mode": "read_only",
+        "openclaw_root": str(root),
+        "agent_bus": {
+            "root": bus["root"],
+            "exists": bus["exists"],
+            **bus["states"],
+        },
+        "approvals": {
+            "root": approvals["root"],
+            "exists": approvals["exists"],
+            **approvals["states"],
+        },
+        "supervisor": supervisor,
+        "counts": counts,
+        "safety": {
+            "mutates_openclaw": False,
+            "dispatch_policy": "Read-only status only. Future dispatch must use ops_task_bus.py submit and owner approval for real sends.",
+            "forbidden": [
+                "do not modify OpenClaw callback fast path",
+                "do not enable legacy Telegram polling watcher",
+                "do not bypass agent_bus for native OpenClaw employees",
+            ],
+        },
+        "note": "OpenClaw Native Adapter status is read-only and maps native bus/approvals/supervisor into Company Kernel observability.",
+    }
+
+
 def openclaw_guard_health(conn: sqlite3.Connection | None = None) -> dict:
     root = openclaw_root()
     telegram_dir = root / "telegram"
@@ -9372,6 +9480,11 @@ def cmd_task_children(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_openclaw_native_status(args: argparse.Namespace) -> int:
+    emit(openclaw_native_status())
+    return 0
+
+
 def parse_split_item(raw: str) -> dict:
     parts = raw.split("|", 3)
     if len(parts) < 2:
@@ -11140,6 +11253,11 @@ def cmd_doctor(args: argparse.Namespace) -> int:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="companyctl", description="Company Kernel command interface")
     sub = parser.add_subparsers(dest="cmd", required=True)
+
+    openclaw_cmd = sub.add_parser("openclaw")
+    openclaw_sub = openclaw_cmd.add_subparsers(dest="openclaw_cmd", required=True)
+    openclaw_native = openclaw_sub.add_parser("native-status")
+    openclaw_native.set_defaults(func=cmd_openclaw_native_status)
 
     emp = sub.add_parser("employee")
     emp_sub = emp.add_subparsers(dest="employee_cmd", required=True)

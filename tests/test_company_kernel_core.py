@@ -4599,6 +4599,11 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertIn("const workspacePrune = await companyApiGetOptional('/v1/workspaces/prune?dry_run=true&older_than_days=30&limit=50', currentSummaryFallback('workspace_prune_preview', {}));", html)
         self.assertIn("const telemetry = await companyApiGetOptional('/v1/telemetry/traces?limit=20', {traces: currentSummaryFallback('traces', [])});", html)
         self.assertIn("const openclawInventory = await companyApiGetOptional('/v1/openclaw/runtime-inventory', currentSummaryFallback('openclaw_runtime_inventory', {}));", html)
+        self.assertIn("const openclawNativeStatus = await companyApiGetOptional('/v1/openclaw/native-status', currentSummaryFallback('openclaw_native_status', {}));", html)
+        self.assertIn("openclaw_native_status: openclawNativeStatus || {}", html)
+        self.assertIn("OpenClaw Native Bus", html)
+        self.assertIn("bus_inbox", html)
+        self.assertIn("approval_notify_pending", html)
         self.assertIn("window.dashboardOptionalApiWarnings = window.dashboardOptionalApiWarnings || [];", html)
         self.assertIn("Live refresh partial:", html)
         self.assertNotIn("Optional API ${path} failed: ${err.message}; continuing refresh.", html)
@@ -9719,6 +9724,75 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertIn("market_agent", payload["missing_registered"])
         self.assertNotIn("market-agent", payload["missing_registered"])
         self.assertEqual(1, payload["counts"]["missing_registered"])
+
+    def test_openclaw_native_status_reads_agent_bus_approvals_and_supervisor_without_mutation(self) -> None:
+        openclaw_root = self.root / "openclaw"
+        bus_root = openclaw_root / "ops" / "agent_bus"
+        approvals_root = openclaw_root / "ops" / "approvals"
+        for state in ["inbox", "running", "done", "failed"]:
+            (bus_root / state / "main").mkdir(parents=True, exist_ok=True)
+        for state in ["pending", "approved", "denied", "archived", "notify_pending", "notify_done", "notify_failed"]:
+            (approvals_root / state).mkdir(parents=True, exist_ok=True)
+        request_path = bus_root / "inbox" / "main" / "task-invest-debug.json"
+        request_path.write_text(
+            json.dumps(
+                {
+                    "source_agent": "invest",
+                    "target_agent": "main",
+                    "type": "debug_request",
+                    "priority": "P1",
+                    "payload": {"next_command": "python3 safe_check.py", "expected_evidence": "final receipt"},
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        done_path = bus_root / "done" / "invest" / "task-invest-done.json"
+        done_path.parent.mkdir(parents=True, exist_ok=True)
+        done_path.write_text('{"source_agent":"main","target_agent":"invest","type":"receipt"}', encoding="utf-8")
+        approval_path = approvals_root / "pending" / "approval-invest-send.json"
+        approval_path.write_text('{"source_agent":"invest","action":"telegram_send","status":"pending"}', encoding="utf-8")
+        notify_path = approvals_root / "notify_pending" / "approval-invest-send.approved.json"
+        notify_path.write_text('{"source_agent":"invest","decision":"approved"}', encoding="utf-8")
+        supervisor_path = openclaw_root / "reports" / "openclaw-agent-supervisor-state.json"
+        supervisor_path.parent.mkdir(parents=True, exist_ok=True)
+        supervisor_path.write_text(
+            json.dumps(
+                {
+                    "ok": True,
+                    "last_run_at": "2026-06-11T12:30:00+07:00",
+                    "agents": {"invest": {"status": "online"}, "main": {"status": "online"}},
+                    "summary": {"inbox": 1, "running": 0, "done": 1, "failed": 0},
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        before = {path: path.stat().st_mtime_ns for path in [request_path, done_path, approval_path, notify_path, supervisor_path]}
+
+        status = companyctl.openclaw_native_status()
+
+        self.assertTrue(status["ok"])
+        self.assertEqual("read_only", status["mode"])
+        self.assertEqual(str(openclaw_root), status["openclaw_root"])
+        self.assertEqual(1, status["counts"]["bus_inbox"])
+        self.assertEqual(1, status["counts"]["bus_done"])
+        self.assertEqual(1, status["counts"]["approval_pending"])
+        self.assertEqual(1, status["counts"]["approval_notify_pending"])
+        self.assertEqual("debug_request", status["agent_bus"]["inbox"]["main"]["samples"][0]["type"])
+        self.assertEqual("invest", status["agent_bus"]["inbox"]["main"]["samples"][0]["source_agent"])
+        self.assertEqual("telegram_send", status["approvals"]["pending"]["samples"][0]["action"])
+        self.assertEqual(True, status["supervisor"]["ok"])
+        self.assertEqual("2026-06-11T12:30:00+07:00", status["supervisor"]["last_run_at"])
+        self.assertFalse(status["safety"]["mutates_openclaw"])
+        self.assertIn("ops_task_bus.py submit", status["safety"]["dispatch_policy"])
+        after = {path: path.stat().st_mtime_ns for path in before}
+        self.assertEqual(before, after)
+
+        api_status, payload = api_gateway.route_get("/v1/openclaw/native-status", {})
+        self.assertEqual(HTTPStatus.OK, api_status)
+        self.assertTrue(payload["ok"])
+        self.assertEqual(1, payload["counts"]["bus_inbox"])
 
     def test_employee_sync_openclaw_runtime_registers_config_agents_and_runtime_candidates(self) -> None:
         config = self.root / "openclaw" / "openclaw.json"
