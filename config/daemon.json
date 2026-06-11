@@ -5,6 +5,7 @@
   "heartbeat_runtimes": ["*"],
   "sync_openclaw_runtime": true,
   "sync_openclaw_heartbeats": true,
+  "import_openclaw_native_results": true,
   "run_repair": true,
   "run_scheduler": true,
   "run_supervisor_delivery_loop": true,

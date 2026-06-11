@@ -12718,6 +12718,7 @@ class CompanyKernelCoreTest(unittest.TestCase):
                 {
                     "sync_openclaw_runtime": True,
                     "sync_openclaw_heartbeats": True,
+                    "import_openclaw_native_results": True,
                     "run_repair": False,
                     "run_scheduler": False,
                     "run_supervisor_delivery_loop": False,
@@ -12730,8 +12731,9 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertTrue(state["ok"])
         self.assertEqual(("employee", "sync-openclaw-runtime"), calls[0])
         self.assertEqual(("employee", "sync-openclaw-heartbeats"), calls[1])
+        self.assertEqual(("openclaw", "import-results"), calls[2])
         summary = company_daemon.summarize_state(state)
-        self.assertEqual(2, summary["counts"]["openclaw_sync"])
+        self.assertEqual(3, summary["counts"]["openclaw_sync"])
 
     def test_daemon_records_adapter_runs_for_dashboard(self) -> None:
         code, submitted = run_cli("task", "submit", "--from", "openclaw-main", "--to", "codex", "--task-id", "task-adapter-run-dashboard", "--title", "adapter run dashboard")

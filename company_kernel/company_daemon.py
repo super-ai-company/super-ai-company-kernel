@@ -321,6 +321,8 @@ def tick(config: dict) -> dict:
         results.append({"step": "openclaw-sync.runtime", "result": run_companyctl("employee", "sync-openclaw-runtime")})
     if config.get("sync_openclaw_heartbeats", False):
         results.append({"step": "openclaw-sync.heartbeats", "result": run_companyctl("employee", "sync-openclaw-heartbeats")})
+    if config.get("import_openclaw_native_results", False):
+        results.append({"step": "openclaw-sync.import-results", "result": run_companyctl("openclaw", "import-results")})
     if config.get("run_repair", True):
         results.append({"step": "repair.reset-stale-claims", "result": run_companyctl("repair", "reset-stale-claims")})
     if config.get("run_scheduler", True):
