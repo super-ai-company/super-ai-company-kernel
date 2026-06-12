@@ -123,6 +123,13 @@ label{font-size:12px;color:var(--muted);display:block;margin-bottom:4px}
   <button onclick="refreshAll(true)">⟳ 刷新</button>
 </div>
 
+<div id="connBanner" style="display:none;padding:10px 20px;background:#2a1620;border-bottom:1px solid var(--bad);font-size:13px;align-items:center;gap:10px">
+  <span style="color:var(--bad)">⚠ 无法连接 Company Kernel API。</span>
+  <span style="color:var(--muted)">请先在终端运行 <code style="font-family:var(--mono)">bin/company-api-gateway</code>，或填写 API 地址：</span>
+  <input id="apiBaseInput" placeholder="http://127.0.0.1:8765" style="width:240px">
+  <button class="primary" onclick="saveApiBase()">连接</button>
+</div>
+
 <div class="tabs" id="tabs">
   <div class="tab active" data-v="overview">总览</div>
   <div class="tab" data-v="employees">员工 <span class="cnt" id="cntEmp">-</span></div>
@@ -238,7 +245,30 @@ label{font-size:12px;color:var(--muted);display:block;margin-bottom:4px}
 
 <script>
 "use strict";
-const API = "";   // same-origin
+let API = "";   // resolved by detectApi(): same-origin → saved → default 8765
+const API_CANDIDATES = () => {
+  const c = [];
+  if (location.protocol.startsWith("http")) c.push("");           // same-origin (served by gateway)
+  const saved = localStorage.getItem("ck_api_base");
+  if (saved) c.push(saved);
+  c.push("http://127.0.0.1:8765");                                 // launchd default port
+  return [...new Set(c)];
+};
+async function detectApi() {
+  for (const base of API_CANDIDATES()) {
+    try {
+      const res = await fetch(base + "/v1/health", {signal: AbortSignal.timeout(2500)});
+      if (res.ok) { API = base; $("connBanner").style.display = "none"; return true; }
+    } catch (e) {}
+  }
+  $("connBanner").style.display = "flex";
+  return false;
+}
+function saveApiBase() {
+  const v = $("apiBaseInput").value.trim().replace(/\/+$/, "");
+  if (v) localStorage.setItem("ck_api_base", v);
+  detectApi().then(ok => { if (ok) { toast("已连接 " + (API || "本服务"), "ok"); refreshAll(); } else toast("仍无法连接，请确认网关已启动", "bad"); });
+}
 const OWNER = "owner";
 const COLORS = ["#5b8cff","#a78bfa","#3ecf8e","#f5b94d","#f0647c","#38bdf8","#fb923c","#e879f9"];
 let EMPLOYEES = [], TASKS = [], lastRefresh = 0, timer = null;
@@ -545,8 +575,8 @@ async function refreshAll(manual=false) {
   if($("msgAgent").value) loadMessages();
   if($("convAgent").value) loadConversations();
 }
-refreshAll();
-timer = setInterval(refreshAll, 15000);
+detectApi().then(ok => { refreshAll(); if(!ok) $("refreshMeta").textContent = "API 未连接"; });
+timer = setInterval(async () => { if (!API && !(await detectApi())) return; refreshAll(); }, 15000);
 </script>
 </body>
 </html>

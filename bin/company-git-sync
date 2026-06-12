@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+# One-command commit + push for Company Kernel.
+# Usage: bin/company-git-sync ["commit message"]
+# Designed so the owner (or a launchd job) can sync GitHub in one step.
+set -euo pipefail
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
+cd "$ROOT"
+
+MSG="${1:-chore: company kernel sync $(date '+%Y-%m-%d %H:%M')}"
+
+if [[ -n "$(git status --porcelain)" ]]; then
+  git add -A
+  git commit -m "$MSG"
+  echo "committed: $(git log --oneline -1)"
+else
+  echo "working tree clean, nothing to commit"
+fi
+
+AHEAD="$(git rev-list --count '@{u}..HEAD' 2>/dev/null || echo '?')"
+if [[ "$AHEAD" == "0" ]]; then
+  echo "already in sync with remote"
+  exit 0
+fi
+
+echo "pushing $AHEAD commit(s) to origin..."
+git push origin main
+echo "push ok: $(git log --oneline -1)"
