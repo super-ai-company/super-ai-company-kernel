@@ -4,12 +4,20 @@ import argparse
 import contextlib
 import io
 import json
+import os
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 from . import companyctl
 from . import company_dashboard
+
+
+CONSOLE_TEMPLATE = Path(
+    os.environ.get("OPENCLAW_COMPANY_KERNEL_ROOT", Path(__file__).resolve().parents[1])
+).resolve() / "dashboard_templates" / "console.html"
+CONSOLE_PATHS = {"/", "/console", "/ui", "/index.html"}
 
 
 API_VERSION = "v1"
@@ -99,6 +107,9 @@ API_ENDPOINTS = [
     {"method": "POST", "path": "/v1/approvals/{approval_id}/approve", "summary": "Approve request", "body": {"by": "employee id", "reason": "string"}},
     {"method": "POST", "path": "/v1/approvals/{approval_id}/deny", "summary": "Deny request", "body": {"by": "employee id", "reason": "string"}},
     {"method": "POST", "path": "/v1/heartbeats", "summary": "Write employee heartbeat", "body": {"agent": "employee id"}},
+    {"method": "GET", "path": "/v1/heartbeats", "summary": "List all employee heartbeats"},
+    {"method": "GET", "path": "/v1/events", "summary": "List recent company events", "query": {"limit": "integer optional, default 50, max 200"}},
+    {"method": "GET", "path": "/", "summary": "Live operations console (HTML), also at /console"},
     {"method": "GET", "path": "/v1/attendance/latest", "summary": "Read latest persisted attendance sweep report"},
     {"method": "POST", "path": "/v1/attendance/sweep", "summary": "Run attendance sweep with optional exact agent reply probes", "body": {"source": "source employee optional", "agents": "comma-separated employees optional", "sweep_id": "string optional", "include_candidates": "bool optional", "stale_minutes": "integer optional", "probe_replies": "bool optional", "reply_timeout": "integer optional"}},
     {"method": "GET", "path": "/v1/agent-matrix", "summary": "Read layered employee readiness matrix", "query": {"agents": "comma-separated employees optional"}},
@@ -245,6 +256,29 @@ def route_get(path: str, query: dict[str, list[str]]) -> tuple[int, dict]:
     if path == "/v1/runtimes":
         code, payload = run_companyctl(["runtime", "list"])
         return (HTTPStatus.OK if code == 0 else HTTPStatus.BAD_REQUEST), {"exit_code": code, **payload}
+    if path == "/v1/events":
+        try:
+            limit = max(1, min(int(query_value(query, "limit") or 50), 200))
+        except ValueError:
+            limit = 50
+        conn = companyctl.connect()
+        try:
+            rows = conn.execute(
+                "SELECT id, event_type, source_agent, task_id, created_at, processed_at, trace_id FROM company_events ORDER BY created_at DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+        finally:
+            conn.close()
+        return HTTPStatus.OK, {"ok": True, "events": [dict(row) for row in rows]}
+    if path == "/v1/heartbeats":
+        conn = companyctl.connect()
+        try:
+            rows = conn.execute(
+                "SELECT agent_id, runtime, workspace, status, last_seen_at FROM heartbeats ORDER BY agent_id"
+            ).fetchall()
+        finally:
+            conn.close()
+        return HTTPStatus.OK, {"ok": True, "heartbeats": [dict(row) for row in rows]}
     if path == "/v1/tasks":
         argv = ["task", "list"]
         agent = query_value(query, "agent")
@@ -1072,8 +1106,23 @@ class ApiHandler(BaseHTTPRequestHandler):
         status = ok_status if code == 0 else HTTPStatus.BAD_REQUEST
         self.send_json(status, {"exit_code": code, **payload})
 
+    def send_html(self, code: int, html: str) -> None:
+        raw = html.encode("utf-8")
+        self.send_response(code)
+        self.send_cors_headers()
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(raw)))
+        self.end_headers()
+        self.wfile.write(raw)
+
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
+        if parsed.path in CONSOLE_PATHS:
+            if CONSOLE_TEMPLATE.exists():
+                self.send_html(HTTPStatus.OK, CONSOLE_TEMPLATE.read_text(encoding="utf-8"))
+            else:
+                self.send_html(HTTPStatus.NOT_FOUND, "<h1>console template missing</h1><p>expected at dashboard_templates/console.html</p>")
+            return
         query = parse_qs(parsed.query)
         status, payload = route_get(parsed.path, query)
         self.send_json(status, payload)

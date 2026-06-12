@@ -264,11 +264,22 @@ def build_codex_command(workspace: Path, output: Path, sandbox: str, model: str)
     return cmd
 
 
-def run_codex(task_card: Path, workspace: Path, output: Path, events: Path, sandbox: str, model: str, isolation: str, sandbox_profile: str) -> tuple[int, str]:
+TIMEOUT_EXIT_CODE = 124
+
+
+def run_codex(task_card: Path, workspace: Path, output: Path, events: Path, sandbox: str, model: str, isolation: str, sandbox_profile: str, timeout_seconds: int = 1800) -> tuple[int, str]:
     cmd = wrap_command(build_codex_command(workspace, output, sandbox, model), runtime="codex", workspace=workspace, isolation=isolation, profile_name=sandbox_profile)
-    with task_card.open("r", encoding="utf-8") as stdin, events.open("w", encoding="utf-8") as event_out:
-        cp = subprocess.run(cmd, stdin=stdin, stdout=event_out, stderr=subprocess.STDOUT, text=True)
-    return cp.returncode, " ".join(cmd)
+    try:
+        with task_card.open("r", encoding="utf-8") as stdin, events.open("w", encoding="utf-8") as event_out:
+            cp = subprocess.run(cmd, stdin=stdin, stdout=event_out, stderr=subprocess.STDOUT, text=True, timeout=timeout_seconds or None)
+        return cp.returncode, " ".join(cmd)
+    except subprocess.TimeoutExpired:
+        note = f"codex exec killed after exceeding timeout of {timeout_seconds} seconds at {now()}"
+        with events.open("a", encoding="utf-8") as event_out:
+            event_out.write(json.dumps({"type": "adapter.timeout", "detail": note}, ensure_ascii=False) + "\n")
+        if not output.exists() or not output.read_text(encoding="utf-8").strip():
+            output.write_text(note + "\n", encoding="utf-8")
+        return TIMEOUT_EXIT_CODE, " ".join(cmd)
 
 
 def direct_reply_text(agent: str, message: str) -> str:
@@ -452,7 +463,7 @@ def process(args: argparse.Namespace) -> int:
             eta="running",
         )
         working_delivery = send_source_progress(args.agent, args.direct_source, working_reply)
-        run_code, cmd = run_codex(artifact["task_card"], workspace, artifact["last_message"], artifact["events"], "workspace-write", args.model, args.isolation, args.sandbox_profile)
+        run_code, cmd = run_codex(artifact["task_card"], workspace, artifact["last_message"], artifact["events"], "workspace-write", args.model, args.isolation, args.sandbox_profile, timeout_seconds=args.timeout_seconds)
         if run_code == 0:
             workspace_report = write_workspace_progress(
                 workspace,
@@ -529,7 +540,7 @@ def process(args: argparse.Namespace) -> int:
         run_companyctl(["heartbeat", "--agent", args.agent])
         emit({"ok": done_code == 0, "processed": 1, "executed": False, "task_id": task["id"], "task_card": str(artifact["task_card"]), "report": str(artifact["report"]), "companyctl_stdout": done_out, "companyctl_stderr": done_err})
         return done_code
-    code, cmd = run_codex(artifact["task_card"], workspace, artifact["last_message"], artifact["events"], args.sandbox, args.model, args.isolation, args.sandbox_profile)
+    code, cmd = run_codex(artifact["task_card"], workspace, artifact["last_message"], artifact["events"], args.sandbox, args.model, args.isolation, args.sandbox_profile, timeout_seconds=args.timeout_seconds)
     if code == 0:
         detail = execution_detail(cmd, artifact["last_message"], success=True)
         write_report(artifact["report"], task, executed=True, status="completed", detail=detail, task_card=artifact["task_card"], output=artifact["last_message"])
@@ -552,6 +563,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--isolation", default="none", choices=["none", "docker", "firejail"], help="wrap codex exec in a container/sandbox command")
     parser.add_argument("--sandbox-profile", default="default", help="sandbox profile name from config/sandbox_profiles.json")
     parser.add_argument("--execute", action="store_true", help="actually run codex exec; without this only writes task card and report")
+    parser.add_argument("--timeout-seconds", type=int, default=1800, help="kill codex exec after this many seconds and block the task with evidence (0 disables)")
     parser.add_argument("--attendance-probe", action="store_true", help="reply to attendance without claiming or processing tasks")
     parser.add_argument("--direct-message", default="", help="reply to a direct reachability message without claiming tasks")
     parser.add_argument("--direct-source", default="", help="source employee for direct reachability messages")

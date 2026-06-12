@@ -211,6 +211,51 @@ def retry_due_adapter_runs(config: dict) -> list[dict]:
     return results
 
 
+WATCHDOG_STATE_PATH = STATE_DIR / "watchdog.json"
+
+
+def check_unclaimed_tasks(config: dict) -> list[dict]:
+    """Alert once per task when a submitted task stays unclaimed beyond the configured window."""
+    watchdog = config.get("watchdog") or {}
+    if not watchdog.get("enabled", False):
+        return []
+    minutes = int(watchdog.get("unclaimed_minutes", 10) or 10)
+    notify = str(watchdog.get("notify", "") or "")
+    sender = str(watchdog.get("from", "openclaw-main") or "openclaw-main")
+    limit = int(watchdog.get("max_alerts_per_tick", 5) or 5)
+    cutoff = (datetime.now(timezone.utc).astimezone() - timedelta(minutes=minutes)).isoformat(timespec="seconds")
+    conn = companyctl.connect()
+    try:
+        rows = conn.execute(
+            "SELECT id, target_agent, title, created_at FROM tasks WHERE status = 'submitted' AND created_at <= ? ORDER BY created_at LIMIT ?",
+            (cutoff, limit),
+        ).fetchall()
+    finally:
+        conn.close()
+    if not rows:
+        return []
+    alerted: dict = {}
+    if WATCHDOG_STATE_PATH.exists():
+        try:
+            alerted = json.loads(WATCHDOG_STATE_PATH.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            alerted = {}
+    results = []
+    for row in rows:
+        if alerted.get(row["id"]):
+            continue
+        body = (
+            f"看门狗告警：任务 {row['id']}（目标 {row['target_agent']}，标题 {row['title']}）"
+            f"已提交超过 {minutes} 分钟仍无人领取。请检查对应 adapter worker 是否启用、daemon 是否在跑。"
+        )
+        if notify:
+            results.append(run_companyctl("message", "send", "--from", sender, "--to", notify, "--body", body))
+        alerted[row["id"]] = now()
+    WATCHDOG_STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    WATCHDOG_STATE_PATH.write_text(json.dumps(alerted, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    return results
+
+
 def employee_exists(agent: str) -> bool:
     conn = companyctl.connect()
     try:
@@ -269,7 +314,7 @@ def summarize_state(state: dict) -> dict:
     failed_steps = []
     heartbeat_agents = []
     adapter_steps = []
-    counts = {"steps": len(steps), "heartbeats": 0, "adapters": 0, "repair": 0, "scheduler": 0, "supervisor": 0, "failed": 0}
+    counts = {"steps": len(steps), "heartbeats": 0, "adapters": 0, "repair": 0, "scheduler": 0, "supervisor": 0, "watchdog": 0, "failed": 0}
     for item in steps:
         step = str(item.get("step", ""))
         result = item.get("result", {})
@@ -289,6 +334,8 @@ def summarize_state(state: dict) -> dict:
             counts["scheduler"] += 1
         elif step.startswith("supervisor."):
             counts["supervisor"] += 1
+        elif step.startswith("watchdog."):
+            counts["watchdog"] += 1
     return {
         "ok": state.get("ok", False),
         "at": state.get("at", ""),
@@ -317,6 +364,8 @@ def tick(config: dict) -> dict:
             continue
         adapter_state = run_adapter(worker)
         results.append({"step": f"adapter.{worker.get('agent', '')}", "result": {"returncode": 0 if adapter_state["ok"] else 1, "stdout": json.dumps(adapter_state, ensure_ascii=False), "stderr": ""}})
+    for result in check_unclaimed_tasks(config):
+        results.append({"step": "watchdog.unclaimed-task", "result": result})
     state = {"ok": all(item["result"].get("returncode", 1) == 0 for item in results), "at": now(), "results": results}
     path = write_state(state)
     state["state_file"] = str(path)
