@@ -5,6 +5,7 @@ import contextlib
 import io
 import json
 import os
+import threading
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -200,11 +201,18 @@ def openapi_descriptor() -> dict:
     }
 
 
+_CLI_LOCK = threading.Lock()
+
+
 def run_companyctl(argv: list[str]) -> tuple[int, dict]:
-    buf = io.StringIO()
-    with contextlib.redirect_stdout(buf):
-        code = companyctl.main(argv)
-    raw = buf.getvalue().strip()
+    # ThreadingHTTPServer handles requests concurrently, but redirect_stdout swaps the
+    # process-global sys.stdout: without a lock, parallel requests corrupt each other's
+    # captured output and return empty payloads. Serialize all in-process CLI calls.
+    with _CLI_LOCK:
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            code = companyctl.main(argv)
+        raw = buf.getvalue().strip()
     return code, json.loads(raw) if raw else {}
 
 
