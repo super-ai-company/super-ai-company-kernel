@@ -1,0 +1,105 @@
+from __future__ import annotations
+
+import contextlib
+import io
+import json
+import subprocess
+import tempfile
+import unittest
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from unittest import mock
+
+from company_kernel import codex_adapter, company_daemon
+
+
+def iso(dt: datetime) -> str:
+    return dt.astimezone().isoformat(timespec="seconds")
+
+
+class DaemonWatchdogTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.state_path = Path(self.tmp.name) / "watchdog.json"
+        self.addCleanup(self.tmp.cleanup)
+
+    def _config(self, **overrides) -> dict:
+        cfg = {
+            "watchdog": {
+                "enabled": True,
+                "unclaimed_minutes": 10,
+                "notify": "owner",
+                "from": "openclaw-main",
+                "max_alerts_per_tick": 5,
+                **overrides,
+            }
+        }
+        return cfg
+
+    def test_watchdog_disabled_returns_empty(self) -> None:
+        self.assertEqual([], company_daemon.check_unclaimed_tasks({"watchdog": {"enabled": False}}))
+        self.assertEqual([], company_daemon.check_unclaimed_tasks({}))
+
+    def test_watchdog_alerts_once_per_stale_task(self) -> None:
+        stale_at = iso(datetime.now(timezone.utc) - timedelta(minutes=30))
+        rows = [
+            {"id": "task-stale-1", "target_agent": "codex", "title": "fix bug", "created_at": stale_at},
+        ]
+
+        class FakeConn:
+            def execute(self, sql, params=()):
+                class Cursor:
+                    def fetchall(inner) -> list[dict]:
+                        return rows
+
+                return Cursor()
+
+            def close(self):
+                pass
+
+        sent: list[list[str]] = []
+
+        def fake_run_companyctl(*args: str) -> dict:
+            sent.append(list(args))
+            return {"command": list(args), "returncode": 0, "stdout": "{}", "stderr": ""}
+
+        with mock.patch.object(company_daemon.companyctl, "connect", lambda: FakeConn()), \
+                mock.patch.object(company_daemon, "run_companyctl", fake_run_companyctl), \
+                mock.patch.object(company_daemon, "WATCHDOG_STATE_PATH", self.state_path):
+            first = company_daemon.check_unclaimed_tasks(self._config())
+            second = company_daemon.check_unclaimed_tasks(self._config())
+
+        self.assertEqual(1, len(first))
+        self.assertEqual([], second, "same task must not be alerted twice")
+        self.assertEqual(1, len(sent))
+        self.assertIn("task-stale-1", " ".join(sent[0]))
+        state = json.loads(self.state_path.read_text(encoding="utf-8"))
+        self.assertIn("task-stale-1", state)
+
+
+class CodexTimeoutTest(unittest.TestCase):
+    def test_run_codex_timeout_blocks_with_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            task_card = base / "card.md"
+            task_card.write_text("# card\n", encoding="utf-8")
+            output = base / "out.md"
+            events = base / "events.jsonl"
+
+            def fake_run(cmd, stdin=None, stdout=None, stderr=None, text=None, timeout=None):
+                raise subprocess.TimeoutExpired(cmd=cmd, timeout=timeout)
+
+            with mock.patch.object(codex_adapter.subprocess, "run", fake_run), \
+                    mock.patch.object(codex_adapter, "wrap_command", lambda cmd, **kw: ["codex", "exec"]):
+                code, cmd = codex_adapter.run_codex(
+                    task_card, base, output, events, "workspace-write", "", "none", "default", timeout_seconds=5
+                )
+
+            self.assertEqual(codex_adapter.TIMEOUT_EXIT_CODE, code)
+            self.assertIn("timeout", output.read_text(encoding="utf-8"))
+            event_lines = events.read_text(encoding="utf-8").strip().splitlines()
+            self.assertTrue(any("adapter.timeout" in line for line in event_lines))
+
+
+if __name__ == "__main__":
+    unittest.main()

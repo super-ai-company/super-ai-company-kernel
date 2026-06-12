@@ -43,6 +43,14 @@ Implemented and verified:
 - Daemon loop with heartbeat refresh, scheduler run, repair pass, compact summary output, adapter run recording, launchd template and install/uninstall scripts.
 - OpenClaw alert integration in `/Users/owner/openclaw/workspace-xmanx/scripts`, including Company Kernel heartbeat, daemon, launchd, capability, and evidence health fields.
 
+## 2026-06-13 Reliability Fixes (root-cause for "collaboration dies after 1-2 rounds")
+
+- Codex adapter worker is now enabled for real execution in `config/daemon.json` (`company-codex-adapter --execute --sandbox workspace-write --timeout-seconds 1800`), so the resident daemon drives task relay instead of any agent session.
+- `codex exec` now has a hard timeout (`--timeout-seconds`, default 1800s, exit code 124). On timeout the process is killed, an `adapter.timeout` event is appended to evidence, and the task is blocked instead of hanging forever.
+- Daemon no longer proxies heartbeats for all employees (`heartbeat_agents: []`, `heartbeat_runtimes: []`). Only workers that actually run heartbeat themselves. Expect previously "alive" idle employees to show stale heartbeats — that is honest signal, not regression.
+- New unclaimed-task watchdog: each tick the daemon alerts `owner` (config `watchdog`) once per task that stays `submitted` beyond `unclaimed_minutes` (default 10), so a broken relay chain is detected in minutes instead of silently dying.
+- New tests in `tests/test_daemon_watchdog_and_timeout.py` (watchdog dedup, disabled mode, timeout blocking with evidence).
+
 ## Verification Commands
 
 ```bash

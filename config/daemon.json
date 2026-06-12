@@ -1,19 +1,26 @@
 {
-  "version": 1,
+  "version": 2,
   "interval_seconds": 30,
-  "heartbeat_agents": ["openclaw-main", "hermes", "codex"],
-  "heartbeat_runtimes": ["*"],
+  "heartbeat_agents": [],
+  "heartbeat_runtimes": [],
   "run_repair": true,
   "run_scheduler": true,
   "run_supervisor_delivery_loop": true,
   "run_retries": true,
   "max_retries_per_tick": 5,
+  "watchdog": {
+    "enabled": true,
+    "unclaimed_minutes": 10,
+    "notify": "owner",
+    "from": "openclaw-main",
+    "max_alerts_per_tick": 5
+  },
   "adapter_workers": [
     {
       "agent": "codex",
-      "enabled": false,
-      "command": "company-adapter-worker",
-      "args": ["--dry-run"],
+      "enabled": true,
+      "command": "company-codex-adapter",
+      "args": ["--execute", "--sandbox", "workspace-write", "--timeout-seconds", "1800"],
       "max_tasks_per_tick": 1,
       "retry_policy": {"max_attempts": 3, "base_delay_seconds": 60, "max_delay_seconds": 900}
     },

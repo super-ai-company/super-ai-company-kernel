@@ -1,0 +1,552 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Super AI Company · 控制台</title>
+<style>
+:root{
+  --bg:#0b0e14;--bg2:#11151f;--card:#161b27;--card2:#1c2230;--line:#262d3d;
+  --text:#e6e9f0;--muted:#8b93a7;--dim:#5b6275;
+  --accent:#5b8cff;--accent2:#7aa2ff;--ok:#3ecf8e;--warn:#f5b94d;--bad:#f0647c;--purple:#a78bfa;
+  --mono:ui-monospace,SFMono-Regular,Menlo,monospace;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%}
+body{background:var(--bg);color:var(--text);font:14px/1.55 -apple-system,BlinkMacSystemFont,"PingFang SC","Segoe UI",sans-serif}
+a{color:var(--accent2);text-decoration:none}
+button{font:inherit;cursor:pointer;border:1px solid var(--line);background:var(--card2);color:var(--text);border-radius:8px;padding:6px 12px;transition:.15s}
+button:hover{border-color:var(--accent);color:var(--accent2)}
+button.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+button.primary:hover{background:var(--accent2);color:#fff}
+button.ok{border-color:var(--ok);color:var(--ok)}
+button.bad{border-color:var(--bad);color:var(--bad)}
+button:disabled{opacity:.4;cursor:not-allowed}
+input,select,textarea{font:inherit;background:var(--bg2);border:1px solid var(--line);color:var(--text);border-radius:8px;padding:7px 10px;width:100%}
+input:focus,select:focus,textarea:focus{outline:none;border-color:var(--accent)}
+::-webkit-scrollbar{width:8px;height:8px}::-webkit-scrollbar-thumb{background:var(--line);border-radius:4px}
+
+.topbar{position:sticky;top:0;z-index:50;display:flex;align-items:center;gap:16px;padding:12px 20px;background:rgba(11,14,20,.92);backdrop-filter:blur(8px);border-bottom:1px solid var(--line)}
+.logo{display:flex;align-items:center;gap:10px;font-weight:700;font-size:16px;white-space:nowrap}
+.logo .orb{width:26px;height:26px;border-radius:8px;background:linear-gradient(135deg,var(--accent),var(--purple));display:grid;place-items:center;font-size:13px}
+.healthchips{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+.chip{display:inline-flex;align-items:center;gap:6px;padding:3px 10px;border-radius:99px;border:1px solid var(--line);background:var(--card);font-size:12px;color:var(--muted)}
+.chip b{color:var(--text)}
+.dot{width:8px;height:8px;border-radius:50%;background:var(--dim);flex:none}
+.dot.ok{background:var(--ok);box-shadow:0 0 6px var(--ok)}
+.dot.warn{background:var(--warn)}
+.dot.bad{background:var(--bad);box-shadow:0 0 6px var(--bad)}
+.spacer{flex:1}
+.refresh-meta{font-size:12px;color:var(--dim);white-space:nowrap}
+
+.tabs{display:flex;gap:2px;padding:0 20px;border-bottom:1px solid var(--line);background:var(--bg)}
+.tab{padding:10px 16px;color:var(--muted);border-bottom:2px solid transparent;cursor:pointer;font-size:13.5px;user-select:none}
+.tab:hover{color:var(--text)}
+.tab.active{color:var(--accent2);border-bottom-color:var(--accent)}
+.tab .cnt{margin-left:6px;font-size:11px;background:var(--card2);border-radius:8px;padding:1px 7px;color:var(--muted)}
+.tab .cnt.alert{background:var(--bad);color:#fff}
+
+main{padding:18px 20px 60px;max-width:1500px;margin:0 auto}
+.view{display:none}.view.active{display:block}
+.grid{display:grid;gap:14px}
+.cards-3{grid-template-columns:repeat(auto-fill,minmax(290px,1fr))}
+.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px}
+.card h3{font-size:13px;color:var(--muted);font-weight:600;margin-bottom:10px;display:flex;align-items:center;gap:8px}
+.section-head{display:flex;align-items:center;gap:10px;margin:4px 0 14px;flex-wrap:wrap}
+.section-head h2{font-size:16px}
+.section-head .hint{font-size:12px;color:var(--dim)}
+
+.emp{display:flex;flex-direction:column;gap:8px}
+.emp-top{display:flex;align-items:center;gap:10px}
+.avatar{width:38px;height:38px;border-radius:10px;display:grid;place-items:center;font-weight:700;font-size:15px;color:#fff;flex:none}
+.emp-name{font-weight:600}
+.emp-sub{font-size:12px;color:var(--muted)}
+.badge{font-size:11px;padding:2px 8px;border-radius:6px;border:1px solid var(--line);color:var(--muted)}
+.badge.active{border-color:var(--ok);color:var(--ok)}
+.badge.candidate{border-color:var(--warn);color:var(--warn)}
+.emp-meta{display:flex;gap:8px;flex-wrap:wrap;font-size:12px;color:var(--muted)}
+.emp-actions{display:flex;gap:8px;margin-top:2px}
+.emp-actions button{font-size:12px;padding:4px 10px}
+
+.kanban{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;align-items:start}
+.kcol{background:var(--bg2);border:1px solid var(--line);border-radius:12px;padding:10px;min-height:120px}
+.kcol h4{font-size:12.5px;color:var(--muted);padding:2px 4px 8px;display:flex;justify-content:space-between}
+.tcard{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:10px;margin-bottom:8px;cursor:pointer;transition:.15s}
+.tcard:hover{border-color:var(--accent)}
+.tcard .tt{font-size:13px;font-weight:600;margin-bottom:4px;word-break:break-word}
+.tcard .tm{font-size:11.5px;color:var(--muted);display:flex;gap:8px;flex-wrap:wrap}
+.prio{font-size:10px;padding:1px 6px;border-radius:5px;font-weight:700}
+.prio.P0{background:var(--bad);color:#fff}.prio.P1{background:var(--warn);color:#222}
+.prio.P2{background:var(--card2);color:var(--muted)}.prio.P3{background:var(--card2);color:var(--dim)}
+
+.list{display:flex;flex-direction:column;gap:8px}
+.row{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:10px 13px}
+.row .head{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.row .who{font-weight:600;font-size:13px}
+.row .when{font-size:11.5px;color:var(--dim);margin-left:auto;font-family:var(--mono)}
+.row .body{margin-top:6px;font-size:13px;color:var(--text);white-space:pre-wrap;word-break:break-word}
+.arrow{color:var(--dim)}
+
+.form-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px;margin-bottom:10px}
+.form-grid .full{grid-column:1/-1}
+label{font-size:12px;color:var(--muted);display:block;margin-bottom:4px}
+
+.feed{font-family:var(--mono);font-size:12px}
+.feed .row{padding:7px 12px}
+.etype{color:var(--purple)}
+.modal-bg{position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:100;display:none;align-items:flex-start;justify-content:center;padding:60px 20px;overflow:auto}
+.modal-bg.open{display:flex}
+.modal{background:var(--card);border:1px solid var(--line);border-radius:14px;max-width:760px;width:100%;padding:20px}
+.modal h3{margin-bottom:12px}
+.modal pre{background:var(--bg2);border:1px solid var(--line);border-radius:8px;padding:12px;font-size:12px;overflow:auto;max-height:50vh;white-space:pre-wrap;word-break:break-word}
+.modal .close{float:right}
+.kv{display:grid;grid-template-columns:130px 1fr;gap:4px 12px;font-size:13px;margin-bottom:12px}
+.kv .k{color:var(--muted)}
+.toast-wrap{position:fixed;right:18px;bottom:18px;z-index:200;display:flex;flex-direction:column;gap:8px}
+.toast{background:var(--card2);border:1px solid var(--line);border-left:3px solid var(--accent);border-radius:10px;padding:10px 14px;font-size:13px;max-width:380px;animation:slidein .2s}
+.toast.ok{border-left-color:var(--ok)}.toast.bad{border-left-color:var(--bad)}
+@keyframes slidein{from{transform:translateX(30px);opacity:0}to{transform:none;opacity:1}}
+.empty{color:var(--dim);font-size:13px;padding:18px;text-align:center}
+.conv-thread{max-height:420px;overflow:auto;display:flex;flex-direction:column;gap:8px;padding:4px}
+.bubble{background:var(--bg2);border:1px solid var(--line);border-radius:10px;padding:8px 12px;font-size:13px}
+.bubble .bh{font-size:11.5px;color:var(--muted);margin-bottom:3px;display:flex;gap:8px}
+@media(max-width:900px){.kanban{grid-template-columns:repeat(2,1fr)}}
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <div class="logo"><div class="orb">🏢</div>Super AI Company <span style="color:var(--dim);font-weight:400;font-size:12px">控制台</span></div>
+  <div class="healthchips" id="healthChips"></div>
+  <div class="spacer"></div>
+  <span class="refresh-meta" id="refreshMeta">连接中…</span>
+  <button onclick="refreshAll(true)">⟳ 刷新</button>
+</div>
+
+<div class="tabs" id="tabs">
+  <div class="tab active" data-v="overview">总览</div>
+  <div class="tab" data-v="employees">员工 <span class="cnt" id="cntEmp">-</span></div>
+  <div class="tab" data-v="tasks">任务 <span class="cnt" id="cntTask">-</span></div>
+  <div class="tab" data-v="messages">消息</div>
+  <div class="tab" data-v="conversations">对话 <span class="cnt" id="cntConv">-</span></div>
+  <div class="tab" data-v="approvals">审批 <span class="cnt" id="cntAppr">-</span></div>
+  <div class="tab" data-v="activity">活动流</div>
+</div>
+
+<main>
+
+<!-- 总览 -->
+<section class="view active" id="v-overview">
+  <div class="grid cards-3" id="ovCards"></div>
+  <div style="height:14px"></div>
+  <div class="grid" style="grid-template-columns:1fr 1fr;gap:14px">
+    <div class="card"><h3>⏳ 待审批</h3><div class="list" id="ovApprovals"><div class="empty">加载中…</div></div></div>
+    <div class="card"><h3>🔔 最新事件</h3><div class="list feed" id="ovEvents"><div class="empty">加载中…</div></div></div>
+  </div>
+</section>
+
+<!-- 员工 -->
+<section class="view" id="v-employees">
+  <div class="section-head">
+    <h2>AI 员工</h2><span class="hint">心跳 10 分钟内 = 在岗</span>
+    <div class="spacer"></div>
+    <button class="primary" onclick="attendanceSweep()">📋 全员考勤探测</button>
+  </div>
+  <div class="grid cards-3" id="empGrid"></div>
+</section>
+
+<!-- 任务 -->
+<section class="view" id="v-tasks">
+  <div class="section-head"><h2>任务看板</h2><span class="hint">点击卡片查看详情与证据</span></div>
+  <div class="card" style="margin-bottom:14px">
+    <h3>➕ 派发新任务</h3>
+    <div class="form-grid">
+      <div><label>发起人</label><select id="tFrom"></select></div>
+      <div><label>执行人</label><select id="tTo"></select></div>
+      <div><label>优先级</label><select id="tPrio"><option>P1</option><option>P0</option><option>P2</option><option>P3</option></select></div>
+      <div class="full"><label>标题</label><input id="tTitle" placeholder="任务标题"></div>
+      <div class="full"><label>描述（验收标准、相关文件路径写得越细，AI 员工干得越好）</label><textarea id="tDesc" rows="2"></textarea></div>
+    </div>
+    <button class="primary" onclick="submitTask()">派发任务</button>
+  </div>
+  <div class="kanban" id="kanban"></div>
+</section>
+
+<!-- 消息 -->
+<section class="view" id="v-messages">
+  <div class="section-head"><h2>消息中心</h2>
+    <select id="msgAgent" style="width:200px" onchange="loadMessages()"></select>
+  </div>
+  <div class="card" style="margin-bottom:14px">
+    <h3>✉️ 发送消息</h3>
+    <div class="form-grid">
+      <div><label>发件人</label><select id="mFrom"></select></div>
+      <div><label>收件人</label><select id="mTo"></select></div>
+      <div><label>模式</label><select id="mMode"><option value="record">仅记录（写入收件箱）</option><option value="direct">直连执行（实际唤起对方运行时）</option></select></div>
+      <div class="full"><label>内容</label><textarea id="mBody" rows="2" placeholder="消息内容"></textarea></div>
+    </div>
+    <button class="primary" onclick="sendMessage()">发送</button>
+  </div>
+  <div class="list" id="msgList"><div class="empty">选择员工查看消息</div></div>
+</section>
+
+<!-- 对话 -->
+<section class="view" id="v-conversations">
+  <div class="section-head"><h2>多轮对话</h2>
+    <select id="convAgent" style="width:200px" onchange="loadConversations()"></select>
+  </div>
+  <div class="grid" style="grid-template-columns:330px 1fr;gap:14px">
+    <div class="card" style="align-self:start"><h3>会话列表</h3><div class="list" id="convList"><div class="empty">无</div></div></div>
+    <div class="card">
+      <h3 id="convTitle">选择左侧会话</h3>
+      <div class="conv-thread" id="convThread"></div>
+      <div style="display:flex;gap:8px;margin-top:10px">
+        <select id="convReplyAs" style="width:160px"></select>
+        <input id="convReplyBody" placeholder="以所选身份回复…" onkeydown="if(event.key==='Enter')convReply()">
+        <button class="primary" onclick="convReply()">回复</button>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- 审批 -->
+<section class="view" id="v-approvals">
+  <div class="section-head"><h2>审批中心</h2>
+    <select id="apprStatus" style="width:160px" onchange="loadApprovals()">
+      <option value="pending">待审批</option><option value="approved">已批准</option>
+      <option value="denied">已拒绝</option><option value="all">全部</option>
+    </select>
+  </div>
+  <div class="list" id="apprList"><div class="empty">加载中…</div></div>
+</section>
+
+<!-- 活动流 -->
+<section class="view" id="v-activity">
+  <div class="section-head"><h2>活动流</h2><span class="hint">公司事件 + Adapter 执行记录</span></div>
+  <div class="grid" style="grid-template-columns:1fr 1fr;gap:14px">
+    <div class="card"><h3>🛰 Adapter 执行</h3><div class="list feed" id="adapterList"></div></div>
+    <div class="card"><h3>📜 公司事件</h3><div class="list feed" id="eventList"></div></div>
+  </div>
+</section>
+
+</main>
+
+<div class="modal-bg" id="modalBg" onclick="if(event.target===this)closeModal()">
+  <div class="modal"><button class="close" onclick="closeModal()">✕</button><div id="modalContent"></div></div>
+</div>
+<div class="toast-wrap" id="toasts"></div>
+
+<script>
+"use strict";
+const API = "";   // same-origin
+const OWNER = "owner";
+const COLORS = ["#5b8cff","#a78bfa","#3ecf8e","#f5b94d","#f0647c","#38bdf8","#fb923c","#e879f9"];
+let EMPLOYEES = [], TASKS = [], lastRefresh = 0, timer = null;
+
+const $ = id => document.getElementById(id);
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const color = id => COLORS[[...String(id)].reduce((a,c)=>a+c.charCodeAt(0),0) % COLORS.length];
+const initial = id => String(id||"?").slice(0,2).toUpperCase();
+const fmtTime = t => { if(!t) return "-"; const d = new Date(t); return isNaN(d) ? String(t) : d.toLocaleString("zh-CN",{hour12:false}); };
+const ago = t => { if(!t) return "从未"; const s = (Date.now()-new Date(t))/1e3; if(isNaN(s)) return String(t);
+  if(s<60) return Math.floor(s)+" 秒前"; if(s<3600) return Math.floor(s/60)+" 分钟前"; if(s<86400) return Math.floor(s/3600)+" 小时前"; return Math.floor(s/86400)+" 天前"; };
+const isOnDuty = hb => hb && (Date.now()-new Date(hb)) < 10*60*1000;
+
+async function api(path, opts={}) {
+  const res = await fetch(API+path, {headers:{"Content-Type":"application/json"}, ...opts,
+    body: opts.body ? JSON.stringify(opts.body) : undefined});
+  let data = {};
+  try { data = await res.json(); } catch(e) {}
+  if (!res.ok) throw new Error(data.error || data.stderr || ("HTTP "+res.status));
+  return data;
+}
+function toast(msg, kind="") {
+  const el = document.createElement("div"); el.className = "toast "+kind; el.textContent = msg;
+  $("toasts").appendChild(el); setTimeout(()=>el.remove(), 5000);
+}
+function openModal(html){ $("modalContent").innerHTML = html; $("modalBg").classList.add("open"); }
+function closeModal(){ $("modalBg").classList.remove("open"); }
+
+/* ---------- tabs ---------- */
+$("tabs").addEventListener("click", e => {
+  const t = e.target.closest(".tab"); if(!t) return;
+  document.querySelectorAll(".tab").forEach(x=>x.classList.remove("active"));
+  document.querySelectorAll(".view").forEach(x=>x.classList.remove("active"));
+  t.classList.add("active"); $("v-"+t.dataset.v).classList.add("active");
+});
+
+/* ---------- health ---------- */
+async function loadHealth() {
+  try {
+    const h = await api("/v1/health");
+    const ok = h.ok !== false;
+    $("healthChips").innerHTML =
+      chipHtml(ok?"ok":"bad", "内核", ok?"正常":"异常") +
+      chipHtml("ok", "员工", (h.employees ?? h.counts?.employees ?? EMPLOYEES.length)) +
+      (h.pending_approvals!=null ? chipHtml(h.pending_approvals>0?"warn":"ok","待审批",h.pending_approvals) : "");
+    $("refreshMeta").textContent = "更新于 " + new Date().toLocaleTimeString("zh-CN",{hour12:false}) + " · 每 15s 自动刷新";
+  } catch(e) {
+    $("healthChips").innerHTML = chipHtml("bad","API","不可达");
+    $("refreshMeta").textContent = "API 连接失败：" + e.message;
+  }
+}
+const chipHtml = (dot,k,v)=>`<span class="chip"><span class="dot ${dot}"></span>${k} <b>${esc(v)}</b></span>`;
+
+/* ---------- employees ---------- */
+async function loadEmployees() {
+  const [data, hbData] = await Promise.all([api("/v1/employees"), api("/v1/heartbeats").catch(()=>({heartbeats:[]}))]);
+  const hbMap = {};
+  for (const hb of (hbData.heartbeats||[])) hbMap[hb.agent_id] = hb.last_seen_at;
+  EMPLOYEES = (data.employees || data.items || []).map(e => ({...e, last_seen_at: hbMap[e.id] || ""}));
+  $("cntEmp").textContent = EMPLOYEES.length;
+  // selects
+  const opts = EMPLOYEES.map(e=>`<option value="${esc(e.id)}">${esc(e.id)}</option>`).join("");
+  const withOwnerFirst = `<option value="${OWNER}">${OWNER}（我）</option>` + EMPLOYEES.filter(e=>e.id!==OWNER).map(e=>`<option value="${esc(e.id)}">${esc(e.id)}</option>`).join("");
+  ["tFrom","mFrom","convReplyAs"].forEach(id=>{ if($(id)) $(id).innerHTML = withOwnerFirst; });
+  ["tTo","mTo"].forEach(id=>{ if($(id)) $(id).innerHTML = opts; });
+  ["msgAgent","convAgent"].forEach(id=>{ if($(id) && !$(id).value) $(id).innerHTML = opts; });
+  // grid
+  $("empGrid").innerHTML = EMPLOYEES.map(e=>{
+    const hb = e.last_seen_at || e.heartbeat || "";
+    const duty = isOnDuty(hb);
+    return `<div class="card emp">
+      <div class="emp-top">
+        <div class="avatar" style="background:${color(e.id)}">${initial(e.id)}</div>
+        <div style="flex:1">
+          <div class="emp-name">${esc(e.name||e.id)} <span class="dot ${duty?"ok":(e.status==="active"?"bad":"")}" style="display:inline-block;margin-left:4px" title="${duty?"在岗":"离线"}"></span></div>
+          <div class="emp-sub">${esc(e.role||"")}</div>
+        </div>
+        <span class="badge ${esc(e.status)}">${e.status==="active"?"在编":e.status==="candidate"?"候选":esc(e.status)}</span>
+      </div>
+      <div class="emp-meta">
+        <span>⚙️ ${esc(e.runtime)}</span>
+        <span>💓 ${ago(hb)}</span>
+      </div>
+      <div class="emp-actions">
+        <button onclick="quickMsg('${esc(e.id)}')">发消息</button>
+        <button onclick="quickTask('${esc(e.id)}')">派任务</button>
+        <button onclick="showEmployee('${esc(e.id)}')">详情</button>
+      </div>
+    </div>`;
+  }).join("");
+}
+async function showEmployee(id) {
+  openModal(`<h3>员工 ${esc(id)}</h3><pre>加载中…</pre>`);
+  try { const d = await api("/v1/employees/"+encodeURIComponent(id));
+    openModal(`<h3>员工 ${esc(id)}</h3><pre>${esc(JSON.stringify(d,null,2))}</pre>`);
+  } catch(e){ openModal(`<h3>员工 ${esc(id)}</h3><pre>读取失败：${esc(e.message)}</pre>`); }
+}
+function quickMsg(to){ document.querySelector('[data-v="messages"]').click(); $("mTo").value=to; $("mBody").focus(); }
+function quickTask(to){ document.querySelector('[data-v="tasks"]').click(); $("tTo").value=to; $("tTitle").focus(); }
+
+async function attendanceSweep() {
+  toast("正在发起全员考勤探测…");
+  try {
+    const d = await api("/v1/attendance/sweep", {method:"POST", body:{source:OWNER}});
+    toast("考勤完成：" + (d.summary || JSON.stringify(d).slice(0,120)), "ok");
+    refreshAll();
+  } catch(e){ toast("考勤失败："+e.message, "bad"); }
+}
+
+/* ---------- tasks ---------- */
+const KCOLS = [["submitted","📥 待领取"],["claimed","🔧 进行中"],["done","✅ 已完成"],["blocked","⛔ 受阻"]];
+async function loadTasks() {
+  const d = await api("/v1/tasks");
+  TASKS = d.tasks || d.items || [];
+  const open = TASKS.filter(t=>["submitted","claimed"].includes(t.status)).length;
+  $("cntTask").textContent = open;
+  $("kanban").innerHTML = KCOLS.map(([st,label])=>{
+    const items = TASKS.filter(t=>t.status===st).sort((a,b)=>(b.created_at||"").localeCompare(a.created_at||""));
+    return `<div class="kcol"><h4>${label}<span>${items.length}</span></h4>` +
+      (items.slice(0,30).map(t=>`<div class="tcard" onclick="showTask('${esc(t.id)}')">
+          <div class="tt">${esc(t.title)}</div>
+          <div class="tm"><span class="prio ${esc(t.priority||"P2")}">${esc(t.priority||"P2")}</span>
+          <span>${esc(t.source_agent)} → <b>${esc(t.target_agent)}</b></span><span>${ago(t.created_at)}</span></div>
+        </div>`).join("") || `<div class="empty">空</div>`) + `</div>`;
+  }).join("");
+}
+async function showTask(id) {
+  openModal(`<h3>任务 ${esc(id)}</h3><pre>加载中…</pre>`);
+  try {
+    const d = await api("/v1/tasks/"+encodeURIComponent(id));
+    const t = d.task || d;
+    const actions = `<div style="display:flex;gap:8px;margin-bottom:12px">
+      ${t.status==="blocked"||t.status==="interrupted" ? `<button class="ok" onclick="taskReopen('${esc(id)}')">重新打开</button>`:""}
+      <button onclick="taskReassignPrompt('${esc(id)}')">改派</button></div>`;
+    openModal(`<h3>任务 ${esc(t.id||id)}</h3>
+      <div class="kv">
+        <span class="k">标题</span><span>${esc(t.title)}</span>
+        <span class="k">状态</span><span>${esc(t.status)}</span>
+        <span class="k">流向</span><span>${esc(t.source_agent)} → ${esc(t.target_agent)}</span>
+        <span class="k">创建</span><span>${fmtTime(t.created_at)}</span>
+        <span class="k">摘要</span><span>${esc(t.summary||"-")}</span>
+        <span class="k">证据</span><span style="font-family:var(--mono);font-size:12px">${esc(t.evidence_path||t.evidence||"-")}</span>
+        <span class="k">阻塞</span><span>${esc(t.blocker||"-")}</span>
+      </div>${actions}<pre>${esc(JSON.stringify(d,null,2))}</pre>`);
+  } catch(e){ openModal(`<h3>任务 ${esc(id)}</h3><pre>读取失败：${esc(e.message)}</pre>`); }
+}
+async function taskReopen(id) {
+  try { await api(`/v1/tasks/${encodeURIComponent(id)}/reopen`, {method:"POST", body:{by:OWNER, reason:"控制台手动重开"}});
+    toast("任务已重开","ok"); closeModal(); loadTasks();
+  } catch(e){ toast("失败："+e.message,"bad"); }
+}
+function taskReassignPrompt(id) {
+  const to = prompt("改派给哪个员工 ID？\n" + EMPLOYEES.map(e=>e.id).join(", "));
+  if(!to) return;
+  api(`/v1/tasks/${encodeURIComponent(id)}/reassign`, {method:"POST", body:{by:OWNER, to, reason:"控制台改派"}})
+    .then(()=>{ toast("已改派给 "+to,"ok"); closeModal(); loadTasks(); })
+    .catch(e=>toast("失败："+e.message,"bad"));
+}
+async function submitTask() {
+  const body = {from:$("tFrom").value, to:$("tTo").value, title:$("tTitle").value.trim(),
+    description:$("tDesc").value.trim(), priority:$("tPrio").value};
+  if(!body.title) return toast("请填写任务标题","bad");
+  try { const d = await api("/v1/tasks",{method:"POST",body});
+    toast("任务已派发："+(d.task?.id||""),"ok"); $("tTitle").value=""; $("tDesc").value=""; loadTasks();
+  } catch(e){ toast("派发失败："+e.message,"bad"); }
+}
+
+/* ---------- messages ---------- */
+async function loadMessages() {
+  const agent = $("msgAgent").value; if(!agent) return;
+  try {
+    const d = await api("/v1/messages?agent="+encodeURIComponent(agent));
+    const msgs = (d.messages || d.items || []).slice(0,80);
+    $("msgList").innerHTML = msgs.map(m=>`<div class="row">
+      <div class="head"><span class="who" style="color:${color(m.source_agent)}">${esc(m.source_agent)}</span>
+      <span class="arrow">→</span><span class="who" style="color:${color(m.target_agent)}">${esc(m.target_agent)}</span>
+      <span class="when">${fmtTime(m.created_at)}</span></div>
+      <div class="body">${esc(m.body)}</div></div>`).join("") || `<div class="empty">无消息</div>`;
+  } catch(e){ $("msgList").innerHTML = `<div class="empty">读取失败：${esc(e.message)}</div>`; }
+}
+async function sendMessage() {
+  const direct = $("mMode").value==="direct";
+  const body = {from:$("mFrom").value, to:$("mTo").value, body:$("mBody").value.trim()};
+  if(!body.body) return toast("请输入内容","bad");
+  try {
+    const d = await api(direct?"/v1/messages/direct":"/v1/messages",{method:"POST",body});
+    toast(direct ? "已直连执行：" + (d.reply||"").slice(0,80) : "消息已送达","ok");
+    $("mBody").value=""; $("msgAgent").value = body.to; loadMessages();
+  } catch(e){ toast("发送失败："+e.message,"bad"); }
+}
+
+/* ---------- conversations ---------- */
+let CURRENT_CONV = "";
+async function loadConversations() {
+  const agent = $("convAgent").value; if(!agent) return;
+  try {
+    const d = await api("/v1/conversations?agent="+encodeURIComponent(agent));
+    const convs = d.conversations || d.items || [];
+    $("cntConv").textContent = convs.length;
+    $("convList").innerHTML = convs.map(c=>`<div class="row" style="cursor:pointer" onclick="showConv('${esc(c.id)}')">
+      <div class="who">${esc(c.title||c.id)}</div>
+      <div class="emp-sub">${esc((c.participants||"")).slice(0,60)} · ${ago(c.updated_at||c.created_at)}</div></div>`).join("")
+      || `<div class="empty">无会话</div>`;
+  } catch(e){ $("convList").innerHTML = `<div class="empty">${esc(e.message)}</div>`; }
+}
+async function showConv(id) {
+  CURRENT_CONV = id;
+  try {
+    const d = await api("/v1/conversations/"+encodeURIComponent(id));
+    const c = d.conversation || d;
+    $("convTitle").textContent = (c.title||id);
+    const msgs = d.messages || c.messages || [];
+    $("convThread").innerHTML = msgs.map(m=>`<div class="bubble">
+      <div class="bh"><b style="color:${color(m.source_agent||m.from)}">${esc(m.source_agent||m.from)}</b><span>${fmtTime(m.created_at)}</span></div>
+      ${esc(m.body)}</div>`).join("") || `<div class="empty">无消息</div>`;
+    $("convThread").scrollTop = $("convThread").scrollHeight;
+  } catch(e){ $("convThread").innerHTML = `<div class="empty">${esc(e.message)}</div>`; }
+}
+async function convReply() {
+  if(!CURRENT_CONV) return toast("先选择会话","bad");
+  const body = {from:$("convReplyAs").value, body:$("convReplyBody").value.trim()};
+  if(!body.body) return;
+  try { await api(`/v1/conversations/${encodeURIComponent(CURRENT_CONV)}/reply`,{method:"POST",body});
+    $("convReplyBody").value=""; showConv(CURRENT_CONV); toast("已回复","ok");
+  } catch(e){ toast("回复失败："+e.message,"bad"); }
+}
+
+/* ---------- approvals ---------- */
+async function loadApprovals() {
+  const st = $("apprStatus").value;
+  try {
+    const d = await api("/v1/approvals?status="+st);
+    const items = d.approvals || d.items || [];
+    const pending = st==="pending" ? items : items.filter(a=>a.status==="pending");
+    $("cntAppr").textContent = pending.length;
+    $("cntAppr").className = "cnt" + (pending.length>0 ? " alert" : "");
+    const render = a => `<div class="row">
+      <div class="head"><span class="who">${esc(a.action)}</span>
+        <span class="badge ${a.status==="pending"?"candidate":a.status==="approved"?"active":""}">${esc(a.status)}</span>
+        <span class="emp-sub">来自 ${esc(a.source_agent||a.requested_by||"-")} · 风险 ${esc(a.risk||"-")}</span>
+        <span class="when">${fmtTime(a.created_at)}</span></div>
+      <div class="body">${esc(a.reason||"")}</div>
+      ${a.status==="pending" ? `<div style="display:flex;gap:8px;margin-top:8px">
+        <button class="ok" onclick="decide('${esc(a.id)}','approve')">✓ 批准</button>
+        <button class="bad" onclick="decide('${esc(a.id)}','deny')">✕ 拒绝</button></div>` : ""}
+    </div>`;
+    $("apprList").innerHTML = items.map(render).join("") || `<div class="empty">无记录</div>`;
+    $("ovApprovals").innerHTML = pending.slice(0,5).map(render).join("") || `<div class="empty">没有待审批项 ✓</div>`;
+  } catch(e){ $("apprList").innerHTML = `<div class="empty">${esc(e.message)}</div>`; }
+}
+async function decide(id, action) {
+  const reason = prompt(action==="approve" ? "批准理由（可空）" : "拒绝理由（可空）") ?? "";
+  try { await api(`/v1/approvals/${encodeURIComponent(id)}/${action}`,{method:"POST",body:{by:OWNER, reason:reason||("控制台"+(action==="approve"?"批准":"拒绝"))}});
+    toast(action==="approve"?"已批准":"已拒绝","ok"); loadApprovals();
+  } catch(e){ toast("操作失败："+e.message,"bad"); }
+}
+
+/* ---------- activity ---------- */
+async function loadActivity() {
+  try {
+    const d = await api("/v1/adapter-runs?limit=30");
+    const runs = d.adapter_runs || d.items || [];
+    $("adapterList").innerHTML = runs.map(r=>`<div class="row">
+      <div class="head"><span class="dot ${r.ok?"ok":"bad"}"></span>
+      <span class="who">${esc(r.agent_id)}</span><span class="etype">${esc(r.command)}</span>
+      <span class="when">${fmtTime(r.created_at)}</span></div>
+      <div class="emp-sub">task: ${esc(r.task_id||"-")} · attempt ${esc(r.attempt)} ${r.ok?"":(r.next_retry_at?("· 重试于 "+fmtTime(r.next_retry_at)):"")}</div>
+    </div>`).join("") || `<div class="empty">无记录</div>`;
+  } catch(e){ $("adapterList").innerHTML = `<div class="empty">${esc(e.message)}</div>`; }
+  try {
+    const d = await api("/v1/events?limit=40");
+    const evs = d.events || d.items || [];
+    const html = evs.map(ev=>`<div class="row"><div class="head">
+      <span class="etype">${esc(ev.event_type||ev.type)}</span>
+      <span class="emp-sub">${esc(ev.source_agent||"")} ${ev.target_agent?("→ "+esc(ev.target_agent)):""}</span>
+      <span class="when">${fmtTime(ev.created_at)}</span></div></div>`).join("");
+    $("eventList").innerHTML = html || `<div class="empty">无事件</div>`;
+    $("ovEvents").innerHTML = html ? evs.slice(0,8).map(ev=>`<div class="row"><div class="head">
+      <span class="etype">${esc(ev.event_type||ev.type)}</span>
+      <span class="emp-sub">${esc(ev.source_agent||"")} ${ev.target_agent?("→ "+esc(ev.target_agent)):""}</span>
+      <span class="when">${ago(ev.created_at)}</span></div></div>`).join("") : `<div class="empty">无事件</div>`;
+  } catch(e){ $("eventList").innerHTML = `<div class="empty">${esc(e.message)}</div>`; $("ovEvents").innerHTML = $("eventList").innerHTML; }
+}
+
+/* ---------- overview cards ---------- */
+function renderOverview() {
+  const active = EMPLOYEES.filter(e=>e.status==="active");
+  const onduty = active.filter(e=>isOnDuty(e.last_seen_at||e.heartbeat)).length;
+  const byStatus = s => TASKS.filter(t=>t.status===s).length;
+  $("ovCards").innerHTML = [
+    ["👥 在编员工", active.length, `${onduty} 在岗 / ${active.length - onduty} 离线`, onduty===active.length?"ok":"warn"],
+    ["📥 待领取任务", byStatus("submitted"), "超过 10 分钟未领取会触发看门狗告警", byStatus("submitted")>0?"warn":"ok"],
+    ["🔧 进行中", byStatus("claimed"), "已被员工领取", "ok"],
+    ["⛔ 受阻任务", byStatus("blocked"), "需人工或改派处理", byStatus("blocked")>0?"bad":"ok"],
+  ].map(([t,n,sub,dot])=>`<div class="card"><h3><span class="dot ${dot}"></span>${t}</h3>
+    <div style="font-size:30px;font-weight:700">${n}</div><div class="emp-sub">${sub}</div></div>`).join("");
+}
+
+/* ---------- refresh loop ---------- */
+async function refreshAll(manual=false) {
+  if(manual) toast("刷新中…");
+  await Promise.allSettled([loadHealth(), loadEmployees(), loadTasks(), loadApprovals(), loadActivity()]);
+  renderOverview();
+  if($("msgAgent").value) loadMessages();
+  if($("convAgent").value) loadConversations();
+}
+refreshAll();
+timer = setInterval(refreshAll, 15000);
+</script>
+</body>
+</html>
