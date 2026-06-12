@@ -16,6 +16,9 @@ else
   echo "working tree clean, nothing to commit"
 fi
 
+echo "integrating remote changes (pull --rebase)..."
+git pull --rebase origin main
+
 AHEAD="$(git rev-list --count '@{u}..HEAD' 2>/dev/null || echo '?')"
 if [[ "$AHEAD" == "0" ]]; then
   echo "already in sync with remote"

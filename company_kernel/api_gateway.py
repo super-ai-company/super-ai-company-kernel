@@ -1069,6 +1069,8 @@ class ApiHandler(BaseHTTPRequestHandler):
         self.send_header("Access-Control-Allow-Origin", "*")
         self.send_header("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE, OPTIONS")
         self.send_header("Access-Control-Allow-Headers", "Content-Type")
+        # Chrome local-network access: allow file:// console to reach 127.0.0.1
+        self.send_header("Access-Control-Allow-Private-Network", "true")
 
     def send_json(self, code: int, payload: dict) -> None:
         raw = json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8")
