@@ -15,6 +15,10 @@ from .sandboxing import wrap_command
 
 ROOT = Path(os.environ.get("OPENCLAW_COMPANY_KERNEL_ROOT", Path(__file__).resolve().parents[1])).resolve()
 DB_PATH = ROOT / "company.sqlite"
+
+# launchd agents get a minimal PATH; add common tool locations so the codex CLI resolves.
+_PATH_EXTRAS = ["/opt/homebrew/bin", "/usr/local/bin", str(Path.home() / ".local/bin"), str(Path.home() / "bin"), str(Path.home() / ".npm-global/bin")]
+os.environ["PATH"] = ":".join([p for p in os.environ.get("PATH", "").split(":") if p] + [p for p in _PATH_EXTRAS if p not in os.environ.get("PATH", "")])
 DEFAULT_WORKSPACE = Path(
     os.environ.get("OPENCLAW_CODEX_WORKSPACE", str(Path.home() / ".codex"))
 ).expanduser().resolve()

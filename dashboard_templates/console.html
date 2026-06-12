@@ -251,7 +251,8 @@ const API_CANDIDATES = () => {
   if (location.protocol.startsWith("http")) c.push("");           // same-origin (served by gateway)
   const saved = localStorage.getItem("ck_api_base");
   if (saved) c.push(saved);
-  c.push("http://127.0.0.1:8765");                                 // launchd default port
+  c.push("http://127.0.0.1:8788");                                 // company-kernel console gateway
+  c.push("http://127.0.0.1:8765");                                 // legacy launchd port
   return [...new Set(c)];
 };
 async function detectApi() {

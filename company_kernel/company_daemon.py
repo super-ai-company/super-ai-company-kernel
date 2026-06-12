@@ -32,8 +32,19 @@ def load_config(path: Path) -> dict:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+def augmented_path(current: str) -> str:
+    """launchd agents get a minimal PATH; add common tool locations so codex/hermes/openclaw resolve."""
+    home = str(Path.home())
+    extras = ["/opt/homebrew/bin", "/usr/local/bin", f"{home}/.local/bin", f"{home}/bin", f"{home}/.npm-global/bin"]
+    parts = [p for p in current.split(":") if p]
+    for extra in extras:
+        if extra not in parts:
+            parts.append(extra)
+    return ":".join(parts)
+
+
 def run_cmd(args: list[str]) -> dict:
-    env = {**os.environ, "OPENCLAW_COMPANY_KERNEL_ROOT": str(ROOT)}
+    env = {**os.environ, "OPENCLAW_COMPANY_KERNEL_ROOT": str(ROOT), "PATH": augmented_path(os.environ.get("PATH", ""))}
     cp = subprocess.run(args, cwd=str(ROOT), text=True, capture_output=True, env=env)
     result = {
         "command": args,
