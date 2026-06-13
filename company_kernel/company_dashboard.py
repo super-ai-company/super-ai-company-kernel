@@ -10,11 +10,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from . import companyctl
+from .db_paths import ensure_db_parent, resolve_db_path
 from .schema_migrations import ensure_schema_migrations
 
 
 ROOT = Path(__file__).resolve().parents[1]
-DB_PATH = ROOT / "company.sqlite"
+DB_PATH = resolve_db_path(ROOT)
 SCHEMA = ROOT / "company_kernel" / "schema.sql"
 DEFAULT_OUTPUT = ROOT / "state" / "dashboard.html"
 ADVANCED_TEMPLATE_CANDIDATES = [
@@ -27,7 +28,7 @@ def now() -> str:
 
 
 def connect() -> sqlite3.Connection:
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(ensure_db_parent(DB_PATH))
     conn.row_factory = sqlite3.Row
     conn.executescript(SCHEMA.read_text(encoding="utf-8"))
     ensure_schema_migrations(conn)
@@ -68,6 +69,40 @@ def minutes_since(value: str, generated_at: str) -> int | None:
     return max(0, int((generated - timestamp).total_seconds() // 60))
 
 
+EVIDENCE_REVIEW_SLA_MINUTES = 24 * 60
+
+
+def evidence_review_context(item: dict, generated_at: str, *, sla_minutes: int = EVIDENCE_REVIEW_SLA_MINUTES) -> dict:
+    status = str(item.get("acceptance_status") or "pending")
+    age = minutes_since(str(item.get("updated_at") or ""), generated_at)
+    if status != "pending":
+        return {
+            "pending_age_minutes": age,
+            "review_sla_minutes": sla_minutes,
+            "review_state": status,
+            "owner_next_action": "Evidence already reviewed; inspect trace if the result is disputed.",
+        }
+    stale = age is not None and age >= sla_minutes
+    return {
+        "pending_age_minutes": age,
+        "review_sla_minutes": sla_minutes,
+        "review_state": "pending_review_stale" if stale else "pending_review_fresh",
+        "owner_next_action": (
+            "Prioritize stale final evidence review: safe-preview, accept or reject final evidence, or request rework."
+            if stale
+            else "Review safe preview and accept or reject final evidence."
+        ),
+    }
+
+
+def seconds_since(value: str, generated_at: str) -> int | None:
+    timestamp = parse_time(value)
+    generated = parse_time(generated_at)
+    if not timestamp or not generated:
+        return None
+    return max(0, int((generated - timestamp).total_seconds()))
+
+
 def milliseconds_between(start: str, end: str) -> int:
     start_dt = parse_time(start)
     end_dt = parse_time(end)
@@ -95,6 +130,12 @@ def build_traces(conn: sqlite3.Connection, *, limit: int = 20) -> list[dict]:
               SELECT trace_id, created_at FROM handoffs WHERE trace_id != ''
               UNION ALL
               SELECT trace_id, started_at AS created_at FROM execution_attempts WHERE trace_id != ''
+              UNION ALL
+              SELECT trace_id, started_at AS created_at FROM runtime_sessions WHERE trace_id != ''
+              UNION ALL
+              SELECT trace_id, started_at AS created_at FROM agent_tool_calls WHERE trace_id != ''
+              UNION ALL
+              SELECT trace_id, created_at FROM budget_events WHERE trace_id != ''
             )
             GROUP BY trace_id
             ORDER BY last_seen DESC
@@ -108,7 +149,7 @@ def build_traces(conn: sqlite3.Connection, *, limit: int = 20) -> list[dict]:
         event_rows = rows(
             conn,
             """
-            SELECT id, event_type, source_agent, task_id, created_at, processed_at
+            SELECT id, event_type, source_agent, task_id, payload_json, created_at, processed_at
             FROM company_events
             WHERE trace_id = ?
             ORDER BY created_at ASC
@@ -126,32 +167,98 @@ def build_traces(conn: sqlite3.Connection, *, limit: int = 20) -> list[dict]:
             (trace_id,),
         )
         artifact_rows = rows(conn, "SELECT artifact_id, task_id, employee_id, name, stage, status, version, created_at FROM artifacts WHERE trace_id = ? ORDER BY created_at ASC", (trace_id,))
-        evidence_rows = rows(conn, "SELECT evidence_id, task_id, employee_id, summary, path_or_url, is_final, created_at FROM evidence WHERE trace_id = ? ORDER BY created_at ASC", (trace_id,))
+        evidence_rows = rows(conn, "SELECT evidence_id, task_id, attempt_id, employee_id, summary, path_or_url, is_final, created_at FROM evidence WHERE trace_id = ? ORDER BY created_at ASC", (trace_id,))
         handoff_rows = rows(conn, "SELECT handoff_id, from_task_id, to_task_id, from_employee_id, status, summary, created_at FROM handoffs WHERE trace_id = ? ORDER BY created_at ASC", (trace_id,))
-        attempt_rows = rows(conn, "SELECT attempt_id, task_id, employee_id, adapter_type, status, started_at, finished_at FROM execution_attempts WHERE trace_id = ? ORDER BY started_at ASC", (trace_id,))
+        attempt_rows = rows(
+            conn,
+            """
+            SELECT attempt_id, task_id, employee_id, adapter_type, status,
+                   runtime_policy_json, metadata_json, started_at, finished_at
+            FROM execution_attempts
+            WHERE trace_id = ?
+            ORDER BY started_at ASC
+            """,
+            (trace_id,),
+        )
+        session_rows = rows(
+            conn,
+            """
+            SELECT session_id, task_id, attempt_id, employee_id, adapter_type, runtime_type,
+                   status, started_at, last_heartbeat_at, last_progress_at, stopped_at
+            FROM runtime_sessions
+            WHERE trace_id = ?
+            ORDER BY started_at ASC
+            """,
+            (trace_id,),
+        )
+        tool_call_rows = rows(
+            conn,
+            """
+            SELECT tool_call_id, task_id, attempt_id, employee_id, session_id, tool_name,
+                   tool_type, status, risk_level, started_at, finished_at, output_summary, error_message
+            FROM agent_tool_calls
+            WHERE trace_id = ?
+            ORDER BY started_at ASC
+            """,
+            (trace_id,),
+        )
+        budget_rows = rows(
+            conn,
+            """
+            SELECT budget_event_id, task_id, attempt_id, employee_id, cost_type, amount,
+                   currency, token_input, token_output, runtime_seconds, summary, created_at
+            FROM budget_events
+            WHERE trace_id = ?
+            ORDER BY created_at ASC
+            """,
+            (trace_id,),
+        )
         timestamps = [item["created_at"] for item in [*event_rows, *run_rows, *artifact_rows, *evidence_rows, *handoff_rows] if item.get("created_at")]
         timestamps.extend(item["started_at"] for item in attempt_rows if item.get("started_at"))
         timestamps.extend(item["finished_at"] for item in attempt_rows if item.get("finished_at"))
+        timestamps.extend(item["started_at"] for item in session_rows if item.get("started_at"))
+        timestamps.extend(item["stopped_at"] for item in session_rows if item.get("stopped_at"))
+        timestamps.extend(item["started_at"] for item in tool_call_rows if item.get("started_at"))
+        timestamps.extend(item["finished_at"] for item in tool_call_rows if item.get("finished_at"))
+        timestamps.extend(item["created_at"] for item in budget_rows if item.get("created_at"))
         if not timestamps:
             continue
         start = min(timestamps)
         end = max([*(item.get("processed_at") for item in event_rows if item.get("processed_at")), *timestamps])
         duration = max(1, milliseconds_between(start, end))
         spans = []
-        for event in event_rows:
+        for event_index, event in enumerate(event_rows):
             span_start = milliseconds_between(start, event["created_at"])
             span_duration = milliseconds_between(event["created_at"], event.get("processed_at") or event["created_at"])
+            event_name = event["event_type"]
+            correction_direction = ""
+            if event_name == "supervisor.correction_requested":
+                event_name = "supervisor.correction.requested"
+                correction_direction = "supervisor_to_worker"
+            elif event_name == "supervisor.correction_acknowledged":
+                event_name = "supervisor.correction.acknowledged"
+                correction_direction = "worker_to_supervisor"
+            span = {
+                "name": event_name,
+                "service": event["source_agent"] or "event",
+                "duration_ms": max(12, span_duration),
+                "start_ms": span_start,
+                "event_id": event["id"],
+                "task_id": event["task_id"],
+                "created_at": event["created_at"],
+                "processed_at": event.get("processed_at", ""),
+                "event_sequence": event_index,
+            }
+            if correction_direction:
+                try:
+                    payload = json.loads(event.get("payload_json", "{}") or "{}")
+                except json.JSONDecodeError:
+                    payload = {}
+                span["attempt_id"] = str(payload.get("attempt_id", "") or "")
+                span["correction_direction"] = correction_direction
+                span["label"] = str(payload.get("message", "") or event["event_type"])
             spans.append(
-                {
-                    "name": event["event_type"],
-                    "service": event["source_agent"] or "event",
-                    "duration_ms": max(12, span_duration),
-                    "start_ms": span_start,
-                    "event_id": event["id"],
-                    "task_id": event["task_id"],
-                    "created_at": event["created_at"],
-                    "processed_at": event.get("processed_at", ""),
-                }
+                span
             )
         for run in run_rows:
             span_start = milliseconds_between(start, run["created_at"])
@@ -190,6 +297,7 @@ def build_traces(conn: sqlite3.Connection, *, limit: int = 20) -> list[dict]:
                     "start_ms": milliseconds_between(start, item["created_at"]),
                     "evidence_id": item["evidence_id"],
                     "task_id": item["task_id"],
+                    "attempt_id": item.get("attempt_id", ""),
                     "created_at": item["created_at"],
                     "label": item["summary"] or item["path_or_url"],
                 }
@@ -208,6 +316,10 @@ def build_traces(conn: sqlite3.Connection, *, limit: int = 20) -> list[dict]:
                 }
             )
         for attempt in attempt_rows:
+            metadata = companyctl.attempt_json_field(attempt, "metadata_json")
+            runtime_policy = companyctl.attempt_json_field(attempt, "runtime_policy_json")
+            previous_attempt_id = str(metadata.get("previous_attempt_id", "") or "")
+            attempt_chain = [previous_attempt_id, attempt["attempt_id"]] if previous_attempt_id else [attempt["attempt_id"]]
             spans.append(
                 {
                     "name": f"attempt.{attempt['status']}",
@@ -216,11 +328,64 @@ def build_traces(conn: sqlite3.Connection, *, limit: int = 20) -> list[dict]:
                     "start_ms": milliseconds_between(start, attempt["started_at"]),
                     "attempt_id": attempt["attempt_id"],
                     "task_id": attempt["task_id"],
+                    "adapter_type": attempt["adapter_type"],
+                    "previous_attempt_id": previous_attempt_id,
+                    "attempt_chain": attempt_chain,
+                    "runtime_policy": runtime_policy,
                     "created_at": attempt["started_at"],
                     "label": attempt["adapter_type"],
                 }
             )
-        spans.sort(key=lambda item: (item.get("start_ms", 0), item.get("name", "")))
+        for session in session_rows:
+            spans.append(
+                {
+                    "name": f"runtime.session.{session['status']}",
+                    "service": session["employee_id"] or "runtime",
+                    "duration_ms": milliseconds_between(session["started_at"], session.get("stopped_at") or session.get("last_heartbeat_at") or session["started_at"]),
+                    "start_ms": milliseconds_between(start, session["started_at"]),
+                    "session_id": session["session_id"],
+                    "attempt_id": session.get("attempt_id", ""),
+                    "task_id": session.get("task_id", ""),
+                    "created_at": session["started_at"],
+                    "label": f"{session.get('runtime_type') or session.get('adapter_type') or 'runtime'} session",
+                }
+            )
+        for tool_call in tool_call_rows:
+            spans.append(
+                {
+                    "name": f"tool.call.{tool_call['status']}",
+                    "service": tool_call["employee_id"] or "tool",
+                    "duration_ms": milliseconds_between(tool_call["started_at"], tool_call.get("finished_at") or tool_call["started_at"]),
+                    "start_ms": milliseconds_between(start, tool_call["started_at"]),
+                    "tool_call_id": tool_call["tool_call_id"],
+                    "session_id": tool_call.get("session_id", ""),
+                    "attempt_id": tool_call.get("attempt_id", ""),
+                    "task_id": tool_call.get("task_id", ""),
+                    "created_at": tool_call["started_at"],
+                    "label": companyctl.sanitize_log_text(tool_call.get("output_summary") or tool_call.get("error_message") or tool_call.get("tool_name", "")),
+                    "risk_level": tool_call.get("risk_level", ""),
+                }
+            )
+        for budget_event in budget_rows:
+            spans.append(
+                {
+                    "name": f"budget.{budget_event['cost_type'] or 'spent'}",
+                    "service": budget_event["employee_id"] or "budget",
+                    "duration_ms": 24,
+                    "start_ms": milliseconds_between(start, budget_event["created_at"]),
+                    "budget_event_id": budget_event["budget_event_id"],
+                    "attempt_id": budget_event.get("attempt_id", ""),
+                    "task_id": budget_event.get("task_id", ""),
+                    "created_at": budget_event["created_at"],
+                    "label": f"{budget_event['amount']} {budget_event['currency']} · {budget_event['summary']}",
+                    "amount": float(budget_event.get("amount") or 0),
+                    "currency": budget_event.get("currency", ""),
+                    "token_input": int(budget_event.get("token_input") or 0),
+                    "token_output": int(budget_event.get("token_output") or 0),
+                    "runtime_seconds": int(budget_event.get("runtime_seconds") or 0),
+                }
+            )
+        spans.sort(key=lambda item: (item.get("start_ms", 0), item.get("event_sequence", 999999), item.get("name", "")))
         first = spans[0] if spans else {}
         traces.append(
             {
@@ -243,8 +408,1173 @@ def build_traces(conn: sqlite3.Connection, *, limit: int = 20) -> list[dict]:
     return traces
 
 
+def long_task_state(attempt: dict, *, generated_at: str) -> dict:
+    return companyctl.long_task_state_for_attempt(attempt, generated_at=generated_at)
+
+
+def latest_verification_summary() -> dict:
+    def load_latest(path: Path) -> dict:
+        try:
+            if not path.exists():
+                return {}
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return {}
+        return data if isinstance(data, dict) else {}
+
+    local = load_latest(ROOT / "state" / "local-smoke" / "latest.json")
+    comm = load_latest(ROOT / "reports" / "communication-acceptance" / "latest.json")
+    current = now()
+    freshness_threshold_minutes = 24 * 60
+    local_skill = local.get("skill_closed_loop", {}) if isinstance(local.get("skill_closed_loop"), dict) else {}
+    local_cockpit = local_skill.get("cockpit_verification", {}) if isinstance(local_skill.get("cockpit_verification"), dict) else {}
+    direct_matrix = local.get("direct_matrix", []) if isinstance(local.get("direct_matrix"), list) else []
+    comm_metrics = comm.get("metrics", {}) if isinstance(comm.get("metrics"), dict) else {}
+    continuity_total = int(comm_metrics.get("continuity_total") or 0)
+    continuity_passed = int(comm_metrics.get("continuity_passed") or 0)
+    local_summary = {
+        "available": bool(local),
+        "ok": bool(local.get("ok")),
+        "id": str(local.get("smoke_id") or local.get("run_id") or ""),
+        "generated_at": str(local.get("generated_at") or ""),
+        "attendance_ok": bool((local.get("attendance", {}) if isinstance(local.get("attendance"), dict) else {}).get("ok")),
+        "direct_ok": bool((local.get("direct", {}) if isinstance(local.get("direct"), dict) else {}).get("ok")) or bool(direct_matrix and all(str(item.get("direct_status") or "") == "ok" for item in direct_matrix if isinstance(item, dict))),
+        "direct_checked": bool((local.get("direct", {}) if isinstance(local.get("direct"), dict) else {}) or direct_matrix),
+        "skill_closed_loop_ok": bool(local_skill.get("ok")),
+        "skill_closed_loop_checked": bool(local_skill),
+        "cockpit_visibility_checked": bool(local_cockpit),
+        "cockpit_visible": bool(local_cockpit.get("ok") and local_cockpit.get("task_visible")),
+        "cockpit_tool_call_count": int(local_cockpit.get("tool_call_count") or 0),
+        "cockpit_budget_event_count": int(local_cockpit.get("budget_event_count") or 0),
+        "cockpit_evidence_count": int(local_cockpit.get("evidence_count") or 0),
+        "summary": companyctl.sanitize_log_text(str(local.get("summary") or "")),
+    }
+    comm_summary = {
+        "available": bool(comm),
+        "ok": bool(comm.get("ok") and comm.get("mechanism_ok", True)),
+        "id": str(comm.get("run_id") or ""),
+        "generated_at": str(comm.get("generated_at") or ""),
+        "mode": str(comm.get("mode") or ""),
+        "real_execution": bool(comm.get("real_execution")),
+        "continuity": f"{continuity_passed}/{continuity_total}" if continuity_total else "",
+        "continuity_success_rate": float(comm_metrics.get("continuity_success_rate") or 0),
+        "summary": companyctl.sanitize_log_text(str(comm.get("summary") or "")),
+    }
+    report_ages = [
+        age
+        for age in [
+            minutes_since(local_summary["generated_at"], current) if local_summary["generated_at"] else None,
+            minutes_since(comm_summary["generated_at"], current) if comm_summary["generated_at"] else None,
+        ]
+        if age is not None
+    ]
+    max_report_age_minutes = max(report_ages) if report_ages else None
+    freshness = "missing" if max_report_age_minutes is None else ("fresh" if max_report_age_minutes <= freshness_threshold_minutes else "stale")
+    coverage_gaps = []
+    if local_summary["available"] and not local_summary["skill_closed_loop_checked"]:
+        coverage_gaps.append("skill_closed_loop_not_checked")
+    if local_summary["skill_closed_loop_checked"] and not local_summary["cockpit_visibility_checked"]:
+        coverage_gaps.append("cockpit_visibility_not_checked")
+    elif local_summary["cockpit_visibility_checked"] and not local_summary["cockpit_visible"]:
+        coverage_gaps.append("cockpit_visibility_failed")
+    if local_summary["available"] and not local_summary["direct_checked"]:
+        coverage_gaps.append("direct_matrix_not_checked")
+    ok = bool(local_summary["available"] and local_summary["ok"] and comm_summary["available"] and comm_summary["ok"])
+    if not local_summary["available"] and not comm_summary["available"]:
+        status = "missing_verification_reports"
+        owner_next_action = "run company-local-smoke and company-communication-acceptance before claiming local readiness"
+    elif freshness == "stale":
+        status = "stale_verification_reports"
+        owner_next_action = "rerun company-local-smoke and company-communication-acceptance; latest green reports are stale"
+    elif coverage_gaps:
+        status = "verification_coverage_gap"
+        owner_next_action = "run company-local-smoke with skill closed-loop, cockpit visibility, and direct matrix coverage before claiming full local readiness"
+    elif not ok:
+        status = "verification_attention_required"
+        owner_next_action = "inspect latest local smoke and communication acceptance reports"
+    else:
+        status = "all_recent_verifications_green"
+        owner_next_action = "monitor freshness and rerun verification after backend/control-plane changes"
+    summary_parts = [part for part in [local_summary["summary"], comm_summary["summary"]] if part]
+    return {
+        "ok": ok,
+        "status": status,
+        "freshness": freshness,
+        "freshness_threshold_minutes": freshness_threshold_minutes,
+        "max_report_age_minutes": max_report_age_minutes,
+        "coverage_gaps": coverage_gaps,
+        "local_smoke": local_summary,
+        "communication_acceptance": comm_summary,
+        "summary": " · ".join(summary_parts) or status,
+        "owner_next_action": owner_next_action,
+        "source_files": {
+            "local_smoke": "state/local-smoke/latest.json",
+            "communication_acceptance": "reports/communication-acceptance/latest.json",
+        },
+    }
+
+
+def build_cockpit_summary(summary: dict) -> dict:
+    generated_at = str(summary.get("generated_at") or now())
+    doctor = summary.get("doctor") if isinstance(summary.get("doctor"), dict) else {}
+    employees = summary.get("employees", [])
+    active_attempts = summary.get("active_attempts", [])
+    chat_counts = chat_classification_counts(summary.get("direct_messages_recent", []))
+    tasks_by_id = {str(task.get("id", "")): task for task in summary.get("tasks", [])}
+
+    def risk_first_tool_calls(tool_calls: list[dict]) -> list[dict]:
+        def timestamp(item: dict) -> str:
+            return str(item.get("finished_at") or item.get("started_at") or "")
+
+        def priority(item: dict) -> int:
+            status = str(item.get("status", "") or "")
+            risk = str(item.get("risk_level", "") or "")
+            if status in {"failed", "blocked", "cancelled"}:
+                return 0
+            if status == "running":
+                return 1
+            if risk in {"high", "critical"}:
+                return 2
+            return 3
+
+        latest_first = sorted(tool_calls, key=timestamp, reverse=True)
+        return sorted(latest_first, key=priority)
+
+    def owner_attention_priority(item: dict) -> tuple[int, str]:
+        kind = str(item.get("kind") or "")
+        state = str(item.get("state") or "")
+        risk = str(item.get("risk") or "")
+        action = str(item.get("approval_action") or "")
+        review_state = str(item.get("review_state") or "")
+        if risk == "P0" or action == "budget_overrun" or kind == "evidence_issue":
+            return 0, "P0"
+        if kind in {"blocked_task", "tool_call"} and state in {"blocked", "failed", "cancelled", "heartbeat_stale", "stale"}:
+            return 0, "P0"
+        if kind == "approval" or risk == "P1":
+            return 1, "P1"
+        if kind in {"stagnant_task", "ledger_gap"} or review_state == "pending_review_stale":
+            return 1, "P1"
+        if kind == "employee_readiness" and state in {"unsafe", "candidate_only", "online_only"}:
+            return 2, "P2"
+        if kind == "evidence":
+            return 2, "P2"
+        return 3, "P3"
+
+    def owner_attention_next_action(item: dict) -> str:
+        existing = str(item.get("owner_next_action") or "").strip()
+        if existing:
+            return existing
+        kind = str(item.get("kind") or "")
+        state = str(item.get("state") or "")
+        action = str(item.get("approval_action") or "")
+        if kind == "approval":
+            return "review approval details, then approve, deny, or mock-resolve without bypassing owner policy"
+        if kind == "stagnant_task":
+            return "send progress probe, request Hermes correction, inspect logs, wait, or cancel the attempt"
+        if kind == "blocked_task":
+            if state == "heartbeat_stale":
+                return "inspect runtime logs and heartbeat, then correct, cancel, retry, or reassign"
+            return "review blocker, then correct, retry, reassign, or cancel"
+        if kind == "ledger_gap":
+            return "require missing tool-call or budget ledger before accepting this work"
+        if kind == "tool_call":
+            return "inspect sanitized tool-call detail and decide whether to correct, retry, or block"
+        if kind == "evidence_issue":
+            return "require valid final evidence before accepting task completion"
+        if kind == "evidence":
+            return "safe-preview final evidence, then accept, reject, or request rework"
+        if kind == "employee_readiness":
+            return "verify runtime evidence before assigning automatic work"
+        if action:
+            return f"review {action} and decide the owner-controlled next step"
+        return "inspect this owner attention item and choose the safest next control action"
+
+    def annotate_owner_attention(items: list[dict]) -> list[dict]:
+        annotated = []
+        for item in items:
+            rank, label = owner_attention_priority(item)
+            enriched = dict(item)
+            enriched["priority_rank"] = rank
+            enriched["priority_label"] = label
+            enriched["owner_next_action"] = owner_attention_next_action(enriched)
+            annotated.append(enriched)
+        return sorted(annotated, key=lambda item: (int(item.get("priority_rank", 3)), str(item.get("updated_at") or "")), reverse=False)
+
+    progress_by_task = {}
+    for progress in companyctl.task_progress_events(summary.get("events", [])):
+        task_id = str(progress.get("task_id", ""))
+        if task_id and task_id not in progress_by_task:
+            progress_by_task[task_id] = progress
+    long_tasks = []
+    for attempt in active_attempts:
+        task_id = str(attempt.get("task_id", ""))
+        task = tasks_by_id.get(task_id, {})
+        state = long_task_state(attempt, generated_at=generated_at)
+        evidence = companyctl.sanitize_evidence_path_for_display(str(task.get("evidence_path") or ""))
+        supervisor_state = companyctl.attempt_json_field(dict(attempt), "supervisor_state_json")
+        last_correction = supervisor_state.get("last_correction", {}) if isinstance(supervisor_state.get("last_correction", {}), dict) else {}
+        requested = int(supervisor_state.get("corrections_requested", 0) or 0)
+        acknowledged = int(supervisor_state.get("corrections_acknowledged", 0) or 0)
+        correction = {
+            "requested": requested,
+            "acknowledged": acknowledged,
+            "needs_ack": requested > acknowledged,
+            "last_by": str(last_correction.get("by", "") or ""),
+            "last_message": str(last_correction.get("message", "") or ""),
+            "last_created_at": str(last_correction.get("created_at", "") or ""),
+        }
+        long_tasks.append(
+            {
+                "task_id": attempt.get("task_id", ""),
+                "title": task.get("title", ""),
+                "target_agent": task.get("target_agent", attempt.get("employee_id", "")),
+                "attempt_id": attempt.get("attempt_id", ""),
+                "trace_id": attempt.get("trace_id", ""),
+                "attempt_status": attempt.get("status", ""),
+                "task_status": task.get("status", ""),
+                "started_at": attempt.get("started_at", ""),
+                "last_heartbeat_at": attempt.get("last_heartbeat_at", ""),
+                "last_progress_at": attempt.get("last_progress_at", ""),
+                "blocker": task.get("blocker", "") or attempt.get("error_message", ""),
+                "evidence": evidence,
+                "correction": correction,
+                "latest_progress": progress_by_task.get(task_id, {}),
+                **state,
+            }
+        )
+    pending_approvals = [item for item in summary.get("approvals", []) if str(item.get("status", "")).lower() == "pending"]
+    approval_center_summary = companyctl.approval_control_summary(pending_approvals)
+    approval_center_summary["real_execution_blocked"] = bool(approval_center_summary.get("blocked_real_execution_count") or approval_center_summary.get("pending_owner_action_count"))
+    approval_details = {}
+    pending_approval_task_ids = set()
+    for approval in pending_approvals:
+        raw = approval.get("reason", "")
+        try:
+            detail = json.loads(raw or "{}")
+        except json.JSONDecodeError:
+            detail = {}
+        if isinstance(detail, dict):
+            approval_details[str(approval.get("id", ""))] = detail
+            metadata = detail.get("metadata", {})
+            if isinstance(metadata, dict) and metadata.get("task_id"):
+                pending_approval_task_ids.add(str(metadata["task_id"]))
+    legacy_task_evidence = []
+    for task in summary.get("tasks", []):
+        evidence = companyctl.sanitize_evidence_path_for_display(str(task.get("evidence_path") or ""))
+        if evidence.get("allowed"):
+            legacy_task_evidence.append(
+                {
+                    "task_id": task.get("id", ""),
+                    "title": task.get("title", ""),
+                    "status": task.get("status", ""),
+                    "target_agent": task.get("target_agent", ""),
+                    "updated_at": task.get("updated_at", ""),
+                    "evidence": evidence,
+                }
+            )
+    def evidence_owner_actions(evidence_id: str, task_id: str) -> list[dict]:
+        def action(action_id: str, label: str, api: str, *, method: str = "GET", requires_owner_approval: bool = False, dangerous: bool = False) -> dict:
+            return {
+                "id": action_id,
+                "label": label,
+                "api": api,
+                "method": method,
+                "task_id": task_id,
+                "evidence_id": evidence_id,
+                "requires_owner_approval": requires_owner_approval,
+                "dry_run_default": False,
+                "dangerous": dangerous,
+            }
+        return [
+            action("safe_preview", "Safe preview", f"/v1/evidence/{evidence_id}/safe-preview"),
+            action("accept_evidence", "Accept evidence", f"/v1/evidence/{evidence_id}/accept", method="POST", requires_owner_approval=True),
+            action("reject_evidence", "Reject evidence", f"/v1/evidence/{evidence_id}/reject", method="POST", requires_owner_approval=True),
+            action("view_trace", "View trace", ""),
+        ]
+
+    recent_evidence = []
+    for item in summary.get("evidence_records", []):
+        evidence = item.get("display") if isinstance(item.get("display"), dict) else companyctl.sanitize_evidence_path_for_display(str(item.get("path_or_url") or ""))
+        if evidence.get("allowed") and item.get("is_final"):
+            decision = item.get("acceptance_decision", {}) if isinstance(item.get("acceptance_decision", {}), dict) else companyctl.evidence_acceptance_decision(item)
+            acceptance = companyctl.evidence_acceptance_context(item, evidence)
+            evidence_id = str(item.get("evidence_id", "") or "")
+            task_id = str(item.get("task_id", "") or "")
+            evidence_item = {
+                "evidence_id": evidence_id,
+                "task_id": task_id,
+                "trace_id": item.get("trace_id", ""),
+                "title": tasks_by_id.get(task_id, {}).get("title", ""),
+                "status": tasks_by_id.get(task_id, {}).get("status", ""),
+                "target_agent": item.get("employee_id", ""),
+                "updated_at": item.get("created_at", ""),
+                "summary": item.get("summary", ""),
+                "artifact_id": item.get("artifact_id", ""),
+                "attempt_id": item.get("attempt_id", ""),
+                "evidence": evidence,
+                "acceptance_status": decision.get("status", "pending"),
+                "acceptance_state": acceptance.get("state", ""),
+                "acceptance_decision": decision,
+                "acceptance": acceptance,
+                "actions": evidence_owner_actions(evidence_id, task_id),
+            }
+            evidence_item.update(evidence_review_context(evidence_item, generated_at))
+            evidence_rank, evidence_label = owner_attention_priority({"kind": "evidence", **evidence_item})
+            evidence_item["priority_rank"] = evidence_rank
+            evidence_item["priority_label"] = evidence_label
+            recent_evidence.append(evidence_item)
+    owner_attention = []
+    def attention_actions(kind: str, *, task_id: str = "", attempt_id: str = "", approval_id: str = "") -> list[dict]:
+        base = {"task_id": task_id, "attempt_id": attempt_id, "approval_id": approval_id}
+        def action(action_id: str, label: str, api: str, *, method: str = "GET", requires_owner_approval: bool = False, dry_run_default: bool = True, dangerous: bool = False) -> dict:
+            return {
+                **base,
+                "id": action_id,
+                "label": label,
+                "api": api,
+                "method": method,
+                "requires_owner_approval": requires_owner_approval,
+                "dry_run_default": dry_run_default,
+                "dangerous": dangerous,
+            }
+        if kind == "stagnant_task":
+            return [
+                action("send_probe", "Send progress probe", f"/v1/tasks/{task_id}/progress", method="POST"),
+                action("send_correction", "Request Hermes correction", f"/v1/tasks/{task_id}/correct", method="POST", requires_owner_approval=True),
+                action("view_logs", "View sanitized logs", f"/v1/tasks/{task_id}"),
+                action("wait", "Keep waiting", "", method="none"),
+                action("cancel_attempt", "Cancel attempt", f"/v1/tasks/{task_id}/cancel", method="POST", requires_owner_approval=True, dangerous=True),
+            ]
+        if kind == "blocked_task":
+            return [
+                action("send_correction", "Send correction", f"/v1/tasks/{task_id}/correct", method="POST", requires_owner_approval=True),
+                action("view_logs", "View sanitized logs", f"/v1/tasks/{task_id}"),
+                action("retry", "Retry / reassign", f"/v1/tasks/{task_id}/retry", method="POST", requires_owner_approval=True),
+                action("reassign", "Reassign employee", f"/v1/tasks/{task_id}/reassign", method="POST", requires_owner_approval=True),
+            ]
+        if kind == "approval":
+            return [
+                action("approve", "Approve", f"/v1/approvals/{approval_id}/approve", method="POST", requires_owner_approval=True, dry_run_default=False, dangerous=True),
+                action("deny", "Deny", f"/v1/approvals/{approval_id}/deny", method="POST", requires_owner_approval=True),
+                action("mock_resolve", "Mock resolve dry-run", f"/v1/approvals/{approval_id}/resolve", method="POST"),
+            ]
+        if kind == "evidence":
+            return [
+                action("safe_preview", "Safe preview", "", method="GET"),
+                action("accept_evidence", "Accept evidence", "", method="POST", requires_owner_approval=True),
+                action("reject_evidence", "Reject evidence", "", method="POST", requires_owner_approval=True),
+                action("view_trace", "View trace", ""),
+            ]
+        if kind == "evidence_issue":
+            return [
+                action("review_task", "Review task", f"/v1/tasks/{task_id}"),
+                action("view_trace", "View trace", ""),
+            ]
+        if kind == "ledger_gap":
+            return [
+                action("send_probe", "Send progress probe", f"/v1/tasks/{task_id}/progress", method="POST"),
+                action("view_logs", "View sanitized logs", f"/v1/tasks/{task_id}"),
+                action("send_correction", "Request Hermes correction", f"/v1/tasks/{task_id}/correct", method="POST", requires_owner_approval=True),
+            ]
+        if kind == "employee_readiness":
+            return [
+                action("verify_runtime", "Verify runtime evidence", "/v1/agent-matrix", method="GET"),
+                action("view_employee", "View employee", ""),
+                action("keep_candidate", "Keep candidate", "", method="none"),
+            ]
+        return []
+
+    for item in long_tasks:
+        state = str(item.get("long_task_state") or "")
+        if state in {"progress_stagnant", "correcting"}:
+            task_id = str(item.get("task_id", ""))
+            attempt_id = str(item.get("attempt_id", ""))
+            correction = item.get("correction", {}) if isinstance(item.get("correction", {}), dict) else {}
+            message = "员工仍在线，但 15 分钟没有新进度。可继续等待、发送探针、查看日志或请求 Hermes 纠偏。"
+            if correction.get("needs_ack"):
+                last_by = correction.get("last_by") or "Hermes"
+                if str(last_by).lower() == "hermes":
+                    last_by = "Hermes"
+                last_message = correction.get("last_message") or "纠偏已发出"
+                message = f"{last_by} 已发纠偏，等待员工确认：{last_message}"
+            owner_attention.append(
+                {
+                    "kind": "stagnant_task",
+                    "state": "correcting" if correction.get("needs_ack") else state,
+                    "approval_id": "",
+                    "task_id": task_id,
+                    "approval_action": "",
+                    "risk": "",
+                    "title": item.get("title", ""),
+                    "target_agent": item.get("target_agent", ""),
+                    "attempt_id": attempt_id,
+                    "trace_id": item.get("trace_id", ""),
+                    "message": message,
+                    "correction": correction,
+                    "updated_at": item.get("last_progress_at") or item.get("started_at", ""),
+                    "actions": attention_actions("stagnant_task", task_id=task_id, attempt_id=attempt_id),
+                }
+            )
+        elif state in {"heartbeat_stale", "blocked", "failed", "stale"}:
+            task_id = str(item.get("task_id", ""))
+            attempt_id = str(item.get("attempt_id", ""))
+            owner_attention.append(
+                {
+                    "kind": "blocked_task",
+                    "state": state,
+                    "approval_id": "",
+                    "task_id": task_id,
+                    "approval_action": "",
+                    "risk": "",
+                    "title": item.get("title", ""),
+                    "target_agent": item.get("target_agent", ""),
+                    "attempt_id": attempt_id,
+                    "trace_id": item.get("trace_id", ""),
+                    "message": item.get("blocker") or "任务需要人工检查：查看日志、纠偏、取消或重新分配。",
+                    "updated_at": item.get("last_progress_at") or item.get("started_at", ""),
+                    "actions": attention_actions("blocked_task", task_id=task_id, attempt_id=attempt_id),
+                }
+            )
+    supervisor_activity = []
+    for item in long_tasks:
+        correction = item.get("correction", {}) if isinstance(item.get("correction", {}), dict) else {}
+        if correction.get("needs_ack"):
+            last_by = str(correction.get("last_by") or "Hermes")
+            supervisor = "Hermes" if last_by.lower() == "hermes" else last_by
+            supervisor_activity.append(
+                {
+                    "kind": "correction_pending_ack",
+                    "supervisor": supervisor,
+                    "target_agent": item.get("target_agent", ""),
+                    "task_id": item.get("task_id", ""),
+                    "attempt_id": item.get("attempt_id", ""),
+                    "trace_id": item.get("trace_id", ""),
+                    "state": item.get("long_task_state", ""),
+                    "message": correction.get("last_message") or "纠偏已发出，等待员工确认。",
+                    "updated_at": correction.get("last_created_at") or item.get("last_progress_at") or item.get("started_at", ""),
+                }
+            )
+        elif item.get("long_task_state") == "progress_stagnant":
+            supervisor_activity.append(
+                {
+                    "kind": "stagnant_check",
+                    "supervisor": "Hermes",
+                    "target_agent": item.get("target_agent", ""),
+                    "task_id": item.get("task_id", ""),
+                    "attempt_id": item.get("attempt_id", ""),
+                    "trace_id": item.get("trace_id", ""),
+                    "state": item.get("long_task_state", ""),
+                    "message": "heartbeat fresh but progress stagnant; correction or probe recommended.",
+                    "updated_at": item.get("last_progress_at") or item.get("started_at", ""),
+                }
+            )
+    supervisor_loop = summary.get("supervisor_loop", {}) if isinstance(summary.get("supervisor_loop", {}), dict) else {}
+    if supervisor_loop:
+        loop_counts = supervisor_loop.get("counts", {}) if isinstance(supervisor_loop.get("counts", {}), dict) else {}
+        supervisor_activity.append(
+            {
+                "kind": "supervisor_loop",
+                "supervisor": str(supervisor_loop.get("actor") or "Hermes"),
+                "target_agent": "",
+                "task_id": "",
+                "attempt_id": "",
+                "trace_id": "",
+                "state": "observed",
+                "message": f"latest supervisor loop scanned={loop_counts.get('scanned', 0)} sent={loop_counts.get('sent', 0)} failed={loop_counts.get('failed', 0)}",
+                "updated_at": str(supervisor_loop.get("completed_at") or ""),
+            }
+        )
+    supervisor_activity.sort(key=lambda item: item.get("updated_at") or "", reverse=True)
+    for task in summary.get("tasks", []):
+        status = str(task.get("status", "")).lower()
+        if status in {"blocked", "failed", "stale"}:
+            task_id = str(task.get("id", ""))
+            owner_attention.append(
+                {
+                    "kind": "blocked_task",
+                    "state": status,
+                    "approval_id": "",
+                    "task_id": task_id,
+                    "approval_action": "",
+                    "risk": "",
+                    "title": task.get("title", ""),
+                    "target_agent": task.get("target_agent", ""),
+                    "attempt_id": "",
+                    "trace_id": task.get("trace_id", ""),
+                    "message": task.get("blocker") or task.get("summary") or "任务已阻塞或失败，需要人工处理。",
+                    "updated_at": task.get("updated_at", ""),
+                    "actions": attention_actions("blocked_task", task_id=task_id),
+                }
+            )
+    for item in pending_approvals[:10]:
+        approval_id = str(item.get("id", ""))
+        detail = approval_details.get(approval_id, {})
+        metadata = detail.get("metadata", {}) if isinstance(detail.get("metadata", {}), dict) else {}
+        task_id = str(metadata.get("task_id") or item.get("task_id", "") or "")
+        target_agent = str(detail.get("target") or item.get("target_agent", "") or "")
+        risk = str(detail.get("risk") or item.get("risk", "") or "")
+        request_reason = str(detail.get("request_reason") or item.get("reason", "") or "")
+        approval_action = str(item.get("action") or "")
+        budget_context = {}
+        if approval_action in {"budget_overrun", "budget.overrun"}:
+            budget_context = {
+                "amount": float(metadata.get("budget_amount") or metadata.get("amount") or 0),
+                "currency": str(metadata.get("currency") or "USD"),
+                "limit_status": str(metadata.get("limit_status") or "overrun"),
+                "hard_limit": float(metadata.get("hard_limit") or 0),
+                "soft_limit": float(metadata.get("soft_limit") or 0),
+            }
+        approval_message = f"需要 owner approval；真实外部发送保持 dry-run，直到人工批准。{request_reason}".strip()
+        if budget_context:
+            approval_message = (
+                f"预算超限，需要 owner approval；"
+                f"amount={budget_context['amount']} {budget_context['currency']} "
+                f"limit_status={budget_context['limit_status']}。{request_reason}"
+            ).strip()
+        owner_attention.append(
+            {
+                "kind": "approval",
+                "state": "blocked",
+                "approval_id": approval_id,
+                "task_id": task_id,
+                "approval_action": approval_action,
+                "risk": risk,
+                "title": item.get("action") or item.get("id", ""),
+                "target_agent": target_agent,
+                "attempt_id": "",
+                "trace_id": "",
+                "message": approval_message,
+                "budget": budget_context,
+                "updated_at": item.get("updated_at", ""),
+                "actions": attention_actions("approval", task_id=task_id, approval_id=approval_id),
+            }
+        )
+    evidence_acceptance_queue = [item for item in recent_evidence if str(item.get("acceptance_status") or "pending") == "pending"]
+    for item in evidence_acceptance_queue[:10]:
+        task_id = str(item.get("task_id", ""))
+        owner_attention.append(
+            {
+                "kind": "evidence",
+                "state": "pending_review",
+                "review_state": item.get("review_state", "pending_review_fresh"),
+                "approval_id": "",
+                "task_id": task_id,
+                "evidence_id": item.get("evidence_id", ""),
+                "approval_action": "",
+                "risk": "",
+                "title": item.get("title", ""),
+                "target_agent": item.get("target_agent", ""),
+                "attempt_id": item.get("attempt_id", ""),
+                "trace_id": item.get("trace_id", ""),
+                "message": f"{item.get('owner_next_action', 'Review final evidence.')} path={item.get('evidence', {}).get('relative_path', '')}",
+                "updated_at": item.get("updated_at", ""),
+                "pending_age_minutes": item.get("pending_age_minutes"),
+                "review_sla_minutes": item.get("review_sla_minutes"),
+                "owner_next_action": item.get("owner_next_action", ""),
+                "evidence": item.get("evidence", {}),
+                "actions": item.get("actions", attention_actions("evidence", task_id=task_id)),
+            }
+        )
+    for tool_call in summary.get("tool_calls", [])[:10]:
+        if str(tool_call.get("status", "") or "") not in {"running", "failed", "blocked", "cancelled"}:
+            continue
+        task_id = str(tool_call.get("task_id", "") or "")
+        owner_attention.append(
+            {
+                "kind": "tool_call",
+                "state": tool_call.get("status", ""),
+                "approval_id": tool_call.get("approval_id", ""),
+                "task_id": task_id,
+                "approval_action": "",
+                "risk": tool_call.get("risk_level", ""),
+                "title": tool_call.get("tool_name", ""),
+                "target_agent": tool_call.get("employee_id", ""),
+                "attempt_id": tool_call.get("attempt_id", ""),
+                "trace_id": tool_call.get("trace_id", ""),
+                "message": f"tool call {tool_call.get('status', '')}: {tool_call.get('tool_name', '')} · {tool_call.get('output_summary') or tool_call.get('input_summary') or ''}",
+                "updated_at": tool_call.get("finished_at") or tool_call.get("started_at") or "",
+                "actions": attention_actions("blocked_task" if str(tool_call.get("status", "")) in {"failed", "blocked"} else "stagnant_task", task_id=task_id, attempt_id=str(tool_call.get("attempt_id", "") or "")),
+            }
+        )
+    evidence_issues = summary.get("evidence_health", {}).get("issues", [])
+    if not isinstance(evidence_issues, list):
+        evidence_issues = []
+    completion_invalid_tasks = []
+    for issue in evidence_issues[:10]:
+        task_id = str(issue.get("task_id", ""))
+        raw_reason = str(issue.get("reason", "") or "")
+        normalized_reason = "missing_final_evidence" if raw_reason == "completed_without_evidence" else (raw_reason or "missing_final_evidence")
+        completion_invalid_tasks.append(
+            {
+                "task_id": task_id,
+                "target_agent": issue.get("agent", ""),
+                "completion_invalid": True,
+                "completion_invalid_reason": normalized_reason,
+                "final_evidence_count": 0,
+                "message": f"Done-like task is invalid until final evidence is submitted: {raw_reason}",
+                "actions": attention_actions("evidence_issue", task_id=task_id),
+            }
+        )
+        owner_attention.append(
+            {
+                "kind": "evidence_issue",
+                "state": "blocked",
+                "approval_id": "",
+                "task_id": task_id,
+                "approval_action": "",
+                "risk": "P0",
+                "title": task_id,
+                "target_agent": issue.get("agent", ""),
+                "attempt_id": "",
+                "trace_id": "",
+                "reason": issue.get("reason", ""),
+                "message": f"任务 done 但缺少 final evidence：{issue.get('reason', '')}",
+                "updated_at": "",
+                "actions": attention_actions("evidence_issue", task_id=task_id),
+            }
+        )
+    for employee in employees:
+        employee_id = str(employee.get("id", "") or "")
+        employee_status = str(employee.get("employee_status") or employee.get("status") or "")
+        readiness_level = str(employee.get("readiness_level", "") or "")
+        if employee_status == "candidate":
+            readiness_level = "candidate_only"
+        elif not readiness_level:
+            if employee_status == "active":
+                readiness_level = "online_only"
+            elif employee_status:
+                readiness_level = "task_unsupported"
+        if readiness_level not in {"candidate_only", "online_only", "unsafe", "task_unsupported"}:
+            continue
+        runtime = str(employee.get("runtime", "") or "")
+        reason = str(employee.get("readiness_reason", "") or "")
+        if not reason and readiness_level == "candidate_only":
+            reason = "candidate_requires_structured_runtime_evidence_before_activation"
+        if readiness_level == "candidate_only":
+            message = "员工仍是 candidate，只可评审或 smoke；必须有结构化 execution evidence 后才能参与自动派工。"
+        elif readiness_level == "online_only":
+            message = "员工在线但缺少 runtime/task/evidence 闭环；不要把在线心跳当作可交付能力。"
+        elif readiness_level == "unsafe":
+            message = "员工 readiness unsafe；禁止自动派工，先修复安全或能力证据。"
+        else:
+            message = "员工暂不支持任务闭环；只能保留观察或人工评审。"
+        owner_attention.append(
+            {
+                "kind": "employee_readiness",
+                "state": readiness_level,
+                "approval_id": "",
+                "task_id": "",
+                "employee_id": employee_id,
+                "approval_action": "",
+                "risk": "P1",
+                "title": employee_id,
+                "display_name": employee.get("name") or employee_id,
+                "target_agent": employee_id,
+                "runtime": runtime,
+                "attempt_id": "",
+                "trace_id": "",
+                "message": f"{message} reason={reason}".strip(),
+                "updated_at": employee.get("last_seen_at") or generated_at,
+                "actions": attention_actions("employee_readiness"),
+            }
+        )
+    runtime_sessions_by_task: dict[str, list[dict]] = {}
+    for session in summary.get("runtime_sessions", []):
+        task_id = str(session.get("task_id", "") or "")
+        if task_id:
+            runtime_sessions_by_task.setdefault(task_id, []).append(session)
+    tool_calls_by_task: dict[str, list[dict]] = {}
+    for tool_call in summary.get("tool_calls", []):
+        task_id = str(tool_call.get("task_id", "") or "")
+        if task_id:
+            tool_calls_by_task.setdefault(task_id, []).append(tool_call)
+    budget_by_task = {}
+    budget_summary = summary.get("budget_summary", {}) if isinstance(summary.get("budget_summary"), dict) else {}
+    if isinstance(budget_summary.get("by_task"), dict):
+        budget_by_task = budget_summary.get("by_task", {})
+
+    def runtime_summary_for_task(task_id: str) -> dict:
+        sessions = runtime_sessions_by_task.get(task_id, [])
+        latest = sessions[0] if sessions else {}
+        return {
+            "session_count": len(sessions),
+            "active_session_count": sum(1 for item in sessions if str(item.get("status", "") or "") in {"active", "idle"}),
+            "latest_session_id": latest.get("session_id", ""),
+            "latest_runtime_type": latest.get("runtime_type", ""),
+            "latest_status": latest.get("status", ""),
+            "latest_heartbeat_at": latest.get("last_heartbeat_at", ""),
+        }
+
+    def tool_summary_for_task(task_id: str) -> dict:
+        tool_calls = risk_first_tool_calls(tool_calls_by_task.get(task_id, []))
+        latest = tool_calls[0] if tool_calls else {}
+        return {
+            "tool_call_count": len(tool_calls),
+            "running_tool_call_count": sum(1 for item in tool_calls if str(item.get("status", "") or "") == "running"),
+            "failed_tool_call_count": sum(1 for item in tool_calls if str(item.get("status", "") or "") in {"failed", "blocked", "cancelled"}),
+            "latest_tool_call_id": latest.get("tool_call_id", ""),
+            "latest_tool_name": latest.get("tool_name", ""),
+            "latest_tool_type": latest.get("tool_type", ""),
+            "latest_tool_status": latest.get("status", ""),
+            "latest_risk_level": latest.get("risk_level", ""),
+        }
+
+    def budget_summary_for_task(task_id: str) -> dict:
+        amount = float((budget_by_task or {}).get(task_id, 0) or 0)
+        by_currency = {}
+        if isinstance(budget_summary.get("by_task_by_currency"), dict):
+            by_currency = budget_summary.get("by_task_by_currency", {}).get(task_id, {}) or {}
+        currencies = sorted(str(currency) for currency in by_currency.keys())
+        return {
+            "event_count": int((budget_summary.get("by_task_event_count", {}) or {}).get(task_id, 0)) if isinstance(budget_summary.get("by_task_event_count", {}), dict) else 0,
+            "total_amount": round(amount, 6),
+            "total_amounts_by_currency": by_currency,
+            "currency": currencies[0] if len(currencies) == 1 else ("mixed" if currencies else str(budget_summary.get("currency") or "USD")),
+            "token_input": int((budget_summary.get("by_task_token_input", {}) or {}).get(task_id, 0)) if isinstance(budget_summary.get("by_task_token_input", {}), dict) else 0,
+            "token_output": int((budget_summary.get("by_task_token_output", {}) or {}).get(task_id, 0)) if isinstance(budget_summary.get("by_task_token_output", {}), dict) else 0,
+            "runtime_seconds": int((budget_summary.get("by_task_runtime_seconds", {}) or {}).get(task_id, 0)) if isinstance(budget_summary.get("by_task_runtime_seconds", {}), dict) else 0,
+        }
+
+    def ledger_gaps_for_card(card: dict) -> list[str]:
+        state = str(card.get("state", "") or "")
+        attempt_id = str(card.get("attempt_id", "") or "")
+        if not attempt_id or state in {"blocked", "failed", "stale", "completion_invalid"}:
+            return []
+        runtime = card.get("runtime_summary", {}) if isinstance(card.get("runtime_summary", {}), dict) else {}
+        tool = card.get("tool_summary", {}) if isinstance(card.get("tool_summary", {}), dict) else {}
+        budget = card.get("budget_summary", {}) if isinstance(card.get("budget_summary", {}), dict) else {}
+        gaps = []
+        if int(runtime.get("session_count") or 0) > 0 and int(tool.get("tool_call_count") or 0) == 0:
+            gaps.append("tool_call_ledger_missing")
+        if int(runtime.get("session_count") or 0) > 0 and int(budget.get("event_count") or 0) == 0:
+            gaps.append("budget_ledger_missing")
+        return gaps
+
+    def task_observability_summary(task_id: str) -> dict:
+        return {
+            "runtime_summary": runtime_summary_for_task(task_id),
+            "tool_summary": tool_summary_for_task(task_id),
+            "budget_summary": budget_summary_for_task(task_id),
+        }
+
+    task_cards_by_id: dict[str, dict] = {}
+
+    def task_owner_next_action(card: dict) -> str:
+        state = str(card.get("state", "") or "")
+        correction = card.get("correction", {}) if isinstance(card.get("correction", {}), dict) else {}
+        tool_summary = card.get("tool_summary", {}) if isinstance(card.get("tool_summary", {}), dict) else {}
+        budget = card.get("budget_summary", {}) if isinstance(card.get("budget_summary", {}), dict) else {}
+        ledger_gaps = card.get("ledger_gaps", []) if isinstance(card.get("ledger_gaps", []), list) else []
+        if bool(card.get("completion_invalid")):
+            return "review task and require valid final evidence before accepting completion"
+        if "tool_call_ledger_missing" in ledger_gaps:
+            return "tool-call ledger missing: inspect logs, send probe, or request Hermes correction before trusting progress"
+        if "budget_ledger_missing" in ledger_gaps:
+            return "cost ledger missing: inspect runtime session and require adapter budget_event before accepting work"
+        if state == "correcting" or correction.get("needs_ack"):
+            return "wait for correction ack or cancel/reassign if progress remains stagnant"
+        if state in {"blocked", "failed", "stale"}:
+            return "review blocker, then correct, retry, reassign, or cancel"
+        if state in {"progress_stagnant", "heartbeat_stale"}:
+            return "employee may still be online; inspect logs, request correction, wait, or cancel"
+        if int(tool_summary.get("failed_tool_call_count") or 0) > 0:
+            return "inspect failed tool calls before accepting output"
+        if str(budget.get("limit_status") or "") in {"hard_exceeded", "soft_exceeded"}:
+            return "review budget status before retrying or assigning more work"
+        if int(card.get("final_evidence_count") or 0) > 0:
+            return "review final evidence and accept if it matches the task"
+        return "monitor progress, tool calls, budget, and evidence"
+
+    def upsert_task_card(card: dict) -> None:
+        task_id = str(card.get("task_id", "") or "")
+        if not task_id:
+            return
+        existing = task_cards_by_id.get(task_id, {})
+        card = {**task_observability_summary(task_id), **card}
+        card["ledger_gaps"] = ledger_gaps_for_card(card)
+        card["owner_next_action"] = task_owner_next_action(card)
+        merged = {**existing, **card}
+        if existing.get("actions") and not card.get("actions"):
+            merged["actions"] = existing["actions"]
+        merged["ledger_gaps"] = ledger_gaps_for_card(merged)
+        merged["owner_next_action"] = task_owner_next_action(merged)
+        task_cards_by_id[task_id] = merged
+
+    for item in long_tasks:
+        task_id = str(item.get("task_id", "") or "")
+        correction = item.get("correction", {}) if isinstance(item.get("correction", {}), dict) else {}
+        long_state = str(item.get("long_task_state", "") or "")
+        card_state = "correcting" if correction.get("needs_ack") else long_state or str(item.get("task_status", "") or "")
+        upsert_task_card(
+            {
+                "task_id": task_id,
+                "title": item.get("title", ""),
+                "state": card_state,
+                "task_status": item.get("task_status", ""),
+                "long_task_state": long_state,
+                "heartbeat_state": item.get("heartbeat_state", ""),
+                "progress_state": item.get("progress_state", ""),
+                "employee_id": item.get("target_agent", ""),
+                "target_agent": item.get("target_agent", ""),
+                "attempt_id": item.get("attempt_id", ""),
+                "trace_id": item.get("trace_id", ""),
+                "started_at": item.get("started_at", ""),
+                "updated_at": item.get("last_progress_at") or item.get("started_at", ""),
+                "latest_progress": item.get("latest_progress", {}),
+                "correction": correction,
+                "blocker": item.get("blocker", ""),
+                "evidence": item.get("evidence", {}),
+                "completion_invalid": False,
+                "completion_invalid_reason": "",
+                "final_evidence_count": 0,
+                "actions": attention_actions("stagnant_task", task_id=task_id, attempt_id=str(item.get("attempt_id", "") or "")),
+            }
+        )
+    for task in summary.get("tasks", []):
+        status = str(task.get("status", "") or "").lower()
+        task_id = str(task.get("id", "") or "")
+        if status not in {"blocked", "failed", "stale"}:
+            continue
+        upsert_task_card(
+            {
+                "task_id": task_id,
+                "title": task.get("title", ""),
+                "state": status,
+                "task_status": status,
+                "long_task_state": "",
+                "heartbeat_state": "",
+                "progress_state": "",
+                "employee_id": task.get("claimed_by") or task.get("target_agent", ""),
+                "target_agent": task.get("target_agent", ""),
+                "attempt_id": "",
+                "trace_id": task.get("trace_id", ""),
+                "updated_at": task.get("updated_at", ""),
+                "latest_progress": progress_by_task.get(task_id, {}),
+                "correction": {},
+                "blocker": task.get("blocker") or task.get("summary") or "",
+                "evidence": companyctl.sanitize_evidence_path_for_display(str(task.get("evidence_path") or "")),
+                "completion_invalid": False,
+                "completion_invalid_reason": "",
+                "final_evidence_count": 0,
+                "actions": attention_actions("blocked_task", task_id=task_id),
+            }
+        )
+    for invalid in completion_invalid_tasks:
+        task_id = str(invalid.get("task_id", "") or "")
+        task = tasks_by_id.get(task_id, {})
+        upsert_task_card(
+            {
+                "task_id": task_id,
+                "title": task.get("title") or task_id,
+                "state": "completion_invalid",
+                "task_status": task.get("status", ""),
+                "long_task_state": "",
+                "heartbeat_state": "",
+                "progress_state": "",
+                "employee_id": invalid.get("target_agent") or task.get("claimed_by") or task.get("target_agent", ""),
+                "target_agent": invalid.get("target_agent") or task.get("target_agent", ""),
+                "attempt_id": "",
+                "trace_id": task.get("trace_id", ""),
+                "updated_at": task.get("updated_at", ""),
+                "latest_progress": progress_by_task.get(task_id, {}),
+                "correction": {},
+                "blocker": invalid.get("message", ""),
+                "evidence": companyctl.sanitize_evidence_path_for_display(str(task.get("evidence_path") or "")),
+                "completion_invalid": True,
+                "completion_invalid_reason": invalid.get("completion_invalid_reason", ""),
+                "final_evidence_count": int(invalid.get("final_evidence_count") or 0),
+                "actions": invalid.get("actions", []),
+            }
+        )
+    task_cards = sorted(
+        task_cards_by_id.values(),
+        key=lambda item: (
+            {"completion_invalid": 0, "blocked": 1, "failed": 1, "stale": 1, "correcting": 2, "progress_stagnant": 3}.get(str(item.get("state", "")), 9),
+            str(item.get("updated_at", "")),
+        ),
+    )
+    for card in task_cards:
+        ledger_gaps = card.get("ledger_gaps", []) if isinstance(card.get("ledger_gaps", []), list) else []
+        if not ledger_gaps:
+            continue
+        task_id = str(card.get("task_id", "") or "")
+        attempt_id = str(card.get("attempt_id", "") or "")
+        readable = []
+        if "tool_call_ledger_missing" in ledger_gaps:
+            readable.append("Tool-call ledger missing")
+        if "budget_ledger_missing" in ledger_gaps:
+            readable.append("Cost ledger missing")
+        owner_attention.append(
+            {
+                "kind": "ledger_gap",
+                "state": "missing_observability",
+                "approval_id": "",
+                "task_id": task_id,
+                "approval_action": "",
+                "risk": "P1",
+                "title": card.get("title", task_id),
+                "target_agent": card.get("target_agent", ""),
+                "attempt_id": attempt_id,
+                "trace_id": card.get("trace_id", ""),
+                "ledger_gaps": ledger_gaps,
+                "message": "; ".join(readable) + ". Progress/runtime exists but backend control-plane evidence is incomplete.",
+                "updated_at": card.get("updated_at", ""),
+                "actions": attention_actions("ledger_gap", task_id=task_id, attempt_id=attempt_id),
+            }
+        )
+    employee_states = []
+    for employee in employees:
+        status = str(employee.get("employee_status") or employee.get("status") or "")
+        heartbeat = str(employee.get("heartbeat_status") or "missing")
+        active_state = status
+        if status == "active" and employee.get("current_attempt"):
+            active_state = "busy"
+        elif status == "active" and employee.get("runtime") == "antigravity":
+            active_state = "active-limited"
+        if heartbeat in {"stale", "missing", "offline"}:
+            active_state = "abnormal" if status == "active" else status
+        employee_states.append(
+            {
+                "id": employee.get("id", ""),
+                "name": employee.get("name", ""),
+                "runtime": employee.get("runtime", ""),
+                "role": employee.get("role", ""),
+                "status": active_state,
+                "employee_status": status,
+                "readiness_level": employee.get("readiness_level", active_state),
+                "readiness_reason": employee.get("readiness_reason", ""),
+                "readiness_checks": employee.get("readiness_checks", {}),
+                "heartbeat_status": heartbeat,
+                "progress_layer": employee.get("progress_layer", ""),
+                "progress_state": employee.get("progress_state", ""),
+                "current_attempt": employee.get("current_attempt", {}),
+                "current_task_id": employee.get("current_task_id", ""),
+                "current_task_title": employee.get("current_task_title", ""),
+                "runtime_summary": employee.get("runtime_summary", {}) if isinstance(employee.get("runtime_summary", {}), dict) else {},
+                "tool_summary": employee.get("tool_summary", {}) if isinstance(employee.get("tool_summary", {}), dict) else {},
+                "budget_summary": employee.get("budget_summary", {}) if isinstance(employee.get("budget_summary", {}), dict) else {},
+                "evidence_summary": employee.get("evidence_summary", {}) if isinstance(employee.get("evidence_summary", {}), dict) else {},
+                "work_status_summary": employee.get("work_status_summary", {}) if isinstance(employee.get("work_status_summary", {}), dict) else {},
+                "work_health": employee.get("work_health", {}) if isinstance(employee.get("work_health", {}), dict) else {},
+                "last_seen_at": employee.get("last_seen_at", ""),
+            }
+        )
+    employees_total = len(employee_states)
+    employees_online = sum(
+        1
+        for item in employee_states
+        if str(item.get("heartbeat_status") or "") not in {"", "missing", "offline"}
+        and seconds_since(str(item.get("last_seen_at") or ""), generated_at) < 15 * 60
+    )
+    employees_abnormal = sum(1 for item in employee_states if str(item.get("status") or "") == "abnormal")
+    employee_status_counts: dict[str, int] = {}
+    readiness_counts: dict[str, int] = {}
+    for item in employee_states:
+        employee_status = str(item.get("status") or "unknown")
+        readiness_level = str(item.get("readiness_level") or "unknown")
+        employee_status_counts[employee_status] = employee_status_counts.get(employee_status, 0) + 1
+        readiness_counts[readiness_level] = readiness_counts.get(readiness_level, 0) + 1
+    active_limited_reasons = {
+        str(item.get("id") or ""): str(item.get("readiness_reason") or item.get("status") or "limited")
+        for item in employee_states
+        if str(item.get("status") or "") in {"active-limited", "candidate"}
+        or str(item.get("readiness_level") or "") in {"candidate_only", "online_only", "task_unsupported", "unsafe", "no_reply"}
+    }
+    attention_levels = ["active_limited", "candidate_only", "online_only", "task_unsupported", "no_reply", "unsafe"]
+    owner_attention_required = sum(int(readiness_counts.get(level, 0) or 0) for level in attention_levels)
+    agent_matrix_summary = {
+        "source": "cockpit.employee_view_models",
+        "counts": readiness_counts,
+        "active_ready": int(readiness_counts.get("active_ready", 0) or 0),
+        "active_limited": int(readiness_counts.get("active_limited", 0) or 0),
+        "candidate_only": int(readiness_counts.get("candidate_only", 0) or 0),
+        "online_only": int(readiness_counts.get("online_only", 0) or 0),
+        "task_unsupported": int(readiness_counts.get("task_unsupported", 0) or 0),
+        "no_reply": int(readiness_counts.get("no_reply", 0) or 0),
+        "unsafe": int(readiness_counts.get("unsafe", 0) or 0),
+        "owner_attention_required": owner_attention_required,
+        "attention_levels": [level for level in attention_levels if int(readiness_counts.get(level, 0) or 0)],
+        "rule": "online is not active_ready; active_ready requires structured runtime/task/evidence readiness",
+        "owner_next_action": "review employee_readiness rows and run /v1/agent-matrix for any non-active_ready employee" if owner_attention_required else "all visible employees are active_ready or idle; monitor tasks",
+    }
+    agent_matrix_summary["summary"] = " · ".join(
+        f"{level}={int(agent_matrix_summary.get(level, 0) or 0)}"
+        for level in ["active_ready", "active_limited", "candidate_only", "online_only", "task_unsupported", "no_reply", "unsafe"]
+    )
+    employee_counts = {
+        "total": employees_total,
+        "online": employees_online,
+        "abnormal": employees_abnormal,
+        "status_counts": employee_status_counts,
+        "readiness_counts": readiness_counts,
+    }
+    raw_counts = summary.get("counts") or {}
+    registered_total = int(raw_counts.get("registered_employees") or raw_counts.get("employees") or employees_total)
+    excluded_human_owner_ids = [
+        str(item.get("id") or "")
+        for item in summary.get("all_employees", [])
+        if item.get("id") and (item.get("id") == "owner-shift" or item.get("role") == "human-owner" or item.get("runtime") == "human")
+    ]
+    excluded_human_owners = max(registered_total - employees_total, len(excluded_human_owner_ids))
+    registry_reconciliation = {
+        "registered_total": registered_total,
+        "schedulable_total": employees_total,
+        "excluded_human_owners": excluded_human_owners,
+        "excluded_employee_ids": excluded_human_owner_ids,
+        "summary": (
+            f"{employees_total} schedulable AI employees shown; "
+            f"{registered_total} Kernel registered records; "
+            f"{excluded_human_owners} human owner records excluded from scheduling."
+        ),
+    }
+    budget_summary = summary.get("budget_summary", {}) if isinstance(summary.get("budget_summary"), dict) else {}
+    projects = []
+    for project in summary.get("projects", [])[:20]:
+        project_id = str(project.get("id") or "")
+        budget_by_currency = budget_summary.get("by_project_by_currency", {}).get(project_id, {}) if isinstance(budget_summary.get("by_project_by_currency", {}), dict) else {}
+        project_cost = {
+            "budget_by_currency": budget_by_currency,
+            "budget_total": round(sum(float(amount or 0) for amount in budget_by_currency.values()), 6),
+            "budget_currency": next(iter(budget_by_currency.keys()), "USD") if len(budget_by_currency) <= 1 else "mixed",
+            "budget_event_count": int((budget_summary.get("by_project_event_count", {}) or {}).get(project_id, 0)),
+            "token_input": int((budget_summary.get("by_project_token_input", {}) or {}).get(project_id, 0)),
+            "token_output": int((budget_summary.get("by_project_token_output", {}) or {}).get(project_id, 0)),
+            "runtime_seconds": int((budget_summary.get("by_project_runtime_seconds", {}) or {}).get(project_id, 0)),
+        }
+        projects.append({**project, **project_cost})
+    verification_summary = latest_verification_summary()
+    refresh_contract = {"mode": "rest_polling", "interval_seconds": 10, "sse_reserved": True, "websocket": False}
+    doctor_issues = doctor.get("issues", []) if isinstance(doctor.get("issues", []), list) else []
+    doctor_issue_count = int(doctor.get("issue_count") or len(doctor_issues))
+    health_bar_status = "ok"
+    health_owner_next_action = "system healthy; continue monitoring employee work, costs, and evidence"
+    if doctor_issue_count:
+        health_bar_status = "warn"
+        health_owner_next_action = "doctor unhealthy: inspect /v1/doctor issues before trusting new long-running work"
+    if not verification_summary.get("ok"):
+        health_bar_status = "warn"
+        health_owner_next_action = str(verification_summary.get("owner_next_action") or health_owner_next_action)
+    health_bar = {
+        "api_ok": True,
+        "api_status": "online",
+        "doctor_ok": bool(doctor.get("ok")) if doctor else False,
+        "doctor_exit_code": int(doctor.get("exit_code") or 0) if doctor else 1,
+        "doctor_issue_count": doctor_issue_count,
+        "doctor_issues": doctor_issues,
+        "poll_mode": refresh_contract["mode"],
+        "poll_interval_seconds": refresh_contract["interval_seconds"],
+        "sse_reserved": refresh_contract["sse_reserved"],
+        "websocket": refresh_contract["websocket"],
+        "last_successful_sync_at": generated_at,
+        "last_data_at": generated_at,
+        "data_age_seconds": 0,
+        "status": health_bar_status,
+        "owner_next_action": health_owner_next_action,
+    }
+    raw_openclaw_inventory = summary.get("openclaw_runtime_inventory")
+    if not isinstance(raw_openclaw_inventory, dict) or not raw_openclaw_inventory:
+        raw_openclaw_inventory = summary.get("runtime_health", {}).get("openclaw_inventory", {})
+    openclaw_runtime_summary = (
+        companyctl.openclaw_runtime_inventory_summary(raw_openclaw_inventory)
+        if isinstance(raw_openclaw_inventory, dict) and raw_openclaw_inventory
+        else {}
+    )
+    raw_openclaw_native = summary.get("openclaw_native_status")
+    openclaw_native_summary = (
+        companyctl.openclaw_native_status_summary(raw_openclaw_native)
+        if isinstance(raw_openclaw_native, dict) and raw_openclaw_native
+        else {}
+    )
+    owner_attention = annotate_owner_attention(owner_attention)
+    task_card_states = [str(item.get("state") or "") for item in task_cards]
+    long_task_states = [str(item.get("long_task_state") or "") for item in long_tasks]
+    running_task_count = sum(1 for item in summary.get("tasks", []) if str(item.get("status", "")).lower() in {"claimed", "running"})
+    stagnant_task_count = sum(1 for state in long_task_states if state in {"progress_stagnant", "correcting"})
+    blocked_task_count = sum(1 for state in task_card_states if state in {"blocked", "failed", "stale", "heartbeat_stale", "completion_invalid"})
+    return {
+        "ok": True,
+        "generated_at": generated_at,
+        "refresh": refresh_contract,
+        "health_bar": health_bar,
+        "ledger_consistency": {
+            "source": "single_company_kernel_ledger",
+            "surfaces": ["api", "cli", "dashboard"],
+            "summary": "API / CLI / Dashboard read the same Company Kernel ledger",
+        },
+        "status_contract": {
+            "timeout": "sync_wait_only",
+            "progress_stagnant": "heartbeat fresh but no progress beyond stale_after_seconds; do not auto-cancel",
+            "correction_binding": "task_id + attempt_id",
+        },
+        "openclaw_runtime_inventory": openclaw_runtime_summary,
+        "openclaw_native_status": openclaw_native_summary,
+        "counts": {
+            "employees": employees_total,
+            "employees_total": employees_total,
+            "registered_employees_total": registered_total,
+            "excluded_human_owners": excluded_human_owners,
+            "employees_online": employees_online,
+            "employees_abnormal": employees_abnormal,
+            "employee_status_counts": employee_status_counts,
+            "readiness_counts": readiness_counts,
+            "active_attempts": len(active_attempts),
+            "runtime_sessions": int(raw_counts.get("runtime_sessions") or len(summary.get("runtime_sessions", []))),
+            "active_runtime_sessions": int(raw_counts.get("active_runtime_sessions") or sum(1 for item in summary.get("runtime_sessions", []) if str(item.get("status", "")) in {"active", "idle"})),
+            "tool_calls": int(raw_counts.get("tool_calls") or len(summary.get("tool_calls", []))),
+            "running_tool_calls": int(raw_counts.get("running_tool_calls") or sum(1 for item in summary.get("tool_calls", []) if str(item.get("status", "")) == "running")),
+            "failed_tool_calls": int(raw_counts.get("failed_tool_calls") or sum(1 for item in summary.get("tool_calls", []) if str(item.get("status", "")) in {"failed", "blocked", "cancelled"})),
+            "budget_events": int(raw_counts.get("budget_events") or len(summary.get("budget_events", []))),
+            "estimated_cost": float(summary.get("budget_summary", {}).get("total_amount", 0) or 0),
+            "token_input": int(summary.get("budget_summary", {}).get("token_input", 0) or 0),
+            "token_output": int(summary.get("budget_summary", {}).get("token_output", 0) or 0),
+            "running_tasks": running_task_count,
+            "stagnant_tasks": stagnant_task_count,
+            "blocked_tasks": blocked_task_count,
+            "done_tasks": sum(1 for item in summary.get("tasks", []) if str(item.get("status", "")).lower() in {"completed", "done"}),
+            "awaiting_approval_tasks": sum(
+                1
+                for item in summary.get("tasks", [])
+                if str(item.get("id", "")) in pending_approval_task_ids
+                and str(item.get("status", "")).lower() not in {"completed", "done", "cancelled"}
+            ),
+            "pending_approvals": len(pending_approvals),
+            "recent_evidence": len(recent_evidence),
+            "pending_final_evidence": len(evidence_acceptance_queue),
+            "legacy_task_evidence": len(legacy_task_evidence),
+            "evidence_issues": len(evidence_issues),
+            "completion_invalid_tasks": len(completion_invalid_tasks),
+            "doctor_issues": int(doctor.get("issue_count") or len(doctor.get("issues", []) or [])) if doctor else 0,
+            "chat_task_bound": chat_counts["task_bound"],
+            "chat_work_relevant": chat_counts["work_relevant"],
+            "chat_handshake_or_idle": chat_counts["handshake_or_idle"],
+        },
+        "employee_counts": employee_counts,
+        "agent_matrix_summary": agent_matrix_summary,
+        "verification_summary": verification_summary,
+        "registry_reconciliation": registry_reconciliation,
+        "doctor": doctor,
+        "employees": employee_states,
+        "projects": projects,
+        "active_limited_reasons": active_limited_reasons,
+        "task_cards": task_cards[:30],
+        "long_tasks": long_tasks,
+        "runtime_sessions": summary.get("runtime_sessions", [])[:20],
+        "tool_calls": risk_first_tool_calls(summary.get("tool_calls", []))[:30],
+        "budget_events": summary.get("budget_events", [])[:50],
+        "budget_summary": summary.get("budget_summary", {}),
+        "supervisor_activity": supervisor_activity[:10],
+        "owner_attention": owner_attention[:20],
+        "approval_center_summary": approval_center_summary,
+        "pending_approvals": pending_approvals[:10],
+        "recent_evidence": recent_evidence[:10],
+        "evidence_acceptance_queue": evidence_acceptance_queue[:10],
+        "legacy_task_evidence": legacy_task_evidence[:10],
+        "completion_invalid_tasks": completion_invalid_tasks[:10],
+    }
+
+
 def recent_direct_messages(conn: sqlite3.Connection, *, limit: int = 20) -> list[dict]:
-    return rows(
+    messages = rows(
         conn,
         """
         SELECT id,
@@ -259,6 +1589,51 @@ def recent_direct_messages(conn: sqlite3.Connection, *, limit: int = 20) -> list
         """,
         (limit,),
     )
+    for message in messages:
+        task_context = extract_task_context_from_chat_item(message)
+        low_signal = is_low_signal_chat_message(message, task_context=task_context)
+        message["task_context"] = task_context
+        message["task_bound"] = bool(task_context)
+        message["low_signal"] = low_signal
+        message["chat_classification"] = "task_bound" if task_context else ("handshake_or_idle" if low_signal else "work_relevant")
+    return messages
+
+
+def extract_task_context_from_chat_item(item: dict) -> str:
+    direct = str(item.get("task_id") or item.get("taskId") or "").strip()
+    if direct:
+        return direct
+    text = " ".join(str(item.get(key, "") or "") for key in ("title", "body", "evidence_path", "id", "conversation_id"))
+    match = re.search(r"\b(task[-_:][A-Za-z0-9._-]+|TASK[-_:][A-Za-z0-9._-]+)\b", text)
+    return match.group(1) if match else ""
+
+
+def is_low_signal_chat_message(item: dict, *, task_context: str = "") -> bool:
+    body = str(item.get("body") or "").strip()
+    if not body:
+        return True
+    if task_context:
+        return False
+    if re.search(r"(attempt_id|task_id|trace_id|evidence|artifact|handoff|progress|blocked|failed|completed|done|stale|correction|approval)", body, re.IGNORECASE):
+        return False
+    if len(body) > 160:
+        return False
+    if re.search(r"^(hi|hello|hey|ping|pong|ack|ok|okay|thanks|thank you|收到|在|在线|你好|谢谢|感谢|早上好|晚上好|direct channel opened|dashboard direct ui ping|rest ping|smoke|handshake|greeting|idle|round\s*\d+|direct_ok|message direct ok)[\s.!。！]*$", body, re.IGNORECASE):
+        return True
+    return bool(re.search(r"\b(handshake|greeting|idle chatter|direct_ok|message direct ok)\b", body, re.IGNORECASE))
+
+
+def chat_classification_counts(items: list[dict]) -> dict[str, int]:
+    counts = {"task_bound": 0, "work_relevant": 0, "handshake_or_idle": 0}
+    for item in items:
+        classification = str(item.get("chat_classification") or "").strip()
+        if not classification:
+            task_context = extract_task_context_from_chat_item(item)
+            classification = "task_bound" if task_context else ("handshake_or_idle" if is_low_signal_chat_message(item, task_context=task_context) else "work_relevant")
+        if classification not in counts:
+            classification = "work_relevant"
+        counts[classification] += 1
+    return counts
 
 
 def internal_communication_watchdog(conn: sqlite3.Connection, *, generated_at: str, limit: int = 20) -> dict:
@@ -719,6 +2094,10 @@ def communication_observability_summary(summary: dict) -> dict:
                 "source_agent": item.get("source_agent", ""),
                 "target_agent": item.get("target_agent", ""),
                 "body": item.get("body", ""),
+                "task_context": item.get("task_context", ""),
+                "task_bound": bool(item.get("task_bound")),
+                "low_signal": bool(item.get("low_signal")),
+                "chat_classification": item.get("chat_classification", ""),
                 "created_at": item.get("created_at", ""),
             }
         )
@@ -742,7 +2121,9 @@ def communication_observability_summary(summary: dict) -> dict:
     failed_count = 0
     for run in summary.get("adapter_runs", [])[:8]:
         try:
-            result = json.loads(run.get("result_json", "{}") or "{}")
+            result = run.get("_result")
+            if not isinstance(result, dict):
+                result = json.loads(run.get("result_json", "{}") or "{}")
         except json.JSONDecodeError:
             result = {}
         parsed_runs = result.get("runs", []) if isinstance(result, dict) else []
@@ -771,6 +2152,7 @@ def communication_observability_summary(summary: dict) -> dict:
                 "progress_state": progress.get("state", ""),
                 "progress_label": progress.get("label", ""),
                 "summary": parsed_stdout.get("summary", "") if isinstance(parsed_stdout, dict) else "",
+                "sanitized_log": run.get("sanitized_log") or companyctl.summarize_adapter_result(result).get("sanitized_log", ""),
             }
         )
 
@@ -816,7 +2198,7 @@ def communication_observability_summary(summary: dict) -> dict:
     return {
         "generated_at": summary.get("generated_at", ""),
         "direct_messages": {
-            "counts": {"total": len(summary.get("direct_messages_recent", [])), "shown": len(direct_items)},
+            "counts": {"total": len(summary.get("direct_messages_recent", [])), "shown": len(direct_items), **chat_classification_counts(summary.get("direct_messages_recent", []))},
             "items": direct_items,
         },
         "external_mirror": {
@@ -840,6 +2222,18 @@ def communication_observability_summary(summary: dict) -> dict:
         },
         "internal_watchdog": summary.get("internal_watchdog", {"counts": {}, "no_receipt_messages": [], "open_tasks": []}),
     }
+
+
+def public_summary(summary: dict) -> dict:
+    cleaned = dict(summary)
+    cleaned_runs = []
+    for run in cleaned.get("adapter_runs", []):
+        run_copy = dict(run)
+        run_copy.pop("result_json", None)
+        run_copy.pop("_result", None)
+        cleaned_runs.append(run_copy)
+    cleaned["adapter_runs"] = cleaned_runs
+    return cleaned
 
 
 def load_summary(conn: sqlite3.Connection) -> dict:
@@ -905,23 +2299,52 @@ def load_summary(conn: sqlite3.Connection) -> dict:
         employee["progress_summary"] = progress.get("summary", "")
         current_attempt = conn.execute(
             """
-            SELECT attempt_id, trace_id, task_id, employee_id, adapter_type, runtime, pid, session_key,
-                   status, last_heartbeat_at, last_progress_at, started_at, finished_at, error_message
+            SELECT execution_attempts.attempt_id,
+                   execution_attempts.trace_id,
+                   execution_attempts.task_id,
+                   tasks.title AS task_title,
+                   execution_attempts.employee_id,
+                   execution_attempts.adapter_type,
+                   execution_attempts.runtime,
+                   execution_attempts.pid,
+                   execution_attempts.session_key,
+                   execution_attempts.status,
+                   execution_attempts.runtime_policy_json,
+                   execution_attempts.metadata_json,
+                   execution_attempts.supervisor_state_json,
+                   execution_attempts.last_heartbeat_at,
+                   execution_attempts.last_progress_at,
+                   execution_attempts.started_at,
+                   execution_attempts.finished_at,
+                   execution_attempts.error_message
             FROM execution_attempts
+            JOIN tasks ON tasks.id = execution_attempts.task_id
             WHERE employee_id = ?
-              AND status IN ('starting', 'running', 'correcting')
-            ORDER BY started_at DESC
+              AND execution_attempts.status IN ('starting', 'running', 'correcting')
+              AND LOWER(tasks.status) NOT IN ('completed', 'done', 'cancelled', 'failed')
+            ORDER BY execution_attempts.started_at DESC
             LIMIT 1
             """,
             (employee["id"],),
         ).fetchone()
         employee["current_attempt"] = dict(current_attempt) if current_attempt else {}
 
+    adapter_runs = rows(conn, "SELECT * FROM adapter_runs ORDER BY created_at DESC LIMIT 20")
+    for adapter_run in adapter_runs:
+        raw_result = adapter_run.get("result_json", "{}")
+        try:
+            result = json.loads(raw_result or "{}")
+        except json.JSONDecodeError:
+            result = {"raw": raw_result}
+        adapter_run["_result"] = result
+        adapter_run["sanitized_log"] = companyctl.summarize_adapter_result(result).get("sanitized_log", "")
+
     return {
         "generated_at": generated_at,
         "runtime_health": {
             "daemon": companyctl.daemon_health(),
             "launchd": companyctl.launchd_health(),
+            "openclaw_inventory": companyctl.openclaw_runtime_inventory(conn),
         },
         "evidence_health": {
             "issues": companyctl.task_evidence_issues(conn),
@@ -946,6 +2369,12 @@ def load_summary(conn: sqlite3.Connection) -> dict:
             "pending_events": scalar(conn, "SELECT COUNT(*) FROM company_events WHERE processed_at = ''"),
             "locks": scalar(conn, "SELECT COUNT(*) FROM locks"),
             "adapter_runs": scalar(conn, "SELECT COUNT(*) FROM adapter_runs"),
+            "runtime_sessions": scalar(conn, "SELECT COUNT(*) FROM runtime_sessions"),
+            "active_runtime_sessions": scalar(conn, "SELECT COUNT(*) FROM runtime_sessions WHERE status IN ('active', 'idle')"),
+            "tool_calls": scalar(conn, "SELECT COUNT(*) FROM agent_tool_calls"),
+            "running_tool_calls": scalar(conn, "SELECT COUNT(*) FROM agent_tool_calls WHERE status = 'running'"),
+            "failed_tool_calls": scalar(conn, "SELECT COUNT(*) FROM agent_tool_calls WHERE status IN ('failed', 'blocked', 'cancelled')"),
+            "budget_events": scalar(conn, "SELECT COUNT(*) FROM budget_events"),
         },
         "task_status": status_counts(conn, "tasks"),
         "project_status": status_counts(conn, "projects"),
@@ -1031,15 +2460,40 @@ def load_summary(conn: sqlite3.Connection) -> dict:
         "followups": companyctl.list_followups("all")[:20],
         "pending_events": rows(conn, "SELECT * FROM company_events WHERE processed_at = '' ORDER BY created_at ASC LIMIT 20"),
         "events": rows(conn, "SELECT * FROM company_events ORDER BY created_at DESC LIMIT 20"),
-        "adapter_runs": rows(conn, "SELECT * FROM adapter_runs ORDER BY created_at DESC LIMIT 20"),
+        "adapter_runs": adapter_runs,
+        "runtime_sessions": companyctl.list_runtime_sessions(conn, limit=20),
+        "tool_calls": companyctl.list_tool_calls(conn, limit=30),
+        "budget_events": companyctl.list_budget_events(conn, limit=50),
+        "budget_summary": companyctl.budget_summary(conn),
+        "evidence_records": companyctl.audit_evidence_records(conn, limit=50),
+        "artifact_records": companyctl.audit_artifact_records(conn, limit=50),
+        "handoff_records": companyctl.audit_handoff_records(conn, limit=50),
+        "failure_records": companyctl.audit_failure_records(conn, limit=50),
         "active_attempts": rows(
             conn,
             """
-            SELECT attempt_id, trace_id, task_id, employee_id, adapter_type, runtime, pid, session_key,
-                   status, last_heartbeat_at, last_progress_at, started_at, finished_at, error_message
+            SELECT execution_attempts.attempt_id,
+                   execution_attempts.trace_id,
+                   execution_attempts.task_id,
+                   execution_attempts.employee_id,
+                   execution_attempts.adapter_type,
+                   execution_attempts.runtime,
+                   execution_attempts.pid,
+                   execution_attempts.session_key,
+                   execution_attempts.status,
+                   execution_attempts.runtime_policy_json,
+                   execution_attempts.metadata_json,
+                   execution_attempts.supervisor_state_json,
+                   execution_attempts.last_heartbeat_at,
+                   execution_attempts.last_progress_at,
+                   execution_attempts.started_at,
+                   execution_attempts.finished_at,
+                   execution_attempts.error_message
             FROM execution_attempts
-            WHERE status IN ('starting', 'running', 'correcting')
-            ORDER BY started_at DESC
+            JOIN tasks ON tasks.id = execution_attempts.task_id
+            WHERE execution_attempts.status IN ('starting', 'running', 'correcting')
+              AND LOWER(tasks.status) NOT IN ('completed', 'done', 'cancelled', 'failed')
+            ORDER BY execution_attempts.started_at DESC
             LIMIT 50
             """,
         ),
@@ -1067,14 +2521,19 @@ def render_employee_table(items: list[dict]) -> str:
     body = []
     for item in items:
         employee_id = e(item.get("id", ""))
+        runtime = str(item.get("runtime", "") or "")
+        schedulable = bool(item.get("schedulable"))
         cells = "".join(f"<td>{e(item.get(field, ''))}</td>" for field in fields)
-        actions = (
-            "<td>"
-            f"<button type='button' onclick=\"directMessageEmployee('{employee_id}')\">Direct</button> "
-            f"<button type='button' onclick=\"editEmployee('{employee_id}')\">Edit</button> "
-            f"<button class='danger-button' type='button' onclick=\"offboardEmployee('{employee_id}', false)\">Archive</button>"
-            "</td>"
-        )
+        action_items = []
+        if runtime == "skill":
+            action_items.append("<span class='muted'>No chat; task/evidence only</span>")
+        if schedulable:
+            action_items.append(f"<button type='button' onclick=\"submitTaskToEmployee('{employee_id}')\">Task</button>")
+        elif runtime != "skill":
+            action_items.append("<span class='muted'>Not schedulable</span>")
+        action_items.append(f"<button type='button' onclick=\"editEmployee('{employee_id}')\">Edit</button>")
+        action_items.append(f"<button class='danger-button' type='button' onclick=\"offboardEmployee('{employee_id}', false)\">Archive</button>")
+        actions = "<td>" + " ".join(action_items) + "</td>"
         body.append(f"<tr>{cells}{actions}</tr>")
     return f"<table><thead><tr>{head}</tr></thead><tbody>{''.join(body)}</tbody></table>"
 
@@ -1113,54 +2572,327 @@ def employee_view_models(summary: dict) -> list[dict]:
     employees = []
     communication_config = companyctl.load_communication_config()
     communication_profiles = communication_config.get("employees", {})
-    for employee in summary["employees"]:
-        if employee.get("id") == "owner-shift" or employee.get("role") == "human-owner" or employee.get("runtime") == "human":
-            continue
-        capabilities = companyctl.load_json_or_default(companyctl.employee_paths(employee["id"])["capabilities"], {})
-        skills = capabilities.get("skills", [])
-        tools = capabilities.get("tools", [])
-        task_types = capabilities.get("preferred_task_types", [])
-        communication_profile = communication_profiles.get(employee["id"], {})
-        try:
-            heartbeat_metadata = json.loads(employee.get("heartbeat_metadata_json", "{}") or "{}")
-        except json.JSONDecodeError:
-            heartbeat_metadata = {}
-        heartbeat_progress = companyctl.extract_progress_payload(heartbeat_metadata)
-        age = minutes_since(employee.get("last_seen_at", ""), summary["generated_at"])
-        employee_status = employee.get("employee_status") or employee.get("status", "")
-        heartbeat_status = employee.get("heartbeat_status", "missing")
-        if employee_status != "active":
-            kernel_state = employee_status
-            schedulable = "no"
-        elif heartbeat_status == "missing":
-            kernel_state = "missing_heartbeat"
-            schedulable = "no"
-        elif age is not None and age > 15:
-            kernel_state = "stale_heartbeat"
-            schedulable = "no"
-        else:
-            kernel_state = "online"
-            schedulable = "yes"
-        employees.append(
-            {
-                **employee,
-                "status": employee_status,
-                "employee_status": employee_status,
-                "kernel_state": kernel_state,
-                "schedulable": schedulable,
-                "heartbeat_age_minutes": "" if age is None else age,
-                "communication_paused": bool(communication_profile.get("communication_paused")),
-                "communication_status": "paused" if communication_profile.get("communication_paused") else "enabled",
-                "backlog": f"{employee.get('submitted_tasks', 0)} submitted, {employee.get('claimed_tasks', 0)} claimed",
-                "progress_layer": heartbeat_progress.get("layer", ""),
-                "progress_state": heartbeat_progress.get("state", ""),
-                "progress_label": heartbeat_progress.get("label", ""),
-                "progress_display": f"{heartbeat_progress.get('layer', '')} / {heartbeat_progress.get('state', '')}".strip(" /") if heartbeat_progress.get("layer") or heartbeat_progress.get("state") else "",
-                "skills": ", ".join(str(item) for item in skills[:4]) if isinstance(skills, list) else "invalid",
-                "tools": ", ".join(str(item) for item in tools[:4]) if isinstance(tools, list) else "invalid",
-                "task_types": ", ".join(str(item) for item in task_types[:4]) if isinstance(task_types, list) else "invalid",
-            }
+    employee_ids = {str(employee.get("id", "")) for employee in summary["employees"]}
+    attendance_rows = companyctl.attendance_row_map(companyctl.load_latest_attendance())
+    runtime_sessions_by_employee: dict[str, list[dict]] = {}
+    for session in summary.get("runtime_sessions", []):
+        employee_id = str(session.get("employee_id", "") or "")
+        if employee_id:
+            runtime_sessions_by_employee.setdefault(employee_id, []).append(session)
+    tool_calls_by_employee: dict[str, list[dict]] = {}
+    for tool_call in summary.get("tool_calls", []):
+        employee_id = str(tool_call.get("employee_id", "") or "")
+        if employee_id:
+            tool_calls_by_employee.setdefault(employee_id, []).append(tool_call)
+    evidence_by_employee: dict[str, list[dict]] = {}
+    for evidence in summary.get("evidence_records", []):
+        employee_id = str(evidence.get("employee_id", "") or "")
+        if employee_id:
+            evidence_by_employee.setdefault(employee_id, []).append(evidence)
+    budget_summary = summary.get("budget_summary", {}) if isinstance(summary.get("budget_summary"), dict) else {}
+
+    def employee_runtime_summary(employee_id: str) -> dict:
+        sessions = runtime_sessions_by_employee.get(employee_id, [])
+        latest = sessions[0] if sessions else {}
+        return {
+            "session_count": len(sessions),
+            "active_session_count": sum(1 for item in sessions if str(item.get("status", "") or "") in {"active", "idle"}),
+            "latest_session_id": latest.get("session_id", ""),
+            "latest_runtime_type": latest.get("runtime_type", ""),
+            "latest_status": latest.get("status", ""),
+            "latest_task_id": latest.get("task_id", ""),
+            "latest_attempt_id": latest.get("attempt_id", ""),
+            "latest_heartbeat_at": latest.get("last_heartbeat_at", ""),
+            "latest_progress_at": latest.get("last_progress_at", ""),
+        }
+
+    def employee_tool_summary(employee_id: str) -> dict:
+        calls = sorted(
+            tool_calls_by_employee.get(employee_id, []),
+            key=lambda item: str(item.get("finished_at") or item.get("started_at") or ""),
+            reverse=True,
         )
+        latest = calls[0] if calls else {}
+        return {
+            "tool_call_count": len(calls),
+            "running_tool_call_count": sum(1 for item in calls if str(item.get("status", "") or "") == "running"),
+            "failed_tool_call_count": sum(1 for item in calls if str(item.get("status", "") or "") in {"failed", "blocked", "cancelled"}),
+            "latest_tool_call_id": latest.get("tool_call_id", ""),
+            "latest_tool_name": latest.get("tool_name", ""),
+            "latest_tool_type": latest.get("tool_type", ""),
+            "latest_tool_status": latest.get("status", ""),
+            "latest_task_id": latest.get("task_id", ""),
+            "latest_attempt_id": latest.get("attempt_id", ""),
+            "latest_risk_level": latest.get("risk_level", ""),
+        }
+
+    def employee_budget_rollup(employee_id: str) -> dict:
+        by_currency = {}
+        if isinstance(budget_summary.get("by_employee_by_currency"), dict):
+            by_currency = budget_summary.get("by_employee_by_currency", {}).get(employee_id, {}) or {}
+        currencies = sorted(str(currency) for currency in by_currency.keys())
+        return {
+            "event_count": sum(1 for item in summary.get("budget_events", []) if str(item.get("employee_id", "") or "") == employee_id),
+            "total_amount": round(float((budget_summary.get("by_employee", {}) or {}).get(employee_id, 0) or 0), 6) if isinstance(budget_summary.get("by_employee", {}), dict) else 0,
+            "total_amounts_by_currency": by_currency,
+            "currency": currencies[0] if len(currencies) == 1 else ("mixed" if currencies else str(budget_summary.get("currency") or "USD")),
+            "token_input": sum(int(item.get("token_input") or 0) for item in summary.get("budget_events", []) if str(item.get("employee_id", "") or "") == employee_id),
+            "token_output": sum(int(item.get("token_output") or 0) for item in summary.get("budget_events", []) if str(item.get("employee_id", "") or "") == employee_id),
+            "runtime_seconds": sum(int(item.get("runtime_seconds") or 0) for item in summary.get("budget_events", []) if str(item.get("employee_id", "") or "") == employee_id),
+        }
+
+    def employee_evidence_summary(employee_id: str) -> dict:
+        records = sorted(evidence_by_employee.get(employee_id, []), key=lambda item: str(item.get("created_at") or ""), reverse=True)
+        latest = records[0] if records else {}
+        return {
+            "evidence_count": len(records),
+            "final_evidence_count": sum(1 for item in records if bool(item.get("is_final"))),
+            "latest_evidence_id": latest.get("evidence_id", ""),
+            "latest_task_id": latest.get("task_id", ""),
+            "latest_attempt_id": latest.get("attempt_id", ""),
+            "latest_summary": latest.get("summary", ""),
+            "latest_is_final": bool(latest.get("is_final")) if latest else False,
+            "latest_display": latest.get("display", {}) if isinstance(latest.get("display", {}), dict) else {},
+        }
+
+    conn = companyctl.connect_readonly()
+    try:
+        for employee in summary["employees"]:
+            if employee.get("id") == "owner-shift" or employee.get("role") == "human-owner" or employee.get("runtime") == "human":
+                continue
+            if str(employee.get("employee_status") or employee.get("status") or "") == "archived":
+                continue
+            canonical_id = companyctl.resolve_employee_alias(str(employee.get("id", "")))
+            if canonical_id != employee.get("id") and canonical_id in employee_ids:
+                continue
+            capabilities = companyctl.load_json_or_default(companyctl.employee_paths(employee["id"])["capabilities"], {})
+            permissions = companyctl.load_json_or_default(
+                companyctl.employee_paths(employee["id"])["permissions"],
+                {
+                    "can_submit_tasks": True,
+                    "can_claim_tasks": True,
+                    "can_modify_kernel": False,
+                    "requires_approval_for": ["payment", "compensation", "salary", "penalty", "external_send"],
+                },
+            )
+            skills = capabilities.get("skills", [])
+            tools = capabilities.get("tools", [])
+            task_types = capabilities.get("preferred_task_types", [])
+            communication_profile = communication_profiles.get(employee["id"], {})
+            try:
+                heartbeat_metadata = json.loads(employee.get("heartbeat_metadata_json", "{}") or "{}")
+            except json.JSONDecodeError:
+                heartbeat_metadata = {}
+            heartbeat_progress = companyctl.extract_progress_payload(heartbeat_metadata)
+            age = minutes_since(employee.get("last_seen_at", ""), summary["generated_at"])
+            employee_status = employee.get("employee_status") or employee.get("status", "")
+            heartbeat_status = employee.get("heartbeat_status", "missing")
+            if employee_status != "active":
+                kernel_state = employee_status
+            elif heartbeat_status == "missing":
+                kernel_state = "missing_heartbeat"
+            elif age is not None and age > 15:
+                kernel_state = "stale_heartbeat"
+            else:
+                kernel_state = "online"
+            readiness = companyctl.classify_agent_matrix_row(
+                conn,
+                {"id": employee["id"], "name": employee.get("name", employee["id"]), "runtime": employee.get("runtime", ""), "status": employee_status},
+                attendance_rows.get(str(employee["id"]), {}),
+            )
+            schedulable = readiness.get("level") == "active_ready"
+            current_attempt = employee.get("current_attempt", {}) if isinstance(employee.get("current_attempt", {}), dict) else {}
+            employee_id = str(employee["id"])
+            current_task_id = str(current_attempt.get("task_id", "") or "")
+            current_task_title = str(current_attempt.get("task_title", "") or "")
+            runtime_summary = employee_runtime_summary(employee_id)
+            tool_summary = employee_tool_summary(employee_id)
+            budget_rollup = employee_budget_rollup(employee_id)
+            evidence_summary = employee_evidence_summary(employee_id)
+            current_state = str(current_attempt.get("status") or "")
+            if current_state == "starting":
+                current_state = "running"
+            if not current_state:
+                current_state = "idle"
+            long_task_state = {}
+            if current_attempt:
+                long_task_state = companyctl.long_task_state_for_attempt(current_attempt, generated_at=summary.get("generated_at", ""))
+                current_state = str(long_task_state.get("long_task_state") or current_state)
+            owner_next_action = "idle: assign a task when work is available"
+            recommended_actions: list[dict] = []
+            if current_task_id:
+                owner_next_action = "monitor current task progress, tool calls, budget, and evidence"
+                recommended_actions = [
+                    {"id": "view_task", "label": "View Task", "method": "GET", "requires_owner_approval": False},
+                    {"id": "view_trace", "label": "View Trace", "method": "GET", "requires_owner_approval": False},
+                ]
+            if current_state in {"progress_stagnant", "heartbeat_stale"}:
+                owner_next_action = "employee may still be online; send a probe, inspect logs, request correction, wait, or cancel"
+                recommended_actions = [
+                    {"id": "send_probe", "label": "Send Probe", "method": "POST", "requires_owner_approval": False, "api": f"/v1/tasks/{current_task_id}/progress"},
+                    {"id": "view_logs", "label": "View Logs", "method": "GET", "requires_owner_approval": False},
+                    {"id": "request_correction", "label": "Request Correction", "method": "POST", "requires_owner_approval": True, "dry_run_default": True},
+                    {"id": "wait", "label": "Keep Waiting", "method": "none", "requires_owner_approval": False},
+                    {"id": "cancel", "label": "Cancel", "method": "POST", "requires_owner_approval": True, "dangerous": True},
+                ]
+            elif current_state in {"blocked", "failed", "stale", "cancelled"}:
+                owner_next_action = "review blocker, then correct, cancel, retry, or reassign"
+                recommended_actions = [
+                    {"id": "view_logs", "label": "View Logs", "method": "GET", "requires_owner_approval": False},
+                    {"id": "retry", "label": "Retry", "method": "POST", "requires_owner_approval": True, "dry_run_default": True},
+                    {"id": "reassign", "label": "Reassign", "method": "POST", "requires_owner_approval": True, "dry_run_default": True},
+                    {"id": "cancel", "label": "Cancel", "method": "POST", "requires_owner_approval": True, "dangerous": True},
+                ]
+            work_health_reasons: list[str] = []
+            blocking_states = {"blocked", "failed", "stale", "cancelled", "progress_stagnant", "heartbeat_stale"}
+            warning_states = {"correcting"}
+            if current_state in blocking_states:
+                work_health_reasons.append(current_state)
+            elif current_state in warning_states:
+                work_health_reasons.append(f"task_{current_state}")
+            if current_task_id and int(tool_summary.get("tool_call_count") or 0) == 0:
+                work_health_reasons.append("tool_call_ledger_missing")
+            if int(tool_summary.get("failed_tool_call_count") or 0) > 0:
+                work_health_reasons.append("failed_tool_calls")
+            if current_task_id and int(budget_rollup.get("event_count") or 0) == 0:
+                work_health_reasons.append("budget_ledger_missing")
+            if current_task_id and int(evidence_summary.get("final_evidence_count") or 0) == 0:
+                work_health_reasons.append("final_evidence_missing_for_current_task")
+            if readiness.get("level") in {"candidate_only", "online_only", "no_reply", "unsafe"}:
+                work_health_reasons.append(f"readiness_{readiness.get('level')}")
+            severe_reasons = {
+                "blocked",
+                "failed",
+                "stale",
+                "cancelled",
+                "progress_stagnant",
+                "heartbeat_stale",
+                "failed_tool_calls",
+                "readiness_no_reply",
+                "readiness_unsafe",
+            }
+            if any(reason in severe_reasons for reason in work_health_reasons):
+                work_health_state = "block"
+                work_health_summary = "needs owner attention: " + ", ".join(work_health_reasons)
+            elif work_health_reasons:
+                work_health_state = "warn"
+                work_health_summary = "observable with warnings: " + ", ".join(work_health_reasons)
+            else:
+                work_health_state = "ok"
+                work_health_summary = "employee work is observable"
+            work_health = {
+                "state": work_health_state,
+                "reasons": work_health_reasons,
+                "summary": work_health_summary,
+                "current_task_id": current_task_id,
+                "owner_next_action": owner_next_action,
+            }
+            can_execute_task = schedulable
+            can_chat = bool(
+                str(employee.get("runtime") or "") not in {"skill"}
+                and readiness.get("level") in {"active_ready", "active_limited"}
+                and employee_status == "active"
+            )
+            can_submit_evidence = bool(readiness.get("level") in {"active_ready", "active_limited"} or str(employee.get("runtime") or "") == "skill")
+            if str(employee.get("runtime") or "") == "skill":
+                interaction_mode = "task_evidence_only"
+                interaction_reason = "skill_runtime_no_chat"
+            elif can_chat and can_execute_task:
+                interaction_mode = "chat_and_task"
+                interaction_reason = "readiness_allows_chat_and_task"
+            elif can_chat:
+                interaction_mode = "chat_only"
+                interaction_reason = "not_schedulable_without_full_task_evidence"
+            elif can_execute_task:
+                interaction_mode = "task_only"
+                interaction_reason = "task_ready_chat_unverified"
+            else:
+                interaction_mode = "observe_only"
+                interaction_reason = str(readiness.get("reason") or "not_ready")
+            interaction_contract = {
+                "mode": interaction_mode,
+                "reason": interaction_reason,
+                "can_chat": can_chat,
+                "can_execute_task": can_execute_task,
+                "can_submit_evidence": can_submit_evidence,
+                "show_chat_button": can_chat,
+                "show_task_button": can_execute_task,
+                "show_evidence_monitor": can_submit_evidence,
+                "requires_owner_approval_for_real_actions": True,
+            }
+            work_status_summary = {
+                "employee_id": employee_id,
+                "current_task_id": current_task_id,
+                "current_task_title": current_task_title,
+                "current_attempt_id": str(current_attempt.get("attempt_id", "") or ""),
+                "current_trace_id": str(current_attempt.get("trace_id", "") or ""),
+                "current_state": current_state,
+                "long_task_state": long_task_state.get("long_task_state", ""),
+                "heartbeat_state": long_task_state.get("heartbeat_state", ""),
+                "progress_state": long_task_state.get("progress_state", ""),
+                "heartbeat_age_seconds": long_task_state.get("heartbeat_age_seconds", ""),
+                "progress_age_seconds": long_task_state.get("progress_age_seconds", ""),
+                "runtime_age_seconds": long_task_state.get("runtime_age_seconds", ""),
+                "timeout_is_sync_wait_only": bool(long_task_state.get("timeout_is_sync_wait_only")) if long_task_state else True,
+                "readiness_level": readiness.get("level", ""),
+                "readiness_reason": readiness.get("reason", ""),
+                "active_session_count": runtime_summary.get("active_session_count", 0),
+                "latest_session_id": runtime_summary.get("latest_session_id", ""),
+                "latest_progress_at": runtime_summary.get("latest_progress_at", ""),
+                "tool_call_count": tool_summary.get("tool_call_count", 0),
+                "running_tool_call_count": tool_summary.get("running_tool_call_count", 0),
+                "failed_tool_call_count": tool_summary.get("failed_tool_call_count", 0),
+                "latest_tool_name": tool_summary.get("latest_tool_name", ""),
+                "latest_tool_status": tool_summary.get("latest_tool_status", ""),
+                "budget_event_count": budget_rollup.get("event_count", 0),
+                "budget_total": budget_rollup.get("total_amount", 0),
+                "budget_currency": budget_rollup.get("currency", "USD"),
+                "token_input": budget_rollup.get("token_input", 0),
+                "token_output": budget_rollup.get("token_output", 0),
+                "runtime_seconds": budget_rollup.get("runtime_seconds", 0),
+                "evidence_count": evidence_summary.get("evidence_count", 0),
+                "final_evidence_count": evidence_summary.get("final_evidence_count", 0),
+                "latest_evidence_id": evidence_summary.get("latest_evidence_id", ""),
+                "owner_next_action": owner_next_action,
+                "recommended_actions": recommended_actions,
+                "interaction_contract": interaction_contract,
+                "work_health": work_health,
+            }
+            employees.append(
+                {
+                    **employee,
+                    "status": employee_status,
+                    "employee_status": employee_status,
+                    "kernel_state": kernel_state,
+                    "schedulable": schedulable,
+                    "readiness_level": readiness.get("level", ""),
+                    "readiness_reason": readiness.get("reason", ""),
+                    "readiness_checks": readiness.get("checks", {}),
+                    "interaction_contract": interaction_contract,
+                    "sandbox_profile": companyctl.employee_sandbox_profile(employee, permissions),
+                    "heartbeat_age_minutes": "" if age is None else age,
+                    "communication_paused": bool(communication_profile.get("communication_paused")),
+                    "communication_status": "paused" if communication_profile.get("communication_paused") else "enabled",
+                    "backlog": f"{employee.get('submitted_tasks', 0)} submitted, {employee.get('claimed_tasks', 0)} claimed",
+                    "current_task_id": current_task_id,
+                    "current_task_title": current_task_title,
+                    "runtime_summary": runtime_summary,
+                    "tool_summary": tool_summary,
+                    "budget_summary": budget_rollup,
+                    "evidence_summary": evidence_summary,
+                    "work_health": work_health,
+                    "work_status_summary": work_status_summary,
+                    "progress_layer": heartbeat_progress.get("layer", ""),
+                    "progress_state": heartbeat_progress.get("state", ""),
+                    "progress_label": heartbeat_progress.get("label", ""),
+                    "progress_display": f"{heartbeat_progress.get('layer', '')} / {heartbeat_progress.get('state', '')}".strip(" /") if heartbeat_progress.get("layer") or heartbeat_progress.get("state") else "",
+                    "skills": ", ".join(str(item) for item in skills[:4]) if isinstance(skills, list) else "invalid",
+                    "tools": ", ".join(str(item) for item in tools[:4]) if isinstance(tools, list) else "invalid",
+                    "task_types": ", ".join(str(item) for item in task_types[:4]) if isinstance(task_types, list) else "invalid",
+                }
+            )
+    finally:
+        conn.close()
     return employees
 
 
@@ -1285,7 +3017,9 @@ def render(summary: dict) -> str:
     adapter_runs = []
     for run in summary["adapter_runs"]:
         try:
-            result = json.loads(run.get("result_json", "{}") or "{}")
+            result = run.get("_result")
+            if not isinstance(result, dict):
+                result = json.loads(run.get("result_json", "{}") or "{}")
         except json.JSONDecodeError:
             result = {}
         progress = companyctl.extract_progress_payload({})
@@ -1298,9 +3032,10 @@ def render(summary: dict) -> str:
             {
                 **run,
                 "ok_text": "yes" if run.get("ok") else "no",
-                "state_file": result.get("state_file", ""),
+                "state_file": run.get("state_file") or result.get("state_file", ""),
                 "progress_layer": progress.get("layer", ""),
                 "progress_state": progress.get("state", ""),
+                "sanitized_log": run.get("sanitized_log") or companyctl.summarize_adapter_result(result).get("sanitized_log", ""),
             }
         )
     runtime_health = [
@@ -1448,7 +3183,7 @@ def render(summary: dict) -> str:
     <h2>Recent Events</h2>
     {render_table(["id", "trace", "type", "source", "task", "processed_at", "created"], summary["events"], ["id", "trace_id", "event_type", "source_agent", "task_id", "processed_at", "created_at"])}
     <h2>Adapter Runs</h2>
-    {render_table(["id", "trace", "agent", "task", "command", "ok", "progress_layer", "progress_state", "processed", "attempt", "next_retry", "ack_by", "ack_reason", "state_file", "created"], adapter_runs, ["id", "trace_id", "agent_id", "task_id", "command", "ok_text", "progress_layer", "progress_state", "processed", "attempt", "next_retry_at", "acknowledged_by", "acknowledgement_reason", "state_file", "created_at"])}
+    {render_table(["id", "trace", "agent", "task", "command", "ok", "progress_layer", "progress_state", "processed", "attempt", "next_retry", "ack_by", "ack_reason", "sanitized_log", "state_file", "created"], adapter_runs, ["id", "trace_id", "agent_id", "task_id", "command", "ok_text", "progress_layer", "progress_state", "processed", "attempt", "next_retry_at", "acknowledged_by", "acknowledgement_reason", "sanitized_log", "state_file", "created_at"])}
     <h2>Locks</h2>
     {render_table(["resource", "owner", "lease_until", "updated"], summary["locks"], ["resource_key", "owner_agent", "lease_until", "updated_at"])}
   </main>
@@ -1498,7 +3233,7 @@ def render(summary: dict) -> str:
       const name = document.getElementById('employee-name').value.trim() || id;
       const role = document.getElementById('employee-role').value.trim() || 'business-agent';
       const runtime = document.getElementById('employee-runtime').value;
-      const workspace = document.getElementById('employee-workspace').value.trim() || `${{window.companyKernelRoot || '.'}}/employees/${{id}}`;
+      const workspace = document.getElementById('employee-workspace').value.trim() || `employees/${{id}}`;
       const skills = document.getElementById('employee-skills').value.trim();
       if (!id) {{
         setEmployeeApiStatus('employee id is required', true);
@@ -1552,18 +3287,21 @@ def render(summary: dict) -> str:
         setEmployeeApiStatus(`Notification save failed: ${{err.message}}`, true);
       }}
     }}
-    async function directMessageEmployee(id) {{
+    async function submitTaskToEmployee(id) {{
       if (!id) return;
-      const source = prompt(`Source employee for direct message to ${{id}}`, 'main');
+      const source = prompt(`Source employee for task to ${{id}}`, 'main');
       if (source === null) return;
-      const body = prompt(`Message to ${{id}}`, `只回复：${{id}}_DIRECT_OK`);
-      if (body === null) return;
-      setEmployeeApiStatus(`Direct messaging ${{id}}...`, false);
+      const title = prompt(`Task title for ${{id}}`, `Dashboard task for ${{id}}`);
+      if (title === null || !title.trim()) return;
+      const description = prompt(`Task description for ${{id}}`, 'Created from Company Kernel dashboard. Track status, progress, attempts, and evidence in the task table.');
+      if (description === null) return;
+      setEmployeeApiStatus(`Submitting task to ${{id}}...`, false);
       try {{
-        const result = await callCompanyApi('/v1/messages/direct', {{from: source || 'main', to: id, body}}, 'POST');
-        setEmployeeApiStatus(`Direct reply from ${{id}}: ${{result.reply || '(empty)'}}; evidence=${{result.file || 'n/a'}}`, false);
+        const result = await callCompanyApi('/v1/tasks', {{from: source || 'main', to: id, title, description, priority: 'P3'}}, 'POST');
+        setEmployeeApiStatus(`Task submitted: ${{result.task?.id || result.task_id || 'created'}}. Progress/evidence will appear in Tasks & Adapter Runs.`, false);
+        setTimeout(() => location.reload(), 700);
       }} catch (err) {{
-        setEmployeeApiStatus(`Direct failed: ${{err.message}}`, true);
+        setEmployeeApiStatus(`Task submit failed: ${{err.message}}`, true);
       }}
     }}
     async function editEmployee(id) {{
@@ -1665,13 +3403,35 @@ def render(summary: dict) -> str:
         setEmployeeApiStatus(`Reassign failed: ${{err.message}}`, true);
       }}
     }}
+    function traceTimelineSummary(timeline) {{
+      const rows = Array.isArray(timeline) ? timeline : [];
+      if (!rows.length) return '-';
+      return rows.map(item => {{
+        const id = item.event_id || item.run_id || item.artifact_id || item.evidence_id || item.handoff_id || item.attempt_id || '';
+        const display = item.display && item.display.relative_path ? ` · ${{item.display.relative_path}}` : '';
+        const log = item.sanitized_log ? ` · ${{item.sanitized_log}}` : '';
+        return `${{item.at || '-'}} · ${{item.kind || '-'}} · ${{item.status || '-'}} · ${{item.task_id || '-'}} · ${{item.label || id}}${{display}}${{log}}`;
+      }}).join('\\n');
+    }}
     async function viewTaskTrace(traceId) {{
       if (!traceId) {{
         setEmployeeApiStatus('No trace_id for this task yet.', true);
         return;
       }}
-      setEmployeeApiStatus(`Trace ${{traceId}} is visible in the Traces panel/API.`, false);
-      location.hash = `trace-${{traceId}}`;
+      setEmployeeApiStatus(`Loading Trace Timeline ${{traceId}}...`, false);
+      try {{
+        const payload = await companyApiGet(`/v1/traces/${{encodeURIComponent(traceId)}}/timeline`);
+        renderDetails(`Trace Timeline: ${{traceId}}`, [
+          ['Trace ID', payload.trace_id || traceId],
+          ['Counts', payload.counts || {{}}],
+          ['Tasks', (payload.tasks || []).map(task => `${{task.id || '-'}} · ${{task.status || '-'}} · ${{task.target_agent || '-'}}`).join('\\n') || '-'],
+          ['Timeline', traceTimelineSummary(payload.timeline || [])],
+          ['Raw', payload],
+        ], payload);
+        setEmployeeApiStatus(`Trace Timeline loaded for ${{traceId}}.`, false);
+      }} catch (err) {{
+        setEmployeeApiStatus(`Trace Timeline failed: ${{err.message}}`, true);
+      }}
     }}
     window.addEventListener('DOMContentLoaded', checkCompanyApi);
   </script>
@@ -1681,13 +3441,25 @@ def render(summary: dict) -> str:
 
 
 def advanced_summary(summary: dict) -> dict:
-    prepared = dict(summary)
-    prepared["employees"] = employee_view_models(summary)
+    prepared = public_summary(summary)
+    employees = employee_view_models(summary)
+    counts = dict(summary.get("counts", {}))
+    counts["registered_employees"] = int(counts.get("employees") or len(summary.get("employees", [])))
+    counts["employees"] = len(employees)
+    counts["active_employees"] = sum(1 for employee in employees if employee.get("employee_status") == "active")
+    counts["candidate_employees"] = sum(1 for employee in employees if employee.get("employee_status") == "candidate")
+    counts["archived_employees"] = sum(1 for employee in employees if employee.get("employee_status") == "archived")
+    prepared["counts"] = counts
+    prepared["employees"] = employees
+    prepared["all_employees"] = summary.get("employees", [])
+    prepared["skill_registry"] = companyctl.skill_registry()
     prepared["communication_observability"] = communication_observability_summary(summary)
+    prepared["openclaw_runtime_inventory"] = summary.get("runtime_health", {}).get("openclaw_inventory", {})
+    prepared["cockpit"] = build_cockpit_summary({**summary, "employees": employees, "all_employees": summary.get("employees", []), "counts": counts})
     return prepared
 
 
-def load_advanced_template(path: str = "", *, include_external: bool = False) -> tuple[Path | None, str]:
+def load_advanced_template(path: str = "") -> tuple[Path | None, str]:
     if path:
         candidates = [Path(path)]
     else:
@@ -1699,7 +3471,56 @@ def load_advanced_template(path: str = "", *, include_external: bool = False) ->
 
 
 def inject_advanced_dashboard(template: str, summary: dict, *, db_path: Path, api_base: str) -> str:
-    payload = json.dumps(advanced_summary(summary), ensure_ascii=False)
+    bootstrap_summary = {
+        "generated_at": summary.get("generated_at", ""),
+        "counts": summary.get("counts", {}),
+        "projects": [],
+        "tasks": [],
+        "employees": [],
+        "conversations": [],
+        "direct_messages_recent": [],
+        "events": [],
+        "adapter_runs": [],
+        "approvals": [],
+        "evidence_records": [],
+        "artifact_records": [],
+        "handoff_records": [],
+        "failure_records": [],
+        "traces": [],
+        "cockpit": {
+            "ok": True,
+            "counts": {
+                "employees": 0,
+                "employees_total": 0,
+                "employees_online": 0,
+                "employees_abnormal": 0,
+                "active_attempts": 0,
+                "running_tasks": 0,
+                "stagnant_tasks": 0,
+                "blocked_tasks": 0,
+                "done_tasks": 0,
+                "awaiting_approval_tasks": 0,
+                "pending_approvals": 0,
+                "recent_evidence": 0,
+                "legacy_task_evidence": 0,
+                "evidence_issues": 0,
+                "chat_task_bound": 0,
+                "chat_work_relevant": 0,
+                "chat_handshake_or_idle": 0,
+            },
+            "long_tasks": [],
+            "owner_attention": [],
+            "supervisor_activity": [],
+            "recent_evidence": [],
+            "ledger_consistency": summary.get("cockpit", {}).get("ledger_consistency", {}),
+        },
+        "runtime_health": {},
+        "communication_observability": {},
+        "skill_registry": {"skills": []},
+        "openclaw_runtime_inventory": {},
+        "bootstrap_mode": "api-first-lightweight",
+    }
+    payload = json.dumps(bootstrap_summary, ensure_ascii=False)
     payload_b64 = base64.b64encode(payload.encode("utf-8")).decode("ascii")
     html_text = template
 
@@ -1713,9 +3534,19 @@ def inject_advanced_dashboard(template: str, summary: dict, *, db_path: Path, ap
     injection = (
         f"<script>\n"
         f"  window.kernelSummary = JSON.parse(decodeURIComponent(escape(atob({json.dumps(payload_b64)}))));\n"
-        f"  window.dbPath = {json.dumps(str(db_path), ensure_ascii=False)};\n"
+        f"  window.dbPath = {json.dumps(db_path.name, ensure_ascii=False)};\n"
         f"  window.companyApiBase = {json.dumps(api_base, ensure_ascii=False)};\n"
-        f"  window.companyKernelRoot = {json.dumps(str(ROOT), ensure_ascii=False)};\n"
+        f"  window.companyKernelRoot = '.';\n"
+        f"</script>\n"
+    )
+    resync = (
+        f"<script>\n"
+        f"  window.kernelSummary = JSON.parse(decodeURIComponent(escape(atob({json.dumps(payload_b64)}))));\n"
+        f"  window.dbPath = {json.dumps(db_path.name, ensure_ascii=False)};\n"
+        f"  window.companyApiBase = {json.dumps(api_base, ensure_ascii=False)};\n"
+        f"  window.companyKernelRoot = '.';\n"
+        f"  if (!window.summaryData) {{ window.summaryData = window.kernelSummary; }}\n"
+        f"  try {{ if (!summaryData) summaryData = window.summaryData || window.kernelSummary; }} catch (_) {{}}\n"
         f"</script>\n"
     )
 
@@ -1726,9 +3557,14 @@ def inject_advanced_dashboard(template: str, summary: dict, *, db_path: Path, ap
         html_text = append_before_body(html_text, injection)
 
     if "kernel-summary-debug" not in html_text:
-        html_text = html_text.replace("</script>", f'  <!-- kernel-summary-debug {payload} -->\n</script>', 1)
+        debug_meta = {
+            "generated_at": summary.get("generated_at", ""),
+            "counts": summary.get("counts", {}),
+            "api_base": api_base,
+        }
+        html_text = append_before_body(html_text, f"\n<!-- kernel-summary-debug {json.dumps(debug_meta, ensure_ascii=False)} -->\n")
 
-    return html_text
+    return append_before_body(html_text, resync)
 
 
 def run(args: argparse.Namespace) -> int:
@@ -1741,17 +3577,36 @@ def run(args: argparse.Namespace) -> int:
     output.parent.mkdir(parents=True, exist_ok=True)
     template_path = None
     variant = args.variant
-    if variant == "advanced":
-        template_path, template = load_advanced_template(args.template, include_external=variant == "advanced")
+    if variant in {"auto", "advanced"}:
+        template_path, template = load_advanced_template(args.template)
         if template:
-            output.write_text(inject_advanced_dashboard(template, summary, db_path=DB_PATH, api_base=args.api_base), encoding="utf-8")
+            prepared_summary = advanced_summary(summary)
+            output.write_text(inject_advanced_dashboard(template, prepared_summary, db_path=DB_PATH, api_base=args.api_base), encoding="utf-8")
             variant = "advanced"
-        else:
+        elif variant == "advanced":
             raise SystemExit("advanced dashboard template not found")
+        else:
+            prepared_summary = summary
+            output.write_text(render(summary), encoding="utf-8")
+            variant = "basic"
     else:
+        prepared_summary = summary
         output.write_text(render(summary), encoding="utf-8")
         variant = "basic"
-    print(json.dumps({"ok": True, "output": str(output), "variant": variant, "template": str(template_path or ""), "counts": summary["counts"]}, ensure_ascii=False, indent=2))
+    print(
+        json.dumps(
+            {
+                "ok": True,
+                "output": str(output),
+                "variant": variant,
+                "template": str(template_path or ""),
+                "counts": prepared_summary["counts"],
+                "ledger_consistency": prepared_summary.get("cockpit", {}).get("ledger_consistency", {}),
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+    )
     return 0
 
 

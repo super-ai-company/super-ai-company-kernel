@@ -50,6 +50,53 @@ def resolve_trace_id(conn: sqlite3.Connection, trace_id: str = "", task_id: str 
     return trace
 
 
+def event_payload(event: dict) -> dict:
+    try:
+        payload = json.loads(event.get("payload_json", "{}") or "{}")
+    except json.JSONDecodeError:
+        payload = {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def first_payload_value(payload: dict, *keys: str) -> str:
+    for key in keys:
+        value = payload.get(key)
+        if value not in {None, ""}:
+            return str(value)
+    return ""
+
+
+def enrich_recovery_event(timeline_item: dict, event_type: str, payload: dict) -> None:
+    if event_type in {"task.retrying", "task.reassigned", "task.blocked", "task.failed", "task.stale", "task.progress", "task.probe", "supervisor.cancel_requested", "task.cancelled", "task.done"}:
+        for key in ("attempt_id", "previous_attempt_id", "reason", "message"):
+            value = first_payload_value(payload, key)
+            if value:
+                timeline_item[key] = value
+    if event_type == "task.reassigned":
+        from_employee = first_payload_value(payload, "from", "from_employee", "old_employee")
+        to_employee = first_payload_value(payload, "to", "to_employee", "new_employee")
+        if from_employee:
+            timeline_item["from_employee"] = from_employee
+        if to_employee:
+            timeline_item["to_employee"] = to_employee
+            timeline_item["target"] = to_employee
+    if event_type in {"task.blocked", "task.failed", "task.stale"}:
+        blocker = first_payload_value(payload, "blocker", "error", "reason", "message")
+        if blocker:
+            timeline_item["blocker"] = blocker
+    if event_type == "task.progress":
+        progress_state = first_payload_value(payload, "progress_state", "state", "progress_layer")
+        progress = first_payload_value(payload, "progress")
+        if progress_state:
+            timeline_item["progress_state"] = progress_state
+        if progress:
+            timeline_item["progress"] = progress
+    if event_type == "task.probe":
+        timeline_item["action"] = "probe_requested"
+        timeline_item["external_send"] = bool(payload.get("external_send"))
+        timeline_item["non_mutating"] = bool(payload.get("non_mutating"))
+
+
 def load_trace(conn: sqlite3.Connection, trace_id: str) -> dict:
     task_ids = set()
     for row in rows(conn, "SELECT task_id, metadata_json FROM task_metadata"):
@@ -66,6 +113,9 @@ def load_trace(conn: sqlite3.Connection, trace_id: str) -> dict:
     task_ids.update(row["from_task_id"] for row in rows(conn, "SELECT DISTINCT from_task_id FROM handoffs WHERE trace_id = ? AND from_task_id != ''", (trace_id,)))
     task_ids.update(row["to_task_id"] for row in rows(conn, "SELECT DISTINCT to_task_id FROM handoffs WHERE trace_id = ? AND to_task_id != ''", (trace_id,)))
     task_ids.update(row["task_id"] for row in rows(conn, "SELECT DISTINCT task_id FROM execution_attempts WHERE trace_id = ? AND task_id != ''", (trace_id,)))
+    task_ids.update(row["task_id"] for row in rows(conn, "SELECT DISTINCT task_id FROM runtime_sessions WHERE trace_id = ? AND task_id != ''", (trace_id,)))
+    task_ids.update(row["task_id"] for row in rows(conn, "SELECT DISTINCT task_id FROM agent_tool_calls WHERE trace_id = ? AND task_id != ''", (trace_id,)))
+    task_ids.update(row["task_id"] for row in rows(conn, "SELECT DISTINCT task_id FROM budget_events WHERE trace_id = ? AND task_id != ''", (trace_id,)))
     tasks = []
     if task_ids:
         placeholders = ",".join("?" for _ in task_ids)
@@ -76,13 +126,38 @@ def load_trace(conn: sqlite3.Connection, trace_id: str) -> dict:
     evidence = rows(conn, "SELECT * FROM evidence WHERE trace_id = ? ORDER BY created_at ASC", (trace_id,))
     handoffs = rows(conn, "SELECT * FROM handoffs WHERE trace_id = ? ORDER BY created_at ASC", (trace_id,))
     execution_attempts = rows(conn, "SELECT * FROM execution_attempts WHERE trace_id = ? ORDER BY started_at ASC", (trace_id,))
+    runtime_sessions = rows(conn, "SELECT * FROM runtime_sessions WHERE trace_id = ? ORDER BY started_at ASC", (trace_id,))
+    tool_calls = rows(conn, "SELECT * FROM agent_tool_calls WHERE trace_id = ? ORDER BY started_at ASC", (trace_id,))
+    budget_events = rows(conn, "SELECT * FROM budget_events WHERE trace_id = ? ORDER BY created_at ASC", (trace_id,))
     timeline = []
     for task in tasks:
         timeline.append({"kind": "task", "at": task["created_at"], "label": f"task {task['id']} submitted to {task['target_agent']}", "status": task["status"], "task_id": task["id"]})
         if task.get("updated_at") and task["updated_at"] != task["created_at"]:
             timeline.append({"kind": "task", "at": task["updated_at"], "label": f"task {task['id']} {task['status']}", "status": task["status"], "task_id": task["id"]})
     for event in events:
-        timeline.append({"kind": "event", "at": event["created_at"], "label": event["event_type"], "status": "processed" if event.get("processed_at") else "pending", "event_id": event["id"], "task_id": event.get("task_id", "")})
+        timeline_item = {"kind": "event", "at": event["created_at"], "label": event["event_type"], "status": "processed" if event.get("processed_at") else "pending", "event_id": event["id"], "task_id": event.get("task_id", ""), "actor": event.get("source_agent", "")}
+        payload = event_payload(event)
+        if event["event_type"] in {"supervisor.correction_requested", "supervisor.correction_acknowledged"}:
+            action = "correction_acknowledged" if event["event_type"] == "supervisor.correction_acknowledged" else "correction_requested"
+            timeline_item.update(
+                {
+                    "action": action,
+                    "attempt_id": str(payload.get("attempt_id", "") or ""),
+                    "target": "hermes" if action == "correction_acknowledged" else "",
+                    "message": payload.get("message", ""),
+                }
+            )
+        elif event["event_type"] == "approval.requested":
+            timeline_item.update(
+                {
+                    "approval_id": str(payload.get("approval_id", "") or ""),
+                    "approval_action": str(payload.get("action", "") or ""),
+                    "risk": str(payload.get("risk", "") or ""),
+                    "target": str(payload.get("target", "") or ""),
+                }
+            )
+        enrich_recovery_event(timeline_item, event["event_type"], payload)
+        timeline.append(timeline_item)
     for run in adapter_runs:
         timeline.append({"kind": "adapter", "at": run["created_at"], "label": f"{run['agent_id']} {run['command']}", "status": "ok" if run.get("ok") else "failed", "run_id": run["id"], "task_id": run.get("task_id", ""), "attempt": run.get("attempt", 1)})
     for artifact in artifacts:
@@ -95,6 +170,16 @@ def load_trace(conn: sqlite3.Connection, trace_id: str) -> dict:
         timeline.append({"kind": "attempt", "at": attempt["started_at"], "label": f"{attempt['employee_id']} via {attempt['adapter_type']}", "status": attempt["status"], "attempt_id": attempt["attempt_id"], "task_id": attempt["task_id"]})
         if attempt.get("finished_at"):
             timeline.append({"kind": "attempt", "at": attempt["finished_at"], "label": f"{attempt['attempt_id']} finished", "status": attempt["status"], "attempt_id": attempt["attempt_id"], "task_id": attempt["task_id"]})
+    for session in runtime_sessions:
+        timeline.append({"kind": "runtime_session", "at": session["started_at"], "label": f"{session['employee_id']} session {session['runtime_type'] or session['adapter_type']}", "status": session["status"], "session_id": session["session_id"], "attempt_id": session.get("attempt_id", ""), "task_id": session.get("task_id", "")})
+        if session.get("stopped_at"):
+            timeline.append({"kind": "runtime_session", "at": session["stopped_at"], "label": f"{session['session_id']} stopped", "status": session["status"], "session_id": session["session_id"], "attempt_id": session.get("attempt_id", ""), "task_id": session.get("task_id", "")})
+    for tool_call in tool_calls:
+        timeline.append({"kind": "tool_call", "at": tool_call["started_at"], "label": f"{tool_call['tool_name']} {tool_call['input_summary']}", "status": tool_call["status"], "tool_call_id": tool_call["tool_call_id"], "session_id": tool_call.get("session_id", ""), "attempt_id": tool_call.get("attempt_id", ""), "task_id": tool_call.get("task_id", "")})
+        if tool_call.get("finished_at"):
+            timeline.append({"kind": "tool_call", "at": tool_call["finished_at"], "label": f"{tool_call['tool_name']} {tool_call['output_summary'] or tool_call['error_message']}", "status": tool_call["status"], "tool_call_id": tool_call["tool_call_id"], "session_id": tool_call.get("session_id", ""), "attempt_id": tool_call.get("attempt_id", ""), "task_id": tool_call.get("task_id", "")})
+    for budget_event in budget_events:
+        timeline.append({"kind": "budget_event", "at": budget_event["created_at"], "label": f"{budget_event['cost_type']} {budget_event['amount']} {budget_event['currency']}: {budget_event['summary']}", "status": "spent", "budget_event_id": budget_event["budget_event_id"], "attempt_id": budget_event.get("attempt_id", ""), "task_id": budget_event.get("task_id", "")})
     timeline.sort(key=lambda item: item.get("at", ""))
     return {
         "trace_id": trace_id,
@@ -106,8 +191,572 @@ def load_trace(conn: sqlite3.Connection, trace_id: str) -> dict:
         "evidence": evidence,
         "handoffs": handoffs,
         "execution_attempts": execution_attempts,
+        "runtime_sessions": runtime_sessions,
+        "tool_calls": tool_calls,
+        "budget_events": budget_events,
         "timeline": timeline,
     }
+
+
+def safe_trace_payload(trace: dict) -> dict:
+    evidence_by_id = {item.get("evidence_id", ""): item for item in trace.get("evidence", [])}
+    artifact_by_id = {item.get("artifact_id", ""): item for item in trace.get("artifacts", [])}
+    adapter_by_id = {item.get("id", ""): item for item in trace.get("adapter_runs", [])}
+    task_target_by_id = {item.get("id", ""): item.get("target_agent", "") for item in trace.get("tasks", [])}
+    timeline = []
+    supervision_chain = []
+    for raw_item in trace.get("timeline", []):
+        item = {
+            "kind": raw_item.get("kind", ""),
+            "at": raw_item.get("at", ""),
+            "status": raw_item.get("status", ""),
+            "label": companyctl.sanitize_log_text(raw_item.get("label", "")),
+            "task_id": raw_item.get("task_id", ""),
+        }
+        safe_text_keys = {"reason", "message", "blocker", "progress_state", "progress"}
+        for key in (
+            "event_id",
+            "run_id",
+            "artifact_id",
+            "evidence_id",
+            "handoff_id",
+            "attempt_id",
+            "previous_attempt_id",
+            "attempt",
+            "actor",
+            "target",
+            "from_employee",
+            "to_employee",
+            "action",
+            "session_id",
+            "tool_call_id",
+            "budget_event_id",
+            "approval_id",
+            "approval_action",
+            "risk",
+            "reason",
+            "message",
+            "blocker",
+            "progress_state",
+            "progress",
+        ):
+            if raw_item.get(key) not in {None, ""}:
+                item[key] = companyctl.sanitize_log_text(raw_item[key]) if key in safe_text_keys else raw_item[key]
+        if item.get("action") in {"correction_requested", "correction_acknowledged"}:
+            if not item.get("target"):
+                item["target"] = task_target_by_id.get(item.get("task_id", ""), "")
+            item["message"] = companyctl.sanitize_log_text(raw_item.get("message", ""))
+            item["summary"] = f"{item.get('actor', '-') or '-'} -> {item.get('target', '-') or '-'} · {item['action']} · {item.get('task_id', '-') or '-'}"
+            supervision_chain.append(
+                {
+                    "at": item.get("at", ""),
+                    "actor": item.get("actor", ""),
+                    "target": item.get("target", ""),
+                    "action": item.get("action", ""),
+                    "task_id": item.get("task_id", ""),
+                    "attempt_id": item.get("attempt_id", ""),
+                    "summary": item["summary"],
+                    "message": item["message"],
+                }
+            )
+        if item.get("evidence_id"):
+            evidence = evidence_by_id.get(item["evidence_id"], {})
+            display = companyctl.sanitize_evidence_path_for_display(str(evidence.get("path_or_url", "")))
+            item["display"] = display
+            item["label"] = companyctl.sanitize_log_text(evidence.get("summary") or display.get("relative_path") or display.get("basename") or item["label"])
+        if item.get("artifact_id"):
+            artifact = artifact_by_id.get(item["artifact_id"], {})
+            item["display"] = companyctl.sanitize_evidence_path_for_display(str(artifact.get("path", "")))
+        if item.get("run_id"):
+            adapter_run = adapter_by_id.get(item["run_id"], {})
+            try:
+                result = json.loads(adapter_run.get("result_json", "{}") or "{}")
+            except json.JSONDecodeError:
+                result = {"raw": adapter_run.get("result_json", "")}
+            summary = companyctl.summarize_adapter_result(result)
+            if summary.get("sanitized_log"):
+                item["sanitized_log"] = summary["sanitized_log"]
+        timeline.append(item)
+    sanitized_artifacts = []
+    for artifact in trace.get("artifacts", []):
+        sanitized_artifacts.append(
+            {
+                "artifact_id": artifact.get("artifact_id", ""),
+                "trace_id": artifact.get("trace_id", ""),
+                "task_id": artifact.get("task_id", ""),
+                "parent_task_id": artifact.get("parent_task_id", ""),
+                "employee_id": artifact.get("employee_id", ""),
+                "artifact_type": artifact.get("artifact_type", ""),
+                "name": artifact.get("name", ""),
+                "mime_type": artifact.get("mime_type", ""),
+                "stage": artifact.get("stage", ""),
+                "version": artifact.get("version", 0),
+                "status": artifact.get("status", ""),
+                "is_input": bool(artifact.get("is_input")),
+                "is_output": bool(artifact.get("is_output")),
+                "is_final": bool(artifact.get("is_final")),
+                "summary": companyctl.sanitize_log_text(artifact.get("summary", "")),
+                "checksum": artifact.get("checksum", ""),
+                "created_at": artifact.get("created_at", ""),
+                "updated_at": artifact.get("updated_at", ""),
+                "display": companyctl.sanitize_evidence_path_for_display(str(artifact.get("path", ""))),
+            }
+        )
+    sanitized_evidence = []
+    for evidence in trace.get("evidence", []):
+        sanitized_evidence.append(
+            {
+                "evidence_id": evidence.get("evidence_id", ""),
+                "trace_id": evidence.get("trace_id", ""),
+                "task_id": evidence.get("task_id", ""),
+                "attempt_id": evidence.get("attempt_id", ""),
+                "employee_id": evidence.get("employee_id", ""),
+                "artifact_id": evidence.get("artifact_id", ""),
+                "type": evidence.get("type", ""),
+                "summary": companyctl.sanitize_log_text(evidence.get("summary", "")),
+                "checksum": evidence.get("checksum", ""),
+                "is_final": bool(evidence.get("is_final")),
+                "created_at": evidence.get("created_at", ""),
+                "display": companyctl.sanitize_evidence_path_for_display(str(evidence.get("path_or_url", ""))),
+            }
+        )
+    sanitized_handoffs = []
+    for handoff in trace.get("handoffs", []):
+        try:
+            artifacts = json.loads(handoff.get("artifacts_json", "") or "[]")
+        except json.JSONDecodeError:
+            artifacts = []
+        sanitized_handoffs.append(
+            {
+                "handoff_id": handoff.get("handoff_id", ""),
+                "trace_id": handoff.get("trace_id", ""),
+                "from_task_id": handoff.get("from_task_id", ""),
+                "to_task_id": handoff.get("to_task_id", ""),
+                "from_employee_id": handoff.get("from_employee_id", ""),
+                "to_employee_id": handoff.get("to_employee_id", ""),
+                "summary": companyctl.sanitize_log_text(handoff.get("summary", "")),
+                "artifacts": artifacts if isinstance(artifacts, list) else [],
+                "known_issues": companyctl.sanitize_log_text(handoff.get("known_issues", "")),
+                "next_steps": companyctl.sanitize_log_text(handoff.get("next_steps", "")),
+                "required_actions": companyctl.sanitize_log_text(handoff.get("required_actions", "")),
+                "acceptance_notes": companyctl.sanitize_log_text(handoff.get("acceptance_notes", "")),
+                "status": handoff.get("status", ""),
+                "created_at": handoff.get("created_at", ""),
+                "updated_at": handoff.get("updated_at", ""),
+            }
+        )
+    sanitized_attempts = []
+    for attempt in trace.get("execution_attempts", []):
+        sanitized_attempts.append(
+            {
+                "attempt_id": attempt.get("attempt_id", ""),
+                "trace_id": attempt.get("trace_id", ""),
+                "task_id": attempt.get("task_id", ""),
+                "employee_id": attempt.get("employee_id", ""),
+                "adapter_type": attempt.get("adapter_type", ""),
+                "runtime": attempt.get("runtime", ""),
+                "status": attempt.get("status", ""),
+                "started_at": attempt.get("started_at", ""),
+                "finished_at": attempt.get("finished_at", ""),
+                "last_heartbeat_at": attempt.get("last_heartbeat_at", ""),
+                "last_progress_at": attempt.get("last_progress_at", ""),
+                "cancel_requested_at": attempt.get("cancel_requested_at", ""),
+                "error_message": companyctl.sanitize_log_text(attempt.get("error_message", "")),
+                "runtime_policy": companyctl.attempt_json_field(attempt, "runtime_policy_json"),
+                "metadata": companyctl.attempt_json_field(attempt, "metadata_json"),
+                "supervisor_state": companyctl.attempt_json_field(attempt, "supervisor_state_json"),
+            }
+        )
+    sanitized_sessions = []
+    for session in trace.get("runtime_sessions", []):
+        sanitized_sessions.append(
+            {
+                "session_id": session.get("session_id", ""),
+                "trace_id": session.get("trace_id", ""),
+                "task_id": session.get("task_id", ""),
+                "attempt_id": session.get("attempt_id", ""),
+                "employee_id": session.get("employee_id", ""),
+                "adapter_type": session.get("adapter_type", ""),
+                "runtime_type": session.get("runtime_type", ""),
+                "pid": session.get("pid", ""),
+                "session_key": companyctl.sanitize_log_text(session.get("session_key", "")),
+                "status": session.get("status", ""),
+                "started_at": session.get("started_at", ""),
+                "last_heartbeat_at": session.get("last_heartbeat_at", ""),
+                "last_progress_at": session.get("last_progress_at", ""),
+                "stopped_at": session.get("stopped_at", ""),
+                "metadata": companyctl.attempt_json_field(session, "metadata_json"),
+            }
+        )
+    sanitized_tool_calls = []
+    for tool_call in trace.get("tool_calls", []):
+        sanitized_tool_calls.append(
+            {
+                "tool_call_id": tool_call.get("tool_call_id", ""),
+                "trace_id": tool_call.get("trace_id", ""),
+                "task_id": tool_call.get("task_id", ""),
+                "attempt_id": tool_call.get("attempt_id", ""),
+                "employee_id": tool_call.get("employee_id", ""),
+                "session_id": tool_call.get("session_id", ""),
+                "tool_name": tool_call.get("tool_name", ""),
+                "tool_type": tool_call.get("tool_type", ""),
+                "input_summary": companyctl.sanitize_log_text(tool_call.get("input_summary", "")),
+                "output_summary": companyctl.sanitize_log_text(tool_call.get("output_summary", "")),
+                "status": tool_call.get("status", ""),
+                "risk_level": tool_call.get("risk_level", ""),
+                "approval_id": tool_call.get("approval_id", ""),
+                "started_at": tool_call.get("started_at", ""),
+                "finished_at": tool_call.get("finished_at", ""),
+                "error_message": companyctl.sanitize_log_text(tool_call.get("error_message", "")),
+            }
+        )
+    sanitized_budget_events = []
+    for budget_event in trace.get("budget_events", []):
+        sanitized_budget_events.append(
+            {
+                "budget_event_id": budget_event.get("budget_event_id", ""),
+                "budget_account_id": budget_event.get("budget_account_id", ""),
+                "trace_id": budget_event.get("trace_id", ""),
+                "task_id": budget_event.get("task_id", ""),
+                "attempt_id": budget_event.get("attempt_id", ""),
+                "employee_id": budget_event.get("employee_id", ""),
+                "cost_type": budget_event.get("cost_type", ""),
+                "amount": float(budget_event.get("amount") or 0),
+                "currency": budget_event.get("currency", ""),
+                "token_input": int(budget_event.get("token_input") or 0),
+                "token_output": int(budget_event.get("token_output") or 0),
+                "model_name": budget_event.get("model_name", ""),
+                "provider": budget_event.get("provider", ""),
+                "runtime_seconds": int(budget_event.get("runtime_seconds") or 0),
+                "summary": companyctl.sanitize_log_text(budget_event.get("summary", "")),
+                "created_at": budget_event.get("created_at", ""),
+            }
+        )
+    trace_story = trace_stage_story(timeline, trace)
+    ceo_timeline = ceo_timeline_items(timeline)
+    ceo_stage_summary = ceo_stage_summary_items(trace_story, ceo_timeline)
+    trace_brief = ceo_trace_brief(trace_story, ceo_stage_summary, ceo_timeline, trace)
+    return {
+        "ok": True,
+        "source": "trace.timeline",
+        "trace_id": trace.get("trace_id", ""),
+        "generated_at": trace.get("generated_at", ""),
+        "counts": {
+            "tasks": len(trace.get("tasks", [])),
+            "events": len(trace.get("events", [])),
+            "adapter_runs": len(trace.get("adapter_runs", [])),
+            "artifacts": len(trace.get("artifacts", [])),
+            "handoffs": len(trace.get("handoffs", [])),
+            "evidence": len(trace.get("evidence", [])),
+            "execution_attempts": len(trace.get("execution_attempts", [])),
+            "runtime_sessions": len(trace.get("runtime_sessions", [])),
+            "tool_calls": len(trace.get("tool_calls", [])),
+            "budget_events": len(trace.get("budget_events", [])),
+            "timeline": len(timeline),
+        },
+        "tasks": [
+            {
+                "id": item.get("id", ""),
+                "source_agent": item.get("source_agent", ""),
+                "target_agent": item.get("target_agent", ""),
+                "status": item.get("status", ""),
+                "title": item.get("title", ""),
+                "created_at": item.get("created_at", ""),
+                "updated_at": item.get("updated_at", ""),
+            }
+            for item in trace.get("tasks", [])
+        ],
+        "artifacts": sanitized_artifacts,
+        "evidence": sanitized_evidence,
+        "handoffs": sanitized_handoffs,
+        "execution_attempts": sanitized_attempts,
+        "runtime_sessions": sanitized_sessions,
+        "tool_calls": sanitized_tool_calls,
+        "budget_events": sanitized_budget_events,
+        "supervision_chain": supervision_chain,
+        "trace_story": trace_story,
+        "ceo_stage_summary": ceo_stage_summary,
+        "ceo_trace_brief": trace_brief,
+        "ceo_timeline": ceo_timeline,
+        "timeline": timeline,
+    }
+
+
+def trace_stage_story(timeline: list[dict], trace: dict) -> dict:
+    required_chain = [
+        "task.created",
+        "task.claimed",
+        "attempt.started",
+        "tool.call.started",
+        "task.progress",
+        "artifact.created",
+        "handoff.created",
+        "evidence.promoted",
+        "task.done",
+    ]
+    observed: set[str] = set()
+    stage_status = {
+        stage: {"stage": stage, "observed": False, "status": "missing", "at": "", "kind": "", "task_id": "", "ref_id": ""}
+        for stage in required_chain
+    }
+
+    def mark_stage(stage: str, item: dict, ref_id: str = "") -> None:
+        if stage not in stage_status:
+            return
+        observed.add(stage)
+        current = stage_status[stage]
+        if (
+            current["observed"]
+            and current.get("at")
+            and item.get("at")
+            and str(current["at"]) <= str(item.get("at"))
+            and (current.get("ref_id") or not ref_id)
+        ):
+            return
+        current.update(
+            {
+                "observed": True,
+                "status": "observed",
+                "at": item.get("at", ""),
+                "kind": item.get("kind", ""),
+                "task_id": item.get("task_id", ""),
+                "ref_id": ref_id,
+            }
+        )
+
+    for item in timeline:
+        kind = item.get("kind", "")
+        label = item.get("label", "")
+        status = str(item.get("status", "")).lower()
+        if kind == "task":
+            mark_stage("task.created", item, str(item.get("task_id", "") or ""))
+            if status in {"claimed", "running", "completed", "done", "success"}:
+                mark_stage("task.claimed", item, str(item.get("task_id", "") or ""))
+            if status in {"completed", "done", "success"}:
+                mark_stage("task.done", item, str(item.get("task_id", "") or ""))
+        if kind == "attempt" or label == "task.attempt.started":
+            mark_stage("attempt.started", item, str(item.get("attempt_id", "") or ""))
+        if kind == "tool_call" or str(label).startswith("tool.call."):
+            mark_stage("tool.call.started", item, str(item.get("tool_call_id", "") or ""))
+        if label.startswith("task.progress") or label in {"runtime.session.progress"}:
+            mark_stage("task.progress", item, str(item.get("event_id", "") or ""))
+        if kind == "artifact" or label == "artifact.created":
+            mark_stage("artifact.created", item, str(item.get("artifact_id", "") or ""))
+        if kind == "handoff" or label == "handoff.created":
+            mark_stage("handoff.created", item, str(item.get("handoff_id", "") or ""))
+        if kind == "evidence" or label == "artifact.promoted_to_evidence":
+            mark_stage("evidence.promoted", item, str(item.get("evidence_id", "") or item.get("event_id", "") or ""))
+        if label in {"task.done", "task.completed", "task.output_submitted"}:
+            mark_stage("task.done", item, str(item.get("event_id", "") or ""))
+    has_failure_or_recovery = any(
+        str(item.get("status", "")).lower() in {"failed", "blocked", "stale", "cancelled", "retrying"}
+        or str(item.get("label", "")).startswith(("task.retry", "task.reassign"))
+        or item.get("kind") == "adapter" and str(item.get("status", "")).lower() == "failed"
+        for item in timeline
+    )
+    missing_required = [stage for stage in required_chain if stage not in observed]
+    done_complete = not missing_required
+    return {
+        "state": "complete" if done_complete else "incomplete",
+        "required_chain": required_chain,
+        "stage_status": [stage_status[stage] for stage in required_chain],
+        "observed_stages": sorted(observed),
+        "missing_required": missing_required,
+        "has_failure_or_recovery": has_failure_or_recovery,
+        "summary": "Trace has complete task-to-evidence chain." if done_complete else f"Trace is missing {len(missing_required)} required stage(s).",
+        "counts": {
+            "tasks": len(trace.get("tasks", [])),
+            "attempts": len(trace.get("execution_attempts", [])),
+            "tool_calls": len(trace.get("tool_calls", [])),
+            "artifacts": len(trace.get("artifacts", [])),
+            "handoffs": len(trace.get("handoffs", [])),
+            "evidence": len(trace.get("evidence", [])),
+            "budget_events": len(trace.get("budget_events", [])),
+        },
+    }
+
+
+def ceo_stage_summary_items(trace_story: dict, ceo_timeline: list[dict]) -> dict:
+    missing_required = list(trace_story.get("missing_required", []) or [])
+    observed_stages = list(trace_story.get("observed_stages", []) or [])
+    has_failure_or_recovery = bool(trace_story.get("has_failure_or_recovery"))
+    critical_items = [item for item in ceo_timeline if item.get("severity") == "critical"]
+    attention_items = [item for item in ceo_timeline if item.get("severity") == "attention"]
+
+    def stage_action(stage: str, observed: bool) -> str:
+        if observed:
+            return "verify downstream handoff/evidence"
+        if stage == "tool.call.started":
+            return "confirm worker is recording tool calls, not only stdout/chat"
+        if stage == "task.progress":
+            return "request progress update or Hermes correction"
+        if stage == "task.done":
+            return "wait for final evidence or reopen/reassign if completion is invalid"
+        return "inspect trace and assign next recovery action"
+
+    stages = []
+    for raw in trace_story.get("stage_status", []) or []:
+        observed = bool(raw.get("observed"))
+        stage = str(raw.get("stage") or "")
+        severity = "success" if observed else ("critical" if stage in missing_required else "attention")
+        stages.append(
+            {
+                "stage": stage,
+                "status": "observed" if observed else "missing",
+                "observed": observed,
+                "severity": severity,
+                "at": raw.get("at", ""),
+                "kind": raw.get("kind", ""),
+                "task_id": raw.get("task_id", ""),
+                "ref_id": raw.get("ref_id", ""),
+                "recommended_owner_action": stage_action(stage, observed),
+            }
+        )
+    if critical_items:
+        severity = "critical"
+        recommended_owner_action = "review failed/recovery items, then retry, reassign, cancel, or request approval"
+    elif missing_required:
+        severity = "attention"
+        recommended_owner_action = "complete missing stages before accepting task output"
+    else:
+        severity = "success"
+        recommended_owner_action = "review final evidence and accept if it matches the task"
+    return {
+        "chain_state": trace_story.get("state", "incomplete"),
+        "severity": severity,
+        "required_chain": trace_story.get("required_chain", []),
+        "observed_stages": observed_stages,
+        "missing_required": missing_required,
+        "has_failure_or_recovery": has_failure_or_recovery,
+        "critical_count": len(critical_items),
+        "attention_count": len(attention_items),
+        "stages": stages,
+        "recommended_owner_action": recommended_owner_action,
+        "summary": companyctl.sanitize_log_text(trace_story.get("summary", "")),
+    }
+
+
+def ceo_trace_brief(trace_story: dict, ceo_stage_summary: dict, ceo_timeline: list[dict], trace: dict) -> dict:
+    critical_count = int(ceo_stage_summary.get("critical_count") or 0)
+    attention_count = int(ceo_stage_summary.get("attention_count") or 0)
+    missing_required = [str(item) for item in ceo_stage_summary.get("missing_required", []) or []]
+    final_evidence_count = sum(1 for item in trace.get("evidence", []) if bool(item.get("is_final")))
+    estimated_cost = round(sum(float(item.get("amount") or 0) for item in trace.get("budget_events", [])), 10)
+    currencies = sorted({str(item.get("currency") or "") for item in trace.get("budget_events", []) if str(item.get("currency") or "")})
+    correction_count = sum(
+        1
+        for item in ceo_timeline
+        if str(item.get("stage") or "") in {"supervisor.correction_requested", "supervisor.correction_acknowledged"}
+    )
+    approval_count = sum(1 for item in ceo_timeline if str(item.get("stage") or "") == "approval.requested")
+    failure_count = sum(1 for item in ceo_timeline if str(item.get("severity") or "") == "critical")
+    severity = str(ceo_stage_summary.get("severity") or "info")
+    chain_state = str(ceo_stage_summary.get("chain_state") or trace_story.get("state") or "incomplete")
+    owner_next_action = companyctl.sanitize_log_text(
+        str(ceo_stage_summary.get("recommended_owner_action") or "inspect trace before accepting work")
+    )
+    if chain_state == "complete" and final_evidence_count:
+        headline = "Trace complete: final evidence is ready for owner review."
+    elif missing_required:
+        headline = f"Trace incomplete: missing {len(missing_required)} stage(s): {', '.join(missing_required[:4])}."
+    elif failure_count:
+        headline = "Trace needs attention: failure or approval item present."
+    else:
+        headline = "Trace is observable; continue monitoring until final evidence is accepted."
+    return {
+        "headline": companyctl.sanitize_log_text(headline),
+        "chain_state": chain_state,
+        "severity": severity,
+        "owner_next_action": owner_next_action,
+        "missing_required": missing_required,
+        "critical_count": critical_count,
+        "attention_count": attention_count,
+        "correction_count": correction_count,
+        "approval_count": approval_count,
+        "failure_count": failure_count,
+        "task_count": len(trace.get("tasks", [])),
+        "attempt_count": len(trace.get("execution_attempts", [])),
+        "runtime_session_count": len(trace.get("runtime_sessions", [])),
+        "tool_call_count": len(trace.get("tool_calls", [])),
+        "artifact_count": len(trace.get("artifacts", [])),
+        "handoff_count": len(trace.get("handoffs", [])),
+        "evidence_count": len(trace.get("evidence", [])),
+        "final_evidence_count": final_evidence_count,
+        "budget_event_count": len(trace.get("budget_events", [])),
+        "estimated_cost": estimated_cost,
+        "currency": currencies[0] if len(currencies) == 1 else ("mixed" if currencies else "USD"),
+    }
+
+
+def ceo_timeline_items(timeline: list[dict]) -> list[dict]:
+    items = []
+    for item in timeline:
+        kind = item.get("kind", "")
+        label = item.get("label", "")
+        status = str(item.get("status", "") or "")
+        title = label or kind
+        recommended_action = "observe"
+        severity = "info"
+        if item.get("action") == "probe_requested" or label == "task.probe":
+            recommended_action = "wait for worker response or escalate to Hermes correction if progress remains stagnant"
+            severity = "attention"
+        elif item.get("action") in {"correction_requested", "correction_acknowledged"}:
+            recommended_action = "verify correction ack" if item.get("action") == "correction_requested" else "continue monitoring"
+            severity = "attention"
+        elif status.lower() in {"failed", "blocked", "stale", "cancelled"}:
+            recommended_action = "review blocker, retry, reassign, or request approval"
+            severity = "critical"
+        elif kind == "evidence":
+            recommended_action = "review final evidence"
+            severity = "success"
+        elif kind == "artifact":
+            recommended_action = "check artifact readiness for handoff/evidence"
+            severity = "success"
+        elif kind == "budget_event":
+            recommended_action = "review spend"
+        elif label == "approval.requested":
+            recommended_action = "owner approval required"
+            severity = "critical" if str(item.get("approval_action", "")) in {"budget_overrun", "budget.overrun", "external_send", "telegram_send", "openclaw_send", "rule_change", "delete_file", "sensitive_file", "publish", "payment", "compensation", "salary", "penalty"} else "attention"
+        elif label in {"task.retrying", "task.reassigned"}:
+            recommended_action = "monitor recovery attempt and verify new progress"
+            severity = "attention"
+        elif label in {"supervisor.cancel_requested", "task.cancelled"}:
+            recommended_action = "verify process stopped and ignore late evidence"
+            severity = "critical"
+        if kind == "adapter" and status.lower() == "failed":
+            title = f"adapter failed: {label}"
+        summary = item.get("sanitized_log") or item.get("message") or label
+        if label == "task.retrying" and item.get("reason"):
+            summary = f"retry {item.get('previous_attempt_id', '-') or '-'} -> {item.get('attempt_id', '-') or '-'} · {item.get('reason', '')}"
+        elif label == "task.probe":
+            summary = f"probe {item.get('attempt_id', '-') or '-'} · {item.get('reason', '') or item.get('message', '') or 'progress_probe'}"
+        elif label == "task.reassigned":
+            summary = f"reassign {item.get('from_employee', '-') or '-'} -> {item.get('to_employee', '-') or '-'} · {item.get('reason', '')}"
+        elif label in {"supervisor.cancel_requested", "task.cancelled"} and item.get("reason"):
+            summary = f"cancel {item.get('attempt_id', '-') or '-'} · {item.get('reason', '')}"
+        elif label in {"task.blocked", "task.failed", "task.stale"} and (item.get("blocker") or item.get("reason")):
+            summary = item.get("blocker") or item.get("reason") or label
+        ceo_item = {
+            "at": item.get("at", ""),
+            "kind": kind,
+            "stage": label,
+            "status": status,
+            "task_id": item.get("task_id", ""),
+            "attempt_id": item.get("attempt_id", ""),
+            "previous_attempt_id": item.get("previous_attempt_id", ""),
+            "actor": item.get("actor", ""),
+            "title": companyctl.sanitize_log_text(title),
+            "summary": companyctl.sanitize_log_text(summary),
+            "severity": severity,
+            "recommended_action": recommended_action,
+        }
+        for key in ("approval_id", "approval_action", "risk", "from_employee", "to_employee", "reason", "blocker", "progress_state", "progress"):
+            if item.get(key):
+                ceo_item[key] = item[key]
+        if label == "approval.requested" and item.get("approval_action"):
+            ceo_item["summary"] = companyctl.sanitize_log_text(f"{item.get('approval_action')} requires owner approval risk={item.get('risk', '-') or '-'}")
+        items.append(ceo_item)
+    return items
 
 
 def render_html(trace: dict) -> str:
@@ -141,7 +790,7 @@ def render_html(trace: dict) -> str:
 </head>
 <body>
   <h1>Trace {e(trace['trace_id'])}</h1>
-  <div class="meta">generated_at={e(trace['generated_at'])}; tasks={len(trace['tasks'])}; events={len(trace['events'])}; adapter_runs={len(trace['adapter_runs'])}; artifacts={len(trace.get('artifacts', []))}; handoffs={len(trace.get('handoffs', []))}; evidence={len(trace.get('evidence', []))}; attempts={len(trace.get('execution_attempts', []))}</div>
+  <div class="meta">generated_at={e(trace['generated_at'])}; tasks={len(trace['tasks'])}; events={len(trace['events'])}; adapter_runs={len(trace['adapter_runs'])}; artifacts={len(trace.get('artifacts', []))}; handoffs={len(trace.get('handoffs', []))}; evidence={len(trace.get('evidence', []))}; attempts={len(trace.get('execution_attempts', []))}; runtime_sessions={len(trace.get('runtime_sessions', []))}; tool_calls={len(trace.get('tool_calls', []))}</div>
   <table>
     <thead><tr><th>time</th><th>kind</th><th>status</th><th>timeline</th><th>task</th><th>id</th></tr></thead>
     <tbody>{''.join(rows_html)}</tbody>
@@ -191,6 +840,8 @@ def main(argv: list[str] | None = None) -> int:
                     "handoffs": len(trace.get("handoffs", [])),
                     "evidence": len(trace.get("evidence", [])),
                     "execution_attempts": len(trace.get("execution_attempts", [])),
+                    "runtime_sessions": len(trace.get("runtime_sessions", [])),
+                    "tool_calls": len(trace.get("tool_calls", [])),
                     "timeline": len(trace["timeline"]),
                 },
             },

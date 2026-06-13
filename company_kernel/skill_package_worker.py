@@ -6,10 +6,12 @@ import os
 import shlex
 import sqlite3
 import subprocess
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
 from company_kernel import companyctl
+from company_kernel.db_paths import ensure_db_parent, resolve_db_path
 
 
 def root() -> Path:
@@ -17,7 +19,7 @@ def root() -> Path:
 
 
 def db_path() -> Path:
-    return root() / "company.sqlite"
+    return resolve_db_path(root())
 
 
 def now() -> str:
@@ -30,7 +32,7 @@ def emit(obj: dict) -> None:
 
 def connect() -> sqlite3.Connection:
     project_root = root()
-    conn = sqlite3.connect(db_path())
+    conn = sqlite3.connect(ensure_db_parent(db_path()))
     conn.row_factory = sqlite3.Row
     conn.executescript((project_root / "company_kernel" / "schema.sql").read_text(encoding="utf-8"))
     conn.commit()
@@ -45,6 +47,13 @@ def run_companyctl(args: list[str]) -> tuple[int, dict, str]:
     except json.JSONDecodeError:
         payload = {"ok": False, "raw": cp.stdout}
     return cp.returncode, payload, cp.stderr
+
+
+def companyctl_json(args: list[str]) -> dict:
+    code, payload, err = run_companyctl(args)
+    if code != 0:
+        return {"ok": False, "payload": payload, "stderr": err[-1000:], "exit_code": code}
+    return {"ok": True, "payload": payload, "stderr": "", "exit_code": code}
 
 
 def employee(agent: str) -> sqlite3.Row | None:
@@ -164,11 +173,64 @@ def process(args: argparse.Namespace) -> int:
             emit({"ok": False, "processed": 0, "agent": args.agent, "task_id": task["id"], "error": "attempt start failed", "companyctl": run_payload, "stderr": run_err[-1000:]})
             return run_code
     attempt_id = run_payload["attempt"]["attempt_id"]
+    trace_id = str(run_payload["attempt"].get("trace_id", ""))
+    session_id = f"skill-session-{args.agent}-{task['id']}"
+    session_started = companyctl_json(
+        [
+            "runtime",
+            "session",
+            "start",
+            "--session-id",
+            session_id,
+            "--employee",
+            args.agent,
+            "--adapter-type",
+            "skill",
+            "--runtime-type",
+            "local-script",
+            "--session-key",
+            f"skill:{manifest['id']}",
+            "--task-id",
+            task["id"],
+            "--attempt-id",
+            attempt_id,
+        ]
+    )
+    tool_call_id = f"skill-tool-{args.agent}-{task['id']}"
+    companyctl_json(
+        [
+            "tool-call",
+            "start",
+            "--tool-call-id",
+            tool_call_id,
+            "--trace-id",
+            trace_id,
+            "--task-id",
+            task["id"],
+            "--attempt-id",
+            attempt_id,
+            "--employee",
+            args.agent,
+            "--session-id",
+            session_id,
+            "--tool-name",
+            "skill.local_script",
+            "--tool-type",
+            "local_script",
+            "--input-summary",
+            f"run skill {manifest['id']} command",
+            "--risk-level",
+            "low",
+        ]
+    )
     run_companyctl(["task", "progress", "--task-id", task["id"], "--agent", args.agent, "--attempt-id", attempt_id, "--state", "acknowledged", "--message", f"Skill package {manifest['id']} acknowledged", "--progress", "5"])
+    started_monotonic = time.monotonic()
     try:
         cp = run_skill_command(manifest["runtime"]["command"], workspace, package_path.parent, task_id=task["id"], agent=args.agent, manifest=manifest, timeout=args.timeout)
     except subprocess.TimeoutExpired as exc:
         blocker = f"skill command timeout after {args.timeout}s"
+        companyctl_json(["tool-call", "finish", "--tool-call-id", tool_call_id, "--status", "failed", "--error", blocker])
+        companyctl_json(["runtime", "session", "stop", "--session-id", session_id, "--status", "failed", "--error", blocker])
         run_companyctl(["task", "block", "--agent", args.agent, "--task-id", task["id"], "--blocker", blocker])
         run_companyctl(["task", "attempt", "finish", "--attempt-id", attempt_id, "--status", "failed", "--error", blocker])
         emit({"ok": False, "processed": 1, "status": "blocked", "task_id": task["id"], "blocker": blocker, "stdout": exc.stdout or "", "stderr": exc.stderr or ""})
@@ -177,12 +239,41 @@ def process(args: argparse.Namespace) -> int:
     final_path = (workspace / final_rel).resolve()
     if cp.returncode != 0 or not final_path.exists():
         blocker = f"skill command failed or missing final artifact: {final_rel}"
+        companyctl_json(["tool-call", "finish", "--tool-call-id", tool_call_id, "--status", "failed", "--output-summary", f"exit_code={cp.returncode}", "--error", blocker])
+        companyctl_json(["runtime", "session", "stop", "--session-id", session_id, "--status", "failed", "--error", blocker])
         run_companyctl(["task", "progress", "--task-id", task["id"], "--agent", args.agent, "--attempt-id", attempt_id, "--state", "blocked_on_input_or_dependency", "--message", blocker, "--progress", "50"])
         run_companyctl(["task", "block", "--agent", args.agent, "--task-id", task["id"], "--blocker", blocker])
         run_companyctl(["task", "attempt", "finish", "--attempt-id", attempt_id, "--status", "failed", "--error", blocker])
         emit({"ok": False, "processed": 1, "status": "blocked", "task_id": task["id"], "blocker": blocker, "exit_code": cp.returncode, "stdout": cp.stdout[-2000:], "stderr": cp.stderr[-2000:]})
         return 1
     summary = f"Skill package {manifest['id']} produced {final_rel}"
+    companyctl_json(["tool-call", "finish", "--tool-call-id", tool_call_id, "--status", "success", "--output-summary", summary])
+    runtime_seconds = max(0, int(round(time.monotonic() - started_monotonic)))
+    pricing = manifest.get("pricing") if isinstance(manifest.get("pricing"), dict) else {}
+    amount = str(pricing.get("amount", 0) or 0)
+    currency = str(pricing.get("currency", "USD") or "USD")
+    budget_recorded = companyctl_json(
+        [
+            "budget",
+            "record",
+            "--task-id",
+            task["id"],
+            "--attempt-id",
+            attempt_id,
+            "--employee",
+            args.agent,
+            "--cost-type",
+            "skill_runtime",
+            "--amount",
+            amount,
+            "--currency",
+            currency,
+            "--runtime-seconds",
+            str(runtime_seconds),
+            "--summary",
+            f"skill package {manifest['id']} pricing unit={pricing.get('unit', 'task')}",
+        ]
+    )
     code, artifact_payload, err = run_companyctl(["task", "artifact", "register", "--task-id", task["id"], "--employee", args.agent, "--path", str(final_path), "--type", final_path.suffix.lstrip(".") or "file", "--stage", "final", "--final", "--summary", summary, "--metadata", json.dumps({"skill_package": manifest["id"], "version": manifest["version"]}, ensure_ascii=False)])
     if code != 0:
         emit({"ok": False, "processed": 1, "status": "blocked", "task_id": task["id"], "error": "artifact register failed", "companyctl": artifact_payload, "stderr": err[-1000:]})
@@ -200,6 +291,7 @@ def process(args: argparse.Namespace) -> int:
     run_companyctl(["task", "progress", "--task-id", task["id"], "--agent", args.agent, "--attempt-id", attempt_id, "--state", "in_progress", "--message", summary, "--progress", "80"])
     code, done, err = run_companyctl(["task", "done", "--agent", args.agent, "--task-id", task["id"], "--summary", summary, "--evidence", evidence["path_or_url"]])
     finish_code, finish, finish_err = run_companyctl(["task", "attempt", "finish", "--attempt-id", attempt_id, "--status", "success" if code == 0 else "failed", "--error", "" if code == 0 else (err or done.get("error", ""))])
+    companyctl_json(["runtime", "session", "stop", "--session-id", session_id, "--status", "stopped" if code == 0 and finish_code == 0 else "failed", "--error", "" if code == 0 and finish_code == 0 else (err or done.get("error", ""))])
     run_companyctl(["heartbeat", "--agent", args.agent])
     emit(
         {
@@ -209,6 +301,9 @@ def process(args: argparse.Namespace) -> int:
             "agent": args.agent,
             "task_id": task["id"],
             "attempt": finish.get("attempt", run_payload["attempt"]),
+            "runtime_session": session_started.get("payload", {}).get("session", {}),
+            "tool_call_id": tool_call_id,
+            "budget_event": budget_recorded.get("payload", {}).get("budget_event", {}),
             "artifact": artifact,
             "evidence": evidence,
             "stdout": cp.stdout[-2000:],

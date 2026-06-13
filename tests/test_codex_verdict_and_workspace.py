@@ -124,6 +124,14 @@ class QueueVerdictIntegrationTest(unittest.TestCase):
 
         def fake_run_companyctl(argv):
             self.calls.append(list(argv))
+            # Provide payloads the managed-execution flow expects (task run -> attempt, etc.)
+            joined = " ".join(argv)
+            if argv[:2] == ["task", "run"]:
+                return 0, json.dumps({"ok": True, "attempt": {"attempt_id": "att-test", "trace_id": "trace-test"}}), ""
+            if "session" in argv and "start" in argv:
+                return 0, json.dumps({"ok": True, "session": {"session_id": "sess-test"}}), ""
+            if argv[:2] == ["task", "attempt"] or ("attempt" in argv and "finish" in argv):
+                return 0, json.dumps({"ok": True, "attempt": {"attempt_id": "att-test", "status": "finished"}}), ""
             return 0, "{}", ""
 
         def fake_run_codex(task_card, workspace, output, events, sandbox, model, isolation, sandbox_profile, timeout_seconds=1800):
@@ -139,6 +147,7 @@ class QueueVerdictIntegrationTest(unittest.TestCase):
                 mock.patch.object(codex_adapter, "next_codex_task", lambda agent: task), \
                 mock.patch.object(codex_adapter, "run_companyctl", fake_run_companyctl), \
                 mock.patch.object(codex_adapter, "run_codex", fake_run_codex), \
+                mock.patch.object(codex_adapter, "copy_report_to_task_evidence", lambda task_id, report: report), \
                 mock.patch.object(codex_adapter.shutil, "which", lambda name: "/usr/local/bin/codex"), \
                 contextlib.redirect_stdout(captured):
             codex_adapter.main(["--agent", "codex", "--execute"])

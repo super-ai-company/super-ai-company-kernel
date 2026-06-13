@@ -5,7 +5,9 @@ import contextlib
 import io
 import json
 import os
+import re
 import threading
+import time
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -13,6 +15,7 @@ from urllib.parse import parse_qs, unquote, urlparse
 
 from . import companyctl
 from . import company_dashboard
+from . import company_trace
 
 
 CONSOLE_TEMPLATE = Path(
@@ -39,11 +42,13 @@ def request_authorized(headers) -> bool:
 
 
 API_VERSION = "v1"
+ABSOLUTE_PATH_RE = re.compile(r"(?<![:\w.-])/[A-Za-z0-9_@%+=:,./~#-]+")
 API_CAPABILITIES = [
     "health",
     "doctor",
     "tasks",
     "messages",
+    "events",
     "conversations",
     "approvals",
     "heartbeats",
@@ -54,8 +59,16 @@ API_CAPABILITIES = [
     "followups",
     "employees",
     "runtimes",
+    "skills",
+    "sse_events",
+    "trace_file_flow",
     "settings",
     "external_mirror",
+    "openclaw_runtime_inventory",
+    "operations_cockpit",
+    "runtime_sessions",
+    "tool_calls",
+    "budget",
 ]
 API_ENDPOINTS = [
     {"method": "GET", "path": "/v1/health", "summary": "Company Kernel health summary"},
@@ -64,6 +77,7 @@ API_ENDPOINTS = [
     {"method": "POST", "path": "/v1/employees", "summary": "Create employee", "body": {"id": "employee id", "name": "display name", "role": "role", "runtime": "runtime id", "workspace": "path"}},
     {"method": "POST", "path": "/v1/employees/onboard", "summary": "Onboard employee with capabilities, permissions, communication, optional scaffold, and optional test task", "body": {"id": "employee id", "name": "display name", "role": "role", "runtime": "runtime id", "workspace": "path", "alias": "alias optional", "skills": "comma-separated optional", "tools": "comma-separated optional", "task_types": "comma-separated optional", "can_talk_to": "comma-separated optional", "can_assign_to": "comma-separated optional", "open_communication": "bool optional", "channel": "channel optional", "default_user_reply_channel": "string optional", "default_user_reply_account": "string optional", "default_user_reply_to": "string optional", "default_user_reply_deliver": "bool optional", "create_test_task": "bool optional"}},
     {"method": "GET", "path": "/v1/employees/{employee_id}", "summary": "Show employee profile, capabilities, permissions, heartbeat, and files"},
+    {"method": "GET", "path": "/v1/employees/{employee_id}/work-history", "summary": "Show employee work history, current activity, attempts, tool calls, budget, and evidence for the CEO cockpit"},
     {"method": "PATCH", "path": "/v1/employees/{employee_id}", "summary": "Update employee profile fields through companyctl", "body": {"name": "display name optional", "role": "role optional", "runtime": "runtime id optional", "workspace": "path optional", "status": "active/candidate/archived optional", "default_user_reply_channel": "string optional", "default_user_reply_account": "string optional", "default_user_reply_to": "string optional", "default_user_reply_deliver": "bool optional", "dry_run": "bool optional"}},
     {"method": "DELETE", "path": "/v1/employees/{employee_id}", "summary": "Offboard employee with dry-run, soft archive, or guarded hard delete", "body": {"hard_delete": "bool optional", "dry_run": "bool optional"}},
     {"method": "POST", "path": "/v1/employees/{employee_id}/profile", "summary": "Update employee profile fields through companyctl", "body": {"name": "display name optional", "role": "role optional", "runtime": "runtime id optional", "workspace": "path optional", "status": "active/candidate/archived optional", "default_user_reply_channel": "string optional", "default_user_reply_account": "string optional", "default_user_reply_to": "string optional", "default_user_reply_deliver": "bool optional", "dry_run": "bool optional"}},
@@ -72,15 +86,28 @@ API_ENDPOINTS = [
     {"method": "POST", "path": "/v1/employees/{employee_id}/capabilities", "summary": "Update employee capabilities", "body": {"set_skills": "comma-separated skills optional", "add_skill": "string/list optional", "set_tools": "comma-separated tools optional", "add_tool": "string/list optional", "set_task_types": "comma-separated task types optional"}},
     {"method": "POST", "path": "/v1/employees/{employee_id}/permissions", "summary": "Update employee permissions", "body": {"can_submit_tasks": "true/false/keep optional", "can_claim_tasks": "true/false/keep optional", "can_modify_kernel": "true/false/keep optional", "requires_approval_for": "comma-separated actions optional"}},
     {"method": "POST", "path": "/v1/employees/match", "summary": "Rank employees by capabilities for routing", "body": {"skills": "comma-separated skills optional", "tools": "comma-separated tools optional", "task_type": "string optional", "runtime": "runtime optional", "role": "role optional", "limit": "integer optional", "include_unavailable": "bool optional"}},
+    {"method": "GET", "path": "/v1/skills", "summary": "List local Skill Package manifests for AI Fleet & Skills"},
     {"method": "GET", "path": "/v1/settings/notification", "summary": "Read sanitized notification settings without secrets"},
     {"method": "POST", "path": "/v1/settings/notification", "summary": "Configure employee notification account without storing tokens", "body": {"telegram_account": "account id", "telegram_bot_token_env": "environment variable name containing token", "telegram_default_target": "chat/user target optional", "employee_notifications_enabled": "bool optional"}},
     {"method": "POST", "path": "/v1/notifications/send", "summary": "Send configured operator notification without exposing secrets", "body": {"message": "string required", "kind": "general/approval/error optional", "subject": "string optional", "target": "telegram target optional", "account": "account optional", "dry_run": "bool optional"}},
     {"method": "GET", "path": "/v1/progress/notifications", "summary": "Read pending or recent progress transition notifications", "query": {"pending_only": "bool optional", "limit": "integer optional"}},
+    {"method": "GET", "path": "/v1/openclaw/runtime-inventory", "summary": "Read-only discovered OpenClaw agents, sessions, Telegram spools, and Company Kernel registration gaps"},
+    {"method": "GET", "path": "/v1/openclaw/native-status", "summary": "Read-only OpenClaw native agent_bus, approvals, and supervisor status mapped for Company Kernel observability"},
+    {"method": "POST", "path": "/v1/openclaw/dispatch-plan", "summary": "Dry-run an official OpenClaw agent_bus submit payload without mutating OpenClaw", "body": {"source": "OpenClaw source agent", "target": "OpenClaw target agent", "type": "agent_bus task type", "priority": "P0/P1/P2/P3 optional", "goal": "task goal", "next_command": "required safe next command", "expected_evidence": "required acceptance evidence", "rollback": "required rollback plan", "task_id": "Kernel task id optional"}},
+    {"method": "POST", "path": "/v1/openclaw/dispatch-execute", "summary": "Write an official OpenClaw agent_bus inbox file only after owner approval", "body": {"source": "OpenClaw source agent", "target": "OpenClaw target agent", "type": "agent_bus task type", "priority": "P0/P1/P2/P3 optional", "goal": "task goal", "next_command": "required safe next command", "expected_evidence": "required acceptance evidence", "rollback": "required rollback plan", "approval_id": "approved openclaw_native_dispatch approval id", "task_id": "Kernel task id optional"}},
+    {"method": "POST", "path": "/v1/openclaw/import-results", "summary": "Import OpenClaw native done/failed result files into Kernel ledger without mutating OpenClaw", "body": {"limit": "integer optional", "agent": "OpenClaw result agent optional"}},
     {"method": "GET", "path": "/v1/supervisor/delivery-loop", "summary": "Read latest autonomous supervisor delivery-loop result"},
     {"method": "POST", "path": "/v1/supervisor/delivery-loop", "summary": "Run autonomous supervisor delivery-loop once", "body": {"limit": "integer optional", "by": "actor optional"}},
     {"method": "POST", "path": "/v1/policy-blocks/report", "summary": "Report non-popup tool-policy blockers and notify operator", "body": {"source": "employee optional", "target": "employee optional", "tool": "tool name optional", "operation": "operation optional", "error": "error text required", "dry_run": "bool optional"}},
     {"method": "GET", "path": "/v1/runtimes", "summary": "List runtimes"},
     {"method": "POST", "path": "/v1/runtimes", "summary": "Register runtime", "body": {"runtime": "runtime id", "command": "command optional", "status": "registered/disabled optional", "notes": "string optional"}},
+    {"method": "GET", "path": "/v1/runtime-sessions", "summary": "List managed runtime sessions", "query": {"employee_id": "employee optional", "task_id": "task optional", "trace_id": "trace optional", "limit": "integer optional"}},
+    {"method": "GET", "path": "/v1/runtime-sessions/{session_id}", "summary": "Show one runtime session with related task, attempt, tool calls, budget, evidence, and events"},
+    {"method": "GET", "path": "/v1/tool-calls", "summary": "List structured agent tool calls", "query": {"employee_id": "employee optional", "task_id": "task optional", "trace_id": "trace optional", "attempt_id": "attempt optional", "session_id": "runtime session optional", "limit": "integer optional"}},
+    {"method": "GET", "path": "/v1/tool-calls/{tool_call_id}", "summary": "Show one sanitized tool call with related task, attempt, runtime session, budget, evidence, and events"},
+    {"method": "GET", "path": "/v1/budget-events", "summary": "List budget/cost ledger events", "query": {"employee_id": "employee optional", "task_id": "task optional", "trace_id": "trace optional", "attempt_id": "attempt optional", "limit": "integer optional"}},
+    {"method": "POST", "path": "/v1/budget-events", "summary": "Record a budget/cost ledger event for adapter, tool, or model usage", "body": {"employee_id": "employee id", "task_id": "task optional", "attempt_id": "attempt optional", "trace_id": "trace optional", "cost_type": "model_api/tool_runtime/compute/etc", "amount": "number", "currency": "USD optional", "token_input": "integer optional", "token_output": "integer optional", "model_name": "optional", "provider": "optional", "runtime_seconds": "integer optional", "summary": "optional"}},
+    {"method": "GET", "path": "/v1/budget-summary", "summary": "Read budget rollup for owner cockpit", "query": {"employee_id": "employee optional", "task_id": "task optional", "trace_id": "trace optional", "attempt_id": "attempt optional"}},
     {"method": "GET", "path": "/v1/tasks", "summary": "List tasks", "query": {"agent": "employee id optional", "status": "task status optional"}},
     {"method": "POST", "path": "/v1/tasks", "summary": "Submit task", "body": {"from": "employee id", "to": "employee id", "title": "string", "description": "string optional", "task_id": "string optional", "priority": "P0/P1/P2/P3 optional", "requires_approval": "action optional", "approval_id": "string optional"}},
     {"method": "POST", "path": "/v1/tasks/route", "summary": "Select employee by capabilities and submit routed task with approval guard", "body": {"from": "employee id", "title": "string", "description": "string optional", "priority": "P0/P1/P2/P3 optional", "task_id": "string optional", "skills": "comma-separated skills optional", "tools": "comma-separated tools optional", "task_type": "string optional", "runtime": "runtime optional", "role": "role optional", "limit": "integer optional", "include_unavailable": "bool optional", "requires_approval": "action optional", "approval_id": "string optional", "risk": "P0/P1/P2/P3 optional", "changed_files": "comma-separated paths optional", "rfc": "path optional"}},
@@ -93,6 +120,7 @@ API_ENDPOINTS = [
     {"method": "POST", "path": "/v1/tasks/{task_id}/reassign", "summary": "Reassign task to another employee", "body": {"by": "employee id", "to": "employee id", "reason": "string"}},
     {"method": "POST", "path": "/v1/tasks/{task_id}/run", "summary": "Start managed long-running attempt", "body": {"agent": "employee id", "by": "employee id", "max_runtime_seconds": "integer optional", "stale_after_seconds": "integer optional", "session_key": "string optional", "pid": "string optional"}},
     {"method": "POST", "path": "/v1/tasks/{task_id}/progress", "summary": "Record managed attempt progress and refresh stale clock", "body": {"agent": "employee id", "attempt_id": "attempt id optional", "state": "progress state optional", "message": "string", "progress": "integer optional", "payload": "object optional"}},
+    {"method": "POST", "path": "/v1/tasks/{task_id}/probe", "summary": "Record owner/supervisor progress probe without mutating worker attempt progress", "body": {"by": "employee id", "attempt_id": "attempt id optional", "message": "string", "reason": "string optional"}},
     {"method": "POST", "path": "/v1/tasks/{task_id}/correct", "summary": "Send supervisor correction or correction ack", "body": {"attempt_id": "attempt id", "by": "employee id", "message": "string", "ack": "bool optional"}},
     {"method": "POST", "path": "/v1/tasks/{task_id}/cancel", "summary": "Cancel managed long-running attempt", "body": {"attempt_id": "attempt id", "by": "employee id", "reason": "string"}},
     {"method": "GET", "path": "/v1/tasks/{task_id}/attempts", "summary": "List managed execution attempts"},
@@ -100,7 +128,21 @@ API_ENDPOINTS = [
     {"method": "POST", "path": "/v1/tasks/{task_id}/conversations", "summary": "Start task-bound conversation", "body": {"from": "employee id optional", "participants": "comma-separated extra participants optional", "title": "string optional", "body": "string optional", "conversation_id": "string optional", "evidence": "path optional"}},
     {"method": "GET", "path": "/v1/messages", "summary": "List messages", "query": {"agent": "employee id required"}},
     {"method": "GET", "path": "/v1/messages/recent-direct", "summary": "Dashboard-ready recent direct messages feed", "query": {"limit": "integer optional"}},
+    {"method": "GET", "path": "/v1/events", "summary": "List Company Kernel event ledger entries", "query": {"pending_only": "bool optional", "limit": "integer optional"}},
+    {"method": "GET", "path": "/v1/events/stream", "summary": "Server-Sent Events stream for recent Company Kernel event ledger entries", "query": {"limit": "integer optional", "poll_seconds": "integer optional", "max_cycles": "integer optional"}},
+    {"method": "GET", "path": "/v1/evidence", "summary": "List sanitized evidence records for Audit Hub", "query": {"task_id": "task id optional", "employee_id": "employee id optional", "limit": "integer optional"}},
+    {"method": "GET", "path": "/v1/evidence/{evidence_id}/content", "summary": "Read safe text preview for a whitelisted evidence record without exposing absolute paths"},
+    {"method": "GET", "path": "/v1/evidence/{evidence_id}/safe-preview", "summary": "Alias for safe evidence text preview; enforces the same whitelist and secret-path policy"},
+    {"method": "POST", "path": "/v1/evidence/{evidence_id}/accept", "summary": "Owner accepts task-bound final evidence after safe preview", "body": {"by": "employee id", "summary": "acceptance summary optional"}},
+    {"method": "POST", "path": "/v1/evidence/{evidence_id}/reject", "summary": "Owner rejects task-bound final evidence and records reason", "body": {"by": "employee id", "reason": "rejection reason"}},
+    {"method": "GET", "path": "/v1/artifacts", "summary": "List sanitized artifact records for Audit Hub", "query": {"task_id": "task id optional", "limit": "integer optional"}},
+    {"method": "GET", "path": "/v1/handoffs", "summary": "List handoff contracts for Audit Hub", "query": {"task_id": "from or to task id optional", "limit": "integer optional"}},
+    {"method": "GET", "path": "/v1/failures", "summary": "List sanitized task, attempt, and adapter failure records for Audit Hub", "query": {"task_id": "task id optional", "limit": "integer optional"}},
+    {"method": "GET", "path": "/v1/traces/{trace_id}/timeline", "summary": "Read sanitized trace timeline for dashboard trace view"},
+    {"method": "GET", "path": "/v1/traces/{trace_id}/file-flow", "summary": "Read trace task/artifact/handoff/evidence file-flow graph"},
+    {"method": "GET", "path": "/v1/workspaces/prune", "summary": "Preview task workspace retention prune candidates; dry-run only", "query": {"dry_run": "bool required", "older_than_days": "integer optional", "limit": "integer optional"}},
     {"method": "GET", "path": "/v1/dashboard/communication-observability", "summary": "Dashboard-ready summary for direct messages, external mirror status, adapter-run progress, 5-layer progress heartbeat, and internal no-receipt watchdog"},
+    {"method": "GET", "path": "/v1/dashboard/cockpit", "summary": "Dashboard-ready AI Employee Cockpit summary with long-task heartbeat/progress state and sanitized evidence"},
     {"method": "GET", "path": "/v1/dashboard/internal-watchdog", "summary": "Detect internal messages/tasks that were delivered but have no receipt, claim, or final evidence"},
     {"method": "POST", "path": "/v1/dashboard/internal-watchdog/remediate", "summary": "Create or dry-run follow-up/escalation/reroute-decision actions for no-receipt messages and open internal tasks", "body": {"source": "employee id optional", "dry_run": "bool optional default true", "deliver": "bool optional", "escalate_to": "employee id optional default hermes", "escalate_existing": "bool optional", "reroute_to": "employee id optional default codex", "create_reroute_plan": "bool optional"}},
     {"method": "POST", "path": "/v1/dashboard/internal-watchdog/apply-reroutes", "summary": "Apply answered reroute decisions by creating new tasks and blocking original stalled tasks", "body": {"by": "employee id optional default hermes", "dry_run": "bool optional default true"}},
@@ -124,6 +166,7 @@ API_ENDPOINTS = [
     {"method": "GET", "path": "/v1/approvals/{approval_id}", "summary": "Show approval"},
     {"method": "POST", "path": "/v1/approvals/{approval_id}/approve", "summary": "Approve request", "body": {"by": "employee id", "reason": "string"}},
     {"method": "POST", "path": "/v1/approvals/{approval_id}/deny", "summary": "Deny request", "body": {"by": "employee id", "reason": "string"}},
+    {"method": "POST", "path": "/v1/approvals/{approval_id}/resolve", "summary": "Mock-resolve request without external delivery", "body": {"by": "employee id", "reason": "string", "mock": True}},
     {"method": "POST", "path": "/v1/heartbeats", "summary": "Write employee heartbeat", "body": {"agent": "employee id"}},
     {"method": "GET", "path": "/v1/heartbeats", "summary": "List all employee heartbeats"},
     {"method": "GET", "path": "/v1/events", "summary": "List recent company events", "query": {"limit": "integer optional, default 50, max 200"}},
@@ -251,6 +294,290 @@ def truthy(value: object) -> bool:
     return value is True or str(value).lower() in {"1", "true", "yes", "on"}
 
 
+def with_control_action(
+    payload: dict,
+    *,
+    action: str,
+    event_type: str,
+    requires_owner_approval: bool = True,
+    dangerous: bool = False,
+) -> dict:
+    event_id = str(payload.get("event_id", "") or "")
+    task_id = str(payload.get("task_id") or payload.get("task", {}).get("id") or "")
+    attempt_id = str(payload.get("attempt", {}).get("attempt_id") or "")
+    return {
+        **payload,
+        "control_action": {
+            "action": action,
+            "task_id": task_id,
+            "attempt_id": attempt_id,
+            "event_type": event_type,
+            "event_id": event_id,
+            "requires_owner_approval": requires_owner_approval,
+            "approval_required": requires_owner_approval,
+            "approval_mode": "owner_required_for_real_execution",
+            "dangerous": dangerous,
+            "audit": {
+                "recorded": bool(event_id),
+                "event_id": event_id,
+                "ledger": "company_events",
+            },
+        },
+    }
+
+
+def attach_task_control_context(payload: dict, task_id: str) -> dict:
+    if not task_id:
+        return payload
+    conn = companyctl.connect()
+    try:
+        context = companyctl.task_control_context_bundle(conn, task_id)
+    finally:
+        conn.close()
+    return {**payload, "control_context": context}
+
+
+def control_action_approval_response(
+    *,
+    task_id: str,
+    action: str,
+    by: str,
+    reason: str,
+    attempt_id: str = "",
+    target: str = "",
+    risk: str = "P1",
+    dangerous: bool = False,
+) -> tuple[int, dict]:
+    approval_action = f"task_control.{action}"
+    approval_id = f"approval-{approval_action.replace('.', '-')}-{task_id}"
+    metadata = {
+        "task_id": task_id,
+        "attempt_id": attempt_id,
+        "control_action": action,
+        "execute_requires": "execute=true or approved owner action",
+    }
+    if target:
+        metadata["target"] = target
+    conn = companyctl.connect()
+    try:
+        result = companyctl.create_approval_internal(
+            conn,
+            source=by,
+            action=approval_action,
+            reason=reason,
+            target=target,
+            risk=risk,
+            approval_id=approval_id,
+            metadata=metadata,
+        )
+    finally:
+        conn.close()
+    event_id = str(result.get("event", {}).get("id", "") or "")
+    approval = dict(result.get("approval", {}) or {})
+    detail = approval.get("detail", {}) if isinstance(approval.get("detail", {}), dict) else {}
+    approval["metadata"] = detail.get("metadata", {}) if isinstance(detail.get("metadata", {}), dict) else {}
+    payload = {
+        "ok": False,
+        "executed": False,
+        "approval_required": True,
+        "approval": approval,
+        "notification": result.get("notification", {}),
+        "event": result.get("event", {}),
+    }
+    response = with_control_action(
+        payload,
+        action=action,
+        event_type="approval.requested",
+        requires_owner_approval=True,
+        dangerous=dangerous,
+    )
+    response["control_action"]["event_id"] = event_id
+    response["control_action"]["approval_mode"] = "pending_owner_approval"
+    response["control_action"]["audit"] = {"recorded": bool(event_id), "event_id": event_id, "ledger": "company_events"}
+    response = attach_task_control_context(response, task_id)
+    return HTTPStatus.ACCEPTED, response
+
+
+PATH_LIKE_EVENT_KEYS = {
+    "artifact",
+    "artifact_path",
+    "evidence",
+    "evidence_path",
+    "file",
+    "files",
+    "path",
+    "path_or_url",
+    "profile",
+    "state_file",
+    "original_path",
+}
+PATH_DISPLAY_KEYS = {
+    "artifact",
+    "artifact_path",
+    "evidence",
+    "evidence_path",
+    "file",
+    "files",
+    "path",
+    "path_or_url",
+    "profile",
+    "state_file",
+    "original_path",
+}
+
+
+def sanitize_event_value(value: object, *, key: str = "") -> object:
+    key_lower = key.lower()
+    if isinstance(value, dict):
+        return {str(item_key): sanitize_event_value(item_value, key=str(item_key)) for item_key, item_value in value.items()}
+    if isinstance(value, list):
+        return [sanitize_event_value(item, key=key) for item in value]
+    if isinstance(value, str):
+        if key_lower in PATH_DISPLAY_KEYS:
+            display = companyctl.sanitize_evidence_path_for_display(value)
+            return {
+                "relative_path": display.get("relative_path", ""),
+                "basename": display.get("basename", ""),
+                "allowed": display.get("allowed", False),
+                "reason": display.get("reason", ""),
+                "absolute_path_exposed": False,
+            }
+        return companyctl.sanitize_log_text(value)
+    return value
+
+
+def sanitize_event_row(row: dict) -> dict:
+    event = dict(row)
+    raw_payload = event.get("payload_json", "")
+    if raw_payload:
+        try:
+            payload = json.loads(raw_payload)
+        except (TypeError, json.JSONDecodeError):
+            payload = companyctl.sanitize_log_text(raw_payload)
+        event["payload"] = sanitize_event_value(payload)
+        event["payload_json"] = json.dumps(event["payload"], ensure_ascii=False, sort_keys=True)
+    else:
+        event["payload"] = {}
+        event["payload_json"] = ""
+    return event
+
+
+def sanitize_task_list_payload(payload: dict) -> dict:
+    result = dict(payload)
+    tasks = result.get("tasks", [])
+    if not isinstance(tasks, list):
+        return result
+    sanitized_tasks: list[dict] = []
+    for task in tasks:
+        if not isinstance(task, dict):
+            sanitized_tasks.append(task)
+            continue
+        item = dict(task)
+        raw_evidence_path = str(item.pop("evidence_path", "") or "")
+        item["evidence"] = companyctl.sanitize_evidence_path_for_display(raw_evidence_path)
+        for key in ("title", "description", "summary", "blocker"):
+            if key in item:
+                item[key] = ABSOLUTE_PATH_RE.sub("[REDACTED_PATH]", companyctl.sanitize_log_text(item.get(key, "")))
+        if isinstance(item.get("current_attempt"), dict):
+            item["current_attempt"] = companyctl.sanitize_json_like(item["current_attempt"])
+        sanitized_tasks.append(item)
+    result["tasks"] = sanitized_tasks
+    return result
+
+
+def sanitize_dashboard_text(value: object) -> str:
+    return ABSOLUTE_PATH_RE.sub("[REDACTED_PATH]", companyctl.sanitize_log_text(value))
+
+
+def sanitize_api_display_value(value: object, *, key: str = "") -> object:
+    key_lower = key.lower()
+    if key_lower in {"payload_json", "detail_json", "result_json", "metadata_json"}:
+        return None
+    if isinstance(value, dict):
+        if value.get("absolute_path_exposed") is False and {"path", "relative_path", "basename", "allowed", "reason"}.issubset(value.keys()):
+            return value
+        sanitized = {}
+        for item_key, item_value in value.items():
+            clean_value = sanitize_api_display_value(item_value, key=str(item_key))
+            if clean_value is not None:
+                sanitized[str(item_key)] = clean_value
+        return sanitized
+    if isinstance(value, list):
+        return [item for item in (sanitize_api_display_value(item, key=key) for item in value) if item is not None]
+    if isinstance(value, str):
+        if key_lower in PATH_DISPLAY_KEYS:
+            display = companyctl.sanitize_evidence_path_for_display(value)
+            return {
+                "relative_path": display.get("relative_path", ""),
+                "basename": display.get("basename", ""),
+                "allowed": display.get("allowed", False),
+                "reason": display.get("reason", ""),
+                "absolute_path_exposed": False,
+            }
+        return sanitize_dashboard_text(value)
+    return value
+
+
+def sanitize_task_detail_payload(payload: dict) -> dict:
+    result = sanitize_api_display_value(payload)
+    if not isinstance(result, dict):
+        return {}
+    task = result.get("task")
+    if isinstance(task, dict):
+        raw_evidence_path = ""
+        original_task = payload.get("task", {}) if isinstance(payload.get("task"), dict) else {}
+        if isinstance(original_task, dict):
+            raw_evidence_path = str(original_task.get("evidence_path") or "")
+        task.pop("evidence_path", None)
+        task["evidence"] = companyctl.sanitize_evidence_path_for_display(raw_evidence_path)
+    return result
+
+
+def recent_event_rows(*, limit: int = 20, after_created_at: str = "", after_id: str = "") -> list[dict]:
+    conn = companyctl.connect_readonly()
+    try:
+        limit = max(1, min(int(limit), 200))
+        if after_id:
+            anchor = conn.execute("SELECT rowid FROM company_events WHERE id = ?", (after_id,)).fetchone()
+            if anchor:
+                return companyctl.rows(
+                    conn,
+                    """
+                    SELECT id, trace_id, event_type, source_agent, task_id, payload_json, created_at, processed_at
+                    FROM company_events
+                    WHERE rowid > ?
+                    ORDER BY rowid ASC
+                    LIMIT ?
+                    """,
+                    (anchor["rowid"], limit),
+                )
+        if after_created_at:
+            return companyctl.rows(
+                conn,
+                """
+                SELECT id, trace_id, event_type, source_agent, task_id, payload_json, created_at, processed_at
+                FROM company_events
+                WHERE created_at > ? OR (created_at = ? AND id > ?)
+                ORDER BY created_at ASC, id ASC
+                LIMIT ?
+                """,
+                (after_created_at, after_created_at, after_id, limit),
+            )
+        latest = companyctl.rows(
+            conn,
+            """
+            SELECT id, trace_id, event_type, source_agent, task_id, payload_json, created_at, processed_at
+            FROM company_events
+            ORDER BY created_at DESC, id DESC
+            LIMIT ?
+            """,
+            (limit,),
+        )
+        return list(reversed(latest))
+    finally:
+        conn.close()
+
+
 def route_get(path: str, query: dict[str, list[str]]) -> tuple[int, dict]:
     if path in {"/v1", "/v1/"}:
         return HTTPStatus.OK, service_descriptor()
@@ -268,12 +595,42 @@ def route_get(path: str, query: dict[str, list[str]]) -> tuple[int, dict]:
         code, payload = run_companyctl(argv)
         return (HTTPStatus.OK if code == 0 else HTTPStatus.BAD_REQUEST), {"exit_code": code, **payload}
     if path == "/v1/employees":
-        code, payload = run_companyctl(["employee", "list"])
-        return (HTTPStatus.OK if code == 0 else HTTPStatus.BAD_REQUEST), {"exit_code": code, **payload}
+        conn = companyctl.connect_readonly()
+        try:
+            summary = company_dashboard.load_summary(conn)
+            employees = company_dashboard.employee_view_models(summary)
+            return HTTPStatus.OK, {"exit_code": 0, "ok": True, "employees": employees}
+        finally:
+            conn.close()
     if path == "/v1/employees/match":
         return HTTPStatus.METHOD_NOT_ALLOWED, {"ok": False, "error": "use POST", "path": path}
+    if path == "/v1/skills":
+        return HTTPStatus.OK, companyctl.skill_registry()
     if path == "/v1/settings/notification":
         return HTTPStatus.OK, companyctl.notification_settings()
+    if path.startswith("/v1/employees/") and path.endswith("/work-history"):
+        employee_id = path.removeprefix("/v1/employees/").removesuffix("/work-history").strip("/")
+        conn = companyctl.connect()
+        try:
+            bundle = companyctl.employee_file_bundle(conn, employee_id)
+        finally:
+            conn.close()
+        return HTTPStatus.OK, {
+            "ok": True,
+            "source": "/v1/employees/{employee_id}/work-history",
+            "employee_id": employee_id,
+            "employee": bundle.get("employee", {}),
+            "current_activity": bundle.get("current_activity", {}),
+            "operational_summary": bundle.get("operational_summary", {}),
+            "ceo_work_contract": bundle.get("ceo_work_contract", {}),
+            "work_history": bundle.get("work_history", {}),
+            "attempts": bundle.get("attempts", []),
+            "runtime_sessions": bundle.get("runtime_sessions", []),
+            "tool_calls": bundle.get("tool_calls", []),
+            "budget_summary": bundle.get("budget_summary", {}),
+            "budget_events": bundle.get("budget_events", []),
+            "evidence_records": bundle.get("evidence_records", []),
+        }
     if path.startswith("/v1/employees/"):
         employee_id = path.removeprefix("/v1/employees/").strip("/")
         code, payload = run_companyctl(["employee", "show", "--id", employee_id])
@@ -313,6 +670,7 @@ def route_get(path: str, query: dict[str, list[str]]) -> tuple[int, dict]:
         if status:
             argv.extend(["--status", status])
         code, payload = run_companyctl(argv)
+        payload = sanitize_task_list_payload(payload)
         return (HTTPStatus.OK if code == 0 else HTTPStatus.BAD_REQUEST), {"exit_code": code, **payload}
     if path.startswith("/v1/tasks/") and path.endswith("/conversations"):
         task_id = path.removeprefix("/v1/tasks/").removesuffix("/conversations").strip("/")
@@ -325,6 +683,7 @@ def route_get(path: str, query: dict[str, list[str]]) -> tuple[int, dict]:
     if path.startswith("/v1/tasks/"):
         task_id = path.removeprefix("/v1/tasks/").strip("/")
         code, payload = run_companyctl(["task", "show", "--task-id", task_id])
+        payload = sanitize_task_detail_payload(payload)
         return (HTTPStatus.OK if code == 0 else HTTPStatus.BAD_REQUEST), {"exit_code": code, **payload}
     if path == "/v1/messages":
         agent = query_value(query, "agent")
@@ -340,11 +699,219 @@ def route_get(path: str, query: dict[str, list[str]]) -> tuple[int, dict]:
             return HTTPStatus.OK, {"ok": True, "direct_messages_recent": company_dashboard.recent_direct_messages(conn, limit=limit)}
         finally:
             conn.close()
+    if path == "/v1/events":
+        limit_raw = query_value(query, "limit", "20")
+        limit = int(limit_raw) if str(limit_raw).isdigit() else 20
+        pending_only = truthy(query_value(query, "pending_only"))
+        if pending_only:
+            conn = companyctl.connect_readonly()
+            try:
+                events = companyctl.rows(
+                    conn,
+                    """
+                    SELECT id, trace_id, event_type, source_agent, task_id, payload_json, created_at, processed_at
+                    FROM company_events
+                    WHERE processed_at = ''
+                    ORDER BY created_at DESC
+                    LIMIT ?
+                    """,
+                    (max(1, min(limit, 200)),),
+                )
+            finally:
+                conn.close()
+        else:
+            events = list(reversed(recent_event_rows(limit=limit)))
+        return HTTPStatus.OK, {"ok": True, "events": [sanitize_event_row(event) for event in events], "pending_only": pending_only}
+    if path == "/v1/evidence":
+        conn = companyctl.connect_readonly()
+        try:
+            task_id = query_value(query, "task_id")
+            employee_id = query_value(query, "employee_id") or query_value(query, "employee")
+            evidence = companyctl.audit_evidence_records(conn, task_id=task_id, employee_id=employee_id, limit=query_value(query, "limit", "50"))
+        finally:
+            conn.close()
+        return HTTPStatus.OK, {"ok": True, "source": "/v1/evidence", "filters": {"task_id": task_id, "employee_id": employee_id}, "evidence": evidence}
+    if path.startswith("/v1/evidence/") and (path.endswith("/content") or path.endswith("/safe-preview")):
+        suffix = "/safe-preview" if path.endswith("/safe-preview") else "/content"
+        evidence_id = path.removeprefix("/v1/evidence/").removesuffix(suffix).strip("/")
+        conn = companyctl.connect_readonly()
+        try:
+            payload = companyctl.safe_evidence_content(conn, evidence_id)
+        finally:
+            conn.close()
+        if payload.get("error") == "evidence not found":
+            return HTTPStatus.NOT_FOUND, payload
+        return (HTTPStatus.OK if payload.get("ok") else HTTPStatus.FORBIDDEN), payload
+    if path == "/v1/artifacts":
+        conn = companyctl.connect_readonly()
+        try:
+            artifacts = companyctl.audit_artifact_records(conn, task_id=query_value(query, "task_id"), limit=query_value(query, "limit", "50"))
+        finally:
+            conn.close()
+        return HTTPStatus.OK, {"ok": True, "source": "/v1/artifacts", "artifacts": artifacts}
+    if path == "/v1/runtime-sessions":
+        conn = companyctl.connect_readonly()
+        try:
+            sessions = companyctl.list_runtime_sessions(
+                conn,
+                employee_id=query_value(query, "employee_id") or query_value(query, "employee"),
+                task_id=query_value(query, "task_id"),
+                trace_id=query_value(query, "trace_id"),
+                limit=int(query_value(query, "limit", "50") or "50"),
+            )
+        finally:
+            conn.close()
+        return HTTPStatus.OK, {"ok": True, "source": "/v1/runtime-sessions", "runtime_sessions": sessions}
+    if path.startswith("/v1/runtime-sessions/"):
+        session_id = path.removeprefix("/v1/runtime-sessions/").strip("/")
+        conn = companyctl.connect_readonly()
+        try:
+            payload = companyctl.runtime_session_detail_bundle(conn, session_id)
+        finally:
+            conn.close()
+        if payload.get("error") == "runtime_session not found":
+            return HTTPStatus.NOT_FOUND, payload
+        if payload.get("error"):
+            return HTTPStatus.BAD_REQUEST, payload
+        return HTTPStatus.OK, payload
+    if path == "/v1/tool-calls":
+        conn = companyctl.connect_readonly()
+        try:
+            tool_calls = companyctl.list_tool_calls(
+                conn,
+                employee_id=query_value(query, "employee_id") or query_value(query, "employee"),
+                task_id=query_value(query, "task_id"),
+                trace_id=query_value(query, "trace_id"),
+                attempt_id=query_value(query, "attempt_id"),
+                session_id=query_value(query, "session_id"),
+                limit=int(query_value(query, "limit", "50") or "50"),
+            )
+        finally:
+            conn.close()
+        return HTTPStatus.OK, {"ok": True, "source": "/v1/tool-calls", "tool_calls": tool_calls}
+    if path.startswith("/v1/tool-calls/"):
+        tool_call_id = path.removeprefix("/v1/tool-calls/").strip("/")
+        conn = companyctl.connect_readonly()
+        try:
+            payload = companyctl.tool_call_detail_bundle(conn, tool_call_id)
+        finally:
+            conn.close()
+        if payload.get("error") == "tool_call not found":
+            return HTTPStatus.NOT_FOUND, payload
+        if payload.get("error"):
+            return HTTPStatus.BAD_REQUEST, payload
+        return HTTPStatus.OK, payload
+    if path == "/v1/budget-events":
+        conn = companyctl.connect_readonly()
+        try:
+            budget_events = companyctl.list_budget_events(
+                conn,
+                employee_id=query_value(query, "employee_id") or query_value(query, "employee"),
+                task_id=query_value(query, "task_id"),
+                trace_id=query_value(query, "trace_id"),
+                attempt_id=query_value(query, "attempt_id"),
+                limit=int(query_value(query, "limit", "50") or "50"),
+            )
+        finally:
+            conn.close()
+        return HTTPStatus.OK, {"ok": True, "source": "/v1/budget-events", "budget_events": budget_events}
+    if path == "/v1/budget-summary":
+        conn = companyctl.connect_readonly()
+        try:
+            summary = companyctl.budget_summary(
+                conn,
+                employee_id=query_value(query, "employee_id") or query_value(query, "employee"),
+                task_id=query_value(query, "task_id"),
+                trace_id=query_value(query, "trace_id"),
+                attempt_id=query_value(query, "attempt_id"),
+            )
+        finally:
+            conn.close()
+        return HTTPStatus.OK, {"ok": True, "source": "/v1/budget-summary", "summary": summary}
+    if path == "/v1/handoffs":
+        conn = companyctl.connect_readonly()
+        try:
+            handoffs = companyctl.audit_handoff_records(conn, task_id=query_value(query, "task_id"), limit=query_value(query, "limit", "50"))
+        finally:
+            conn.close()
+        return HTTPStatus.OK, {"ok": True, "source": "/v1/handoffs", "handoffs": handoffs}
+    if path == "/v1/failures":
+        conn = companyctl.connect_readonly()
+        try:
+            failures = companyctl.audit_failure_records(conn, task_id=query_value(query, "task_id"), limit=query_value(query, "limit", "50"))
+        finally:
+            conn.close()
+        return HTTPStatus.OK, {"ok": True, "source": "/v1/failures", "failures": failures}
+    if path.startswith("/v1/traces/") and path.endswith("/timeline"):
+        trace_id = path.removeprefix("/v1/traces/").removesuffix("/timeline").strip("/")
+        if not trace_id or "/" in trace_id:
+            return HTTPStatus.NOT_FOUND, {"ok": False, "error": "not found", "path": path}
+        conn = companyctl.connect_readonly()
+        try:
+            trace = company_trace.load_trace(conn, trace_id)
+            return HTTPStatus.OK, company_trace.safe_trace_payload(trace)
+        finally:
+            conn.close()
+    if path.startswith("/v1/traces/") and path.endswith("/file-flow"):
+        trace_id = path.removeprefix("/v1/traces/").removesuffix("/file-flow").strip("/")
+        if not trace_id or "/" in trace_id:
+            return HTTPStatus.NOT_FOUND, {"ok": False, "error": "not found", "path": path}
+        conn = companyctl.connect_readonly()
+        try:
+            return HTTPStatus.OK, companyctl.trace_file_flow_graph(conn, trace_id)
+        finally:
+            conn.close()
+    if path == "/v1/workspaces/prune":
+        if not truthy(query_value(query, "dry_run")):
+            return HTTPStatus.BAD_REQUEST, {"ok": False, "error": "workspace prune API is dry-run only; pass dry_run=true"}
+        limit_raw = query_value(query, "limit", "100")
+        older_raw = query_value(query, "older_than_days", "30")
+        limit = int(limit_raw) if str(limit_raw).isdigit() else 100
+        older_than_days = int(older_raw) if str(older_raw).isdigit() else 30
+        conn = companyctl.connect_readonly()
+        try:
+            return HTTPStatus.OK, companyctl.workspace_prune_preview(conn, older_than_days=older_than_days, limit=limit)
+        finally:
+            conn.close()
     if path == "/v1/dashboard/communication-observability":
         conn = companyctl.connect()
         try:
             summary = company_dashboard.load_summary(conn)
             return HTTPStatus.OK, {"ok": True, **company_dashboard.communication_observability_summary(summary)}
+        finally:
+            conn.close()
+    if path == "/v1/dashboard/cockpit":
+        conn = companyctl.connect_readonly()
+        try:
+            summary = company_dashboard.load_summary(conn)
+            employees = company_dashboard.employee_view_models(summary)
+            doctor_code, doctor_payload = run_companyctl(["doctor", "--summary"])
+            doctor = {
+                "ok": bool(doctor_payload.get("ok")),
+                "exit_code": doctor_code,
+                "issue_count": len(doctor_payload.get("issues", []) or []),
+                "issues": doctor_payload.get("issues", []) or [],
+                "generated_at": companyctl.now(),
+                "counts": doctor_payload.get("counts", {}),
+                "heartbeat": doctor_payload.get("heartbeat", {}),
+            }
+            return HTTPStatus.OK, company_dashboard.build_cockpit_summary(
+                {
+                    **summary,
+                    "employees": employees,
+                    "all_employees": summary.get("employees", []),
+                    "doctor": doctor,
+                    "openclaw_native_status": companyctl.openclaw_native_status(),
+                }
+            )
+        finally:
+            conn.close()
+    if path == "/v1/telemetry/traces":
+        conn = companyctl.connect()
+        try:
+            limit_raw = query_value(query, "limit", "20")
+            limit = int(limit_raw) if str(limit_raw).isdigit() else 20
+            return HTTPStatus.OK, {"ok": True, "traces": company_dashboard.build_traces(conn, limit=limit)}
         finally:
             conn.close()
     if path == "/v1/progress/notifications":
@@ -369,6 +936,20 @@ def route_get(path: str, query: dict[str, list[str]]) -> tuple[int, dict]:
             }
         finally:
             conn.close()
+    if path == "/v1/openclaw/runtime-inventory":
+        conn = companyctl.connect_readonly()
+        try:
+            inventory = {"ok": True, **companyctl.openclaw_runtime_inventory(conn)}
+            if truthy(query_value(query, "summary")):
+                return HTTPStatus.OK, companyctl.openclaw_runtime_inventory_summary(inventory)
+            return HTTPStatus.OK, inventory
+        finally:
+            conn.close()
+    if path == "/v1/openclaw/native-status":
+        status = companyctl.openclaw_native_status()
+        if truthy(query_value(query, "summary")):
+            return HTTPStatus.OK, companyctl.openclaw_native_status_summary(status)
+        return HTTPStatus.OK, status
     if path == "/v1/agent-matrix":
         argv = ["agent-matrix"]
         agents = query_value(query, "agents")
@@ -446,8 +1027,14 @@ def route_get(path: str, query: dict[str, list[str]]) -> tuple[int, dict]:
         return (HTTPStatus.OK if code == 0 else HTTPStatus.BAD_REQUEST), {"exit_code": code, **payload}
     if path.startswith("/v1/approvals/"):
         approval_id = path.removeprefix("/v1/approvals/").strip("/")
-        code, payload = run_companyctl(["approval", "show", "--approval-id", approval_id])
-        return (HTTPStatus.OK if code == 0 else HTTPStatus.BAD_REQUEST), {"exit_code": code, **payload}
+        conn = companyctl.connect()
+        try:
+            payload = companyctl.approval_detail_bundle(conn, approval_id)
+        finally:
+            conn.close()
+        if payload.get("error") == "approval not found":
+            return HTTPStatus.NOT_FOUND, payload
+        return (HTTPStatus.OK if payload.get("ok") else HTTPStatus.BAD_REQUEST), payload
     if path == "/v1/attendance/latest":
         latest_path = companyctl.STATE_DIR / "attendance" / "latest.json"
         if not latest_path.exists():
@@ -562,6 +1149,39 @@ def route_delete(path: str, body: dict) -> tuple[int, dict]:
 
 
 def route_post(path: str, body: dict) -> tuple[int, dict]:
+    if path == "/v1/openclaw/dispatch-plan":
+        result = companyctl.openclaw_native_dispatch_plan(
+            source=str(body.get("source", "") or ""),
+            target=str(body.get("target", "") or ""),
+            task_type=str(body.get("type", body.get("task_type", "")) or ""),
+            priority=str(body.get("priority", "P2") or "P2"),
+            goal=str(body.get("goal", "") or ""),
+            next_command=str(body.get("next_command", "") or ""),
+            expected_evidence=str(body.get("expected_evidence", "") or ""),
+            rollback=str(body.get("rollback", "") or ""),
+            task_id=str(body.get("task_id", "") or ""),
+        )
+        return (HTTPStatus.OK if result.get("ok") else HTTPStatus.BAD_REQUEST), result
+    if path == "/v1/openclaw/dispatch-execute":
+        result = companyctl.openclaw_native_dispatch_execute(
+            source=str(body.get("source", "") or ""),
+            target=str(body.get("target", "") or ""),
+            task_type=str(body.get("type", body.get("task_type", "")) or ""),
+            priority=str(body.get("priority", "P2") or "P2"),
+            goal=str(body.get("goal", "") or ""),
+            next_command=str(body.get("next_command", "") or ""),
+            expected_evidence=str(body.get("expected_evidence", "") or ""),
+            rollback=str(body.get("rollback", "") or ""),
+            approval_id=str(body.get("approval_id", "") or ""),
+            task_id=str(body.get("task_id", "") or ""),
+        )
+        return (HTTPStatus.OK if result.get("ok") else HTTPStatus.BAD_REQUEST), result
+    if path == "/v1/openclaw/import-results":
+        result = companyctl.openclaw_native_import_results(
+            limit=int(body.get("limit", 50) or 50),
+            agent=str(body.get("agent", "") or ""),
+        )
+        return (HTTPStatus.OK if result.get("ok") else HTTPStatus.BAD_REQUEST), result
     if path == "/v1/settings/notification":
         payload = companyctl.update_notification_settings(body)
         return (HTTPStatus.OK if payload.get("ok") else HTTPStatus.BAD_REQUEST), payload
@@ -574,6 +1194,23 @@ def route_post(path: str, body: dict) -> tuple[int, dict]:
             account_id=str(body.get("account", "") or ""),
             dry_run=truthy(body.get("dry_run")),
         )
+        return (HTTPStatus.OK if result.get("ok") else HTTPStatus.BAD_REQUEST), result
+    if path.startswith("/v1/evidence/") and (path.endswith("/accept") or path.endswith("/reject")):
+        status_value = "accepted" if path.endswith("/accept") else "rejected"
+        suffix = "/accept" if status_value == "accepted" else "/reject"
+        evidence_id = path.removeprefix("/v1/evidence/").removesuffix(suffix).strip("/")
+        conn = companyctl.connect()
+        try:
+            result = companyctl.decide_evidence_internal(
+                conn,
+                evidence_id=evidence_id,
+                by=str(body.get("by", "")),
+                status=status_value,
+                summary=str(body.get("summary", "")),
+                reason=str(body.get("reason", "")),
+            )
+        finally:
+            conn.close()
         return (HTTPStatus.OK if result.get("ok") else HTTPStatus.BAD_REQUEST), result
     if path == "/v1/policy-blocks/report":
         argv = [
@@ -589,6 +1226,33 @@ def route_post(path: str, body: dict) -> tuple[int, dict]:
             argv.append("--dry-run")
         code, payload = run_companyctl(argv)
         return (HTTPStatus.OK if code == 0 else HTTPStatus.BAD_REQUEST), {"exit_code": code, **payload}
+    if path == "/v1/budget-events":
+        conn = companyctl.connect()
+        try:
+            payload = companyctl.record_budget_event_internal(
+                conn,
+                budget_event_id=str(body.get("budget_event_id", "") or ""),
+                budget_account_id=str(body.get("budget_account_id", "") or ""),
+                trace_id=str(body.get("trace_id", "") or ""),
+                task_id=str(body.get("task_id", "") or ""),
+                attempt_id=str(body.get("attempt_id", "") or ""),
+                employee_id=str(body.get("employee_id", body.get("employee", "")) or ""),
+                cost_type=str(body.get("cost_type", "") or ""),
+                amount=float(body.get("amount", 0) or 0),
+                currency=str(body.get("currency", "USD") or "USD"),
+                token_input=int(body.get("token_input", 0) or 0),
+                token_output=int(body.get("token_output", 0) or 0),
+                model_name=str(body.get("model_name", "") or ""),
+                provider=str(body.get("provider", "") or ""),
+                runtime_seconds=int(body.get("runtime_seconds", 0) or 0),
+                summary=str(body.get("summary", "") or ""),
+                metadata=body.get("metadata") if isinstance(body.get("metadata"), dict) else {},
+            )
+        except (SystemExit, ValueError) as exc:
+            return HTTPStatus.BAD_REQUEST, {"ok": False, "error": str(exc)}
+        finally:
+            conn.close()
+        return HTTPStatus.CREATED, {"ok": True, "source": "/v1/budget-events", **payload}
     if path == "/v1/supervisor/delivery-loop":
         argv = ["supervisor", "delivery-loop"]
         if body.get("limit") not in {None, ""}:
@@ -879,11 +1543,32 @@ def route_post(path: str, body: dict) -> tuple[int, dict]:
         return (HTTPStatus.OK if code == 0 else HTTPStatus.BAD_REQUEST), {"exit_code": code, **payload}
     if path.startswith("/v1/tasks/") and path.endswith("/correct"):
         task_id = path.removeprefix("/v1/tasks/").removesuffix("/correct").strip("/")
+        if not truthy(body.get("ack")) and not truthy(body.get("execute")):
+            return control_action_approval_response(
+                task_id=task_id,
+                action="correction",
+                by=str(body.get("by", "")),
+                reason=str(body.get("message", "")),
+                attempt_id=str(body.get("attempt_id", "")),
+                risk="P1",
+            )
         argv = ["task", "correct", "--task-id", task_id, "--attempt-id", str(body.get("attempt_id", "")), "--by", str(body.get("by", "")), "--message", str(body.get("message", ""))]
         if truthy(body.get("ack")):
             argv.append("--ack")
         code, payload = run_companyctl(argv)
-        return (HTTPStatus.OK if code == 0 else HTTPStatus.BAD_REQUEST), {"exit_code": code, **payload}
+        response = {"exit_code": code, **payload}
+        if code == 0:
+            response = with_control_action(
+                response,
+                action="correction_ack" if truthy(body.get("ack")) else "correction",
+                event_type="supervisor.correction_acknowledged" if truthy(body.get("ack")) else "supervisor.correction_requested",
+                requires_owner_approval=not truthy(body.get("ack")),
+            )
+            if truthy(body.get("execute")) and not truthy(body.get("ack")):
+                response["executed"] = True
+                response["control_action"]["approval_mode"] = "owner_approved_execute"
+            response = attach_task_control_context(response, task_id)
+        return (HTTPStatus.OK if code == 0 else HTTPStatus.BAD_REQUEST), response
     if path.startswith("/v1/tasks/") and path.endswith("/progress"):
         task_id = path.removeprefix("/v1/tasks/").removesuffix("/progress").strip("/")
         argv = ["task", "progress", "--task-id", task_id, "--agent", str(body.get("agent", "")), "--message", str(body.get("message", ""))]
@@ -895,10 +1580,43 @@ def route_post(path: str, body: dict) -> tuple[int, dict]:
             argv.extend(["--payload", json.dumps(payload_body, ensure_ascii=False) if isinstance(payload_body, dict) else str(payload_body)])
         code, payload = run_companyctl(argv)
         return (HTTPStatus.OK if code == 0 else HTTPStatus.BAD_REQUEST), {"exit_code": code, **payload}
+    if path.startswith("/v1/tasks/") and path.endswith("/probe"):
+        task_id = path.removeprefix("/v1/tasks/").removesuffix("/probe").strip("/")
+        argv = ["task", "probe", "--task-id", task_id, "--by", str(body.get("by", "")), "--message", str(body.get("message", ""))]
+        for key, flag in [("attempt_id", "--attempt-id"), ("reason", "--reason")]:
+            if body.get(key) not in {None, ""}:
+                argv.extend([flag, str(body[key])])
+        code, payload = run_companyctl(argv)
+        response = {"exit_code": code, **payload}
+        if code == 0:
+            response = with_control_action(
+                response,
+                action="task.probe",
+                event_type="task.probe",
+                requires_owner_approval=False,
+            )
+            response = attach_task_control_context(response, task_id)
+        return (HTTPStatus.OK if code == 0 else HTTPStatus.BAD_REQUEST), response
     if path.startswith("/v1/tasks/") and path.endswith("/cancel"):
         task_id = path.removeprefix("/v1/tasks/").removesuffix("/cancel").strip("/")
+        if not truthy(body.get("execute")):
+            return control_action_approval_response(
+                task_id=task_id,
+                action="cancel",
+                by=str(body.get("by", "")),
+                reason=str(body.get("reason", "")),
+                attempt_id=str(body.get("attempt_id", "")),
+                risk="P0",
+                dangerous=True,
+            )
         code, payload = run_companyctl(["task", "cancel", "--task-id", task_id, "--attempt-id", str(body.get("attempt_id", "")), "--by", str(body.get("by", "")), "--reason", str(body.get("reason", ""))])
-        return (HTTPStatus.OK if code == 0 else HTTPStatus.BAD_REQUEST), {"exit_code": code, **payload}
+        response = {"exit_code": code, **payload}
+        if code == 0:
+            response = with_control_action(response, action="cancel", event_type="supervisor.cancel_requested", dangerous=True)
+            response["executed"] = True
+            response["control_action"]["approval_mode"] = "owner_approved_execute"
+            response = attach_task_control_context(response, task_id)
+        return (HTTPStatus.OK if code == 0 else HTTPStatus.BAD_REQUEST), response
     if path.startswith("/v1/tasks/") and path.endswith("/claim"):
         task_id = path.removeprefix("/v1/tasks/").removesuffix("/claim").strip("/")
         argv = ["task", "claim", "--agent", str(body.get("agent", "")), "--task-id", task_id]
@@ -920,15 +1638,48 @@ def route_post(path: str, body: dict) -> tuple[int, dict]:
         if body.get("status"):
             argv.extend(["--status", str(body["status"])])
         code, payload = run_companyctl(argv)
-        return (HTTPStatus.OK if code == 0 else HTTPStatus.BAD_REQUEST), {"exit_code": code, **payload}
+        response = {"exit_code": code, **payload}
+        if code == 0:
+            response = with_control_action(response, action="reopen", event_type="task.reopened")
+            response = attach_task_control_context(response, task_id)
+        return (HTTPStatus.OK if code == 0 else HTTPStatus.BAD_REQUEST), response
     if path.startswith("/v1/tasks/") and path.endswith("/retry"):
         task_id = path.removeprefix("/v1/tasks/").removesuffix("/retry").strip("/")
+        if not truthy(body.get("execute")):
+            return control_action_approval_response(
+                task_id=task_id,
+                action="retry",
+                by=str(body.get("by", "")),
+                reason=str(body.get("reason", "")),
+                risk="P1",
+            )
         code, payload = run_companyctl(["task", "retry", "--task-id", task_id, "--by", str(body.get("by", "")), "--reason", str(body.get("reason", ""))])
-        return (HTTPStatus.OK if code == 0 else HTTPStatus.BAD_REQUEST), {"exit_code": code, **payload}
+        response = {"exit_code": code, **payload}
+        if code == 0:
+            response = with_control_action(response, action="retry", event_type="task.retrying")
+            response["executed"] = True
+            response["control_action"]["approval_mode"] = "owner_approved_execute"
+            response = attach_task_control_context(response, task_id)
+        return (HTTPStatus.OK if code == 0 else HTTPStatus.BAD_REQUEST), response
     if path.startswith("/v1/tasks/") and path.endswith("/reassign"):
         task_id = path.removeprefix("/v1/tasks/").removesuffix("/reassign").strip("/")
+        if not truthy(body.get("execute")):
+            return control_action_approval_response(
+                task_id=task_id,
+                action="reassign",
+                by=str(body.get("by", "")),
+                reason=str(body.get("reason", "")),
+                target=str(body.get("to", "")),
+                risk="P1",
+            )
         code, payload = run_companyctl(["task", "reassign", "--task-id", task_id, "--by", str(body.get("by", "")), "--to", str(body.get("to", "")), "--reason", str(body.get("reason", ""))])
-        return (HTTPStatus.OK if code == 0 else HTTPStatus.BAD_REQUEST), {"exit_code": code, **payload}
+        response = {"exit_code": code, **payload}
+        if code == 0:
+            response = with_control_action(response, action="reassign", event_type="task.reassigned")
+            response["executed"] = True
+            response["control_action"]["approval_mode"] = "owner_approved_execute"
+            response = attach_task_control_context(response, task_id)
+        return (HTTPStatus.OK if code == 0 else HTTPStatus.BAD_REQUEST), response
     if path == "/v1/conversations":
         argv = [
             "conversation",
@@ -1073,6 +1824,11 @@ def route_post(path: str, body: dict) -> tuple[int, dict]:
         approval_id = path.removeprefix("/v1/approvals/").removesuffix("/deny").strip("/")
         code, payload = run_companyctl(["approval", "deny", "--approval-id", approval_id, "--by", str(body.get("by", "")), "--reason", str(body.get("reason", ""))])
         return (HTTPStatus.OK if code == 0 else HTTPStatus.BAD_REQUEST), {"exit_code": code, **payload}
+    if path.startswith("/v1/approvals/") and path.endswith("/resolve"):
+        approval_id = path.removeprefix("/v1/approvals/").removesuffix("/resolve").strip("/")
+        argv = ["approval", "resolve", "--approval-id", approval_id, "--by", str(body.get("by", "")), "--reason", str(body.get("reason", "")), "--mock"]
+        code, payload = run_companyctl(argv)
+        return (HTTPStatus.OK if code == 0 else HTTPStatus.BAD_REQUEST), {"exit_code": code, **payload}
     if path.startswith("/v1/adapter-runs/") and path.endswith("/ack"):
         run_id = path.removeprefix("/v1/adapter-runs/").removesuffix("/ack").strip("/")
         code, payload = run_companyctl(["runtime", "ack-adapter-run", "--run-id", run_id, "--by", str(body.get("by", "")), "--reason", str(body.get("reason", ""))])
@@ -1105,6 +1861,60 @@ class ApiHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(raw)))
         self.end_headers()
         self.wfile.write(raw)
+
+    def send_sse_event(self, event: str, payload: dict, *, event_id: str = "") -> None:
+        if event_id:
+            self.wfile.write(f"id: {event_id}\n".encode("utf-8"))
+        self.wfile.write(f"event: {event}\n".encode("utf-8"))
+        data = json.dumps(payload, ensure_ascii=False)
+        for line in data.splitlines() or ["{}"]:
+            self.wfile.write(f"data: {line}\n".encode("utf-8"))
+        self.wfile.write(b"\n")
+        self.wfile.flush()
+
+    def stream_events(self, query: dict[str, list[str]]) -> None:
+        limit_raw = query_value(query, "limit", "20")
+        poll_raw = query_value(query, "poll_seconds", "2")
+        cycles_raw = query_value(query, "max_cycles", "30")
+        limit = int(limit_raw) if str(limit_raw).isdigit() else 20
+        poll_seconds = max(1, min(int(poll_raw) if str(poll_raw).isdigit() else 2, 10))
+        max_cycles = max(1, min(int(cycles_raw) if str(cycles_raw).isdigit() else 30, 300))
+        self.send_response(HTTPStatus.OK)
+        self.send_cors_headers()
+        self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+        self.send_header("Cache-Control", "no-cache")
+        self.send_header("Connection", "keep-alive")
+        self.end_headers()
+        last_created_at = ""
+        last_id = str(self.headers.get("Last-Event-ID", "") or "")
+        self.send_sse_event(
+            "stream_status",
+            {
+                "ok": True,
+                "mode": "sqlite_short_poll",
+                "poll_seconds": poll_seconds,
+                "timeout_is_sync_wait_only": True,
+                "timeout_semantics": "sync_wait_window",
+                "failure_semantics": "task_failure_decided_by_attempt_evidence",
+                "ledger_consistency": {
+                    "source": "single_company_kernel_ledger",
+                    "surfaces": ["api", "cli", "dashboard"],
+                },
+            },
+        )
+        for _ in range(max_cycles):
+            try:
+                events = recent_event_rows(limit=limit, after_created_at=last_created_at, after_id=last_id)
+                for event in events:
+                    safe_event = sanitize_event_row(event)
+                    self.send_sse_event("company_event", safe_event, event_id=safe_event.get("id", ""))
+                    last_created_at = event.get("created_at", last_created_at)
+                    last_id = event.get("id", last_id)
+                if not events:
+                    self.send_sse_event("heartbeat", {"ok": True, "created_at": companyctl.now()})
+                time.sleep(poll_seconds)
+            except (BrokenPipeError, ConnectionResetError):
+                break
 
     def do_OPTIONS(self) -> None:
         self.send_response(HTTPStatus.NO_CONTENT)
@@ -1160,7 +1970,17 @@ class ApiHandler(BaseHTTPRequestHandler):
         if not self.require_auth():
             return
         query = parse_qs(parsed.query)
-        status, payload = route_get(unquote(parsed.path), query)
+        if parsed.path == "/v1/events/stream":
+            self.stream_events(query)
+            return
+        try:
+            status, payload = route_get(unquote(parsed.path), query)
+        except Exception as exc:
+            status, payload = HTTPStatus.INTERNAL_SERVER_ERROR, {
+                "ok": False,
+                "error": companyctl.sanitize_log_text(exc),
+                "path": parsed.path,
+            }
         self.send_json(status, payload)
 
     def do_POST(self) -> None:

@@ -11,6 +11,21 @@
       "production_deploy": ["production deploy", "deploy", "上线", "生产部署"],
       "secret_change": ["secret", "token", "password", "密钥", "密码"],
       "kernel_change": ["company kernel", "companyctl", "company_kernel", "approval rule", "审批规则", "公司内核", "内核制度", "内核schema"]
-    }
+    },
+    "auto_approval_rules": [
+      {
+        "id": "nestcar_non_p1_data_fetch_external_send",
+        "enabled": true,
+        "action": "external_send",
+        "source": "main",
+        "target": "nestcar",
+        "priority_not_in": ["P1"],
+        "risk_not_in": ["P1"],
+        "metadata": {
+          "adapter": "openclaw",
+          "task_type": "data_fetch"
+        }
+      }
+    ]
   }
 }

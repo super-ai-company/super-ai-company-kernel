@@ -12,10 +12,23 @@ from pathlib import Path
 from company_kernel import companyctl
 
 
-ROOT = Path(os.environ.get("OPENCLAW_COMPANY_KERNEL_ROOT", Path(__file__).resolve().parents[1])).resolve()
-CONFIG_PATH = ROOT / "config" / "daemon.json"
-STATE_DIR = ROOT / "state" / "daemon"
-LOG_PATH = ROOT / "logs" / "daemon.log"
+def resolve_daemon_paths() -> dict[str, Path]:
+    paths = companyctl.resolve_kernel_paths(Path(__file__).resolve().parents[1])
+    root = Path(paths["root"])
+    log_dir = Path(paths["log_dir"])
+    return {
+        "root": root,
+        "config_path": root / "config" / "daemon.json",
+        "state_dir": root / "state" / "daemon",
+        "log_path": log_dir / "daemon.log",
+    }
+
+
+_DAEMON_PATHS = resolve_daemon_paths()
+ROOT = _DAEMON_PATHS["root"]
+CONFIG_PATH = _DAEMON_PATHS["config_path"]
+STATE_DIR = _DAEMON_PATHS["state_dir"]
+LOG_PATH = _DAEMON_PATHS["log_path"]
 
 
 def now() -> str:
@@ -349,7 +362,7 @@ def summarize_state(state: dict) -> dict:
     failed_steps = []
     heartbeat_agents = []
     adapter_steps = []
-    counts = {"steps": len(steps), "heartbeats": 0, "adapters": 0, "repair": 0, "scheduler": 0, "supervisor": 0, "watchdog": 0, "failed": 0}
+    counts = {"steps": len(steps), "heartbeats": 0, "adapters": 0, "repair": 0, "scheduler": 0, "supervisor": 0, "watchdog": 0, "openclaw_sync": 0, "failed": 0}
     for item in steps:
         step = str(item.get("step", ""))
         result = item.get("result", {})
@@ -371,6 +384,8 @@ def summarize_state(state: dict) -> dict:
             counts["supervisor"] += 1
         elif step.startswith("watchdog."):
             counts["watchdog"] += 1
+        elif step.startswith("openclaw-sync."):
+            counts["openclaw_sync"] += 1
     return {
         "ok": state.get("ok", False),
         "at": state.get("at", ""),
@@ -384,6 +399,12 @@ def summarize_state(state: dict) -> dict:
 
 def tick(config: dict) -> dict:
     results = []
+    if config.get("sync_openclaw_runtime", False):
+        results.append({"step": "openclaw-sync.runtime", "result": run_companyctl("employee", "sync-openclaw-runtime")})
+    if config.get("sync_openclaw_heartbeats", False):
+        results.append({"step": "openclaw-sync.heartbeats", "result": run_companyctl("employee", "sync-openclaw-heartbeats")})
+    if config.get("import_openclaw_native_results", False):
+        results.append({"step": "openclaw-sync.import-results", "result": run_companyctl("openclaw", "import-results")})
     if config.get("run_repair", True):
         results.append({"step": "repair.reset-stale-claims", "result": run_companyctl("repair", "reset-stale-claims")})
     if config.get("run_scheduler", True):

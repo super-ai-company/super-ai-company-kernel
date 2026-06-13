@@ -16,10 +16,11 @@ from typing import Any
 from . import codex_pm_supervisor
 from . import company_daemon
 from . import companyctl
+from .db_paths import ensure_db_parent, resolve_db_path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-DB_PATH = ROOT / "company.sqlite"
+DB_PATH = resolve_db_path(ROOT)
 SCHEMA = ROOT / "company_kernel" / "schema.sql"
 DEFAULT_OUTPUT_DIR = ROOT / "reports" / "communication-acceptance"
 DEFAULT_OPENCLAW_ROOT = Path("/Users/shift/openclaw")
@@ -43,7 +44,7 @@ def emit(obj: dict[str, Any]) -> None:
 def connect(db_path: Path | None = None, schema_path: Path | None = None) -> sqlite3.Connection:
     db_path = (db_path or DB_PATH).expanduser().resolve()
     schema_path = (schema_path or SCHEMA).expanduser().resolve()
-    conn = sqlite3.connect(db_path)
+    conn = sqlite3.connect(ensure_db_parent(db_path))
     conn.row_factory = sqlite3.Row
     conn.executescript(schema_path.read_text(encoding="utf-8"))
     conn.commit()
