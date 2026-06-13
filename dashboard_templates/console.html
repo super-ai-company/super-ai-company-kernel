@@ -107,6 +107,11 @@ label{font-size:12px;color:var(--muted);display:block;margin-bottom:4px}
 .toast.ok{border-left-color:var(--ok)}.toast.bad{border-left-color:var(--bad)}
 @keyframes slidein{from{transform:translateX(30px);opacity:0}to{transform:none;opacity:1}}
 .empty{color:var(--dim);font-size:13px;padding:18px;text-align:center}
+.met-totals{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px}
+.met-tbl{width:100%;border-collapse:collapse;font-size:12.5px}
+.met-tbl th{text-align:left;color:var(--dim);font-weight:600;padding:6px 8px;border-bottom:1px solid var(--line)}
+.met-tbl td{padding:7px 8px;border-bottom:1px solid var(--line);color:var(--text)}
+.met-tbl td.pos{color:var(--ok);font-weight:600}.met-tbl td.neg{color:var(--bad);font-weight:600}
 .conv-thread{max-height:420px;overflow:auto;display:flex;flex-direction:column;gap:8px;padding:4px}
 .bubble{background:var(--bg2);border:1px solid var(--line);border-radius:10px;padding:8px 12px;font-size:13px}
 .bubble .bh{font-size:11.5px;color:var(--muted);margin-bottom:3px;display:flex;gap:8px}
@@ -138,6 +143,7 @@ label{font-size:12px;color:var(--muted);display:block;margin-bottom:4px}
   <div class="tab" data-v="messages"><span data-i18n="tab_messages">消息</span></div>
   <div class="tab" data-v="conversations"><span data-i18n="tab_conversations">对话</span> <span class="cnt" id="cntConv">-</span></div>
   <div class="tab" data-v="approvals"><span data-i18n="tab_approvals">审批</span> <span class="cnt" id="cntAppr">-</span></div>
+  <div class="tab" data-v="metrics"><span data-i18n="tab_metrics">指标</span></div>
   <div class="tab" data-v="activity"><span data-i18n="tab_activity">活动流</span></div>
 </div>
 
@@ -256,6 +262,22 @@ label{font-size:12px;color:var(--muted);display:block;margin-bottom:4px}
 </section>
 
 <!-- 活动流 -->
+<section class="view" id="v-metrics">
+  <div class="section-head"><h2 data-i18n="met_title">生死指标</h2><span class="hint" data-i18n="met_hint">毛利 + 验收准确率，决定加码 / 改模式 / 收手</span></div>
+  <div class="grid" style="grid-template-columns:1fr 1fr;gap:14px">
+    <div class="card">
+      <h3 data-i18n="met_econ">💰 单位经济（按任务类型）</h3>
+      <div id="econTotals" class="met-totals"><div class="empty" data-i18n="loading">加载中…</div></div>
+      <div id="econTable"></div>
+    </div>
+    <div class="card">
+      <h3 data-i18n="met_acc">🎯 验收器抽检准确率</h3>
+      <div id="accTotals" class="met-totals"><div class="empty" data-i18n="loading">加载中…</div></div>
+      <div id="accTable"></div>
+    </div>
+  </div>
+</section>
+
 <section class="view" id="v-activity">
   <div class="section-head"><h2 data-i18n="act_title">活动流</h2><span class="hint" data-i18n="act_hint">公司事件 + Adapter 执行记录</span></div>
   <div class="grid" style="grid-template-columns:1fr 1fr;gap:14px">
@@ -279,7 +301,10 @@ const I18N = {
   zh: {
     console:"控制台", connecting:"连接中…", refresh:"⟳ 刷新", connect:"连接",
     cannotConnect:"⚠ 无法连接 Company Kernel API。", runGatewayHint:"请先在终端运行 bin/company-api-gateway，或填写 API 地址：",
-    tab_overview:"总览", tab_employees:"员工", tab_tasks:"任务", tab_messages:"消息", tab_conversations:"对话", tab_approvals:"审批", tab_activity:"活动流",
+    tab_overview:"总览", tab_employees:"员工", tab_tasks:"任务", tab_messages:"消息", tab_conversations:"对话", tab_approvals:"审批", tab_metrics:"指标", tab_activity:"活动流",
+    met_title:"生死指标", met_hint:"毛利 + 验收准确率，决定加码 / 改模式 / 收手", met_econ:"💰 单位经济（按任务类型）", met_acc:"🎯 验收器抽检准确率",
+    met_margin:"毛利", met_revenue:"营收", met_cost:"成本", met_type:"类型", met_count:"笔数", met_kind:"验收类型", met_total:"总数",
+    met_accuracy:"准确率", met_reviewed:"已抽检", met_fp:"误放", met_fn:"误拦", met_noecon:"暂无已完成任务的经济数据", met_noacc:"暂无验收记录", met_unavailable:"指标接口不可用（需较新网关）",
     ov_pendingApprovals:"⏳ 待审批", ov_latestEvents:"🔔 最新事件", loading:"加载中…", none:"无",
     emp_title:"AI 员工", emp_hint:"心跳 10 分钟内 = 在岗", emp_add:"＋ 新增员工", emp_sweep:"📋 全员考勤探测",
     emp_onboardTitle:"🧑‍💼 新增员工（onboard）", emp_register:"注册员工", emp_registerHint:"注册后如需自动接任务，再在 daemon.json 启用 worker",
@@ -298,7 +323,10 @@ const I18N = {
   en: {
     console:"Console", connecting:"Connecting…", refresh:"⟳ Refresh", connect:"Connect",
     cannotConnect:"⚠ Cannot reach Company Kernel API.", runGatewayHint:"Run bin/company-api-gateway in a terminal, or enter the API URL:",
-    tab_overview:"Overview", tab_employees:"Employees", tab_tasks:"Tasks", tab_messages:"Messages", tab_conversations:"Conversations", tab_approvals:"Approvals", tab_activity:"Activity",
+    tab_overview:"Overview", tab_employees:"Employees", tab_tasks:"Tasks", tab_messages:"Messages", tab_conversations:"Conversations", tab_approvals:"Approvals", tab_metrics:"Metrics", tab_activity:"Activity",
+    met_title:"Survival metrics", met_hint:"margin + verifier accuracy — decide to scale / pivot / stop", met_econ:"💰 Unit economics (by task type)", met_acc:"🎯 Verifier sampling accuracy",
+    met_margin:"Margin", met_revenue:"Revenue", met_cost:"Cost", met_type:"Type", met_count:"Count", met_kind:"Kind", met_total:"Total",
+    met_accuracy:"Accuracy", met_reviewed:"Reviewed", met_fp:"False+", met_fn:"False-", met_noecon:"No economics data from completed tasks yet", met_noacc:"No verifier records yet", met_unavailable:"Metrics API unavailable (needs newer gateway)",
     ov_pendingApprovals:"⏳ Pending approvals", ov_latestEvents:"🔔 Latest events", loading:"Loading…", none:"None",
     emp_title:"AI Employees", emp_hint:"heartbeat within 10 min = on duty", emp_add:"＋ Add employee", emp_sweep:"📋 Attendance sweep",
     emp_onboardTitle:"🧑‍💼 Onboard employee", emp_register:"Register", emp_registerHint:"After registering, enable a worker in daemon.json for auto task pickup",
@@ -396,7 +424,43 @@ $("tabs").addEventListener("click", e => {
   document.querySelectorAll(".tab").forEach(x=>x.classList.remove("active"));
   document.querySelectorAll(".view").forEach(x=>x.classList.remove("active"));
   t.classList.add("active"); $("v-"+t.dataset.v).classList.add("active");
+  if(t.dataset.v==="metrics") loadMetrics();
 });
+
+/* ---------- metrics (survival indicators) ---------- */
+function fmtMoney(n){ return "$"+(Number(n||0)).toFixed(2); }
+function fmtPct(n){ return n==null ? "—" : (Number(n)*100).toFixed(1)+"%"; }
+async function loadMetrics(){
+  try {
+    const eco = await api("/v1/economics");
+    const tot = eco.totals || {};
+    $("econTotals").innerHTML =
+      chipHtml((tot.margin>=0)?"ok":"bad", t("met_margin"), fmtMoney(tot.margin)) +
+      chipHtml("ok", t("met_revenue"), fmtMoney(tot.revenue)) +
+      chipHtml("warn", t("met_cost"), fmtMoney(tot.cost));
+    const rows = eco.by_task_type || [];
+    $("econTable").innerHTML = rows.length ? (
+      "<table class='met-tbl'><thead><tr><th>"+t("met_type")+"</th><th>"+t("met_count")+"</th><th>"+t("met_revenue")+"</th><th>"+t("met_cost")+"</th><th>"+t("met_margin")+"</th></tr></thead><tbody>"+
+      rows.map(r=>"<tr><td>"+r.task_type+"</td><td>"+r.count+"</td><td>"+fmtMoney(r.revenue)+"</td><td>"+fmtMoney(r.cost)+"</td><td class='"+((r.margin>=0)?'pos':'neg')+"'>"+fmtMoney(r.margin)+"</td></tr>").join("")+
+      "</tbody></table>"
+    ) : "<div class='empty' data-i18n='met_noecon'>"+t("met_noecon")+"</div>";
+  } catch(e){ $("econTotals").innerHTML="<div class='empty'>"+t("met_unavailable")+"</div>"; $("econTable").innerHTML=""; }
+  try {
+    const acc = await api("/v1/verifier-accuracy");
+    const tot = acc.totals || {};
+    const accClass = tot.accuracy==null ? "warn" : (tot.accuracy>=0.9 ? "ok" : "bad");
+    $("accTotals").innerHTML =
+      chipHtml(accClass, t("met_accuracy"), fmtPct(tot.accuracy)) +
+      chipHtml("ok", t("met_reviewed"), (tot.reviewed||0)+"/"+(tot.total||0)) +
+      chipHtml((tot.false_positive>0)?"bad":"ok", t("met_fp"), tot.false_positive||0);
+    const rows = acc.by_kind || [];
+    $("accTable").innerHTML = rows.length ? (
+      "<table class='met-tbl'><thead><tr><th>"+t("met_kind")+"</th><th>"+t("met_total")+"</th><th>"+t("met_reviewed")+"</th><th>"+t("met_fp")+"</th><th>"+t("met_fn")+"</th><th>"+t("met_accuracy")+"</th></tr></thead><tbody>"+
+      rows.map(r=>"<tr><td>"+r.kind+"</td><td>"+r.total+"</td><td>"+r.reviewed+"</td><td>"+r.false_positive+"</td><td>"+r.false_negative+"</td><td class='"+(r.accuracy==null?'':(r.accuracy>=0.9?'pos':'neg'))+"'>"+fmtPct(r.accuracy)+"</td></tr>").join("")+
+      "</tbody></table>"
+    ) : "<div class='empty'>"+t("met_noacc")+"</div>";
+  } catch(e){ $("accTotals").innerHTML="<div class='empty'>"+t("met_unavailable")+"</div>"; $("accTable").innerHTML=""; }
+}
 
 /* ---------- health ---------- */
 async function loadHealth() {

@@ -108,6 +108,8 @@ API_ENDPOINTS = [
     {"method": "GET", "path": "/v1/budget-events", "summary": "List budget/cost ledger events", "query": {"employee_id": "employee optional", "task_id": "task optional", "trace_id": "trace optional", "attempt_id": "attempt optional", "limit": "integer optional"}},
     {"method": "POST", "path": "/v1/budget-events", "summary": "Record a budget/cost ledger event for adapter, tool, or model usage", "body": {"employee_id": "employee id", "task_id": "task optional", "attempt_id": "attempt optional", "trace_id": "trace optional", "cost_type": "model_api/tool_runtime/compute/etc", "amount": "number", "currency": "USD optional", "token_input": "integer optional", "token_output": "integer optional", "model_name": "optional", "provider": "optional", "runtime_seconds": "integer optional", "summary": "optional"}},
     {"method": "GET", "path": "/v1/budget-summary", "summary": "Read budget rollup for owner cockpit", "query": {"employee_id": "employee optional", "task_id": "task optional", "trace_id": "trace optional", "attempt_id": "attempt optional"}},
+    {"method": "GET", "path": "/v1/economics", "summary": "Per-task-type unit economics: revenue vs cost vs margin (survival metric #1)"},
+    {"method": "GET", "path": "/v1/verifier-accuracy", "summary": "Per-kind verifier sampling accuracy vs human review (survival metric #2)"},
     {"method": "GET", "path": "/v1/tasks", "summary": "List tasks", "query": {"agent": "employee id optional", "status": "task status optional"}},
     {"method": "POST", "path": "/v1/tasks", "summary": "Submit task", "body": {"from": "employee id", "to": "employee id", "title": "string", "description": "string optional", "task_id": "string optional", "priority": "P0/P1/P2/P3 optional", "requires_approval": "action optional", "approval_id": "string optional"}},
     {"method": "POST", "path": "/v1/tasks/route", "summary": "Select employee by capabilities and submit routed task with approval guard", "body": {"from": "employee id", "title": "string", "description": "string optional", "priority": "P0/P1/P2/P3 optional", "task_id": "string optional", "skills": "comma-separated skills optional", "tools": "comma-separated tools optional", "task_type": "string optional", "runtime": "runtime optional", "role": "role optional", "limit": "integer optional", "include_unavailable": "bool optional", "requires_approval": "action optional", "approval_id": "string optional", "risk": "P0/P1/P2/P3 optional", "changed_files": "comma-separated paths optional", "rfc": "path optional"}},
@@ -839,6 +841,20 @@ def route_get(path: str, query: dict[str, list[str]]) -> tuple[int, dict]:
         finally:
             conn.close()
         return HTTPStatus.OK, {"ok": True, "source": "/v1/budget-summary", "summary": summary}
+    if path == "/v1/economics":
+        conn = companyctl.connect_readonly()
+        try:
+            economics = companyctl.compute_economics(conn)
+        finally:
+            conn.close()
+        return HTTPStatus.OK, {"ok": True, "source": "/v1/economics", **economics}
+    if path == "/v1/verifier-accuracy":
+        conn = companyctl.connect_readonly()
+        try:
+            accuracy = companyctl.compute_verifier_accuracy(conn)
+        finally:
+            conn.close()
+        return HTTPStatus.OK, {"ok": True, "source": "/v1/verifier-accuracy", **accuracy}
     if path == "/v1/handoffs":
         conn = companyctl.connect_readonly()
         try:
