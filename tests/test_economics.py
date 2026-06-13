@@ -22,13 +22,20 @@ class EconomicsTest(unittest.TestCase):
         self.assertAlmostEqual(0.12, companyctl.estimate_task_cost({"runtime_seconds": 120}, rates))
 
     def test_compute_economics_margin(self):
+        import uuid
+        tid = f"eco-t-{uuid.uuid4().hex[:8]}"
+        beid = f"be-eco-{uuid.uuid4().hex[:8]}"
         conn = companyctl.connect()
         try:
             conn.execute("INSERT OR REPLACE INTO employees(id,name,role,runtime,workspace,status,created_at,updated_at) VALUES('codex','Codex','dev','codex','/tmp','active','t','t')")
-            conn.execute("INSERT OR REPLACE INTO tasks(id,source_agent,target_agent,title,description,priority,status,created_at,updated_at) VALUES('eco-t1','owner','codex','fix bug','修复测试','P2','completed','t','t')")
-            conn.execute("INSERT INTO budget_events(budget_event_id,task_id,employee_id,cost_type,amount,currency,created_at) VALUES('be-eco-1','eco-t1','codex','codex_runtime',1.0,'USD','t')")
+            conn.execute("INSERT OR REPLACE INTO tasks(id,source_agent,target_agent,title,description,priority,status,created_at,updated_at) VALUES(?,'owner','codex','fix bug','修复测试','P2','completed','t','t')", (tid,))
+            conn.execute("INSERT INTO budget_events(budget_event_id,task_id,employee_id,cost_type,amount,currency,created_at) VALUES(?,?,'codex','codex_runtime',1.0,'USD','t')", (beid, tid))
             conn.commit()
             eco = companyctl.compute_economics(conn)
+            # cleanup so re-runs and the live DB stay clean
+            conn.execute("DELETE FROM budget_events WHERE budget_event_id = ?", (beid,))
+            conn.execute("DELETE FROM tasks WHERE id = ?", (tid,))
+            conn.commit()
         finally:
             conn.close()
         cf = next((b for b in eco["by_task_type"] if b["task_type"] == "code_fix"), None)
