@@ -124,6 +124,31 @@ def run_claude(prompt: Path, output: Path, workspace: Path, model: str, permissi
     return cp.returncode, " ".join(["claude", "-p", "<prompt>", "--no-session-persistence", "--output-format", "text"])
 
 
+def handle_direct(args: argparse.Namespace) -> int:
+    """Direct reachability probe (used by verify-direct activation): run claude -p with the
+    message and return its reply + a receipt, so the kernel can confirm the runtime is live."""
+    if not shutil.which("claude"):
+        emit({"ok": False, "error": "claude command not found", "agent": args.agent, "direct_message": True})
+        return 1
+    base = ROOT / "employees" / args.agent / "reports" / "direct"
+    base.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    prompt = base / f"direct-prompt-{stamp}.md"
+    output = base / f"direct-output-{stamp}.md"
+    prompt.write_text(args.direct_message, encoding="utf-8")
+    workspace = Path(args.workspace).expanduser() if args.workspace else DEFAULT_WORKSPACE
+    code, _ = run_claude(prompt, output, workspace, args.model, args.permission_mode)
+    reply = output.read_text(encoding="utf-8", errors="replace").strip() if output.exists() else ""
+    receipt = base / f"direct-receipt-{stamp}.json"
+    receipt.write_text(json.dumps({"agent": args.agent, "source": args.direct_source,
+        "session_key": args.direct_session_key, "reply": reply, "created_at": now()}, ensure_ascii=False, indent=2), encoding="utf-8")
+    run_companyctl(["heartbeat", "--agent", args.agent])
+    emit({"ok": code == 0, "processed": 0, "agent": args.agent, "direct_message": True,
+          "source": args.direct_source, "session_key": args.direct_session_key,
+          "reply": reply, "receipt": str(receipt), "activation_eligible": True})
+    return code
+
+
 def process(args: argparse.Namespace) -> int:
     emp = employee(args.agent)
     if not emp:
@@ -132,6 +157,8 @@ def process(args: argparse.Namespace) -> int:
     if emp["runtime"] != "claude":
         emit({"ok": False, "error": "employee runtime is not claude", "agent": args.agent, "runtime": emp["runtime"]})
         return 1
+    if getattr(args, "direct_message", ""):
+        return handle_direct(args)
     if args.execute and not shutil.which("claude"):
         emit({"ok": False, "error": "claude command not found"})
         return 1
@@ -175,6 +202,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--model", default="")
     parser.add_argument("--permission-mode", default="default")
     parser.add_argument("--execute", action="store_true", help="actually run claude -p; without this only writes prompt and report")
+    parser.add_argument("--direct-message", default="", help="direct reachability probe: run claude -p with this and return the reply (used by verify-direct)")
+    parser.add_argument("--direct-source", default="", help="source employee for the direct probe")
+    parser.add_argument("--direct-session-key", default="", help="session key from the direct resolver")
+    parser.add_argument("--timeout", type=int, default=120, help="direct probe timeout seconds")
     return parser
 
 
