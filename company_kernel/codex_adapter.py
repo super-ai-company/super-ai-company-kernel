@@ -67,6 +67,16 @@ def employee(agent: str) -> sqlite3.Row | None:
         conn.close()
 
 
+def task_cost_so_far(task_id: str) -> float:
+    """Sum of recorded budget cost for a task across all prior attempts."""
+    conn = connect()
+    try:
+        row = conn.execute("SELECT COALESCE(SUM(amount), 0) AS c FROM budget_events WHERE task_id = ?", (task_id,)).fetchone()
+        return float(row["c"] if row and row["c"] is not None else 0)
+    finally:
+        conn.close()
+
+
 def next_codex_task(agent: str) -> sqlite3.Row | None:
     conn = connect()
     try:
@@ -655,6 +665,19 @@ def process(args: argparse.Namespace) -> int:
         run_companyctl(["heartbeat", "--agent", args.agent])
         emit({"ok": done_code == 0, "processed": 1, "executed": False, "task_id": task["id"], "task_card": str(artifact["task_card"]), "report": str(artifact["report"]), "companyctl_stdout": done_out, "companyctl_stderr": done_err})
         return done_code
+    # Cost gate: if this task already burned >= the cap across prior attempts, stop and
+    # route to a human quote instead of pouring more tokens into the same wall. This is
+    # what keeps outcome-based pricing from going loss-making on hard tasks.
+    if args.max_cost and args.max_cost > 0:
+        spent = task_cost_so_far(task["id"])
+        if spent >= args.max_cost:
+            blocker = (f"成本上限到达：已花费 ${spent:.4f} ≥ 上限 ${args.max_cost:.2f}，"
+                       f"转人工报价（needs quote），不再自动执行以免亏损。")
+            write_report(artifact["report"], task, executed=False, status="blocked", detail=blocker, task_card=artifact["task_card"], output=artifact["last_message"])
+            done_code, done_out, done_err = run_companyctl(["task", "block", "--agent", args.agent, "--task-id", task["id"], "--blocker", blocker])
+            run_companyctl(["heartbeat", "--agent", args.agent])
+            emit({"ok": done_code == 0, "processed": 1, "executed": False, "verdict": "cost_capped", "needs_quote": True, "task_id": task["id"], "spent": spent, "max_cost": args.max_cost, "blocker": blocker, "report": str(artifact["report"])})
+            return done_code
     run_code, run_payload, run_err = run_companyctl_json(["task", "run", "--task-id", task["id"], "--agent", args.agent, "--by", args.agent, "--adapter-type", "codex", "--session-key", f"codex:{task['id']}"])
     if run_code != 0:
         emit({"ok": False, "error": "attempt start failed", "task_id": task["id"], "companyctl": run_payload, "stderr": run_err[-1000:]})
@@ -790,6 +813,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--sandbox-profile", default="default", help="sandbox profile name from config/sandbox_profiles.json")
     parser.add_argument("--execute", action="store_true", help="actually run codex exec; without this only writes task card and report")
     parser.add_argument("--timeout-seconds", type=int, default=1800, help="kill codex exec after this many seconds and block the task with evidence (0 disables)")
+    parser.add_argument("--max-cost", type=float, default=0.0, help="per-task cumulative cost cap (USD); when reached, block and route to human quote instead of running again (0 disables)")
     parser.add_argument("--attendance-probe", action="store_true", help="reply to attendance without claiming or processing tasks")
     parser.add_argument("--direct-message", default="", help="reply to a direct reachability message without claiming tasks")
     parser.add_argument("--direct-source", default="", help="source employee for direct reachability messages")

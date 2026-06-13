@@ -215,3 +215,73 @@ class QueueVerdictIntegrationTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class CostGateTest(unittest.TestCase):
+    """codex adapter blocks (needs quote) when a task's cumulative cost hits the cap,
+    instead of running codex again and losing money on a hard task."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.ws = Path(self.tmp.name) / "ws"; self.ws.mkdir()
+        self.calls = []
+
+    def test_cost_cap_blocks_before_running(self):
+        ran = {"called": False}
+
+        def fake_run_companyctl(argv):
+            self.calls.append(list(argv))
+            return 0, "{}", ""
+
+        def fake_run_codex(*a, **k):
+            ran["called"] = True
+            return 0, "codex exec"
+
+        emp = FakeRow({"id": "codex", "runtime": "codex", "workspace": str(self.ws), "status": "active"})
+        task = fake_task(description="普通任务")
+        import io, contextlib, json as _json
+        captured = io.StringIO()
+        with mock.patch.object(codex_adapter, "employee", lambda agent: emp), \
+                mock.patch.object(codex_adapter, "next_codex_task", lambda agent: task), \
+                mock.patch.object(codex_adapter, "run_companyctl", fake_run_companyctl), \
+                mock.patch.object(codex_adapter, "run_codex", fake_run_codex), \
+                mock.patch.object(codex_adapter, "task_cost_so_far", lambda tid: 9.99), \
+                mock.patch.object(codex_adapter.shutil, "which", lambda name: "/usr/local/bin/codex"), \
+                contextlib.redirect_stdout(captured):
+            codex_adapter.main(["--agent", "codex", "--execute", "--max-cost", "5"])
+        result = _json.loads(captured.getvalue())
+        self.assertEqual("cost_capped", result["verdict"])
+        self.assertTrue(result["needs_quote"])
+        self.assertFalse(ran["called"], "must NOT run codex once cost cap is hit")
+        self.assertIn("block", [a[1] if a[0] == "task" else a[0] for a in self.calls])
+
+    def test_under_cap_still_runs(self):
+        ran = {"called": False}
+        def fake_run_companyctl(argv):
+            self.calls.append(list(argv))
+            if argv[:2] == ["task", "run"]:
+                return 0, '{"ok":true,"attempt":{"attempt_id":"a","trace_id":"t"}}', ""
+            if "session" in argv and "start" in argv:
+                return 0, '{"ok":true,"session":{"session_id":"s"}}', ""
+            if argv[:2] == ["task", "attempt"]:
+                return 0, '{"ok":true,"attempt":{"attempt_id":"a"}}', ""
+            return 0, "{}", ""
+        def fake_run_codex(task_card, workspace, output, events, *a, **k):
+            ran["called"] = True
+            output.write_text("ok\nSTATUS: completed\n", encoding="utf-8")
+            events.write_text("{}\n", encoding="utf-8")
+            return 0, "codex exec"
+        emp = FakeRow({"id": "codex", "runtime": "codex", "workspace": str(self.ws), "status": "active"})
+        import io, contextlib, json as _json
+        captured = io.StringIO()
+        with mock.patch.object(codex_adapter, "employee", lambda agent: emp), \
+                mock.patch.object(codex_adapter, "next_codex_task", lambda agent: fake_task(description="x")), \
+                mock.patch.object(codex_adapter, "run_companyctl", fake_run_companyctl), \
+                mock.patch.object(codex_adapter, "run_codex", fake_run_codex), \
+                mock.patch.object(codex_adapter, "task_cost_so_far", lambda tid: 1.0), \
+                mock.patch.object(codex_adapter, "copy_report_to_task_evidence", lambda tid, r: r), \
+                mock.patch.object(codex_adapter.shutil, "which", lambda name: "/usr/local/bin/codex"), \
+                contextlib.redirect_stdout(captured):
+            codex_adapter.main(["--agent", "codex", "--execute", "--max-cost", "5"])
+        self.assertTrue(ran["called"], "under the cap codex should run")
