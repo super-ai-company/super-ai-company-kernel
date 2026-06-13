@@ -20,25 +20,55 @@
       "agent": "codex",
       "enabled": true,
       "command": "company-codex-adapter",
-      "args": ["--execute", "--sandbox", "workspace-write", "--timeout-seconds", "1800"],
+      "args": [
+        "--execute",
+        "--sandbox",
+        "workspace-write",
+        "--timeout-seconds",
+        "1800"
+      ],
       "max_tasks_per_tick": 1,
-      "retry_policy": {"max_attempts": 3, "base_delay_seconds": 60, "max_delay_seconds": 900}
+      "retry_policy": {
+        "max_attempts": 3,
+        "base_delay_seconds": 60,
+        "max_delay_seconds": 900
+      }
     },
     {
       "agent": "hermes",
-      "enabled": false,
+      "enabled": true,
       "command": "company-hermes-adapter",
       "args": [],
       "max_tasks_per_tick": 1,
-      "retry_policy": {"max_attempts": 3, "base_delay_seconds": 60, "max_delay_seconds": 900}
+      "retry_policy": {
+        "max_attempts": 3,
+        "base_delay_seconds": 60,
+        "max_delay_seconds": 900
+      }
     },
     {
       "agent": "nestcar",
-      "enabled": false,
+      "enabled": true,
       "command": "company-openclaw-adapter",
       "args": [],
       "max_tasks_per_tick": 1,
-      "retry_policy": {"max_attempts": 3, "base_delay_seconds": 60, "max_delay_seconds": 900}
+      "retry_policy": {
+        "max_attempts": 3,
+        "base_delay_seconds": 60,
+        "max_delay_seconds": 900
+      }
+    },
+    {
+      "agent": "antigravity",
+      "enabled": true,
+      "command": "company-antigravity-adapter",
+      "args": [],
+      "max_tasks_per_tick": 1,
+      "retry_policy": {
+        "max_attempts": 2,
+        "base_delay_seconds": 120,
+        "max_delay_seconds": 900
+      }
     }
   ]
 }
