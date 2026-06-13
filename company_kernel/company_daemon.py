@@ -231,6 +231,24 @@ def retry_due_adapter_runs(config: dict) -> list[dict]:
 WATCHDOG_STATE_PATH = STATE_DIR / "watchdog.json"
 
 
+def maybe_backup(config: dict) -> list[dict]:
+    """Take a DB snapshot when the newest backup is older than the configured interval."""
+    backup_cfg = config.get("backup") or {}
+    if not backup_cfg.get("enabled", False):
+        return []
+    from company_kernel import backup as backup_mod
+    interval_hours = float(backup_cfg.get("interval_hours", 24) or 24)
+    keep = int(backup_cfg.get("keep", 14) or 14)
+    snaps = backup_mod.list_snapshots()
+    if snaps:
+        newest_age_h = (datetime.now().timestamp() - snaps[0].stat().st_mtime) / 3600.0
+        if newest_age_h < interval_hours:
+            return []
+    result = backup_mod.snapshot(keep=keep, label="auto")
+    return [{"step": "backup.snapshot", "result": {"returncode": 0 if result.get("ok") else 1,
+            "stdout": json.dumps(result, ensure_ascii=False), "stderr": ""}}]
+
+
 def check_unclaimed_tasks(config: dict) -> list[dict]:
     """Alert once per task when a submitted task stays unclaimed beyond the configured window."""
     watchdog = config.get("watchdog") or {}
@@ -383,6 +401,7 @@ def tick(config: dict) -> dict:
         results.append({"step": f"adapter.{worker.get('agent', '')}", "result": {"returncode": 0 if adapter_state["ok"] else 1, "stdout": json.dumps(adapter_state, ensure_ascii=False), "stderr": ""}})
     for result in check_unclaimed_tasks(config):
         results.append({"step": "watchdog.unclaimed-task", "result": result})
+    results.extend(maybe_backup(config))
     state = {"ok": all(item["result"].get("returncode", 1) == 0 for item in results), "at": now(), "results": results}
     path = write_state(state)
     state["state_file"] = str(path)
