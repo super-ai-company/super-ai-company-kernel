@@ -7988,6 +7988,20 @@ def direct_runtime_command(runtime: str, target: str, source: str, body: str, ti
             "--timeout",
             str(timeout),
         ], target
+    if runtime in {"claude", "trae"}:
+        return [
+            str(ROOT / "bin" / f"company-{runtime}-adapter"),
+            "--agent",
+            target,
+            "--direct-message",
+            body,
+            "--direct-source",
+            source,
+            "--direct-session-key",
+            session_key,
+            "--timeout",
+            str(timeout),
+        ], target
     raise ValueError(f"direct send unsupported runtime: {runtime}")
 
 

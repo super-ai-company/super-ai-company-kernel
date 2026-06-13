@@ -124,6 +124,30 @@ def run_trae(prompt: Path, output: Path, workspace: Path, mode: str, new_window:
     return cp.returncode, " ".join(["trae", "chat", "--mode", mode, "<prompt>"])
 
 
+def handle_direct(args: argparse.Namespace) -> int:
+    """Direct reachability probe for verify-direct activation: run trae chat and return reply + receipt."""
+    if not shutil.which("trae"):
+        emit({"ok": False, "error": "trae command not found", "agent": args.agent, "direct_message": True})
+        return 1
+    base = ROOT / "employees" / args.agent / "reports" / "direct"
+    base.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    prompt = base / f"direct-prompt-{stamp}.md"
+    output = base / f"direct-output-{stamp}.md"
+    prompt.write_text(args.direct_message, encoding="utf-8")
+    workspace = Path(args.workspace).expanduser() if args.workspace else DEFAULT_WORKSPACE
+    code, _ = run_trae(prompt, output, workspace, "ask", False)
+    reply = output.read_text(encoding="utf-8", errors="replace").strip() if output.exists() else ""
+    receipt = base / f"direct-receipt-{stamp}.json"
+    receipt.write_text(json.dumps({"agent": args.agent, "source": args.direct_source,
+        "session_key": args.direct_session_key, "reply": reply, "created_at": now()}, ensure_ascii=False, indent=2), encoding="utf-8")
+    run_companyctl(["heartbeat", "--agent", args.agent])
+    emit({"ok": code == 0, "processed": 0, "agent": args.agent, "direct_message": True,
+          "source": args.direct_source, "session_key": args.direct_session_key,
+          "reply": reply, "receipt": str(receipt), "activation_eligible": True})
+    return code
+
+
 def process(args: argparse.Namespace) -> int:
     emp = employee(args.agent)
     if not emp:
@@ -132,6 +156,8 @@ def process(args: argparse.Namespace) -> int:
     if emp["runtime"] != "trae":
         emit({"ok": False, "error": "employee runtime is not trae", "agent": args.agent, "runtime": emp["runtime"]})
         return 1
+    if getattr(args, "direct_message", ""):
+        return handle_direct(args)
     if args.execute and not shutil.which("trae"):
         emit({"ok": False, "error": "trae command not found"})
         return 1
@@ -175,6 +201,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--mode", default="ask", choices=["ask", "edit", "agent"])
     parser.add_argument("--new-window", action="store_true")
     parser.add_argument("--execute", action="store_true", help="actually run trae chat; without this only writes prompt and report")
+    parser.add_argument("--direct-message", default="", help="direct reachability probe (used by verify-direct)")
+    parser.add_argument("--direct-source", default="")
+    parser.add_argument("--direct-session-key", default="")
+    parser.add_argument("--timeout", type=int, default=120)
     return parser
 
 
