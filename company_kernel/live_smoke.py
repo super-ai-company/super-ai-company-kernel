@@ -46,8 +46,23 @@ def ctl(args: list[str]) -> tuple[int, dict]:
         return cp.returncode, {"raw": (cp.stdout or cp.stderr)[-300:]}
 
 
-def ensure_active(agent: str) -> None:
-    ctl(["employee", "update", "--id", agent, "--status", "active"])
+def employee_status(agent: str) -> str:
+    _, d = ctl(["employee", "show", "--id", agent])
+    return str((d.get("employee") or {}).get("status", ""))
+
+
+def ensure_active(agent: str) -> str:
+    """Activate the agent. Candidates can't be flipped directly — the kernel requires a real
+    verify-direct round-trip (proving the runtime actually responds) before activation."""
+    if employee_status(agent) == "active":
+        return "already active"
+    # try a plain update first; if the kernel refuses (candidate), do a real verify-direct
+    code, d = ctl(["employee", "update", "--id", agent, "--status", "active"])
+    if code == 0 and d.get("ok"):
+        return "activated"
+    code, d = ctl(["employee", "verify-direct", "--id", agent, "--from", "main",
+                   "--rounds", "2", "--activate", "--continue-on-failure"])
+    return "verify-direct ok" if employee_status(agent) == "active" else f"activation failed ({d.get('error','')[:60]})"
 
 
 def auto_approve(task_id: str) -> None:
@@ -83,7 +98,11 @@ def smoke(runtime: str, agent: str, adapter: str, cli: str | None, extra: list[s
         log(f"  结果: ⏭  跳过（{cli or 'app'} 不在本机，链路无法实测）")
         return "skipped (no CLI)"
 
-    ensure_active(agent)
+    act = ensure_active(agent)
+    log(f"  激活: {act}")
+    if employee_status(agent) != "active":
+        log("  结果: ⛔ 无法激活为在岗员工（候选验证未通过），跳过执行")
+        return "activation failed"
     task_id = f"smoke-{runtime}-{datetime.now().strftime('%H%M%S')}"
     title = f"smoke: {runtime} 真实执行确认"
     desc = ("这是一次链路冒烟。请做一件最小的真实动作并确认：在你的工作目录创建文件 "
