@@ -1,0 +1,22 @@
+{
+  "version": 1,
+  "currency": "USD",
+  "_comment": "结果价(result_prices)按任务类型关键词匹配，给买家按结果计费；成本(cost_rates)用于估算执行成本以算毛利。改成你的真实费率。",
+  "result_prices": {
+    "code_fix": 5.0,
+    "data_report": 8.0,
+    "ticket_resolution": 1.5,
+    "default": 3.0
+  },
+  "task_type_keywords": {
+    "code_fix": ["修复", "fix", "bug", "测试", "test", "重构", "refactor"],
+    "data_report": ["数据", "报表", "抓取", "report", "scrape", "etl", "聚合"],
+    "ticket_resolution": ["工单", "客服", "ticket", "support", "解决"]
+  },
+  "cost_rates": {
+    "token_input_per_1k": 0.003,
+    "token_output_per_1k": 0.015,
+    "runtime_per_minute": 0.05,
+    "_note": "token 费率按 1k tokens；无 token 数据时用 runtime_per_minute 兜底估算。"
+  }
+}

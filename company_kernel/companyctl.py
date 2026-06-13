@@ -5732,6 +5732,90 @@ def cmd_budget_record(args: argparse.Namespace) -> int:
     return 0
 
 
+def load_pricing_config() -> dict:
+    path = ROOT / "config" / "pricing.json"
+    if not path.exists():
+        return {}
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return {}
+
+
+def classify_task_type(title: str, description: str, pricing: dict) -> str:
+    text = f"{title}\n{description}".lower()
+    for ttype, keywords in (pricing.get("task_type_keywords") or {}).items():
+        for kw in keywords:
+            if kw.lower() in text:
+                return ttype
+    return "default"
+
+
+def estimate_task_cost(ev: dict, rates: dict) -> float:
+    """Cost of a task from its budget events: prefer recorded amount; else estimate from
+    tokens; else fall back to runtime. Lets us compute margin even before token capture lands."""
+    amount = float(ev.get("amount") or 0)
+    if amount > 0:
+        return amount
+    ti = int(ev.get("token_input") or 0)
+    to = int(ev.get("token_output") or 0)
+    if ti or to:
+        return ti / 1000.0 * float(rates.get("token_input_per_1k", 0)) + to / 1000.0 * float(rates.get("token_output_per_1k", 0))
+    secs = int(ev.get("runtime_seconds") or 0)
+    return secs / 60.0 * float(rates.get("runtime_per_minute", 0))
+
+
+def compute_economics(conn: sqlite3.Connection) -> dict:
+    """Per-task-type unit economics: revenue (result price) vs cost (from budget events) ->
+    margin. This is survival-metric #1 for outcome-based pricing."""
+    pricing = load_pricing_config()
+    prices = pricing.get("result_prices") or {}
+    rates = pricing.get("cost_rates") or {}
+    currency = pricing.get("currency", "USD")
+    # completed tasks + their aggregated budget cost
+    tasks = rows(conn, "SELECT id, title, description, target_agent FROM tasks WHERE status = 'completed'")
+    cost_by_task: dict = {}
+    for ev in rows(conn, "SELECT task_id, amount, token_input, token_output, runtime_seconds FROM budget_events WHERE task_id != ''"):
+        cost_by_task.setdefault(ev["task_id"], []).append(ev)
+    buckets: dict = {}
+    for task in tasks:
+        ttype = classify_task_type(task.get("title", ""), task.get("description", ""), pricing)
+        revenue = float(prices.get(ttype, prices.get("default", 0)))
+        cost = sum(estimate_task_cost(ev, rates) for ev in cost_by_task.get(task["id"], []))
+        b = buckets.setdefault(ttype, {"task_type": ttype, "count": 0, "revenue": 0.0, "cost": 0.0})
+        b["count"] += 1
+        b["revenue"] += revenue
+        b["cost"] += cost
+    for b in buckets.values():
+        b["revenue"] = round(b["revenue"], 4)
+        b["cost"] = round(b["cost"], 4)
+        b["margin"] = round(b["revenue"] - b["cost"], 4)
+        b["margin_pct"] = round((b["margin"] / b["revenue"] * 100) if b["revenue"] else 0.0, 1)
+    total_rev = round(sum(b["revenue"] for b in buckets.values()), 4)
+    total_cost = round(sum(b["cost"] for b in buckets.values()), 4)
+    return {
+        "currency": currency,
+        "by_task_type": sorted(buckets.values(), key=lambda x: -x["revenue"]),
+        "totals": {
+            "completed_tasks": sum(b["count"] for b in buckets.values()),
+            "revenue": total_rev,
+            "cost": total_cost,
+            "margin": round(total_rev - total_cost, 4),
+            "margin_pct": round((total_rev - total_cost) / total_rev * 100 if total_rev else 0.0, 1),
+        },
+        "note": "revenue=按 config/pricing.json 结果价；cost=budget_events 估算（amount>token>runtime 兜底）。",
+    }
+
+
+def cmd_economics(args: argparse.Namespace) -> int:
+    conn = connect_readonly()
+    try:
+        emit({"ok": True, **compute_economics(conn)})
+    finally:
+        conn.close()
+    return 0
+
+
 def cmd_budget_summary(args: argparse.Namespace) -> int:
     conn = connect_readonly()
     try:
@@ -12659,6 +12743,9 @@ def build_parser() -> argparse.ArgumentParser:
     tool_call_list.add_argument("--session-id", default="")
     tool_call_list.add_argument("--limit", type=int, default=50)
     tool_call_list.set_defaults(func=cmd_tool_call_list)
+
+    economics = sub.add_parser("economics")
+    economics.set_defaults(func=cmd_economics)
 
     budget = sub.add_parser("budget")
     budget_sub = budget.add_subparsers(dest="budget_cmd", required=True)
