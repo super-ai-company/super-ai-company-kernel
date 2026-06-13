@@ -26,6 +26,7 @@ CTL = ROOT / "bin" / "companyctl"
 REPORT = ROOT / "state" / "status-reconcile-report.txt"
 
 CLI_RUNTIMES = {"codex": "codex", "hermes": "hermes", "claude": "claude", "trae": "trae"}
+GUI_ONLY_RUNTIMES = {"antigravity"}  # cannot work autonomously -> archived, never online
 
 lines: list[str] = []
 def log(s: str = "") -> None:
@@ -87,9 +88,11 @@ def reconcile_one(emp: dict, oc_registered: set) -> tuple[str, str]:
         demote(agent, reason)
         return "candidate", reason
 
-    if runtime == "antigravity":
-        demote(agent, "GUI-only：不能自动干活，需人工/GUI worker")
-        return "candidate", "GUI-only（不自动）"
+    if runtime in GUI_ONLY_RUNTIMES:
+        # GUI-only runtimes can't work autonomously -> archive, not just demote, so they
+        # never appear as an online employee.
+        ctl(["employee", "update", "--id", agent, "--status", "archived"])
+        return "archived", "GUI-only：已下线（不作为在线员工）"
 
     if runtime == "openclaw":
         # business agents run inside OpenClaw; real = registered in OpenClaw inventory
@@ -109,15 +112,16 @@ def main() -> int:
     log(f"时间: {datetime.now().isoformat(timespec='seconds')}")
     log("规则: 只有真实探测通过的才保留 active；其余降级 candidate 并写明原因。\n")
     oc = openclaw_registered()
-    active, candidate = [], []
+    active, candidate, archived = [], [], []
     for emp in list_employees():
         status, reason = reconcile_one(emp, oc)
-        icon = "✅" if status == "active" else "⏸"
+        icon = {"active": "✅", "archived": "🗑"}.get(status, "⏸")
         log(f"  {icon} {emp['id']:<16} [{emp.get('runtime',''):<11}] → {status:<10} {reason}")
-        (active if status == "active" else candidate).append(emp["id"])
+        {"active": active, "archived": archived}.get(status, candidate).append(emp["id"])
     log("\n============ 结果 ============")
     log(f"✅ 真能干活（active, {len(active)}）: {', '.join(active)}")
     log(f"⏸  暂不可用（candidate, {len(candidate)}）: {', '.join(candidate)}")
+    log(f"🗑 已下线（archived, {len(archived)}）: {', '.join(archived)}")
     REPORT.parent.mkdir(parents=True, exist_ok=True)
     REPORT.write_text("\n".join(lines) + "\n", encoding="utf-8")
     log(f"\n报告: {REPORT}")
