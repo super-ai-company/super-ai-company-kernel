@@ -13,6 +13,10 @@ from unittest import mock
 
 class ConversationStressTest(unittest.TestCase):
     def setUp(self):
+        # Registered FIRST so it runs LAST (cleanups are LIFO): after the env patch is
+        # removed, reload the kernel modules with the real env so module-level DB_PATH/ROOT
+        # globals revert — otherwise this test's temp paths leak into other test files.
+        self.addCleanup(self._restore_modules)
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)
@@ -30,6 +34,11 @@ class ConversationStressTest(unittest.TestCase):
         importlib.reload(companyctl); importlib.reload(api_gateway)
         self.ctl = companyctl
         self.gw = api_gateway
+
+    def _restore_modules(self):
+        import importlib
+        from company_kernel import companyctl, api_gateway
+        importlib.reload(companyctl); importlib.reload(api_gateway)
 
     def _run(self, argv):
         import contextlib, io, json
