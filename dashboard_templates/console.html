@@ -367,7 +367,8 @@ async function loadEmployees() {
   const [data, hbData] = await Promise.all([api("/v1/employees"), api("/v1/heartbeats").catch(()=>({heartbeats:[]}))]);
   const hbMap = {};
   for (const hb of (hbData.heartbeats||[])) hbMap[hb.agent_id] = hb.last_seen_at;
-  EMPLOYEES = (data.employees || data.items || []).map(e => ({...e, last_seen_at: hbMap[e.id] || ""}));
+  // archived employees (e.g. GUI-only antigravity) are off the roster entirely
+  EMPLOYEES = (data.employees || data.items || []).filter(e => e.status !== "archived").map(e => ({...e, last_seen_at: hbMap[e.id] || ""}));
   $("cntEmp").textContent = EMPLOYEES.length;
   // selects
   const opts = EMPLOYEES.map(e=>`<option value="${esc(e.id)}">${esc(e.id)}</option>`).join("");
