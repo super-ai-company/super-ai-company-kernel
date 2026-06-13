@@ -1,5 +1,8 @@
 # Agent 接入指南（跨平台 · 全智能体）
 
+> English version: [AGENT_ONBOARDING.en.md](AGENT_ONBOARDING.en.md)
+
+
 让任意 AI 智能体（codex / claude / hermes / openclaw / trae / antigravity，或任何自定义 agent）
 在 **Windows / Linux / macOS** 上接入 Company Kernel 员工体系。本指南不依赖任何特定机器路径，
 全部用环境变量表达。

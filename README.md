@@ -1,883 +1,135 @@
-# Company Kernel
+# Company Kernel · 超级 AI 公司内核
 
-通用 AI 公司内核。用于把 OpenClaw、Hermes、Codex、Claude、Trae、Antigravity 等工具注册成公司员工，并用统一任务协议互相通信。
+> **A governance kernel that turns any AI agent (Codex, Claude, Hermes, OpenClaw, Trae, Antigravity, or your own) into a managed "employee"** — with one shared task protocol for messaging, task routing, approvals, locks, audit, and recovery. Cross-platform (Windows / Linux / macOS). **v1.0**.
+>
+> **把任意 AI 智能体（Codex、Claude、Hermes、OpenClaw、Trae、Antigravity 或自建）统一为"公司员工"的治理内核** —— 用一套任务协议管理通信、派活、审批、锁、审计与恢复。跨平台（Windows / Linux / macOS）。**v1.0**。
 
-> **v1.0 已上线**：跨平台（Windows / Linux / macOS）、支持任意智能体自动接入员工体系。
-> 一站式接入指南：[docs/AGENT_ONBOARDING.md](docs/AGENT_ONBOARDING.md)
-> 上线就绪评估：[docs/GO_LIVE_READINESS.md](docs/GO_LIVE_READINESS.md) · 完成报告：[docs/COMPLETION_REPORT.md](docs/COMPLETION_REPORT.md)
+English | [中文](#中文说明)
 
-## 30 秒上手
+---
+
+## English
+
+### What it is
+
+Modern AI tools are each powerful but isolated: each has its own rules, state, and task queue. Company Kernel pulls "how the company runs" out of any single tool. Tools only **execute tasks** — they cannot change company rules, the communication protocol, approval policy, or the underlying state. Any tool can crash, go offline, or upgrade without destroying the company itself.
+
+### Key features
+
+- **Unified employee model** — register any runtime as an employee with one command; adding an agent is a command, not a code change.
+- **Task protocol** — submit / claim / done / block with mandatory evidence; multi-round conversations; event-driven hooks.
+- **Verdict gate** — a worker's exit code 0 is not "done"; the agent must emit `STATUS: completed` / `STATUS: blocked - <reason>`, otherwise the task blocks for human review (no fake completions).
+- **Per-task workspace** — a task can target a specific repo via `工作区: /abs/path`; the kernel validates it and refuses to let workers modify the kernel itself.
+- **Governance** — high-risk actions (external send, deploy, kernel change) require owner approval; rule changes go through RFCs.
+- **Reliability** — execution timeout, retry policy, stale-task watchdog, honest heartbeats.
+- **Security & ops** — opt-in Bearer-token gateway auth, automatic SQLite online backup + guarded restore.
+- **Live console** — employees on-duty, task kanban, messaging, conversations, approvals, activity feed; served by the API gateway.
+- **Interfaces** — `companyctl` CLI, REST / JSON-RPC / gRPC gateways, launchd/systemd/Task-Scheduler daemon.
+
+### 30-second quick start
 
 ```bash
 git clone https://github.com/super-ai-company/super-ai-company-kernel.git
 cd super-ai-company-kernel
-export OPENCLAW_COMPANY_KERNEL_ROOT="$PWD"          # Windows 见接入指南
-bin/companyctl doctor --summary                      # 自检
+export OPENCLAW_COMPANY_KERNEL_ROOT="$PWD"      # Windows: see onboarding guide
+bin/companyctl doctor --summary                  # self-check (Win: python -m company_kernel.companyctl ...)
+bin/company-add-employee --id codex --name Codex --role developer \
+  --runtime codex --workspace <your-repo> --enable-worker --execute
+bin/company-api-gateway --port 8765              # open http://127.0.0.1:8765/
+```
+
+### Onboard any agent
+
+One command per employee. Supported runtimes: `codex`, `claude`, `hermes`, `openclaw`, `trae`, `antigravity`, `local` (generic / any custom agent). Full Windows/Linux/macOS matrix and per-runtime notes:
+**[docs/AGENT_ONBOARDING.md](docs/AGENT_ONBOARDING.md)**.
+
+### Going to production
+
+- Enable auth: `export COMPANY_KERNEL_API_TOKEN="<random>"` — all API write/data endpoints then require `Authorization: Bearer`.
+- Backups: on by default (daemon every 24h); manual via `bin/company-backup snapshot|list|restore`.
+- The gateway binds `127.0.0.1` by default; expose with `--host 0.0.0.0` **only** after setting a token.
+- Readiness assessment: [docs/GO_LIVE_READINESS.md](docs/GO_LIVE_READINESS.md).
+
+### Tests
+
+```bash
+python3 -B -m unittest discover -s tests      # baseline: 206 passing
+```
+
+### Documentation index
+
+| Doc | What |
+|---|---|
+| [docs/AGENT_ONBOARDING.md](docs/AGENT_ONBOARDING.md) | Cross-platform onboarding for every agent |
+| [docs/GO_LIVE_READINESS.md](docs/GO_LIVE_READINESS.md) | Production readiness + upgrade backlog |
+| [docs/COMPLETION_REPORT.md](docs/COMPLETION_REPORT.md) | Delivered capabilities |
+| [docs/SUPER_AI_COMPANY_GOAL.md](docs/SUPER_AI_COMPANY_GOAL.md) | Project vision |
+| [docs/RUNTIME_ADAPTERS.md](docs/RUNTIME_ADAPTERS.md) | Adapter design |
+| [DELIVERY.md](DELIVERY.md) | Change log / delivery notes |
+
+---
+
+## 中文说明
+
+### 这是什么
+
+现在的 AI 工具各自都很强，但彼此孤立：每个都有自己的规则、状态和任务队列。Company Kernel 把"公司怎么运转"从任何单个工具里抽离出来——工具只负责**执行任务**，不能修改公司制度、通信协议、审批规则或底层状态。任何工具崩溃、离线或升级，都不会摧毁公司本身。
+
+### 核心能力
+
+- **统一员工模型** —— 一条命令把任意运行时注册为员工；新增智能体是命令，不是改代码。
+- **任务协议** —— 提交/领取/完成/阻塞，强制证据；多轮对话；事件驱动钩子接力。
+- **裁决门** —— worker 退出码 0 不等于"完成"；智能体必须输出 `STATUS: completed` 或 `STATUS: blocked - 原因`，否则任务进入受阻待人工复核（杜绝假完成）。
+- **任务级工作区** —— 任务可用 `工作区: /绝对路径` 指定目标仓库；内核校验路径并禁止 worker 改动内核自身。
+- **治理** —— 高风险动作（外发、部署、改内核）需 owner 审批；规则变更走 RFC。
+- **可靠性** —— 执行超时、重试策略、断链看门狗、诚实心跳。
+- **安全与运维** —— 可选 Bearer-token 网关鉴权、SQLite 自动在线备份 + 守护式恢复。
+- **实时控制台** —— 员工在岗、任务看板、消息、对话、审批、活动流，由 API 网关直接提供。
+- **接口** —— `companyctl` 命令行、REST / JSON-RPC / gRPC 网关、launchd/systemd/任务计划程序常驻。
+
+### 30 秒上手
+
+```bash
+git clone https://github.com/super-ai-company/super-ai-company-kernel.git
+cd super-ai-company-kernel
+export OPENCLAW_COMPANY_KERNEL_ROOT="$PWD"      # Windows 见接入指南
+bin/companyctl doctor --summary                  # 自检（Windows: python -m company_kernel.companyctl ...）
 bin/company-add-employee --id codex --name Codex --role developer \
   --runtime codex --workspace <你的代码仓库> --enable-worker --execute
-bin/company-api-gateway --port 8765                  # 浏览器开 http://127.0.0.1:8765/
+bin/company-api-gateway --port 8765              # 浏览器开 http://127.0.0.1:8765/
 ```
 
-新增任意员工只需一条 `company-add-employee`；全部运行时 × 各操作系统接入方法见
-[docs/AGENT_ONBOARDING.md](docs/AGENT_ONBOARDING.md)。
+### 接入任意智能体
 
-## Goal
+每个员工一条命令。支持的运行时：`codex`、`claude`、`hermes`、`openclaw`、`trae`、`antigravity`、`local`（通用 / 任意自建智能体）。完整的 Windows/Linux/macOS 矩阵与各运行时要点见：
+**[docs/AGENT_ONBOARDING.md](docs/AGENT_ONBOARDING.md)**。
 
-项目总目标见：[docs/SUPER_AI_COMPANY_GOAL.md](docs/SUPER_AI_COMPANY_GOAL.md)
+### 上线生产
 
-第一版最短使用路径见：[docs/FIRST_RELEASE_RUNBOOK.md](docs/FIRST_RELEASE_RUNBOOK.md)
+- 开启鉴权：`export COMPANY_KERNEL_API_TOKEN="<强随机串>"` —— 之后所有 API 数据/写操作都需 `Authorization: Bearer`。
+- 备份：默认开启（daemon 每 24h）；手动 `bin/company-backup snapshot|list|restore`。
+- 网关默认只绑 `127.0.0.1`；要对外暴露请**先设 token** 再 `--host 0.0.0.0`。
+- 上线就绪评估见 [docs/GO_LIVE_READINESS.md](docs/GO_LIVE_READINESS.md)。
 
-本地环境、隐藏目录和 Skill 启用规范见：[docs/LOCAL_ENVIRONMENT_AND_SKILLS.md](docs/LOCAL_ENVIRONMENT_AND_SKILLS.md)
-
-Hermes 管理 Codex 项目开发的 PM 监督闭环见：[docs/CODEX_HERMES_PM_SUPERVISION.md](docs/CODEX_HERMES_PM_SUPERVISION.md)
-
-各类员工逐步接入规则见：[docs/EMPLOYEE_INTEGRATION_MATRIX.md](docs/EMPLOYEE_INTEGRATION_MATRIX.md)
-
-OpenClaw 员工与 Company Kernel 的桥接边界见：[docs/OPENCLAW_COMPANY_BRIDGE.md](docs/OPENCLAW_COMPANY_BRIDGE.md)
-
-## Quick Start
+### 测试
 
 ```bash
-cd $OPENCLAW_COMPANY_KERNEL_ROOT
-python3 -m company_kernel.companyctl doctor
-python3 -m company_kernel.companyctl employee create --id hermes --name Hermes --role supervisor --runtime hermes --workspace $OPENCLAW_HERMES_WORKSPACE
-python3 -m company_kernel.companyctl employee create --id codex --name Codex --role developer --runtime codex --workspace $OPENCLAW_CODEX_WORKSPACE
-python3 -m company_kernel.companyctl conversation start --from hermes --participants hermes,codex,claude --title "方案讨论" --body "请讨论第一版实现方案"
-python3 -m company_kernel.companyctl task submit --from hermes --to codex --title "测试互通" --description "Codex 领取任务并回传 evidence"
-python3 -m company_kernel.companyctl runtime verify-adapters --agents hermes,codex,claude,trae,antigravity,nestcar
+python3 -B -m unittest discover -s tests      # 基线：206 通过
 ```
 
-## Test
+### 文档索引
 
-```bash
-python3 -m unittest discover -s tests -v
-```
+| 文档 | 内容 |
+|---|---|
+| [docs/AGENT_ONBOARDING.md](docs/AGENT_ONBOARDING.md) | 跨平台全智能体接入指南 |
+| [docs/GO_LIVE_READINESS.md](docs/GO_LIVE_READINESS.md) | 上线就绪评估 + 升级清单 |
+| [docs/COMPLETION_REPORT.md](docs/COMPLETION_REPORT.md) | 已交付能力 |
+| [docs/SUPER_AI_COMPANY_GOAL.md](docs/SUPER_AI_COMPANY_GOAL.md) | 项目愿景 |
+| [docs/RUNTIME_ADAPTERS.md](docs/RUNTIME_ADAPTERS.md) | 适配器设计 |
+| [DELIVERY.md](DELIVERY.md) | 交付与变更记录 |
 
-## v3 File Flow Kernel
+---
 
-任务提交会自动创建授权 workspace：`state/task-workspaces/task_<task-id>/`，包含 `input/`、`work/`、`artifacts/`、`evidence/`、`final/` 和 `manifest.json`。员工产物必须登记为 Artifact，不能只靠聊天或随机路径交接文件；同名产物再次登记会生成新 version，并把旧版本标记为 `superseded`。
+## License / 许可
 
-最小链路：
-
-```bash
-bin/companyctl task artifact register --task-id <task-id> --employee <agent> --path <workspace-file> --type json --summary "产物说明"
-bin/companyctl task artifact scan --task-id <task-id> --employee <agent> --dir <workspace-dir> --type json --summary "自动登记目录产物"
-bin/companyctl task artifact approve --artifact-id <artifact-id> --by <agent>
-bin/companyctl task handoff create --from-task <task-a> --to-task <task-b> --from-employee <agent-a> --to-employee <agent-b> --summary "交接说明" --artifact <artifact-id>
-bin/companyctl task handoff accept --handoff-id <handoff-id> --by <agent-b>
-bin/companyctl task handoff reject --handoff-id <handoff-id> --by <agent-b> --reason "交接不完整"
-bin/companyctl task context --task-id <task-b> --employee <agent-b>
-bin/companyctl task artifact use --task-id <task-b> --employee <agent-b> --artifact-id <artifact-id> --summary "读取用途"
-bin/companyctl task attempt start --task-id <task-id> --employee <agent> --adapter-type local
-bin/companyctl task attempt finish --attempt-id <attempt-id> --status success
-bin/companyctl task retry --task-id <task-id> --by <agent> --reason "补齐后重试"
-bin/companyctl task evidence promote --artifact-id <artifact-id> --employee <agent> --summary "最终证据"
-bin/company-trace --task-id <task-id>
-```
-
-Trace JSON/HTML 与 dashboard trace summary 现在包含 tasks、events、adapter_runs、artifacts、handoffs、evidence、execution_attempts 和完整 timeline/counts。进入 v3 文件流的任务，`task done` 必须使用 promoted final evidence。
-
-## Local Usability Smoke
-
-```bash
-bin/company-local-smoke --json-only
-```
-
-这条本机验收会一次检查 REST/RPC service smoke、重新生成 dashboard、跑 attendance sweep，并对 `nestcar,chindahotpot,codex` 做真实 direct message；报告固定写到 `state/local-smoke/latest.json`。
-
-## Commands
-
-```bash
-python3 -m company_kernel.companyctl employee list
-python3 -m company_kernel.companyctl conversation list --agent codex
-python3 -m company_kernel.companyctl conversation reply --from codex --conversation-id <id> --body "收到"
-python3 -m company_kernel.companyctl workflow validate --workflow video_pipeline_5round
-python3 -m company_kernel.companyctl workflow run --workflow video_pipeline_5round --run-id wf-video-ops-maker-publisher-003
-python3 -m company_kernel.companyctl scheduler run
-python3 -m company_kernel.companyctl approval request --from hermes --action external_send --reason "需要外发客户消息" --target nestcar --risk P1
-python3 -m company_kernel.companyctl lock acquire --agent codex --resource task:<id> --lease-seconds 1800
-python3 -m company_kernel.companyctl repair reset-stale-claims
-python3 -m company_kernel.company_daemon --once
-python3 -m company_kernel.company_dashboard
-python3 -m company_kernel.companyctl project create --project-id super-ai-company-kernel --title "Super AI Company Kernel" --owner openclaw-main
-python3 -m company_kernel.companyctl task list
-python3 -m company_kernel.companyctl task claim --agent codex
-python3 -m company_kernel.companyctl task done --agent codex --task-id <id> --summary "完成" --evidence /path/to/report.md
-python3 -m company_kernel.companyctl task reopen --task-id <id> --by openclaw-main --reason "blocker removed"
-python3 -m company_kernel.companyctl task reassign --task-id <id> --by openclaw-main --to hermes --reason "better runtime"
-python3 -m company_kernel.companyctl heartbeat --agent codex
-python3 -m company_kernel.companyctl runtime test --runtime hermes
-bin/company-adapter-worker --agent codex --dry-run
-bin/company-codex-adapter
-bin/company-codex-adapter --execute --sandbox read-only
-bin/company-codex-pm-supervisor --agent codex --stale-minutes 15
-bin/company-openclaw-adapter --agent nestcar
-bin/company-openclaw-adapter --agent nestcar --execute
-bin/company-hermes-adapter
-bin/company-hermes-adapter --execute
-bin/company-claude-adapter
-bin/company-claude-adapter --execute
-bin/company-trae-adapter
-bin/company-trae-adapter --execute
-bin/company-antigravity-adapter
-bin/company-antigravity-adapter --execute
-bin/company-api-gateway --host 127.0.0.1 --port 8765
-bin/company-api-rpc --host 127.0.0.1 --port 8766
-bin/company-api-grpc --host 127.0.0.1 --port 8767
-```
-
-## Direct Messages Dashboard Feed
-
-Dashboard-ready recent direct messages are available without hard-coded employee IDs:
-
-```bash
-curl 'http://127.0.0.1:8765/v1/messages/recent-direct?limit=20'
-```
-
-`/v1/messages?agent=<id>` remains the per-agent inbox/outbox query. `/v1/messages/recent-direct` is the aggregate feed used by dashboard summary and Chat Hub style views.
-
-## Progress Heartbeat Protocol
-
-Supervisor-facing progress is now normalized into 5 machine-readable layers:
-
-- `received` -> `received|acknowledged|claimed`
-- `working` -> `working|in_progress|actively_progressing`
-- `waiting` -> `waiting|blocked_on_input_or_dependency`
-- `blocked` -> `blocked|failed_to_progress`
-- `done` -> `done|verified_complete|completed`
-
-Write the progress payload inside heartbeat metadata or repo-local progress JSON:
-
-```json
-{
-  "progress": {
-    "state": "blocked_on_input_or_dependency",
-    "summary": "waiting for Shift reply"
-  }
-}
-```
-
-Stable read paths:
-
-- `POST /v1/heartbeats`: persists the progress payload into heartbeat metadata.
-- `GET /v1/dashboard/communication-observability`: returns adapter-run `progress_layer/progress_state`.
-- `POST /v1/supervisor/delivery-loop`: runs one autonomous supervisor pass over pending progress notifications.
-- `GET /v1/supervisor/delivery-loop`: reads the latest supervisor loop result from `state/supervisor/latest_delivery_loop.json`.
-- dashboard employee/adapter views: show normalized progress layer/state from heartbeat or repo-local progress reports.
-
-Minimal autonomous supervisor loop:
-
-```bash
-python3 -m company_kernel.companyctl supervisor delivery-loop --limit 20
-curl -X POST http://127.0.0.1:8765/v1/supervisor/delivery-loop -H 'Content-Type: application/json' -d '{"limit":20}'
-curl http://127.0.0.1:8765/v1/supervisor/delivery-loop
-```
-
-Returned counts:
-
-- `scanned`
-- `sent`
-- `skipped`
-- `failed`
-- `retry_ready`
-- `escalate_ready`
-
-## Sanitized External Mirror
-
-Hermes/Telegram or other outside-chat history must enter Company Kernel as a sanitized mirror payload only. Do not pass bot tokens, API keys, passwords, cookies, or raw secret-bearing records.
-
-Required minimal payload:
-
-```json
-{
-  "thread": {
-    "id": "ext-telegram-hermes-001",
-    "platform": "telegram",
-    "account_id": "home",
-    "external_chat_id": "CHAT_ID_PLACEHOLDER",
-    "owner_agent": "hermes",
-    "bridge_agent": "telegram-bridge",
-    "title": "Shift ↔ Hermes"
-  },
-  "cursor": {
-    "id": "telegram-home-hermes",
-    "value": "cursor-or-message-offset",
-    "state": {"sanitized": true}
-  },
-  "messages": [
-    {
-      "id": "ext-msg-001",
-      "direction": "inbound",
-      "platform": "telegram",
-      "sender_kind": "user",
-      "sender_id": "shift",
-      "body": "sanitized message text",
-      "created_at": "2026-06-05T01:45:00+07:00"
-    }
-  ]
-}
-```
-
-Import/query:
-
-```bash
-bin/companyctl external import --file /path/to/sanitized-payload.json
-curl 'http://127.0.0.1:8765/v1/external-threads?platform=telegram&owner_agent=hermes'
-curl 'http://127.0.0.1:8765/v1/external-threads/ext-telegram-hermes-001/messages'
-```
-
-Repeated imports are idempotent by external message id and update `external_ingest_cursors`.
-
-## Adapter Progress Evidence
-
-`runtime adapter-run show --summary` returns compact `result_summary.runs[]` fields including parsed `report`, `progress_state`, and `progress_task_id` when the adapter stdout points to a repo-local progress JSON.
-
-```bash
-bin/companyctl runtime adapter-run show --run-id <run-id> --summary
-```
-
-## Internal Communication Watchdog Runbook
-
-Use this when agents appear to talk but do not execute. The goal is to distinguish delivered messages from real work receipts.
-
-Detect missing receipts and open internal tasks:
-
-```bash
-curl 'http://127.0.0.1:8765/v1/dashboard/internal-watchdog'
-```
-
-Plan follow-up actions without writing state:
-
-```bash
-curl -X POST 'http://127.0.0.1:8765/v1/dashboard/internal-watchdog/remediate' \
-  -H 'Content-Type: application/json' \
-  -d '{"source":"openclaw-main","dry_run":true,"escalate_existing":false}'
-```
-
-Create first follow-ups to stalled targets:
-
-```bash
-curl -X POST 'http://127.0.0.1:8765/v1/dashboard/internal-watchdog/remediate' \
-  -H 'Content-Type: application/json' \
-  -d '{"source":"openclaw-main","dry_run":false,"escalate_existing":false}'
-```
-
-If the same stalled item remains after a follow-up already exists, escalate to Hermes/main and create a reroute decision envelope:
-
-```bash
-curl -X POST 'http://127.0.0.1:8765/v1/dashboard/internal-watchdog/remediate' \
-  -H 'Content-Type: application/json' \
-  -d '{"source":"openclaw-main","dry_run":false,"escalate_to":"hermes","reroute_to":"codex"}'
-```
-
-Hermes/main should answer the generated `reroute-*` follow-up with:
-
-```text
-decision: reroute
-new_owner: codex
-reason: target stalled
-evidence_path: state/watchdog.json
-next_action: create rerouted task
-rollback: close rerouted task
-```
-
-Apply answered reroute decisions:
-
-```bash
-curl -X POST 'http://127.0.0.1:8765/v1/dashboard/internal-watchdog/apply-reroutes' \
-  -H 'Content-Type: application/json' \
-  -d '{"by":"hermes","dry_run":false}'
-```
-
-Effects:
-
-- creates `rerouted-<original_task_id>` for the new owner;
-- blocks the original stalled task with `rerouted_to:<agent>` evidence;
-- keeps all follow-up/escalation/reroute records repo-local under `state/followups/`;
-- dashboard Communication Observatory shows no-receipt/open-task watchdog state.
-- direct API coverage now includes `/v1/dashboard/internal-watchdog`, `/v1/dashboard/internal-watchdog/remediate`, and `/v1/dashboard/internal-watchdog/apply-reroutes`.
-
-## Boundary
-
-Company Kernel 管制度和通信。OpenClaw、Hermes、Codex、Claude、Trae、Antigravity 都只是 runtime adapter。
-
-## Employee Communication Config
-
-员工别名、互通关系、接力策略放在 `config/company_communications.json`。
-任务完成后的自动接力规则放在 `config/hooks.json`。
-Hook action 可用 `requires_approval` 标记高风险动作；未批准时 `scheduler run` 会阻断该动作并自动生成 pending approval。已完成的 hook action 会记录在 `hook_action_runs`，事件重跑不会重复执行。
-
-通信策略默认是 `policy.mode=open`：任意已注册员工都能互发消息和派任务，除非配置了 `blocked_talk_to` / `blocked_assign_to`。
-如果切到 `policy.mode=strict`，则必须显式配置 `can_talk_to` / `can_assign_to`，否则会被 `companyctl` 拦截。
-
-直连消息会调用目标员工 runtime 并返回真实 reply，同时写入目标 inbox evidence；OpenClaw 业务员工和 Codex 已接通：
-
-```bash
-bin/companyctl message direct --from main --to nestcar --body "只回复：NESTCAR_OK"
-bin/companyctl message direct --from main --to codex --body "只回复：CODEX_OK"
-```
-
-结构化缺参追问可以先通过 followup 状态落地，再由 owner 回复后自动继续 direct 回原员工：
-
-```bash
-bin/companyctl followup request --from nestcar --to main --question "请补充本次还车里程"
-bin/companyctl followup reply --followup-id <followup-id> --by main --answer "本次还车里程是 10234 km"
-```
-
-添加员工只需要命令创建，再按需配置通信。
-本机未安装、未登录或没有可调用执行入口的工具只能登记为 `candidate`，不能算正式员工，也不能进入心跳和自动调度；等真实 runtime 接通后再重新 `employee onboard` 激活。当前 `cursor`、`devin`、`github-copilot`、`local-model-agent` 属于候选员工，`owner` 是人类审批端点。
-
-```bash
-bin/companyctl runtime register --runtime cursor --notes "Cursor IDE adapter placeholder"
-bin/companyctl employee onboard \
-  --id cursor \
-  --name Cursor \
-  --role ide-developer \
-  --runtime cursor \
-  --workspace $HOME/.cursor \
-  --alias cursor \
-  --skills code-editing,review \
-  --tools companyctl \
-  --task-types engineering \
-  --can-talk-to codex,hermes \
-  --can-assign-to codex \
-  --channel engineering \
-  --create-test-task
-bin/companyctl employee create --id video-reviewer --name "Video Reviewer" --role reviewer --runtime openclaw --workspace $OPENCLAW_ROOT/workspace-video-reviewer
-bin/companyctl employee show --id video-reviewer
-bin/companyctl employee capabilities --id video-reviewer --add-skill review --add-tool "oc bus"
-bin/companyctl employee permissions --id video-reviewer --can-modify-kernel false --requires-approval-for "external_send,payment,compensation"
-bin/companyctl communication show --agent video-ops
-bin/companyctl communication check --from video-ops --to video-creator --action assign
-bin/companyctl communication check --from maker --to ops --action talk
-bin/companyctl employee offboard --id cursor --dry-run
-bin/companyctl employee offboard --id cursor
-```
-
-每个员工目录会包含 `profile.json`、`capabilities.json`、`permissions.json`、`rules.md`、`heartbeat.json` 和 inbox/outbox/reports。
-`employee onboard` 只会在 Company Kernel 管理目录内自动写入员工工作区规则文件；外部 workspace 不会被自动改写。`employee offboard` 默认只软归档员工并清理通信映射，`--hard-delete` 也只删除 Company Kernel 管理范围内的员工文件/工作区。
-
-按能力自动选人和派工：
-
-```bash
-bin/companyctl employee match --skills testing,review --task-type engineering
-bin/companyctl task route --from openclaw-main --title "修复测试失败" --description "选择最合适员工处理" --skills testing --task-type engineering
-```
-
-统一 adapter dry-run 验收：
-
-```bash
-bin/companyctl runtime verify-adapters --agents hermes,codex,claude,trae,antigravity,nestcar
-```
-
-该命令会给目标员工创建验收任务，运行对应 adapter dry-run，检查任务完成、evidence 文件和 heartbeat。默认不启动真实外部工具；加 `--execute` 才会走真实 runtime。
-
-高风险 route 或直接 submit 都会先生成审批，不会直接创建任务；批准后带 approval id 重跑：
-
-```bash
-bin/companyctl policy show
-bin/companyctl task submit --from openclaw-main --to chindahotpot --title "发布客户通知" --description "需要外发给客户"
-bin/companyctl approval approve --approval-id <id> --by openclaw-main --reason "证据充分"
-bin/companyctl task submit --from openclaw-main --to chindahotpot --title "发布客户通知" --description "需要外发给客户" --approval-id <id>
-bin/companyctl task route --from openclaw-main --title "发布客户通知" --description "需要外发给客户" --skills business-ops --requires-approval external_send
-bin/companyctl approval approve --approval-id <id> --by openclaw-main --reason "证据充分"
-bin/companyctl task route --from openclaw-main --title "发布客户通知" --description "需要外发给客户" --skills business-ops --requires-approval external_send --approval-id <id>
-```
-
-高风险动作和关键词配置在 `config/policy.json`，普通员工应读取或提交 RFC，不应直接修改内核代码。
-
-## Kernel Guard
-
-保护区配置在 `config/protected_paths.json`，普通员工变更保护区必须先提交 RFC。
-
-```bash
-bin/companyctl guard check --path config/policy.json
-bin/companyctl guard check --changed-file rfcs/20260603-change-policy.md
-```
-
-任务声明会修改保护区时，领取任务前会自动 guard；没有 RFC 会阻止 claim：
-
-```bash
-bin/companyctl rfc create --rfc-id rfc-change-policy --title "修改策略" --by codex --paths config/policy.json --reason "需要调整高风险关键词"
-bin/companyctl rfc list --status pending
-bin/companyctl rfc show --rfc rfc-change-policy
-bin/companyctl rfc approve --rfc rfc-change-policy --by openclaw-main --reason "批准"
-bin/companyctl task submit --from openclaw-main --to codex --title "修改策略" --changed-files config/policy.json --rfc rfc-change-policy
-bin/companyctl task claim --agent codex
-```
-
-当前内置别名：
-
-- `ops` -> `video-ops`
-- `maker` -> `video-creator`
-- `publisher` -> `video-publisher`
-
-视频生产 5 轮协作测试：
-
-```bash
-bin/companyctl workflow validate --workflow video_pipeline_5round
-bin/companyctl workflow run --workflow video_pipeline_5round --run-id wf-video-ops-maker-publisher-003
-bin/companyctl conversation show --conversation-id conv-video-pipeline-wf-video-ops-maker-publisher-003
-```
-
-事件驱动接力测试：
-
-```bash
-bin/companyctl message send --from maker --to ops --body "我应该创作什么视频？视频主题是什么？"
-bin/companyctl scheduler run
-bin/companyctl message list --agent maker
-bin/companyctl task submit --from video-ops --to video-creator --title "hook测试：创作搞笑中文竖版视频" --description "maker 完成后自动派 publisher 发布" --priority P1
-bin/companyctl task done --agent video-creator --task-id <maker-task-id> --summary "maker 已完成" --evidence /path/to/maker-result.md
-bin/companyctl scheduler run
-bin/companyctl scheduler events --pending
-bin/companyctl scheduler skip-event --event-id <event_id> --by openclaw-main --reason "验证事件，无需自动动作"
-```
-
-`message send` 会写入 `company_events`。因此员工发问、员工回复、完成任务后的接力都可以用 `config/hooks.json` 配置，不需要改内核代码。当前示例是：maker 问 ops 视频主题，scheduler 自动让 ops 回复创作要求并写 maker 心跳。
-
-带审批 gate 的 hook 会停在 pending event，批准后重跑 scheduler：
-
-```bash
-bin/companyctl approval approve --approval-id approval-publish-<task-id> --by openclaw-main --reason "允许发布"
-bin/companyctl scheduler run
-```
-
-## Approval Center
-
-高风险动作必须先进入审批中心：付款、赔偿、工资、处罚、外发消息、生产部署、密钥变更、内核变更。
-
-```bash
-bin/companyctl approval request --from hermes --action external_send --reason "需要外发客户消息" --target nestcar --risk P1 --task-id <task-id>
-bin/companyctl approval list --status pending
-bin/companyctl approval approve --approval-id <id> --by openclaw-main --reason "证据充分"
-bin/companyctl approval deny --approval-id <id> --by openclaw-main --reason "证据不足"
-bin/companyctl approval show --approval-id <id>
-```
-
-本机已接入 OpenClaw Telegram 按钮审批，用于 owner 离开电脑后的项目内审批：
-
-- 审批请求由 OpenClaw `ops_bus_worker.py` 发送到 Telegram。
-- Telegram 按钮值为 `oc_approve:<task_id>` / `oc_deny:<task_id>`。
-- 生产必须接入 OpenClaw 原生回调/插件桥接，再调用 `$OPENCLAW_ROOT/scripts/ops_approval_center.py apply-callback`。
-- `$OPENCLAW_ROOT/scripts/ops_telegram_approval_watcher.py` 是禁用的遗留 smoke 工具；不要启动它，它会和 OpenClaw 默认 Telegram bot 的 `getUpdates` 长轮询冲突，导致 NestCar 等独立 agent 已读不回。
-
-验证：
-
-```bash
-openclaw gateway probe
-bin/companyctl doctor --summary --strict-openclaw
-ls $OPENCLAW_ROOT/ops/approvals/approved
-```
-
-注意：这是项目/业务审批链路，不能替代 Codex Desktop 自身的系统级命令授权弹窗。Codex 宿主弹窗只能在本机批准或在弹窗里选择“以后同类命令不再询问”。
-
-## Recovery
-
-任务领取会写 `task:<id>` 租约锁。员工中断后可释放过期锁并把过期 claimed 任务恢复为 submitted：
-
-```bash
-bin/companyctl lock list
-bin/companyctl lock unlock-stale
-bin/companyctl repair reset-stale-claims
-```
-
-## Long Task Delegation
-
-长任务可以拆成多个子任务，分给不同员工执行，全部完成并有 evidence 后再回收父任务：
-
-```bash
-bin/companyctl task submit --from openclaw-main --to video-ops --title "制作并发布短视频项目" --task-id task-video-project-001
-bin/companyctl task show --task-id task-video-project-001
-bin/companyctl task split --task-id task-video-project-001 --by video-ops \
-  --item "maker|创作搞笑中文竖版视频|完成成片并提交 evidence|P1" \
-  --item "publisher|发布短视频|根据 maker evidence 发布并提交报告|P1" \
-  --child-id-prefix task-video-project-001-child
-bin/companyctl task children --task-id task-video-project-001
-bin/companyctl task collect --task-id task-video-project-001 --agent video-ops --summary "子任务已全部完成"
-```
-
-模型或员工也可以先生成 JSON 分解计划，再一次性提交：
-
-```bash
-bin/companyctl task split --task-id task-video-project-001 --by video-ops --plan /path/split-plan.json --child-id-prefix task-video-project-001-child
-```
-
-`split-plan.json` 支持 JSON list，或 `{ "items": [...] }`，每项包含 `target`、`title`、`description`、`priority`。`task split` 会写入子任务关系、子任务 metadata、`task.split` 事件和审计记录。
-围绕任务的多员工讨论可直接绑定到任务 metadata，便于后续追踪 AI 员工之间的多轮协作：
-
-```bash
-bin/companyctl task discuss --task-id task-video-project-001 --from video-ops --participants codex,hermes --body "请讨论执行方案"
-bin/companyctl task conversations --task-id task-video-project-001
-```
-
-## Daemon
-
-`bin/company-daemon` 是本机巡检循环，默认只运行 repair、scheduler 和 heartbeat，不启动真实外部工具。
-`config/daemon.json` 里的 `heartbeat_agents` 是固定员工心跳，`heartbeat_runtimes` 会动态覆盖指定 runtime 下所有 active 员工；设为 `["*"]` 时覆盖所有 active 员工，新增员工后不用手改心跳列表。
-`config/daemon.json` 里的 `adapter_workers` 可以启用员工 worker，让 daemon 每轮自动领取任务、执行 adapter、写 evidence、回传状态。`company-daemon --enable-worker <agent>` 可临时启用任意 active 员工；若该员工未在 daemon config 里预配置，会按员工 runtime 自动选择 `company-codex-adapter`、`company-hermes-adapter`、`company-claude-adapter`、`company-trae-adapter`、`company-antigravity-adapter` 或 `company-openclaw-adapter`。没有专用 adapter 的 local/custom runtime 才回退到 `company-adapter-worker --dry-run`，不启动真实外部工具，也不修改 config 文件。
-每个 worker 支持 `max_tasks_per_tick`，独立状态写到 `state/daemon/workers/<agent>.json`，汇总运行历史写入 SQLite `adapter_runs` 并显示在 dashboard；未确认的失败 adapter run 会让 `companyctl doctor` 报 `adapter_failures`。
-任务提交会生成 `trace_id`，并贯穿 task metadata、`company_events`、`adapter_runs` 和 dashboard，用来追踪派发、hook、adapter 执行链路。
-`bin/company-trace --task-id <task-id>` 会导出同一条链路的 JSON 和 HTML 时间线到 `state/traces/<trace_id>.html`，用于查看派发、hook、adapter run 的火焰图式耗时视图。
-daemon 会按 `run_retries` 和 worker `retry_policy` 对到期失败 adapter run 自动调用 `runtime retry-adapter-run`，默认指数退避写入 `adapter_runs.next_retry_at`，人工确认后不再自动重试。
-`companyctl doctor` 会读取 `state/daemon/last-run.json` 检查 daemon 是否在 10 分钟内运行；如果超过阈值会报 `daemon_stale`，因此定时器应按 10 分钟以内周期执行 daemon。
-`companyctl doctor --summary` 还会显示 launchd 模板和 `~/Library/LaunchAgents` 安装状态，并给出 install/verify 命令；未安装只作为可观测字段，不直接让健康检查失败。
-
-```bash
-bin/company-daemon --once --summary
-bin/company-daemon --once --enable-worker codex --summary
-bin/company-daemon --iterations 10 --interval 30
-bash bin/company-services-install-launchd
-bash bin/company-services-uninstall-launchd
-bash bin/company-daemon-install-launchd
-bash bin/company-daemon-uninstall-launchd
-bin/companyctl doctor --summary
-bin/companyctl doctor --summary --strict-launchd
-bin/companyctl doctor --summary --strict-openclaw
-bin/companyctl runtime adapter-runs --status failed --unacknowledged-only
-bin/companyctl runtime adapter-run show --run-id <adapter-run-id> --summary
-bin/companyctl runtime ack-adapter-run --run-id <adapter-run-id> --by openclaw-main --reason "已复核，可消警"
-bin/companyctl runtime retry-adapter-run --run-id <adapter-run-id> --by openclaw-main --reason "修复后重试"
-bin/company-trace --task-id <task-id>
-bin/company-service-smoke --json-only
-bin/company-local-smoke --json-only
-```
-
-`adapter_runs.task_id` 会记录本次 adapter 处理的任务，旧记录会从 `result_json` 自动回填；`retry-adapter-run` 默认用该字段恢复任务，仍缺失时可补 `--task-id`。
-Codex/Hermes/Claude/Trae 真实执行会把完整 stdout/stderr 写入员工 report 目录，并只把短输出摘要写进任务 summary/blocker。告警侧建议优先读取 `doctor --summary` 和 `adapter-run show --summary`，避免把完整 stdout/result_json 发给模型。
-`doctor --summary` 还会输出只读 `openclaw_guard`：检测外部 Telegram approval watcher 是否被重新启用、OpenClaw 原生 Telegram ingress spool 是否堆积。默认只展示；`--strict-openclaw` 会把这些问题作为失败 gate。该守门不会启动、停止或轮询 Telegram。
-
-全员点名使用 `attendance sweep`，不会把员工目录里的 `active/available` 直接当成在线，而是检查运行时 session、员工心跳文件和 OpenClaw ingress spool：
-
-```bash
-bin/companyctl attendance sweep --source main
-bin/companyctl attendance sweep --source main --agents main,nestcar,codex,hermes
-```
-
-默认会对支持的 OpenClaw/Hermes 员工发起真实 reply probe，要求员工只回复 `<agent_id> 在岗`；通过后才算 `online`。如只想做 session/spool 快速巡检，可加 `--no-probe-replies`。
-
-每次点名会同时写入 `state/attendance/<sweep_id>.json` 和固定入口 `state/attendance/latest.json`，后续看最新结果直接读 `latest.json`。
-
-状态包括 `online`、`session_missing`、`worker_stalled`、`heartbeat_disabled`、`no_reply`。如果 nestcar 这类员工 ingress spool 有 pending/processing，会被判为 `worker_stalled`；如果没有稳定可投递 session 或 runtime 还没有真实 adapter，会判 `session_missing/no_reply`。
-
-最小自动执行闭环：
-
-```bash
-bin/companyctl task submit --from openclaw-main --to codex --task-id task-daemon-worker-smoke --title "daemon worker smoke"
-bin/company-daemon --once --enable-worker codex --summary
-bin/companyctl task show --task-id task-daemon-worker-smoke
-bin/companyctl runtime adapter-runs --agent codex --status ok --limit 3
-```
-
-这条 smoke 会证明 daemon 能临时启用员工 worker，自动领取任务、写 evidence、完成任务、写 heartbeat，并把本次执行写入 `adapter_runs` 供 dashboard/doctor/告警读取。对未预配置 worker 的 active 员工，同一命令会走安全 dry-run 通用 worker。
-上线验收可使用 `doctor --summary --strict-launchd`，把 launchd 未安装或安装文件与模板不一致作为失败 gate。
-服务层验收可使用 `bin/company-service-smoke --json-only`，它会启动本机随机端口 REST/RPC 服务并验证 health/describe/get，gRPC 依赖缺失时返回 `grpcio_not_installed`。
-如需把 gRPC 真实端口也纳入验收，先在部署环境安装可选依赖：
-
-```bash
-python3 -m venv .venv
-.venv/bin/python -m pip install -r requirements-optional.txt
-.venv/bin/python -m company_kernel.company_service_smoke --json-only
-```
-
-配置文件：`config/daemon.json`  
-状态文件：`state/daemon/last-run.json`  
-worker 状态：`state/daemon/workers/<agent>.json`  
-日志文件：`logs/daemon.log`
-launchd 模板：`config/launchd/ai.openclaw.company-kernel.daemon.plist`，默认 300 秒运行一次 daemon。
-服务模板：`config/launchd/ai.openclaw.company-kernel.api.plist` 负责 `127.0.0.1:8765`，`config/launchd/ai.openclaw.company-kernel.dashboard.plist` 负责 `127.0.0.1:8780`。
-dashboard 会显示 Runtime Health，包括 daemon last-run、launchd 安装状态和修复命令。
-
-## API Gateway
-
-`bin/company-api-gateway` 提供轻量 REST 服务层，当前复用 `companyctl` 的制度和状态写入逻辑，作为未来多机/分布式部署前的 API 边界。
-
-```bash
-bin/company-api-gateway --host 127.0.0.1 --port 8765
-curl http://127.0.0.1:8765/v1
-curl http://127.0.0.1:8765/v1/openapi.json
-curl http://127.0.0.1:8765/v1/health
-curl -X POST http://127.0.0.1:8765/v1/tasks \
-  -H 'Content-Type: application/json' \
-  --data '{"from":"openclaw-main","to":"codex","title":"REST task","description":"created through API Gateway"}'
-curl http://127.0.0.1:8765/v1/tasks/<task-id>
-curl -X POST http://127.0.0.1:8765/v1/tasks/<task-id>/claim \
-  -H 'Content-Type: application/json' \
-  --data '{"agent":"codex"}'
-curl -X POST http://127.0.0.1:8765/v1/tasks/<task-id>/done \
-  -H 'Content-Type: application/json' \
-  --data '{"agent":"codex","summary":"已完成","evidence":"/path/report.md"}'
-curl -X POST http://127.0.0.1:8765/v1/tasks/<task-id>/reopen \
-  -H 'Content-Type: application/json' \
-  --data '{"by":"openclaw-main","reason":"blocker removed"}'
-curl -X POST http://127.0.0.1:8765/v1/tasks/<task-id>/reassign \
-  -H 'Content-Type: application/json' \
-  --data '{"by":"openclaw-main","to":"hermes","reason":"better owner"}'
-curl -X POST http://127.0.0.1:8765/v1/conversations \
-  -H 'Content-Type: application/json' \
-  --data '{"from":"hermes","participants":"hermes,codex,claude","title":"方案讨论","body":"请讨论下一步"}'
-curl -X POST http://127.0.0.1:8765/v1/approvals \
-  -H 'Content-Type: application/json' \
-  --data '{"from":"hermes","action":"external_send","reason":"需要外发审批","target":"nestcar","risk":"P1"}'
-curl -X POST http://127.0.0.1:8765/v1/projects \
-  -H 'Content-Type: application/json' \
-  --data '{"project_id":"project-rest","title":"REST Project","owner":"openclaw-main","goal":"跨机项目治理"}'
-curl -X POST http://127.0.0.1:8765/v1/projects/project-rest/plan-items \
-  -H 'Content-Type: application/json' \
-  --data '{"plan_id":"plan-rest-001","title":"接入远程员工","owner":"codex"}'
-curl http://127.0.0.1:8765/v1/projects/project-rest/review
-curl -X POST http://127.0.0.1:8765/v1/projects/project-rest/accept \
-  -H 'Content-Type: application/json' \
-  --data '{"by":"openclaw-main","summary":"验收通过"}'
-curl -X POST http://127.0.0.1:8765/v1/locks/acquire \
-  -H 'Content-Type: application/json' \
-  --data '{"agent":"codex","resource":"task:<task-id>","lease_seconds":1800}'
-curl http://127.0.0.1:8765/v1/locks?agent=codex
-curl -X POST http://127.0.0.1:8765/v1/runtimes \
-  -H 'Content-Type: application/json' \
-  --data '{"runtime":"cursor","command":"cursor-agent","notes":"Cursor adapter placeholder"}'
-curl -X POST http://127.0.0.1:8765/v1/employees \
-  -H 'Content-Type: application/json' \
-  --data '{"id":"cursor-dev","name":"Cursor Dev","role":"developer","runtime":"cursor","workspace":"$OPENCLAW_ROOT/workspace-cursor"}'
-curl -X POST http://127.0.0.1:8765/v1/employees/onboard \
-  -H 'Content-Type: application/json' \
-  --data '{"id":"api-reviewer","name":"API Reviewer","role":"reviewer","runtime":"hermes","workspace":"$OPENCLAW_COMPANY_KERNEL_ROOT/employees/api-reviewer","alias":"api-reviewer","skills":"review,qa","create_test_task":"true"}'
-curl -X POST http://127.0.0.1:8765/v1/employees/api-reviewer/offboard \
-  -H 'Content-Type: application/json' \
-  --data '{"dry_run":"true"}'
-curl -X POST http://127.0.0.1:8765/v1/employees/cursor-dev/capabilities \
-  -H 'Content-Type: application/json' \
-  --data '{"set_skills":"engineering,review","add_tool":["cursor","git"],"set_task_types":"code,review"}'
-curl -X POST http://127.0.0.1:8765/v1/employees/cursor-dev/permissions \
-  -H 'Content-Type: application/json' \
-  --data '{"can_submit_tasks":"false","requires_approval_for":"external_send,payment"}'
-```
-
-`/v1` 返回服务发现、能力列表、治理约束和端点清单；`/v1/openapi.json` 返回机器可读 OpenAPI 3.1 契约。已覆盖的端点：`/v1/health`、`/v1/doctor`、`/v1/employees`、`/v1/employees/onboard`、`/v1/employees/<id>/profile|offboard|capabilities|permissions`、`/v1/runtimes`、`/v1/tasks`、`/v1/tasks/<id>/claim|done|block|reopen|reassign|conversations`、`/v1/messages`、`/v1/conversations`、`/v1/approvals`、`/v1/projects`、`/v1/projects/<id>/review|accept`、`/v1/locks`、`/v1/heartbeats`、`/v1/adapter-runs`。
-
-`bin/company-api-rpc` 提供同一套治理路由的 JSON-RPC 2.0 服务层，默认端口 `8766`，用于非 HTTP path 风格的远端员工接入。`bin/company-api-grpc` 提供同一组 `Describe/Get/Post` gRPC 服务逻辑，默认端口 `8767`；运行真实网络 gRPC server 需要安装 `requirements-optional.txt` 中的 `grpcio`。当前 server 使用 generic gRPC handler，payload 为 JSON bytes，语义与 `docs/company_kernel.proto` 的 `path/query/body_json/status/body_json` 字段对齐。
-
-```bash
-curl -s http://127.0.0.1:8766/rpc
-curl -s -X POST http://127.0.0.1:8766/rpc \
-  -H 'Content-Type: application/json' \
-  --data '{"jsonrpc":"2.0","id":"health","method":"company.get","params":{"path":"/v1/health","query":{}}}'
-curl -s -X POST http://127.0.0.1:8766/rpc \
-  -H 'Content-Type: application/json' \
-  --data '{"jsonrpc":"2.0","id":"task","method":"company.post","params":{"path":"/v1/tasks","body":{"from":"openclaw-main","to":"codex","title":"RPC task","description":"remote dispatch"}}}'
-bin/company-api-grpc --check
-bin/company-api-grpc --host 127.0.0.1 --port 8767
-.venv/bin/python -m company_kernel.api_grpc --check
-.venv/bin/python -m company_kernel.company_service_smoke --json-only
-```
-
-## Sandbox Isolation
-
-`config/sandbox_profiles.json` 定义执行器沙箱策略。Codex/Hermes adapter 默认 `--isolation none`，显式传 `--isolation docker` 或 `--isolation firejail` 才会包装执行命令。
-
-```bash
-bin/company-codex-adapter --execute --sandbox workspace-write --isolation docker --sandbox-profile default
-bin/company-hermes-adapter --execute --isolation firejail --sandbox-profile default
-```
-
-当前已实现可测试的命令构造和 profile 加载；是否安装 Docker/Firejail、镜像内容和真实容器运行由部署环境决定。
-
-安全 dry-run worker 验证：
-
-```bash
-bin/companyctl task submit --from openclaw-main --to codex --title "daemon worker dry-run 验证" --description "自动领取并回传 evidence"
-bin/company-daemon --once
-bin/companyctl task list --agent codex
-```
-
-## Dashboard
-
-生成本地静态操作台：
-
-```bash
-bin/company-dashboard
-open $OPENCLAW_COMPANY_KERNEL_ROOT/state/dashboard.html
-```
-
-默认会优先生成 Gemini 版高级操作台；找不到高级模板时回退到轻量静态表格。操作台包含员工、心跳、项目目标/验收/复盘、任务、审批、事件和锁状态。
-
-员工管理按钮通过 REST API 写入 Company Kernel：
-
-```bash
-bin/company-api-gateway --quiet
-bin/company-dashboard --variant advanced
-```
-
-高级操作台会在加载时检查 `/v1/health`；API 未启动时顶部会显示 `API OFFLINE`，招募/归档失败会直接写入终端日志。招募/归档入口会调用 `/v1/employees/onboard` 和 `/v1/employees/<id>/offboard`，支持 OpenClaw、Hermes、Codex、Claude、Trae、Antigravity 和 local runtime。
-员工卡片的编辑入口调用 `/v1/employees/<id>/profile`，可以调整 name/role/runtime/status；状态变更仍由 `companyctl employee update` 落库和写审计。
-
-## Projects
-
-项目用于把目标、计划、验收标准和任务队列绑定起来：
-
-```bash
-bin/companyctl project create --project-id super-ai-company-kernel --title "Super AI Company Kernel" --owner openclaw-main --goal "统一 AI 员工协作"
-bin/companyctl project plan-add --project-id super-ai-company-kernel --title "接入 Codex Adapter" --owner codex --task-id <task-id>
-bin/companyctl project plan-status --project-id super-ai-company-kernel --plan-id <plan-id> --status done
-bin/companyctl project plan-list --project-id super-ai-company-kernel
-bin/companyctl project link-task --project-id super-ai-company-kernel --task-id <task-id>
-bin/companyctl project show --project-id super-ai-company-kernel
-bin/companyctl project review --project-id super-ai-company-kernel
-bin/companyctl project list --status active
-```
-
-绑定了 `task_id` 的计划项会随任务状态自动同步：任务 `done` 会把计划项置为 `done`，任务 `block` 会把计划项置为 `blocked`，任务 `reopen` 会把 blocked 计划项恢复为 `in_progress`，任务 `reassign` 会同步计划项负责人，避免项目验收状态和任务真实状态漂移。
-
-## Schema Migrations
-
-`companyctl` 和 `company-dashboard` 会自动执行轻量 SQLite 迁移，并把已应用迁移记录到 `schema_migrations`。
-
-## Communication Observability Dashboard
-
-如果要在网页里看员工私聊、external mirror 同步状态、adapter-run summary，使用 advanced dashboard：
-
-```bash
-bin/company-dashboard --variant advanced
-open $OPENCLAW_COMPANY_KERNEL_ROOT/state/dashboard.html
-```
-
-只读聚合接口：
-
-```bash
-curl 'http://127.0.0.1:8765/v1/dashboard/communication-observability'
-```
-
-返回三块摘要：
-
-- `direct_messages.items[]`: 最近员工 direct messages，给 dashboard 的人类可读面板使用。
-- `external_mirror.threads[]`: external thread 的 `platform/owner_agent/bridge_agent/cursor/last_message_at`。
-- `adapter_runs.items[]`: adapter run 的 `command/task_id`，以及 repo 内安全相对路径的 `progress_file/state_file`。
-- `progress_notifications.items[]`: heartbeat 进度层级变化生成的用户向通知项，包含 `from_layer/to_layer/message/reason/delivery_status/delivery_error/delivered_at`。
-
-`progress_file` / `state_file` 只会暴露 repo-local 路径；repo 外绝对路径会被清空，避免 dashboard 泄露运行态边界外文件。
-
-额外只读接口：
-
-```bash
-curl 'http://127.0.0.1:8765/v1/progress/notifications?pending_only=true'
-```
-
-progress notification 复用 `company_events` 的 `event_type=progress.notification`。heartbeat 先落一条 pending，再由 repo 内 delivery 闭环复用现有 notification settings / send 机制，把结果写回同一事件：
-
-- 会发什么：短句 `message`
-- 为什么发：`reason`
-- 由谁触发：`triggered_by`
-- 何时触发：heartbeat 写入时检测到 `progress layer/state` 变化
-- 发得怎样：`delivery_status=pending/sent/skipped/failed`
-- 若发送失败：`delivery_error`
-
-同一 agent 的同一层级切换（如 `working -> waiting`）会按 repo 内 fingerprint 去重，避免重复骚扰。
-
-## Adapter Worker
-
-`bin/company-adapter-worker` 是第二阶段的最小 worker。它会领取指定员工的一个待处理任务，写入 evidence report，并通过 `companyctl task done/block` 回写状态。
-
-默认建议先用 `--dry-run`；daemon 临时启用未预配置员工时也会自动使用该安全模式。真实启动 OpenClaw/Hermes/Codex/Claude/Trae/Antigravity 需要后续专用 adapter。
-
-## Codex Adapter
-
-`bin/company-codex-adapter` 会领取 `codex` 员工的一个待处理任务，生成 Codex task card，并写入 evidence。
-
-默认不启动 Codex：
-
-```bash
-bin/company-codex-adapter
-```
-
-真实执行 Codex：
-
-```bash
-bin/company-codex-adapter --execute --sandbox read-only
-```
-
-## OpenClaw Adapter
-
-`bin/company-openclaw-adapter` 会领取指定 OpenClaw 员工的 Company Kernel 任务，转换成 OpenClaw 旧 `ops/agent_bus` payload。
-
-Company Kernel 不替换 OpenClaw 原生内部通信。OpenClaw 员工只能通过 adapter bridge 接收 Company Kernel 任务，完成必须回 evidence 或 blocker；普通聊天只发短摘要，不发 raw queue counters。
-
-默认不写真实 OpenClaw bus：
-
-```bash
-bin/company-openclaw-adapter --agent nestcar
-```
-
-真实提交到 OpenClaw：
-
-```bash
-bin/company-openclaw-adapter --agent nestcar --execute
-```
-
-`--execute` 会写 OpenClaw legacy bus，必须先通过 `external_send` 审批。未审批时 adapter 会生成 pending approval，并保留任务为 claimed，批准后重跑 adapter 才会写 bus。
-
-## Hermes Adapter
-
-`bin/company-hermes-adapter` 会领取 `hermes` 员工的 Company Kernel 任务，生成 Hermes oneshot prompt，并写入 evidence。
-
-默认不启动 Hermes：
-
-```bash
-bin/company-hermes-adapter
-```
-
-真实执行 Hermes：
-
-```bash
-bin/company-hermes-adapter --execute
-```
-
-## Claude Adapter
-
-`bin/company-claude-adapter` 会领取 `claude` 员工的 Company Kernel 任务，生成 Claude print prompt，并写入 evidence。
-
-默认不启动 Claude：
-
-```bash
-bin/company-claude-adapter
-```
-
-真实执行 Claude：
-
-```bash
-bin/company-claude-adapter --execute
-```
-
-## Trae Adapter
-
-`bin/company-trae-adapter` 会领取 `trae` 员工的 Company Kernel 任务，生成 Trae chat prompt，并写入 evidence。
-
-默认不启动 Trae：
-
-```bash
-bin/company-trae-adapter
-```
-
-真实执行 Trae：
-
-```bash
-bin/company-trae-adapter --execute
-```
-
-## Antigravity Adapter
-
-`bin/company-antigravity-adapter` 会领取 `antigravity` 员工的 Company Kernel 任务，生成 GUI task brief，并写入 evidence。
-
-如果本机存在 `agy` CLI，direct message 会用 `agy --print` 做真实回复校验，attendance sweep 会通过 `bin/company-antigravity-adapter --attendance-probe` 要求精确返回 `antigravity 在岗`。exact-token smoke 只证明通信，不证明 GUI/代码执行；复杂任务必须通过 `--complete` 或 `--block` 回写证据。
-
-默认不打开 Antigravity：
-
-```bash
-bin/company-antigravity-adapter
-```
-
-真实执行只打开 App，不伪造完成：
-
-```bash
-bin/company-antigravity-adapter --execute
-bin/company-antigravity-adapter --complete --task-id <task-id> --summary "GUI 已完成" --evidence /path/evidence.md
-bin/company-antigravity-adapter --block --task-id <task-id> --blocker "GUI 登录失效"
-```
+See repository owner. 详见仓库所有者说明。
