@@ -316,6 +316,9 @@ def build_codex_command(workspace: Path, output: Path, sandbox: str, model: str)
         "exec",
         "--ignore-rules",
         "--ephemeral",
+        # workspace trust is decided by the kernel (resolve_task_workspace); codex's own
+        # git-repo check would otherwise refuse legitimate non-git task workspaces.
+        "--skip-git-repo-check",
         "-C",
         str(workspace),
         "-s",
