@@ -2085,6 +2085,29 @@ def daemon_last_run_path() -> Path:
     return STATE_DIR / "daemon" / "last-run.json"
 
 
+def enabled_worker_agents() -> set:
+    """Agent ids that have an ENABLED adapter worker in config/daemon.json.
+
+    Used by the health check to distinguish 'stale' (a worker that should be alive but
+    isn't) from 'idle' (an employee with no worker, expected to be quiet).
+    """
+    config_path = ROOT / "config" / "daemon.json"
+    if not config_path.exists():
+        return set()
+    try:
+        cfg = json.loads(config_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return set()
+    agents = set()
+    for worker in cfg.get("adapter_workers", []):
+        if worker.get("enabled") and worker.get("agent"):
+            agents.add(str(worker["agent"]))
+    for agent in cfg.get("heartbeat_agents", []):
+        if agent:
+            agents.add(str(agent))
+    return agents
+
+
 def daemon_health(max_age_minutes: int = 10) -> dict:
     path = daemon_last_run_path()
     if not path.exists():
@@ -7187,7 +7210,11 @@ def cmd_doctor(args: argparse.Namespace) -> int:
             ORDER BY e.id
             """,
         )
+        # Only employees with an ENABLED daemon worker are EXPECTED to be alive; an idle
+        # business agent with no worker that simply isn't heartbeating is "idle", not a fault.
+        worker_agents = enabled_worker_agents()
         stale_heartbeats = []
+        idle_employees = []
         for row in conn.execute(
             """
             SELECT e.id, e.runtime, h.last_seen_at
@@ -7198,7 +7225,10 @@ def cmd_doctor(args: argparse.Namespace) -> int:
             """
         ).fetchall():
             if parse_time(row["last_seen_at"]) < heartbeat_cutoff:
-                stale_heartbeats.append(dict(row))
+                if row["id"] in worker_agents:
+                    stale_heartbeats.append(dict(row))
+                else:
+                    idle_employees.append(dict(row))
         pending = {
             "events": rows(conn, "SELECT id, event_type, source_agent, task_id, created_at FROM company_events WHERE processed_at = '' ORDER BY created_at ASC LIMIT 20"),
             "approvals": rows(conn, "SELECT id, source_agent, action, status, updated_at FROM approvals WHERE status = 'pending' ORDER BY updated_at ASC LIMIT 20"),
@@ -7257,6 +7287,7 @@ def cmd_doctor(args: argparse.Namespace) -> int:
             "heartbeat_stale_minutes": 15,
             "missing_heartbeats": missing_heartbeats,
             "stale_heartbeats": stale_heartbeats,
+            "idle_employees": idle_employees,
             "pending": pending,
             "claimed_tasks": claimed_tasks,
             "failed_adapter_runs": failed_adapter_runs,

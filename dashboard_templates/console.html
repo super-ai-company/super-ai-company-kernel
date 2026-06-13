@@ -157,7 +157,22 @@ label{font-size:12px;color:var(--muted);display:block;margin-bottom:4px}
   <div class="section-head">
     <h2>AI 员工</h2><span class="hint">心跳 10 分钟内 = 在岗</span>
     <div class="spacer"></div>
+    <button onclick="toggleNewEmp()">＋ 新增员工</button>
     <button class="primary" onclick="attendanceSweep()">📋 全员考勤探测</button>
+  </div>
+  <div class="card" id="newEmpForm" style="display:none;margin-bottom:14px">
+    <h3>🧑‍💼 新增员工（onboard）</h3>
+    <div class="form-grid">
+      <div><label>ID</label><input id="neId" placeholder="qa-bot"></div>
+      <div><label>名称</label><input id="neName" placeholder="QA Bot"></div>
+      <div><label>角色</label><input id="neRole" placeholder="developer"></div>
+      <div><label>运行时</label><select id="neRuntime"><option>codex</option><option>hermes</option><option>openclaw</option><option>claude</option><option>trae</option><option>antigravity</option><option>local</option></select></div>
+      <div class="full"><label>工作区（绝对路径）</label><input id="neWorkspace" placeholder="/Users/owner/项目路径"></div>
+      <div><label>技能（逗号分隔）</label><input id="neSkills" placeholder="python,review"></div>
+      <div><label>可对话对象（逗号分隔）</label><input id="neCanTalk" placeholder="codex,hermes"></div>
+    </div>
+    <button class="primary" onclick="addEmployee()">注册员工</button>
+    <span class="hint" style="margin-left:8px">注册后如需自动接任务，再在 daemon.json 启用 worker</span>
   </div>
   <div class="grid cards-3" id="empGrid"></div>
 </section>
@@ -201,6 +216,18 @@ label{font-size:12px;color:var(--muted);display:block;margin-bottom:4px}
 <section class="view" id="v-conversations">
   <div class="section-head"><h2>多轮对话</h2>
     <select id="convAgent" style="width:200px" onchange="loadConversations()"></select>
+    <div class="spacer"></div>
+    <button class="primary" onclick="toggleNewConv()">＋ 发起新会话</button>
+  </div>
+  <div class="card" id="newConvForm" style="display:none;margin-bottom:14px">
+    <h3>🆕 发起多轮会话</h3>
+    <div class="form-grid">
+      <div><label>发起人</label><select id="ncFrom"></select></div>
+      <div class="full"><label>参与者（逗号分隔的员工 ID，含发起人）</label><input id="ncParticipants" placeholder="hermes,codex,claude"></div>
+      <div class="full"><label>标题</label><input id="ncTitle" placeholder="会话标题"></div>
+      <div class="full"><label>首条消息</label><textarea id="ncBody" rows="2" placeholder="开场白 / 要讨论的问题"></textarea></div>
+    </div>
+    <button class="primary" onclick="startConversation()">创建会话</button>
   </div>
   <div class="grid" style="grid-template-columns:330px 1fr;gap:14px">
     <div class="card" style="align-self:start"><h3>会话列表</h3><div class="list" id="convList"><div class="empty">无</div></div></div>
@@ -333,7 +360,7 @@ async function loadEmployees() {
   // selects
   const opts = EMPLOYEES.map(e=>`<option value="${esc(e.id)}">${esc(e.id)}</option>`).join("");
   const withOwnerFirst = `<option value="${OWNER}">${OWNER}（我）</option>` + EMPLOYEES.filter(e=>e.id!==OWNER).map(e=>`<option value="${esc(e.id)}">${esc(e.id)}</option>`).join("");
-  ["tFrom","mFrom","convReplyAs"].forEach(id=>{ if($(id)) $(id).innerHTML = withOwnerFirst; });
+  ["tFrom","mFrom","convReplyAs","ncFrom"].forEach(id=>{ if($(id)) $(id).innerHTML = withOwnerFirst; });
   ["tTo","mTo"].forEach(id=>{ if($(id)) $(id).innerHTML = opts; });
   ["msgAgent","convAgent"].forEach(id=>{ if($(id) && !$(id).value) $(id).innerHTML = opts; });
   // grid
@@ -370,6 +397,26 @@ async function showEmployee(id) {
 function quickMsg(to){ document.querySelector('[data-v="messages"]').click(); $("mTo").value=to; $("mBody").focus(); }
 function quickTask(to){ document.querySelector('[data-v="tasks"]').click(); $("tTo").value=to; $("tTitle").focus(); }
 
+function toggleNewEmp() {
+  const f = $("newEmpForm");
+  f.style.display = f.style.display === "none" ? "block" : "none";
+}
+async function addEmployee() {
+  const body = {
+    id: $("neId").value.trim(), name: $("neName").value.trim(),
+    role: $("neRole").value.trim() || "developer", runtime: $("neRuntime").value,
+    workspace: $("neWorkspace").value.trim(),
+    skills: $("neSkills").value.trim(), can_talk_to: $("neCanTalk").value.trim(),
+  };
+  if (!body.id || !body.name || !body.workspace) return toast("ID/名称/工作区必填", "bad");
+  try {
+    await api("/v1/employees/onboard", {method:"POST", body});
+    toast("员工已注册：" + body.id, "ok");
+    $("neId").value=""; $("neName").value=""; $("neWorkspace").value="";
+    $("newEmpForm").style.display="none";
+    refreshAll();
+  } catch(e){ toast("注册失败："+e.message, "bad"); }
+}
 async function attendanceSweep() {
   toast("正在发起全员考勤探测…");
   try {
@@ -480,6 +527,30 @@ async function loadConversations() {
       <div class="emp-sub">${esc((c.participants||"")).slice(0,60)} · ${ago(c.updated_at||c.created_at)}</div></div>`).join("")
       || `<div class="empty">无会话</div>`;
   } catch(e){ $("convList").innerHTML = `<div class="empty">${esc(e.message)}</div>`; }
+}
+function toggleNewConv() {
+  const f = $("newConvForm");
+  f.style.display = f.style.display === "none" ? "block" : "none";
+  if (f.style.display === "block" && !$("ncParticipants").value) {
+    $("ncParticipants").value = $("ncFrom").value + ",codex";
+  }
+}
+async function startConversation() {
+  const from = $("ncFrom").value;
+  const participants = $("ncParticipants").value.trim();
+  const title = $("ncTitle").value.trim();
+  const body = $("ncBody").value.trim();
+  if (!participants || !title || !body) return toast("参与者/标题/首条消息都要填", "bad");
+  try {
+    const d = await api("/v1/conversations", {method:"POST", body:{from, participants, title, body}});
+    toast("会话已创建", "ok");
+    $("ncTitle").value=""; $("ncBody").value="";
+    $("newConvForm").style.display="none";
+    $("convAgent").value = from;
+    await loadConversations();
+    const cid = d.conversation?.id || d.conversation_id;
+    if (cid) showConv(cid);
+  } catch(e){ toast("创建失败："+e.message, "bad"); }
 }
 async function showConv(id) {
   CURRENT_CONV = id;
