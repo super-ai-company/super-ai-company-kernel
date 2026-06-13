@@ -380,14 +380,20 @@ async function attendanceSweep() {
 }
 
 /* ---------- tasks ---------- */
-const KCOLS = [["submitted","📥 待领取"],["claimed","🔧 进行中"],["done","✅ 已完成"],["blocked","⛔ 受阻"]];
+// Each column matches a SET of kernel status values (kernel uses "completed", not "done").
+const KCOLS = [
+  ["📥 待领取", ["submitted"]],
+  ["🔧 进行中", ["claimed","in_progress","running","correcting"]],
+  ["✅ 已完成", ["completed","done","accepted"]],
+  ["⛔ 受阻", ["blocked","interrupted","failed","stalled"]],
+];
 async function loadTasks() {
   const d = await api("/v1/tasks");
   TASKS = d.tasks || d.items || [];
-  const open = TASKS.filter(t=>["submitted","claimed"].includes(t.status)).length;
+  const open = TASKS.filter(t=>["submitted","claimed","in_progress","running","correcting"].includes(t.status)).length;
   $("cntTask").textContent = open;
-  $("kanban").innerHTML = KCOLS.map(([st,label])=>{
-    const items = TASKS.filter(t=>t.status===st).sort((a,b)=>(b.created_at||"").localeCompare(a.created_at||""));
+  $("kanban").innerHTML = KCOLS.map(([label,statuses])=>{
+    const items = TASKS.filter(t=>statuses.includes(t.status)).sort((a,b)=>(b.created_at||"").localeCompare(a.created_at||""));
     return `<div class="kcol"><h4>${label}<span>${items.length}</span></h4>` +
       (items.slice(0,30).map(t=>`<div class="tcard" onclick="showTask('${esc(t.id)}')">
           <div class="tt">${esc(t.title)}</div>
@@ -558,12 +564,12 @@ async function loadActivity() {
 function renderOverview() {
   const active = EMPLOYEES.filter(e=>e.status==="active");
   const onduty = active.filter(e=>isOnDuty(e.last_seen_at||e.heartbeat)).length;
-  const byStatus = s => TASKS.filter(t=>t.status===s).length;
+  const byStatus = (...ss) => TASKS.filter(t=>ss.includes(t.status)).length;
   $("ovCards").innerHTML = [
     ["👥 在编员工", active.length, `${onduty} 在岗 / ${active.length - onduty} 离线`, onduty===active.length?"ok":"warn"],
     ["📥 待领取任务", byStatus("submitted"), "超过 10 分钟未领取会触发看门狗告警", byStatus("submitted")>0?"warn":"ok"],
-    ["🔧 进行中", byStatus("claimed"), "已被员工领取", "ok"],
-    ["⛔ 受阻任务", byStatus("blocked"), "需人工或改派处理", byStatus("blocked")>0?"bad":"ok"],
+    ["✅ 已完成", byStatus("completed","done","accepted"), "已通过裁决门验收", "ok"],
+    ["⛔ 受阻任务", byStatus("blocked","interrupted","failed","stalled"), "需人工或改派处理", byStatus("blocked","interrupted","failed","stalled")>0?"bad":"ok"],
   ].map(([t,n,sub,dot])=>`<div class="card"><h3><span class="dot ${dot}"></span>${t}</h3>
     <div style="font-size:30px;font-weight:700">${n}</div><div class="emp-sub">${sub}</div></div>`).join("");
 }
