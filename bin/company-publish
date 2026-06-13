@@ -1,0 +1,36 @@
+#!/bin/zsh
+# Publish the current Company Kernel version to BOTH remotes (personal + team) and tag it.
+# Usage: bin/company-publish [version]   e.g. bin/company-publish v1.0.0
+set -euo pipefail
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
+cd "$ROOT"
+LOG="$ROOT/state/publish.log"
+mkdir -p "$ROOT/state"
+exec > >(tee "$LOG") 2>&1
+
+VERSION="${1:-v$(cat VERSION 2>/dev/null || echo 1.0.0)}"
+echo "=== publishing $VERSION ==="
+
+# 1. commit any pending work
+if [[ -n "$(git status --porcelain)" ]]; then
+  git add -A
+  git commit -m "release $VERSION"
+fi
+
+# 2. integrate remote then tag
+git pull --rebase origin main || true
+git tag -f "$VERSION" -m "Company Kernel $VERSION"
+
+# 3. push main + tag to every configured remote
+for remote in $(git remote); do
+  echo "--- pushing to $remote"
+  git push "$remote" main || echo "WARN: main push to $remote failed"
+  git push -f "$remote" "$VERSION" || echo "WARN: tag push to $remote failed"
+done
+
+echo ""
+echo "=== published $VERSION ==="
+for remote in $(git remote); do
+  url=$(git remote get-url "$remote")
+  echo "  $remote -> $url"
+done

@@ -2,6 +2,25 @@
 
 通用 AI 公司内核。用于把 OpenClaw、Hermes、Codex、Claude、Trae、Antigravity 等工具注册成公司员工，并用统一任务协议互相通信。
 
+> **v1.0 已上线**：跨平台（Windows / Linux / macOS）、支持任意智能体自动接入员工体系。
+> 一站式接入指南：[docs/AGENT_ONBOARDING.md](docs/AGENT_ONBOARDING.md)
+> 上线就绪评估：[docs/GO_LIVE_READINESS.md](docs/GO_LIVE_READINESS.md) · 完成报告：[docs/COMPLETION_REPORT.md](docs/COMPLETION_REPORT.md)
+
+## 30 秒上手
+
+```bash
+git clone https://github.com/super-ai-company/super-ai-company-kernel.git
+cd super-ai-company-kernel
+export OPENCLAW_COMPANY_KERNEL_ROOT="$PWD"          # Windows 见接入指南
+bin/companyctl doctor --summary                      # 自检
+bin/company-add-employee --id codex --name Codex --role developer \
+  --runtime codex --workspace <你的代码仓库> --enable-worker --execute
+bin/company-api-gateway --port 8765                  # 浏览器开 http://127.0.0.1:8765/
+```
+
+新增任意员工只需一条 `company-add-employee`；全部运行时 × 各操作系统接入方法见
+[docs/AGENT_ONBOARDING.md](docs/AGENT_ONBOARDING.md)。
+
 ## Goal
 
 项目总目标见：[docs/SUPER_AI_COMPANY_GOAL.md](docs/SUPER_AI_COMPANY_GOAL.md)
