@@ -1,0 +1,147 @@
+#!/usr/bin/env python3
+"""One-command employee onboarding: create + capabilities + runtime register + daemon worker + verify.
+
+This collapses the previously manual 4-step flow (employee onboard → runtime register →
+edit daemon.json → restart) into a single, idempotent command so adding a worker to any
+environment is one line.
+
+Example:
+  bin/company-add-employee --id qa-bot --name "QA Bot" --role developer \\
+      --runtime codex --workspace /Users/me/proj --enable-worker --execute
+
+Safe by default: without --enable-worker it only registers the employee (no auto-execution).
+With --enable-worker it adds/flips the daemon.json worker entry (dry-run unless --execute).
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+ROOT = Path(os.environ.get("OPENCLAW_COMPANY_KERNEL_ROOT", Path(__file__).resolve().parents[1])).resolve()
+CTL = ROOT / "bin" / "companyctl"
+DAEMON_CONFIG = ROOT / "config" / "daemon.json"
+
+ADAPTER_COMMANDS = {
+    "openclaw": "company-openclaw-adapter",
+    "hermes": "company-hermes-adapter",
+    "codex": "company-codex-adapter",
+    "claude": "company-claude-adapter",
+    "trae": "company-trae-adapter",
+    "antigravity": "company-antigravity-adapter",
+    "local": "company-adapter-worker",
+}
+
+
+def run(args: list[str]) -> tuple[int, dict]:
+    cp = subprocess.run([str(CTL), *args], cwd=str(ROOT), text=True, capture_output=True)
+    try:
+        payload = json.loads(cp.stdout) if cp.stdout.strip() else {}
+    except json.JSONDecodeError:
+        payload = {"raw": cp.stdout[-500:]}
+    if cp.returncode != 0 and not payload:
+        payload = {"stderr": cp.stderr[-500:]}
+    return cp.returncode, payload
+
+
+def enable_worker(agent: str, runtime: str, execute: bool, dry_run: bool) -> dict:
+    cfg = json.loads(DAEMON_CONFIG.read_text(encoding="utf-8"))
+    workers = cfg.setdefault("adapter_workers", [])
+    command = ADAPTER_COMMANDS.get(runtime, "company-adapter-worker")
+    args = []
+    if command == "company-adapter-worker":
+        args = ["--dry-run"]
+    elif execute and runtime == "codex":
+        args = ["--execute", "--sandbox", "workspace-write", "--timeout-seconds", "1800"]
+    elif execute:
+        args = ["--execute"]
+    entry = next((w for w in workers if w.get("agent") == agent), None)
+    action = "updated"
+    if entry is None:
+        entry = {"agent": agent, "command": command, "max_tasks_per_tick": 1,
+                 "retry_policy": {"max_attempts": 3, "base_delay_seconds": 60, "max_delay_seconds": 900}}
+        workers.append(entry)
+        action = "added"
+    entry["enabled"] = True
+    entry["command"] = command
+    entry["args"] = args
+    if dry_run:
+        return {"action": f"would_{action}", "entry": entry, "written": False}
+    DAEMON_CONFIG.write_text(json.dumps(cfg, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    return {"action": action, "entry": entry, "written": True}
+
+
+def main(argv: list[str] | None = None) -> int:
+    p = argparse.ArgumentParser(description="One-command Company Kernel employee onboarding")
+    p.add_argument("--id", required=True)
+    p.add_argument("--name", required=True)
+    p.add_argument("--role", required=True)
+    p.add_argument("--runtime", required=True)
+    p.add_argument("--workspace", required=True)
+    p.add_argument("--skills", default="")
+    p.add_argument("--tools", default="")
+    p.add_argument("--can-talk-to", default="")
+    p.add_argument("--can-assign-to", default="")
+    p.add_argument("--runtime-command", default="", help="register runtime with this launch command if not present")
+    p.add_argument("--enable-worker", action="store_true", help="also enable a daemon adapter worker for this employee")
+    p.add_argument("--execute", action="store_true", help="worker runs the real runtime (default dry-run)")
+    p.add_argument("--dry-run", action="store_true", help="print every step without writing")
+    args = p.parse_args(argv)
+
+    steps = []
+
+    # 1. register runtime if needed
+    rt_argv = ["runtime", "register", "--runtime", args.runtime]
+    if args.runtime_command:
+        rt_argv += ["--command", args.runtime_command]
+    if not args.dry_run:
+        code, payload = run(rt_argv)
+        steps.append({"step": "runtime.register", "ok": code == 0, "result": payload})
+    else:
+        steps.append({"step": "runtime.register", "ok": True, "would_run": rt_argv})
+
+    # 2. onboard employee
+    ob_argv = ["employee", "onboard", "--id", args.id, "--name", args.name, "--role", args.role,
+               "--runtime", args.runtime, "--workspace", args.workspace]
+    for flag, val in [("--skills", args.skills), ("--tools", args.tools),
+                      ("--can-talk-to", args.can_talk_to), ("--can-assign-to", args.can_assign_to)]:
+        if val:
+            ob_argv += [flag, val]
+    if args.dry_run:
+        ob_argv.append("--dry-run")
+    code, payload = run(ob_argv)
+    steps.append({"step": "employee.onboard", "ok": code == 0, "result": payload})
+    if code != 0:
+        print(json.dumps({"ok": False, "failed_at": "employee.onboard", "steps": steps}, ensure_ascii=False, indent=2))
+        return 1
+
+    # 3. enable daemon worker (optional)
+    if args.enable_worker:
+        worker_result = enable_worker(args.id, args.runtime, args.execute, args.dry_run)
+        steps.append({"step": "daemon.worker", "ok": True, "result": worker_result})
+
+    # 4. verify heartbeat
+    if not args.dry_run:
+        code, payload = run(["heartbeat", "--agent", args.id])
+        steps.append({"step": "heartbeat", "ok": code == 0, "result": payload})
+
+    summary = {
+        "ok": all(s["ok"] for s in steps),
+        "employee": args.id,
+        "runtime": args.runtime,
+        "worker_enabled": args.enable_worker,
+        "execute": args.execute,
+        "dry_run": args.dry_run,
+        "next": "restart daemon (launchd kickstart) so the new worker is picked up next tick"
+                if args.enable_worker and not args.dry_run else "employee registered; enable a worker later with --enable-worker",
+        "steps": steps,
+    }
+    print(json.dumps(summary, ensure_ascii=False, indent=2))
+    return 0 if summary["ok"] else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())
