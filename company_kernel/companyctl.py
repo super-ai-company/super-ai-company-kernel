@@ -5840,6 +5840,14 @@ def is_human_owner_employee(employee: dict) -> bool:
 def cmd_employee_list(_args: argparse.Namespace) -> int:
     conn = connect()
     employees = [employee for employee in rows(conn, "SELECT * FROM employees ORDER BY id") if not is_human_owner_employee(employee)]
+    # attach the real unavailable reason (from profile) so consumers/console show WHY a
+    # candidate isn't working, not just that it isn't.
+    for emp in employees:
+        if emp.get("status") != "active":
+            profile = load_json_or_default(employee_paths(emp["id"])["profile"], {})
+            reason = str(profile.get("unavailable_reason") or "")
+            if reason:
+                emp["unavailable_reason"] = reason
     emit({"ok": True, "employees": employees})
     return 0
 
@@ -6604,6 +6612,14 @@ def employee_has_verified_direct_evidence(employee_id: str) -> bool:
 
 def direct_probe_body(agent_id: str, round_index: int) -> str:
     return f"员工通信验证第{round_index}轮：请只回复 {agent_id}_VERIFY_ROUND_{round_index}_OK"
+
+
+def cmd_employee_set_unavailable(args: argparse.Namespace) -> int:
+    conn = connect()
+    result = mark_employee_unavailable(conn, resolve_employee_alias(args.id, strict=True), args.reason)
+    conn.commit()
+    emit({"ok": True, **result})
+    return 0
 
 
 def cmd_employee_verify_direct(args: argparse.Namespace) -> int:
@@ -11827,6 +11843,10 @@ def build_parser() -> argparse.ArgumentParser:
     emp_verify_direct.add_argument("--activate", action="store_true")
     emp_verify_direct.add_argument("--continue-on-failure", action="store_true")
     emp_verify_direct.set_defaults(func=cmd_employee_verify_direct)
+    emp_set_unavailable = emp_sub.add_parser("set-unavailable")
+    emp_set_unavailable.add_argument("--id", required=True)
+    emp_set_unavailable.add_argument("--reason", required=True)
+    emp_set_unavailable.set_defaults(func=cmd_employee_set_unavailable)
     emp_verify_runtime = emp_sub.add_parser("verify-runtime")
     emp_verify_runtime.add_argument("--id", required=True)
     emp_verify_runtime.add_argument("--from", dest="source", default="main")

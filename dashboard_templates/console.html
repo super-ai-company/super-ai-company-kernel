@@ -392,6 +392,7 @@ async function loadEmployees() {
         <span>⚙️ ${esc(e.runtime)}</span>
         <span>💓 ${ago(hb)}</span>
       </div>
+      ${e.unavailable_reason ? `<div class="emp-sub" style="color:var(--warn)">⏸ ${esc(e.unavailable_reason)}</div>` : ""}
       <div class="emp-actions">
         <button onclick="quickMsg('${esc(e.id)}')">发消息</button>
         <button onclick="quickTask('${esc(e.id)}')">派任务</button>

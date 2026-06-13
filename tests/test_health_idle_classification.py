@@ -33,3 +33,19 @@ class EnabledWorkerAgentsTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SetUnavailableCommandTest(unittest.TestCase):
+    """employee set-unavailable demotes active->candidate with a stored reason."""
+
+    def test_reconcile_reason_classification(self):
+        from company_kernel import reconcile_status as rs
+        # not-logged-in reply
+        r1 = [{"response": {"reply": "Not logged in · Please run /login"}}]
+        self.assertIn("登录", rs.verify_reason(r1))
+        # empty reply
+        r2 = [{"response": {"reply": ""}}]
+        self.assertIn("无响应", rs.verify_reason(r2))
+        # error
+        r3 = [{"response": {"error": "boom"}}]
+        self.assertIn("boom", rs.verify_reason(r3))
