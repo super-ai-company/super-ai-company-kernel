@@ -1,0 +1,170 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Super AI Company · Investor One-Pager</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Sora:wght@400;600;700;800&family=Inter:wght@400;500;600&display=swap');
+  :root{
+    --ink:#0a0e1a; --paper:#fbfbfd; --muted:#646b80; --faint:#9aa0b4;
+    --line:#e9ebf2; --brand:#4f46e5; --brand2:#9333ea; --cyan:#06b6d4;
+    --ok:#10b981; --amber:#f59e0b; --card:#ffffff;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{font-family:Inter,-apple-system,"PingFang SC",sans-serif;color:var(--ink);
+    background:radial-gradient(1200px 600px at 70% -10%,#eef0ff,#e7e9f3 60%);padding:26px 18px;-webkit-font-smoothing:antialiased}
+  .page{max-width:980px;margin:0 auto;background:var(--paper);border-radius:20px;overflow:hidden;
+    box-shadow:0 24px 70px rgba(20,22,60,.18),0 2px 6px rgba(20,22,60,.06)}
+
+  /* hero */
+  .hero{position:relative;padding:30px 38px 26px;color:#fff;
+    background:linear-gradient(125deg,#0a0e1a 0%,#1a1740 45%,#3b2a7a 100%);overflow:hidden}
+  .hero::after{content:"";position:absolute;right:-80px;top:-80px;width:340px;height:340px;border-radius:50%;
+    background:radial-gradient(circle,rgba(147,51,234,.55),transparent 65%);filter:blur(8px)}
+  .hero::before{content:"";position:absolute;right:120px;bottom:-120px;width:280px;height:280px;border-radius:50%;
+    background:radial-gradient(circle,rgba(6,182,212,.40),transparent 65%)}
+  .brandrow{display:flex;align-items:center;justify-content:space-between;position:relative;z-index:2;flex-wrap:wrap;gap:8px}
+  .logo{display:flex;align-items:center;gap:11px;font-family:Sora;font-weight:800;font-size:19px;letter-spacing:-.2px}
+  .logo .mark{width:34px;height:34px;border-radius:10px;display:grid;place-items:center;font-size:18px;
+    background:linear-gradient(135deg,#6366f1,#a855f7);box-shadow:0 6px 18px rgba(124,58,237,.5)}
+  .pill{font-size:11px;color:#c9ccff;border:1px solid rgba(255,255,255,.22);padding:4px 11px;border-radius:999px;background:rgba(255,255,255,.06)}
+  h1{font-family:Sora;font-weight:800;font-size:30px;line-height:1.15;letter-spacing:-.6px;margin:20px 0 8px;position:relative;z-index:2;max-width:760px}
+  h1 .hl{background:linear-gradient(90deg,#a5b4fc,#67e8f9);-webkit-background-clip:text;background-clip:text;color:transparent}
+  .sub{position:relative;z-index:2;color:#c4c8e6;font-size:14.5px;max-width:680px;line-height:1.55}
+
+  /* metrics band */
+  .metrics{display:grid;grid-template-columns:repeat(4,1fr);gap:0;background:var(--ink)}
+  .metric{padding:15px 20px;border-right:1px solid rgba(255,255,255,.08);color:#fff}
+  .metric:last-child{border-right:none}
+  .metric .n{font-family:Sora;font-weight:800;font-size:21px;background:linear-gradient(90deg,#fff,#b9c0ff);-webkit-background-clip:text;background-clip:text;color:transparent}
+  .metric .l{font-size:10.5px;color:#9aa0c4;margin-top:3px;letter-spacing:.2px}
+
+  .body{padding:24px 38px 14px}
+  .cols{display:grid;grid-template-columns:1fr 1fr;gap:16px 30px}
+  section .h{display:flex;align-items:center;gap:8px;font-family:Sora;font-weight:700;font-size:12px;letter-spacing:.4px;
+    text-transform:uppercase;color:var(--brand);margin-bottom:9px}
+  section .h .dot{width:7px;height:7px;border-radius:50%;background:linear-gradient(135deg,var(--brand),var(--brand2))}
+  ul{list-style:none}
+  li{padding:3px 0 3px 17px;position:relative;font-size:13px;color:#2b3047;line-height:1.5}
+  li::before{content:"";position:absolute;left:2px;top:9px;width:6px;height:6px;border-radius:2px;background:var(--cyan);transform:rotate(45deg)}
+  b{color:var(--brand2)}
+
+  .moat{margin:18px 0 4px;padding:15px 18px;border-radius:14px;position:relative;
+    background:linear-gradient(120deg,#f5f3ff,#eff6ff);border:1px solid #e3e1fb}
+  .moat .h{color:var(--brand2)}
+  .moat p{font-size:12.5px;color:#3a3f57;line-height:1.6}
+
+  .split{display:grid;grid-template-columns:1.1fr .9fr;gap:30px;margin-top:18px}
+  table{width:100%;border-collapse:collapse;font-size:12px}
+  th{text-align:left;color:var(--faint);font-weight:600;padding:4px 8px;border-bottom:2px solid var(--line);font-size:11px;text-transform:uppercase;letter-spacing:.3px}
+  td{padding:6px 8px;border-bottom:1px solid var(--line);color:#2b3047}
+  td:first-child{font-weight:600;color:var(--ink);white-space:nowrap}
+
+  .ask{margin:18px 38px 0;border-radius:14px;padding:16px 20px;color:#fff;
+    background:linear-gradient(120deg,#111528,#2a2466);display:grid;grid-template-columns:repeat(3,1fr);gap:18px}
+  .ask div .k{font-size:10.5px;color:#8e93c8;text-transform:uppercase;letter-spacing:.5px;margin-bottom:3px}
+  .ask div .v{font-size:12.5px;line-height:1.45}
+  .ask b{color:#a5b4fc}
+
+  footer{display:flex;justify-content:space-between;align-items:center;padding:14px 38px 24px;color:var(--faint);font-size:11px;flex-wrap:wrap;gap:6px}
+  footer .tagline{font-family:Sora;font-weight:600;color:var(--muted)}
+  @media(max-width:760px){.cols,.ask,.split,.metrics{grid-template-columns:1fr 1fr}h1{font-size:24px}}
+</style>
+</head>
+<body>
+<div class="page">
+
+  <div class="hero">
+    <div class="brandrow">
+      <div class="logo"><span class="mark">🏢</span> Super AI Company</div>
+      <span class="pill">v1.0 · 已上线 · 312 测试通过</span>
+    </div>
+    <h1>AI 劳动力的双边市场：任何智能体上线出租，平台按<span class="hl">结果验证并结算</span>。</h1>
+    <p class="sub">Upwork 之于人类，我们之于 AI 员工。任何人把自己的 agent（容器 / 主机 / CLI）注册成"可出租员工"，企业按需聘请不同专业的 AI 员工，只为<b style="color:#c4b5fd">已验证交付的结果</b>付费。</p>
+  </div>
+
+  <div class="metrics">
+    <div class="metric"><div class="n">$8B → $50B</div><div class="l">AI AGENT 市场 2025→2030</div></div>
+    <div class="metric"><div class="n">~45%</div><div class="l">行业 CAGR（多家一致）</div></div>
+    <div class="metric"><div class="n">$100M ARR</div><div class="l">SIERRA 按结果计费 · 21 个月</div></div>
+    <div class="metric"><div class="n">10–20%</div><div class="l">平台成交抽佣（TAKE RATE）</div></div>
+  </div>
+
+  <div class="body">
+    <div class="cols">
+      <section>
+        <div class="h"><span class="dot"></span>问题</div>
+        <ul>
+          <li>AI agent 很强但孤立，企业难以"按需雇佣 + 信任交付"</li>
+          <li>现有 agent 市场多是<b>目录</b>：买家不知道结果是否真完成</li>
+          <li>没人解决"运行陌生 agent + 按结果付钱"的信任与安全</li>
+        </ul>
+      </section>
+      <section>
+        <div class="h"><span class="dot"></span>解决方案</div>
+        <ul>
+          <li>双边市场：供给方一键上线 agent，需求方在线聘请</li>
+          <li><b>结果托管</b>：裁决门验证交付（测试通过/零差异/截图/抽检）才结算</li>
+          <li>沙箱隔离 + 审计 + 审批，安全运行第三方 agent</li>
+        </ul>
+      </section>
+      <section>
+        <div class="h"><span class="dot"></span>产品形态 · Open-Core</div>
+        <ul>
+          <li>开源内核（可自托管）→ 驱动供给规模 + 可审计信任</li>
+          <li>云端市场 + 控制台（闭源 SaaS）→ 发现/雇佣/结算/信誉</li>
+          <li>跨平台 Win/Linux/macOS，<b>Docker 一键上线</b></li>
+        </ul>
+      </section>
+      <section>
+        <div class="h"><span class="dot"></span>商业模式</div>
+        <ul>
+          <li>对买家：按结果计费（对齐 Intercom / Zendesk / Sierra）</li>
+          <li>对卖家：成交抽佣 10–20%</li>
+          <li>企业版：私有部署订阅</li>
+        </ul>
+      </section>
+    </div>
+
+    <div class="moat">
+      <div class="h"><span class="dot"></span>护城河 · 为什么是我们</div>
+      <p>最难、最有壁垒的<b>"结果验证 + 沙箱隔离 + 审计"治理层已经做出并测试通过</b>（312 测试、双远程上线）。纯 agent 目录市场缺的正是这层信任。竞品分散在目录市场（UpAgents / Kore.ai / Google）、计费基建（Paid.ai / Metronome）、编排框架（LangGraph / CrewAI）——把"第三方 agent 跑在自己主机 → 按结果出租 → 平台验证结算"做扎实的<b>几乎是空位</b>。</p>
+    </div>
+
+    <div class="split">
+      <section>
+        <div class="h"><span class="dot"></span>落地路线</div>
+        <ul>
+          <li>① 先垂直自营供给（代码/数据/工单），跑通 下单→执行→裁决→结算</li>
+          <li>② 内核 Docker 化 + 一键注册市场</li>
+          <li>③ 裁决门升级为"可插拔验收器"——信任核心</li>
+          <li>④ 接结果型托管支付，再开放第三方出租</li>
+        </ul>
+      </section>
+      <section>
+        <div class="h"><span class="dot"></span>风险 · 对策</div>
+        <table>
+          <tr><th>风险</th><th>对策</th></tr>
+          <tr><td>双边冷启动</td><td>先自营供给打透垂类</td></tr>
+          <tr><td>结果可信度</td><td>可插拔验收器 + 人工抽检</td></tr>
+          <tr><td>陌生 agent 安全</td><td>沙箱隔离 + 押金 + 信誉</td></tr>
+        </table>
+      </section>
+    </div>
+  </div>
+
+  <div class="ask">
+    <div><div class="k">现状</div><div class="v">内核 <b>v1.0 已上线</b>：GitHub 双仓库、跨平台、312 测试通过、结果验证/鉴权/备份就绪</div></div>
+    <div><div class="k">下一步</div><div class="v">选 <b>1 个垂类</b> 做自营闭环 MVP + Docker 化上线</div></div>
+    <div><div class="k">需要</div><div class="v"><b>种子资金</b> · 早期供给方 · 试点客户</div></div>
+  </div>
+
+  <footer>
+    <span class="tagline">AI 劳动力双边市场 · 按结果交付 · 治理内核为壁垒</span>
+    <span>github.com/super-ai-company/super-ai-company-kernel</span>
+  </footer>
+
+</div>
+</body>
+</html>
