@@ -127,6 +127,101 @@ CREATE TABLE IF NOT EXISTS task_workspaces (
         "column": "supervisor_state_json",
         "sql": "ALTER TABLE execution_attempts ADD COLUMN supervisor_state_json TEXT NOT NULL DEFAULT '{}'",
     },
+    {
+        "id": "20260608_evidence_attempt_id",
+        "table": "evidence",
+        "column": "attempt_id",
+        "sql": "ALTER TABLE evidence ADD COLUMN attempt_id TEXT NOT NULL DEFAULT ''",
+    },
+    {
+        "id": "20260609_runtime_sessions",
+        "table": "runtime_sessions",
+        "table_sql": """
+CREATE TABLE IF NOT EXISTS runtime_sessions (
+  session_id TEXT PRIMARY KEY,
+  trace_id TEXT NOT NULL DEFAULT '',
+  task_id TEXT NOT NULL DEFAULT '',
+  attempt_id TEXT NOT NULL DEFAULT '',
+  employee_id TEXT NOT NULL,
+  adapter_type TEXT NOT NULL DEFAULT '',
+  runtime_type TEXT NOT NULL DEFAULT '',
+  pid TEXT NOT NULL DEFAULT '',
+  session_key TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL DEFAULT 'active',
+  started_at TEXT NOT NULL,
+  last_heartbeat_at TEXT NOT NULL DEFAULT '',
+  last_progress_at TEXT NOT NULL DEFAULT '',
+  stopped_at TEXT NOT NULL DEFAULT '',
+  metadata_json TEXT NOT NULL DEFAULT '{}'
+)""",
+    },
+    {
+        "id": "20260609_agent_tool_calls",
+        "table": "agent_tool_calls",
+        "table_sql": """
+CREATE TABLE IF NOT EXISTS agent_tool_calls (
+  tool_call_id TEXT PRIMARY KEY,
+  trace_id TEXT NOT NULL DEFAULT '',
+  task_id TEXT NOT NULL DEFAULT '',
+  attempt_id TEXT NOT NULL DEFAULT '',
+  employee_id TEXT NOT NULL,
+  session_id TEXT NOT NULL DEFAULT '',
+  tool_name TEXT NOT NULL,
+  tool_type TEXT NOT NULL DEFAULT 'other',
+  input_summary TEXT NOT NULL DEFAULT '',
+  input_json TEXT NOT NULL DEFAULT '{}',
+  output_summary TEXT NOT NULL DEFAULT '',
+  output_json TEXT NOT NULL DEFAULT '{}',
+  status TEXT NOT NULL DEFAULT 'running',
+  risk_level TEXT NOT NULL DEFAULT '',
+  approval_id TEXT NOT NULL DEFAULT '',
+  started_at TEXT NOT NULL,
+  finished_at TEXT NOT NULL DEFAULT '',
+  error_message TEXT NOT NULL DEFAULT '',
+  metadata_json TEXT NOT NULL DEFAULT '{}'
+)""",
+    },
+    {
+        "id": "20260609_budget_accounts",
+        "table": "budget_accounts",
+        "table_sql": """
+CREATE TABLE IF NOT EXISTS budget_accounts (
+  budget_account_id TEXT PRIMARY KEY,
+  scope_type TEXT NOT NULL DEFAULT '',
+  scope_id TEXT NOT NULL DEFAULT '',
+  currency TEXT NOT NULL DEFAULT 'USD',
+  soft_limit REAL NOT NULL DEFAULT 0,
+  hard_limit REAL NOT NULL DEFAULT 0,
+  status TEXT NOT NULL DEFAULT 'active',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  metadata_json TEXT NOT NULL DEFAULT '{}'
+)""",
+    },
+    {
+        "id": "20260609_budget_events",
+        "table": "budget_events",
+        "table_sql": """
+CREATE TABLE IF NOT EXISTS budget_events (
+  budget_event_id TEXT PRIMARY KEY,
+  budget_account_id TEXT NOT NULL DEFAULT '',
+  trace_id TEXT NOT NULL DEFAULT '',
+  task_id TEXT NOT NULL DEFAULT '',
+  attempt_id TEXT NOT NULL DEFAULT '',
+  employee_id TEXT NOT NULL DEFAULT '',
+  cost_type TEXT NOT NULL DEFAULT '',
+  amount REAL NOT NULL DEFAULT 0,
+  currency TEXT NOT NULL DEFAULT 'USD',
+  token_input INTEGER NOT NULL DEFAULT 0,
+  token_output INTEGER NOT NULL DEFAULT 0,
+  model_name TEXT NOT NULL DEFAULT '',
+  provider TEXT NOT NULL DEFAULT '',
+  runtime_seconds INTEGER NOT NULL DEFAULT 0,
+  summary TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  metadata_json TEXT NOT NULL DEFAULT '{}'
+)""",
+    },
 )
 
 
@@ -220,6 +315,7 @@ CREATE TABLE IF NOT EXISTS evidence (
   evidence_id TEXT PRIMARY KEY,
   trace_id TEXT NOT NULL DEFAULT '',
   task_id TEXT NOT NULL,
+  attempt_id TEXT NOT NULL DEFAULT '',
   employee_id TEXT NOT NULL,
   artifact_id TEXT NOT NULL DEFAULT '',
   type TEXT NOT NULL DEFAULT '',

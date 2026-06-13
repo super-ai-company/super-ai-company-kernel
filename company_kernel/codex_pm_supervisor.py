@@ -7,9 +7,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from . import companyctl
+from .db_paths import ensure_db_parent, resolve_db_path
+
 
 ROOT = Path(__file__).resolve().parents[1]
-DB_PATH = ROOT / "company.sqlite"
+DB_PATH = resolve_db_path(ROOT)
 SCHEMA = ROOT / "company_kernel" / "schema.sql"
 
 
@@ -24,7 +27,7 @@ def emit(obj: dict[str, Any]) -> None:
 def connect(db_path: Path | None = None, schema_path: Path | None = None) -> sqlite3.Connection:
     db_path = (db_path or DB_PATH).expanduser().resolve()
     schema_path = (schema_path or SCHEMA).expanduser().resolve()
-    conn = sqlite3.connect(db_path)
+    conn = sqlite3.connect(ensure_db_parent(db_path))
     conn.row_factory = sqlite3.Row
     conn.executescript(schema_path.read_text(encoding="utf-8"))
     conn.commit()
@@ -176,6 +179,66 @@ def close_task(conn: sqlite3.Connection, task: sqlite3.Row, status: str, summary
     conn.commit()
 
 
+def queue_supervisor_notification(result: dict[str, Any]) -> dict[str, Any]:
+    db_path = Path(str(result.get("db_path") or DB_PATH)).expanduser().resolve()
+    schema_path = SCHEMA.expanduser().resolve()
+    conn = connect(db_path=db_path, schema_path=schema_path)
+    try:
+        payload = {
+            "kind": "supervisor_escalation",
+            "agent_id": str(result.get("agent", "") or ""),
+            "task_id": str(result.get("task_id", "") or ""),
+            "trace_id": "",
+            "trigger": "codex_pm_supervisor",
+            "triggered_at": now(),
+            "triggered_by": "hermes",
+            "message": str(result.get("human_message") or result.get("blocker") or "").strip(),
+            "summary": str(result.get("human_message") or result.get("blocker") or "").strip(),
+            "reason": "sync supervisor notification failed",
+            "delivery_status": "pending",
+            "channel": "repo-only",
+            "account": "",
+            "target": "",
+            "delivery_result": result.get("notification", {}),
+        }
+        event = companyctl.record_event(
+            conn,
+            "progress.notification",
+            "hermes",
+            task_id=payload["task_id"],
+            payload=payload,
+        )
+        return {"event_type": "progress.notification", "event_id": event["id"], **payload}
+    finally:
+        conn.close()
+
+
+def notify_if_escalation(result: dict[str, Any]) -> dict[str, Any]:
+    if result.get("status") not in {"stalled", "blocked"}:
+        return result
+    message = str(result.get("human_message") or result.get("blocker") or "").strip()
+    if not message:
+        return result
+    try:
+        notification = companyctl.notification_send_result(
+            message=message,
+            subject="Company Kernel supervisor escalation",
+            kind="error",
+        )
+    except Exception as exc:
+        notification = {"ok": False, "error": str(exc)}
+    result["notification"] = notification
+    if not notification.get("ok"):
+        result["queued_notification"] = queue_supervisor_notification(result)
+    return result
+
+
+def finalize_result(agent: str, result: dict[str, Any], report_root: Path) -> dict[str, Any]:
+    notify_if_escalation(result)
+    result["report_path"] = str(write_pm_report(agent, result, report_root=report_root))
+    return result
+
+
 def supervise_once(
     agent: str = "codex",
     now_ts: str | None = None,
@@ -204,8 +267,7 @@ def supervise_once(
                 "db_path": str(db_path),
                 "workspace": str(workspace.expanduser().resolve()) if workspace else "",
             }
-            result["report_path"] = str(write_pm_report(agent, result, report_root=report_root))
-            return result
+            return finalize_result(agent, result, report_root)
         task = active_task(conn, agent)
         effective_workspace = workspace.expanduser().resolve() if workspace else Path(emp["workspace"]).expanduser().resolve()
         progress_path, progress = latest_progress(effective_workspace, str(task["id"]) if task else "")
@@ -219,8 +281,7 @@ def supervise_once(
                 "db_path": str(db_path),
                 "workspace": str(effective_workspace),
             }
-            result["report_path"] = str(write_pm_report(agent, result, report_root=report_root))
-            return result
+            return finalize_result(agent, result, report_root)
         task_title = short_text(task["title"])
         if not progress_path:
             result = {
@@ -235,8 +296,7 @@ def supervise_once(
                 "workspace": str(effective_workspace),
                 "progress_history": [],
             }
-            result["report_path"] = str(write_pm_report(agent, result, report_root=report_root))
-            return result
+            return finalize_result(agent, result, report_root)
         history = progress_history(effective_workspace, str(task["id"]))
         state = progress_state(progress)
         layer = progress_layer(progress)
@@ -261,8 +321,7 @@ def supervise_once(
             }
             if close_completed:
                 close_task(conn, task, "completed", result["human_message"], evidence, ts)
-            result["report_path"] = str(write_pm_report(agent, result, report_root=report_root))
-            return result
+            return finalize_result(agent, result, report_root)
         if state == "blocked":
             result = {
                 "ok": True,
@@ -281,8 +340,7 @@ def supervise_once(
                 "progress_history": history,
             }
             close_task(conn, task, "blocked", result["human_message"], evidence, ts)
-            result["report_path"] = str(write_pm_report(agent, result, report_root=report_root))
-            return result
+            return finalize_result(agent, result, report_root)
         created = parse_time(progress_created_at(progress, ts))
         age_minutes = (parse_time(ts) - created).total_seconds() / 60
         if layer in {"received", "working"} and age_minutes > stale_minutes:
@@ -303,8 +361,7 @@ def supervise_once(
                 "progress_history": history,
             }
             close_task(conn, task, "stalled", result["human_message"], evidence, ts)
-            result["report_path"] = str(write_pm_report(agent, result, report_root=report_root))
-            return result
+            return finalize_result(agent, result, report_root)
         result = {
             "ok": True,
             "status": state or "in_progress",
@@ -321,8 +378,7 @@ def supervise_once(
             "workspace": str(effective_workspace),
             "progress_history": history,
         }
-        result["report_path"] = str(write_pm_report(agent, result, report_root=report_root))
-        return result
+        return finalize_result(agent, result, report_root)
     finally:
         conn.close()
 

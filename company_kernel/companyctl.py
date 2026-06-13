@@ -8,6 +8,7 @@ import io
 import json
 import mimetypes
 import os
+import re
 import shutil
 import sqlite3
 import subprocess
@@ -19,24 +20,67 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+from .db_paths import ensure_db_parent
+from . import sandboxing
 from .schema_migrations import ensure_schema_migrations
 
-ROOT = Path(os.environ.get("OPENCLAW_COMPANY_KERNEL_ROOT", Path(__file__).resolve().parents[1])).resolve()
+DEFAULT_ROOT = Path(__file__).resolve().parents[1]
+GLOBAL_CONFIG_PATH = Path("~/.gemini/antigravity/company_kernel_config.json")
+
+
+def load_global_config(path: Path | None = None) -> dict:
+    raw_path = str(os.environ.get("COMPANY_KERNEL_CONFIG_PATH", "") or "").strip()
+    config_path = path or (Path(raw_path).expanduser() if raw_path else GLOBAL_CONFIG_PATH.expanduser())
+    if not config_path.exists():
+        return {}
+    try:
+        payload = json.loads(config_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def resolve_kernel_paths(default_root: Path) -> dict[str, Path | int | dict]:
+    config = load_global_config()
+    env_root = str(os.environ.get("OPENCLAW_COMPANY_KERNEL_ROOT", "") or "").strip()
+    root_value = config.get("master_workspace_root") or env_root or str(default_root)
+    root = Path(str(root_value)).expanduser().resolve()
+    db_value = str(os.environ.get("COMPANY_KERNEL_DB_PATH", "") or config.get("database_path") or root / "company.sqlite")
+    log_value = str(config.get("log_dir") or root / "logs")
+    return {
+        "config": config,
+        "root": root,
+        "db_path": Path(db_value).expanduser().resolve(),
+        "employees_dir": root / "employees",
+        "state_dir": root / "state",
+        "rfc_dir": root / "rfcs",
+        "config_dir": root / "config",
+        "log_dir": Path(log_value).expanduser().resolve(),
+        "gateway_port": int(config.get("gateway_port", 0) or 0),
+    }
+
+
+_KERNEL_PATHS = resolve_kernel_paths(DEFAULT_ROOT)
+ROOT = Path(_KERNEL_PATHS["root"])
 
 
 def resolve_db_path() -> Path:
     override = str(os.environ.get("COMPANY_KERNEL_DB_PATH", "") or "").strip()
     if override:
         return Path(override).expanduser().resolve()
-    return ROOT / "company.sqlite"
+    config_db = load_global_config().get("database_path")
+    if config_db:
+        return Path(str(config_db)).expanduser().resolve()
+    return Path(_KERNEL_PATHS["db_path"])
 
 
 DB_PATH = resolve_db_path()
-EMPLOYEES_DIR = ROOT / "employees"
-STATE_DIR = ROOT / "state"
-RFC_DIR = ROOT / "rfcs"
-CONFIG_DIR = ROOT / "config"
+EMPLOYEES_DIR = Path(_KERNEL_PATHS["employees_dir"])
+STATE_DIR = Path(_KERNEL_PATHS["state_dir"])
+RFC_DIR = Path(_KERNEL_PATHS["rfc_dir"])
+CONFIG_DIR = Path(_KERNEL_PATHS["config_dir"])
 WORKFLOW_DIR = CONFIG_DIR / "workflows"
+SKILL_PACKAGES_DIR = ROOT / "skill-packages"
 LAUNCHD_LABEL = "ai.openclaw.company-kernel.daemon"
 LAUNCHD_TEMPLATE = CONFIG_DIR / "launchd" / f"{LAUNCHD_LABEL}.plist"
 HOOKS_PATH = CONFIG_DIR / "hooks.json"
@@ -49,6 +93,9 @@ SUPERVISOR_STATE_DIR = STATE_DIR / "supervisor"
 TASK_WORKSPACE_ROOT = STATE_DIR / "task-workspaces"
 SCHEMA = ROOT / "company_kernel" / "schema.sql"
 _OPEN_CONNECTIONS: list[sqlite3.Connection] = []
+
+EVIDENCE_DISPLAY_ALLOWED_NAMES = {"evidence", "reports", "artifacts", "final"}
+EVIDENCE_DISPLAY_FORBIDDEN_PARTS = {".ssh", ".env", "config", "profile", "api_key", "api-key", "apikey", "secrets", "secret"}
 
 KNOWN_RUNTIMES = {
     "openclaw": "OpenClaw runtime adapter",
@@ -546,8 +593,7 @@ def sync_backlog_from_queue_file(conn: sqlite3.Connection) -> None:
 
 
 def connect() -> sqlite3.Connection:
-    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(ensure_db_parent(DB_PATH))
     conn.row_factory = sqlite3.Row
     conn.executescript(SCHEMA.read_text(encoding="utf-8"))
     ensure_schema_migrations(conn)
@@ -667,7 +713,7 @@ def write_workspace_manifest(task_id: str, trace_id: str, path: Path) -> Path:
 def ensure_task_workspace(conn: sqlite3.Connection, task_id: str, trace_id: str = "") -> dict:
     require_task(conn, task_id)
     task_trace_id = trace_id or trace_id_for_task(conn, task_id)
-    workspace_path = TASK_WORKSPACE_ROOT / f"task_{safe_path_token(task_id)}"
+    workspace_path = (TASK_WORKSPACE_ROOT / f"task_{safe_path_token(task_id)}").resolve()
     for subdir in ["input", "work", "artifacts", "evidence", "final"]:
         (workspace_path / subdir).mkdir(parents=True, exist_ok=True)
     manifest_path = write_workspace_manifest(task_id, task_trace_id, workspace_path)
@@ -697,13 +743,156 @@ def task_workspace(conn: sqlite3.Connection, task_id: str) -> dict:
 
 def require_workspace_path(conn: sqlite3.Connection, task_id: str, raw_path: str) -> Path:
     workspace = task_workspace(conn, task_id)
-    root = Path(workspace["path"]).resolve()
-    candidate = Path(raw_path).expanduser().resolve()
-    try:
-        candidate.relative_to(root)
-    except ValueError as exc:
-        raise ValueError(f"artifact path must be inside task workspace: {candidate}") from exc
+    root = Path(os.path.realpath(Path(workspace["path"]).expanduser()))
+    candidate = Path(os.path.realpath(Path(raw_path).expanduser()))
+    def macos_var_aliases(path: Path) -> set[str]:
+        text = str(path)
+        aliases = {text}
+        if text.startswith("/private/var/"):
+            aliases.add(text.replace("/private/var/", "/var/", 1))
+        elif text.startswith("/var/"):
+            aliases.add(text.replace("/var/", "/private/var/", 1))
+        return aliases
+
+    root_aliases = macos_var_aliases(root)
+    candidate_aliases = macos_var_aliases(candidate)
+    allowed = False
+    for root_alias in root_aliases:
+        for candidate_alias in candidate_aliases:
+            if candidate_alias == root_alias or candidate_alias.startswith(root_alias.rstrip("/") + "/"):
+                allowed = True
+                break
+        if allowed:
+            break
+    if not allowed:
+        raise ValueError(f"artifact path must be inside task workspace: {candidate}")
     return candidate
+
+
+def evidence_display_roots() -> list[Path]:
+    roots = [
+        TASK_WORKSPACE_ROOT,
+        STATE_DIR / "evidence",
+        STATE_DIR / "reports",
+        STATE_DIR / "artifacts",
+        ROOT / "workspace",
+        ROOT / "reports",
+        ROOT / "artifacts",
+        ROOT / "evidence",
+    ]
+    employees_dir = EMPLOYEES_DIR
+    if employees_dir.exists():
+        roots.extend(path / "reports" for path in employees_dir.iterdir() if path.is_dir())
+    return [path.resolve() for path in roots]
+
+
+def sanitize_evidence_path_for_display(raw_path: str) -> dict:
+    value = str(raw_path or "").strip()
+    policy = {
+        "summary": "workspace/evidence/reports/artifacts/final only; absolute paths and secret/config paths stay hidden",
+        "allowed_segments": sorted(EVIDENCE_DISPLAY_ALLOWED_NAMES),
+        "forbidden_policy": "sensitive_path_tokens_redacted",
+    }
+    result = {
+        "path": "",
+        "relative_path": "",
+        "basename": "",
+        "exists": False,
+        "allowed": False,
+        "reason": "",
+        "checksum": "",
+        "absolute_path_exposed": False,
+        "policy": policy,
+    }
+    if not value:
+        result["reason"] = "empty"
+        return result
+    if "\x00" in value or ".." in Path(value).parts:
+        result["reason"] = "unsafe path traversal"
+        return result
+    candidate = Path(value).expanduser()
+    if not candidate.is_absolute():
+        candidate = ROOT / candidate
+    try:
+        resolved = candidate.resolve()
+    except OSError:
+        result["reason"] = "unresolvable"
+        return result
+    result["exists"] = resolved.exists() and resolved.is_file()
+    parts_lower = {part.lower() for part in resolved.parts}
+    if parts_lower & EVIDENCE_DISPLAY_FORBIDDEN_PARTS:
+        result["reason"] = "forbidden secret/config path"
+        return result
+    allowed_root = None
+    relative = None
+    for root in evidence_display_roots():
+        try:
+            rel = resolved.relative_to(root)
+        except ValueError:
+            continue
+        allowed_root = root
+        relative = rel
+        break
+    if allowed_root is None or relative is None:
+        result["reason"] = "not in allowed evidence roots"
+        return result
+    if not relative.parts:
+        result["reason"] = "evidence path points to root"
+        return result
+    if not (set(part.lower() for part in resolved.parts) & EVIDENCE_DISPLAY_ALLOWED_NAMES):
+        result["reason"] = "missing evidence/reports/artifacts/final segment"
+        return result
+    result.update(
+        {
+            "path": str(relative),
+            "relative_path": str(relative),
+            "basename": resolved.name,
+            "exists": resolved.exists() and resolved.is_file(),
+            "allowed": True,
+            "reason": "allowed",
+            "checksum": sha256_file(resolved) if resolved.exists() and resolved.is_file() else "",
+            "absolute_path_exposed": False,
+        }
+    )
+    return result
+
+
+SENSITIVE_LOG_PATTERNS = [
+    re.compile(r"(?i)(api[_-]?key|token|secret|password|passwd|authorization|bearer)\s*[:=]\s*([^\s,;]+)"),
+    re.compile(r"(?i)(?<![A-Za-z0-9_])(sk-[A-Za-z0-9_\-]{12,})"),
+    re.compile(r"(?i)(?<![A-Za-z0-9_])(xox[baprs]-[A-Za-z0-9\-]{12,})"),
+]
+
+
+def sanitize_log_text(raw: object, *, max_length: int = 1200) -> str:
+    text = "" if raw is None else str(raw)
+    if not text:
+        return ""
+    text = text.replace(str(Path.home()), "~")
+    for env_key, env_value in os.environ.items():
+        if not env_value or len(env_value) < 8:
+            continue
+        key_lower = env_key.lower()
+        if any(marker in key_lower for marker in ("token", "secret", "password", "passwd", "api_key", "apikey", "authorization")):
+            text = text.replace(env_value, "[REDACTED_ENV]")
+    text = re.sub(r"(?<![\w.-])/[^\s\"']*(?:\.env|id_rsa|id_ed25519|config|profile|credentials|token)[^\s\"']*", "[REDACTED_PATH]", text, flags=re.IGNORECASE)
+    text = re.sub(r"(?<![\w.-])~[^\s\"']*(?:\.env|id_rsa|id_ed25519|config|profile|credentials|token)[^\s\"']*", "[REDACTED_PATH]", text, flags=re.IGNORECASE)
+    for pattern in SENSITIVE_LOG_PATTERNS:
+        text = pattern.sub(lambda match: f"{match.group(1)}=[REDACTED]" if match.lastindex and match.lastindex >= 2 else "[REDACTED]", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    if len(text) > max_length:
+        text = text[: max_length - 1] + "…"
+    return text
+
+
+def sanitize_json_like(value: object) -> object:
+    if isinstance(value, dict):
+        return {str(key): sanitize_json_like(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [sanitize_json_like(item) for item in value]
+    if isinstance(value, str):
+        return sanitize_log_text(value)
+    return value
 
 
 def sha256_file(path: Path) -> str:
@@ -876,7 +1065,7 @@ def use_artifact_internal(conn: sqlite3.Connection, *, task_id: str, artifact_id
     return {"artifact": artifact, "event_id": event["id"]}
 
 
-def promote_artifact_to_evidence_internal(conn: sqlite3.Connection, *, artifact_id: str, by: str, summary: str = "", evidence_type: str = "") -> dict:
+def promote_artifact_to_evidence_internal(conn: sqlite3.Connection, *, artifact_id: str, by: str, summary: str = "", evidence_type: str = "", attempt_id: str = "") -> dict:
     require_employee(conn, by)
     artifact = row_by_id(conn, "artifacts", "artifact_id", artifact_id)
     if artifact["status"] in {"rejected", "superseded"}:
@@ -887,6 +1076,7 @@ def promote_artifact_to_evidence_internal(conn: sqlite3.Connection, *, artifact_
         "evidence_id": evidence_id,
         "trace_id": artifact["trace_id"],
         "task_id": artifact["task_id"],
+        "attempt_id": attempt_id,
         "employee_id": by,
         "artifact_id": artifact_id,
         "type": evidence_type or artifact["artifact_type"],
@@ -899,14 +1089,14 @@ def promote_artifact_to_evidence_internal(conn: sqlite3.Connection, *, artifact_
     }
     conn.execute(
         """
-        INSERT INTO evidence(evidence_id, trace_id, task_id, employee_id, artifact_id, type, path_or_url, summary, checksum, is_final, metadata_json, created_at)
-        VALUES (:evidence_id, :trace_id, :task_id, :employee_id, :artifact_id, :type, :path_or_url, :summary, :checksum, :is_final, :metadata_json, :created_at)
+        INSERT INTO evidence(evidence_id, trace_id, task_id, attempt_id, employee_id, artifact_id, type, path_or_url, summary, checksum, is_final, metadata_json, created_at)
+        VALUES (:evidence_id, :trace_id, :task_id, :attempt_id, :employee_id, :artifact_id, :type, :path_or_url, :summary, :checksum, :is_final, :metadata_json, :created_at)
         """,
         evidence,
     )
     conn.execute("UPDATE artifacts SET is_final = 1, updated_at = ? WHERE artifact_id = ?", (ts, artifact_id))
     conn.commit()
-    event = record_event(conn, "artifact.promoted_to_evidence", by, task_id=artifact["task_id"], trace_id=artifact["trace_id"], payload={"artifact_id": artifact_id, "evidence_id": evidence_id, "path": artifact["path"]})
+    event = record_event(conn, "artifact.promoted_to_evidence", by, task_id=artifact["task_id"], trace_id=artifact["trace_id"], payload={"artifact_id": artifact_id, "evidence_id": evidence_id, "path": artifact["path"], "attempt_id": attempt_id})
     return {"evidence": evidence, "event_id": event["id"]}
 
 
@@ -1121,6 +1311,43 @@ def latest_attempt_for_task(conn: sqlite3.Connection, task_id: str, employee_id:
     return dict(row) if row else None
 
 
+def long_task_state_for_attempt(attempt: dict, *, generated_at: str | None = None) -> dict:
+    policy = attempt_json_field(dict(attempt), "runtime_policy_json")
+    heartbeat_interval = int(policy.get("heartbeat_interval_seconds", DEFAULT_RUNTIME_POLICY["heartbeat_interval_seconds"]) or DEFAULT_RUNTIME_POLICY["heartbeat_interval_seconds"])
+    stale_after = int(policy.get("stale_after_seconds", DEFAULT_RUNTIME_POLICY["stale_after_seconds"]) or DEFAULT_RUNTIME_POLICY["stale_after_seconds"])
+    max_runtime = int(policy.get("max_runtime_seconds", DEFAULT_RUNTIME_POLICY["max_runtime_seconds"]) or DEFAULT_RUNTIME_POLICY["max_runtime_seconds"])
+    current = generated_at or now()
+    heartbeat_age = seconds_since(str(attempt.get("last_heartbeat_at") or attempt.get("started_at") or ""), current)
+    progress_age = seconds_since(str(attempt.get("last_progress_at") or attempt.get("started_at") or ""), current)
+    runtime_age = seconds_since(str(attempt.get("started_at") or ""), current)
+    heartbeat_warn_after = max(1, heartbeat_interval * 2)
+    heartbeat_state = "stale" if heartbeat_age >= heartbeat_warn_after else "fresh"
+    progress_state = "stagnant" if progress_age >= stale_after else "fresh"
+    status = str(attempt.get("status") or "")
+    if status == "correcting":
+        state = "correcting"
+    elif status in {"failed", "cancelled", "stale", "success"}:
+        state = status
+    elif heartbeat_state == "stale":
+        state = "heartbeat_stale"
+    elif progress_state == "stagnant":
+        state = "progress_stagnant"
+    else:
+        state = "running"
+    return {
+        "long_task_state": state,
+        "heartbeat_state": heartbeat_state,
+        "progress_state": progress_state,
+        "heartbeat_age_seconds": heartbeat_age,
+        "progress_age_seconds": progress_age,
+        "runtime_age_seconds": runtime_age,
+        "heartbeat_warn_after_seconds": heartbeat_warn_after,
+        "stale_after_seconds": stale_after,
+        "max_runtime_seconds": max_runtime,
+        "timeout_is_sync_wait_only": True,
+    }
+
+
 def start_execution_attempt_internal(
     conn: sqlite3.Connection,
     *,
@@ -1187,6 +1414,11 @@ def finish_execution_attempt_internal(conn: sqlite3.Connection, *, attempt_id: s
     if status not in {"success", "failed", "cancelled", "stale"}:
         raise SystemExit("status must be success, failed, cancelled, or stale")
     attempt = row_by_id(conn, "execution_attempts", "attempt_id", attempt_id)
+    current_status = str(attempt.get("status") or "")
+    if current_status in {"success", "failed", "cancelled", "stale"}:
+        if current_status == status:
+            return {"attempt": attempt, "event_id": "", "idempotent": True}
+        raise ValueError(f"attempt is terminal and cannot be finished again: {current_status}")
     conn.execute(
         "UPDATE execution_attempts SET status = ?, finished_at = ?, error_message = ? WHERE attempt_id = ?",
         (status, now(), error, attempt_id),
@@ -1196,9 +1428,1267 @@ def finish_execution_attempt_internal(conn: sqlite3.Connection, *, attempt_id: s
     return {"attempt": row_by_id(conn, "execution_attempts", "attempt_id", attempt_id), "event_id": event["id"]}
 
 
+def runtime_session_row(conn: sqlite3.Connection, session_id: str) -> dict:
+    return row_by_id(conn, "runtime_sessions", "session_id", session_id)
+
+
+def hydrate_runtime_session(session: dict) -> dict:
+    item = dict(session)
+    try:
+        metadata = json.loads(item.get("metadata_json", "") or "{}")
+    except json.JSONDecodeError:
+        metadata = {}
+    item["metadata"] = metadata if isinstance(metadata, dict) else {}
+    item.pop("metadata_json", None)
+    return item
+
+
+def list_runtime_sessions(conn: sqlite3.Connection, *, employee_id: str = "", task_id: str = "", trace_id: str = "", limit: int = 50) -> list[dict]:
+    where = []
+    params: list[object] = []
+    if employee_id:
+        where.append("employee_id = ?")
+        params.append(employee_id)
+    if task_id:
+        where.append("task_id = ?")
+        params.append(task_id)
+    if trace_id:
+        where.append("trace_id = ?")
+        params.append(trace_id)
+    clause = f"WHERE {' AND '.join(where)}" if where else ""
+    safe_limit = max(1, min(int(limit or 50), 200))
+    rows_out = rows(
+        conn,
+        f"SELECT * FROM runtime_sessions {clause} ORDER BY COALESCE(last_heartbeat_at, started_at) DESC, started_at DESC LIMIT ?",
+        tuple([*params, safe_limit]),
+    )
+    return [hydrate_runtime_session(item) for item in rows_out]
+
+
+def runtime_session_detail_bundle(conn: sqlite3.Connection, session_id: str) -> dict:
+    safe_id = str(session_id or "").strip()
+    if not safe_id or "/" in safe_id:
+        return {"ok": False, "error": "invalid session_id", "session_id": safe_id}
+    raw_session = conn.execute("SELECT * FROM runtime_sessions WHERE session_id = ?", (safe_id,)).fetchone()
+    if not raw_session:
+        return {"ok": False, "error": "runtime_session not found", "session_id": safe_id}
+    session = hydrate_runtime_session(dict(raw_session))
+    task_id = str(session.get("task_id") or "")
+    attempt_id = str(session.get("attempt_id") or "")
+    trace_id = str(session.get("trace_id") or "")
+    employee_id = str(session.get("employee_id") or "")
+    task_row = conn.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone() if task_id else None
+    attempt_row = conn.execute("SELECT * FROM execution_attempts WHERE attempt_id = ?", (attempt_id,)).fetchone() if attempt_id else None
+    events = rows(
+        conn,
+        """
+        SELECT id, trace_id, event_type, source_agent, task_id, payload_json, created_at, processed_at
+        FROM company_events
+        WHERE payload_json LIKE ?
+        ORDER BY created_at ASC
+        LIMIT 50
+        """,
+        (f"%{safe_id}%",),
+    )
+    sanitized_events = []
+    for event in events:
+        raw_payload = event.get("payload_json", "")
+        try:
+            payload = json.loads(raw_payload or "{}")
+        except json.JSONDecodeError:
+            payload = {"raw": sanitize_log_text(raw_payload)}
+        clean_payload = sanitize_json_like(payload)
+        sanitized_events.append(
+            {
+                **event,
+                "payload": clean_payload,
+                "payload_json": json.dumps(clean_payload, ensure_ascii=False, sort_keys=True),
+            }
+        )
+    task_payload = dict(task_row) if task_row else {}
+    if task_payload:
+        raw_evidence_path = task_payload.pop("evidence_path", "")
+        task_payload["evidence"] = sanitize_evidence_path_for_display(raw_evidence_path)
+    return {
+        "ok": True,
+        "source": "/v1/runtime-sessions/{session_id}",
+        "runtime_session": session,
+        "task": task_payload,
+        "attempt": hydrate_execution_attempt(dict(attempt_row)) if attempt_row else {},
+        "tool_calls": list_tool_calls(conn, session_id=safe_id, limit=100),
+        "budget_summary": budget_summary(conn, task_id=task_id, employee_id=employee_id, trace_id=trace_id, attempt_id=attempt_id),
+        "budget_events": list_budget_events(conn, task_id=task_id, employee_id=employee_id, trace_id=trace_id, attempt_id=attempt_id, limit=50),
+        "evidence_records": task_evidence_records(conn, task_id) if task_id else [],
+        "events": sanitized_events,
+        "redaction_policy": sanitized_log_policy(),
+    }
+
+
+def start_runtime_session_internal(
+    conn: sqlite3.Connection,
+    *,
+    session_id: str = "",
+    employee_id: str,
+    adapter_type: str = "",
+    runtime_type: str = "",
+    pid: str = "",
+    session_key: str = "",
+    task_id: str = "",
+    attempt_id: str = "",
+    metadata: dict | None = None,
+) -> dict:
+    require_employee(conn, employee_id)
+    attempt = row_by_id(conn, "execution_attempts", "attempt_id", attempt_id) if attempt_id else {}
+    if task_id:
+        require_task(conn, task_id)
+    resolved_task_id = task_id or str(attempt.get("task_id", "") or "")
+    trace_id = trace_id_for_task(conn, resolved_task_id, str(attempt.get("trace_id", "") or ""))
+    ts = now()
+    session = {
+        "session_id": session_id or f"session-{datetime.now().strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:8]}",
+        "trace_id": trace_id,
+        "task_id": resolved_task_id,
+        "attempt_id": attempt_id,
+        "employee_id": employee_id,
+        "adapter_type": adapter_type or str(attempt.get("adapter_type", "") or ""),
+        "runtime_type": runtime_type,
+        "pid": str(pid or ""),
+        "session_key": str(session_key or attempt.get("session_key", "") or ""),
+        "status": "active",
+        "started_at": ts,
+        "last_heartbeat_at": ts,
+        "last_progress_at": "",
+        "stopped_at": "",
+        "metadata_json": json.dumps(metadata or {}, ensure_ascii=False),
+    }
+    conn.execute(
+        """
+        INSERT INTO runtime_sessions(
+          session_id, trace_id, task_id, attempt_id, employee_id, adapter_type, runtime_type,
+          pid, session_key, status, started_at, last_heartbeat_at, last_progress_at,
+          stopped_at, metadata_json
+        )
+        VALUES (
+          :session_id, :trace_id, :task_id, :attempt_id, :employee_id, :adapter_type, :runtime_type,
+          :pid, :session_key, :status, :started_at, :last_heartbeat_at, :last_progress_at,
+          :stopped_at, :metadata_json
+        )
+        ON CONFLICT(session_id) DO UPDATE SET
+          trace_id = excluded.trace_id,
+          task_id = excluded.task_id,
+          attempt_id = excluded.attempt_id,
+          employee_id = excluded.employee_id,
+          adapter_type = excluded.adapter_type,
+          runtime_type = excluded.runtime_type,
+          pid = excluded.pid,
+          session_key = excluded.session_key,
+          status = excluded.status,
+          last_heartbeat_at = excluded.last_heartbeat_at,
+          metadata_json = excluded.metadata_json
+        """,
+        session,
+    )
+    conn.commit()
+    event = record_event(conn, "runtime.session.started", employee_id, task_id=resolved_task_id, trace_id=trace_id, payload={"session_id": session["session_id"], "attempt_id": attempt_id, "adapter_type": session["adapter_type"], "runtime_type": runtime_type})
+    audit(conn, employee_id, "runtime.session.start", session["session_id"], {"task_id": resolved_task_id, "attempt_id": attempt_id, "event_id": event["id"]})
+    return {"session": hydrate_runtime_session(runtime_session_row(conn, session["session_id"])), "event_id": event["id"]}
+
+
+def heartbeat_runtime_session_internal(conn: sqlite3.Connection, *, session_id: str, status: str = "active", progress: bool = False) -> dict:
+    session = runtime_session_row(conn, session_id)
+    ts = now()
+    fields = ["status = ?", "last_heartbeat_at = ?"]
+    params: list[object] = [status, ts]
+    if progress:
+        fields.append("last_progress_at = ?")
+        params.append(ts)
+    params.append(session_id)
+    conn.execute(f"UPDATE runtime_sessions SET {', '.join(fields)} WHERE session_id = ?", tuple(params))
+    if session.get("attempt_id"):
+        attempt_fields = ["last_heartbeat_at = ?"]
+        attempt_params: list[object] = [ts]
+        if progress:
+            attempt_fields.append("last_progress_at = ?")
+            attempt_params.append(ts)
+        attempt_params.append(session["attempt_id"])
+        conn.execute(f"UPDATE execution_attempts SET {', '.join(attempt_fields)} WHERE attempt_id = ?", tuple(attempt_params))
+    conn.commit()
+    event_type = "runtime.session.progress" if progress else "runtime.session.heartbeat"
+    event = record_event(conn, event_type, session["employee_id"], task_id=session.get("task_id", ""), trace_id=session.get("trace_id", ""), payload={"session_id": session_id, "attempt_id": session.get("attempt_id", ""), "status": status})
+    return {"session": hydrate_runtime_session(runtime_session_row(conn, session_id)), "event_id": event["id"]}
+
+
+def stop_runtime_session_internal(conn: sqlite3.Connection, *, session_id: str, status: str = "stopped", error: str = "") -> dict:
+    if status not in {"stopped", "failed", "stale", "cancelled"}:
+        raise SystemExit("status must be stopped, failed, stale, or cancelled")
+    session = runtime_session_row(conn, session_id)
+    ts = now()
+    conn.execute("UPDATE runtime_sessions SET status = ?, stopped_at = ?, metadata_json = ? WHERE session_id = ?", (status, ts, json.dumps({**attempt_json_field(session, "metadata_json"), "stop_error": error}, ensure_ascii=False), session_id))
+    conn.commit()
+    event = record_event(conn, "runtime.session.stopped", session["employee_id"], task_id=session.get("task_id", ""), trace_id=session.get("trace_id", ""), payload={"session_id": session_id, "attempt_id": session.get("attempt_id", ""), "status": status, "error": error})
+    audit(conn, session["employee_id"], "runtime.session.stop", session_id, {"status": status, "error": error, "event_id": event["id"]})
+    return {"session": hydrate_runtime_session(runtime_session_row(conn, session_id)), "event_id": event["id"]}
+
+
+def tool_call_row(conn: sqlite3.Connection, tool_call_id: str) -> dict:
+    return row_by_id(conn, "agent_tool_calls", "tool_call_id", tool_call_id)
+
+
+def hydrate_tool_call(tool_call: dict) -> dict:
+    item = dict(tool_call)
+    for source_field, target_field in [("input_json", "input"), ("output_json", "output"), ("metadata_json", "metadata")]:
+        try:
+            parsed = json.loads(item.get(source_field, "") or "{}")
+        except json.JSONDecodeError:
+            parsed = {}
+        item[target_field] = parsed if isinstance(parsed, dict) else {}
+        item.pop(source_field, None)
+    item["input_summary"] = sanitize_log_text(item.get("input_summary", ""))
+    item["output_summary"] = sanitize_log_text(item.get("output_summary", ""))
+    item["error_message"] = sanitize_log_text(item.get("error_message", ""))
+    item["sanitized"] = True
+    item["raw_available"] = False
+    item["redaction_policy"] = {
+        **sanitized_log_policy(),
+        "summary": "raw tool payload hidden; input/output/error summaries are sanitized before dashboard/API display",
+    }
+    return item
+
+
+def list_tool_calls(conn: sqlite3.Connection, *, employee_id: str = "", task_id: str = "", trace_id: str = "", attempt_id: str = "", session_id: str = "", limit: int = 50) -> list[dict]:
+    where = []
+    params: list[object] = []
+    for column, value in [("employee_id", employee_id), ("task_id", task_id), ("trace_id", trace_id), ("attempt_id", attempt_id), ("session_id", session_id)]:
+        if value:
+            where.append(f"{column} = ?")
+            params.append(value)
+    clause = f"WHERE {' AND '.join(where)}" if where else ""
+    safe_limit = max(1, min(int(limit or 50), 200))
+    rows_out = rows(conn, f"SELECT * FROM agent_tool_calls {clause} ORDER BY started_at DESC, rowid DESC LIMIT ?", tuple([*params, safe_limit]))
+    return [hydrate_tool_call(item) for item in rows_out]
+
+
+def tool_call_detail_bundle(conn: sqlite3.Connection, tool_call_id: str) -> dict:
+    safe_id = str(tool_call_id or "").strip()
+    if not safe_id or "/" in safe_id:
+        return {"ok": False, "error": "invalid tool_call_id", "tool_call_id": safe_id}
+    raw_tool_call = conn.execute("SELECT * FROM agent_tool_calls WHERE tool_call_id = ?", (safe_id,)).fetchone()
+    if not raw_tool_call:
+        return {"ok": False, "error": "tool_call not found", "tool_call_id": safe_id}
+    tool_call = hydrate_tool_call(dict(raw_tool_call))
+    task_id = str(tool_call.get("task_id") or "")
+    attempt_id = str(tool_call.get("attempt_id") or "")
+    session_id = str(tool_call.get("session_id") or "")
+    trace_id = str(tool_call.get("trace_id") or "")
+    task_row = conn.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone() if task_id else None
+    attempt_row = conn.execute("SELECT * FROM execution_attempts WHERE attempt_id = ?", (attempt_id,)).fetchone() if attempt_id else None
+    session_row = conn.execute("SELECT * FROM runtime_sessions WHERE session_id = ?", (session_id,)).fetchone() if session_id else None
+    events = rows(
+        conn,
+        """
+        SELECT id, trace_id, event_type, source_agent, task_id, payload_json, created_at, processed_at
+        FROM company_events
+        WHERE payload_json LIKE ?
+        ORDER BY created_at ASC
+        LIMIT 50
+        """,
+        (f"%{safe_id}%",),
+    )
+    sanitized_events = []
+    for event in events:
+        raw_payload = event.get("payload_json", "")
+        try:
+            payload = json.loads(raw_payload or "{}")
+        except json.JSONDecodeError:
+            payload = {"raw": sanitize_log_text(raw_payload)}
+        sanitized_events.append(
+            {
+                **event,
+                "payload": sanitize_json_like(payload),
+                "payload_json": json.dumps(sanitize_json_like(payload), ensure_ascii=False, sort_keys=True),
+            }
+        )
+    evidence_records = task_evidence_records(conn, task_id) if task_id else []
+    task_payload = dict(task_row) if task_row else {}
+    if task_payload:
+        raw_evidence_path = task_payload.pop("evidence_path", "")
+        task_payload["evidence"] = sanitize_evidence_path_for_display(raw_evidence_path)
+    return {
+        "ok": True,
+        "source": "/v1/tool-calls/{tool_call_id}",
+        "tool_call": tool_call,
+        "task": task_payload,
+        "attempt": hydrate_execution_attempt(dict(attempt_row)) if attempt_row else {},
+        "runtime_session": hydrate_runtime_session(dict(session_row)) if session_row else {},
+        "budget_summary": budget_summary(conn, task_id=task_id, employee_id=str(tool_call.get("employee_id") or ""), trace_id=trace_id, attempt_id=attempt_id),
+        "budget_events": list_budget_events(conn, task_id=task_id, employee_id=str(tool_call.get("employee_id") or ""), trace_id=trace_id, attempt_id=attempt_id, limit=50),
+        "evidence_records": evidence_records,
+        "events": sanitized_events,
+        "redaction_policy": sanitized_log_policy(),
+    }
+
+
+def start_tool_call_internal(
+    conn: sqlite3.Connection,
+    *,
+    tool_call_id: str = "",
+    trace_id: str = "",
+    task_id: str = "",
+    attempt_id: str = "",
+    employee_id: str,
+    session_id: str = "",
+    tool_name: str,
+    tool_type: str = "other",
+    input_summary: str = "",
+    input_payload: dict | None = None,
+    risk_level: str = "",
+    approval_id: str = "",
+    metadata: dict | None = None,
+) -> dict:
+    require_employee(conn, employee_id)
+    if task_id:
+        require_task(conn, task_id)
+    attempt = row_by_id(conn, "execution_attempts", "attempt_id", attempt_id) if attempt_id else {}
+    resolved_task_id = task_id or str(attempt.get("task_id", "") or "")
+    resolved_trace_id = trace_id or trace_id_for_task(conn, resolved_task_id, str(attempt.get("trace_id", "") or ""))
+    ts = now()
+    tool_call = {
+        "tool_call_id": tool_call_id or f"tool-call-{datetime.now().strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:8]}",
+        "trace_id": resolved_trace_id,
+        "task_id": resolved_task_id,
+        "attempt_id": attempt_id,
+        "employee_id": employee_id,
+        "session_id": session_id,
+        "tool_name": tool_name,
+        "tool_type": tool_type,
+        "input_summary": input_summary,
+        "input_json": json.dumps(input_payload or {}, ensure_ascii=False),
+        "output_summary": "",
+        "output_json": "{}",
+        "status": "running",
+        "risk_level": risk_level,
+        "approval_id": approval_id,
+        "started_at": ts,
+        "finished_at": "",
+        "error_message": "",
+        "metadata_json": json.dumps(metadata or {}, ensure_ascii=False),
+    }
+    conn.execute(
+        """
+        INSERT INTO agent_tool_calls(
+          tool_call_id, trace_id, task_id, attempt_id, employee_id, session_id,
+          tool_name, tool_type, input_summary, input_json, output_summary, output_json,
+          status, risk_level, approval_id, started_at, finished_at, error_message, metadata_json
+        )
+        VALUES (
+          :tool_call_id, :trace_id, :task_id, :attempt_id, :employee_id, :session_id,
+          :tool_name, :tool_type, :input_summary, :input_json, :output_summary, :output_json,
+          :status, :risk_level, :approval_id, :started_at, :finished_at, :error_message, :metadata_json
+        )
+        """,
+        tool_call,
+    )
+    conn.commit()
+    event = record_event(conn, "tool.call.started", employee_id, task_id=resolved_task_id, trace_id=resolved_trace_id, payload={"tool_call_id": tool_call["tool_call_id"], "attempt_id": attempt_id, "session_id": session_id, "tool_name": tool_name, "tool_type": tool_type, "risk_level": risk_level})
+    audit(conn, employee_id, "tool.call.start", tool_call["tool_call_id"], {"task_id": resolved_task_id, "attempt_id": attempt_id, "session_id": session_id, "event_id": event["id"]})
+    return {"tool_call": hydrate_tool_call(tool_call_row(conn, tool_call["tool_call_id"])), "event_id": event["id"]}
+
+
+def finish_tool_call_internal(conn: sqlite3.Connection, *, tool_call_id: str, status: str, output_summary: str = "", output_payload: dict | None = None, error: str = "") -> dict:
+    if status not in {"success", "failed", "blocked", "cancelled"}:
+        raise SystemExit("status must be success, failed, blocked, or cancelled")
+    tool_call = tool_call_row(conn, tool_call_id)
+    ts = now()
+    conn.execute(
+        "UPDATE agent_tool_calls SET status = ?, output_summary = ?, output_json = ?, finished_at = ?, error_message = ? WHERE tool_call_id = ?",
+        (status, output_summary, json.dumps(output_payload or {}, ensure_ascii=False), ts, error, tool_call_id),
+    )
+    conn.commit()
+    event = record_event(conn, f"tool.call.{status}", tool_call["employee_id"], task_id=tool_call.get("task_id", ""), trace_id=tool_call.get("trace_id", ""), payload={"tool_call_id": tool_call_id, "attempt_id": tool_call.get("attempt_id", ""), "session_id": tool_call.get("session_id", ""), "status": status})
+    audit(conn, tool_call["employee_id"], "tool.call.finish", tool_call_id, {"status": status, "event_id": event["id"]})
+    return {"tool_call": hydrate_tool_call(tool_call_row(conn, tool_call_id)), "event_id": event["id"]}
+
+
+def hydrate_budget_event(event: dict) -> dict:
+    item = dict(event)
+    try:
+        metadata = json.loads(item.get("metadata_json", "") or "{}")
+    except json.JSONDecodeError:
+        metadata = {}
+    item["metadata"] = metadata if isinstance(metadata, dict) else {}
+    item.pop("metadata_json", None)
+    item["summary"] = sanitize_log_text(item.get("summary", ""))
+    item["amount"] = float(item.get("amount") or 0)
+    item["token_input"] = int(item.get("token_input") or 0)
+    item["token_output"] = int(item.get("token_output") or 0)
+    item["runtime_seconds"] = int(item.get("runtime_seconds") or 0)
+    return item
+
+
+def list_budget_events(conn: sqlite3.Connection, *, task_id: str = "", employee_id: str = "", trace_id: str = "", attempt_id: str = "", limit: int = 50) -> list[dict]:
+    where = []
+    params: list[object] = []
+    for column, value in [("task_id", task_id), ("employee_id", employee_id), ("trace_id", trace_id), ("attempt_id", attempt_id)]:
+        if value:
+            where.append(f"{column} = ?")
+            params.append(value)
+    clause = f"WHERE {' AND '.join(where)}" if where else ""
+    safe_limit = max(1, min(int(limit or 50), 500))
+    rows_out = rows(conn, f"SELECT * FROM budget_events {clause} ORDER BY created_at DESC LIMIT ?", tuple([*params, safe_limit]))
+    return [hydrate_budget_event(item) for item in rows_out]
+
+
+def budget_limit_summary(conn: sqlite3.Connection, *, task_id: str = "", employee_id: str = "", trace_id: str = "", attempt_id: str = "", total_amount: float = 0.0, currency: str = "USD") -> dict:
+    where = []
+    params: list[object] = []
+    if task_id:
+        where.append("(scope_type = 'task' AND scope_id = ?)")
+        params.append(task_id)
+    if employee_id:
+        where.append("(scope_type = 'employee' AND scope_id = ?)")
+        params.append(employee_id)
+    if trace_id:
+        where.append("(scope_type = 'trace' AND scope_id = ?)")
+        params.append(trace_id)
+    if attempt_id:
+        where.append("(scope_type = 'attempt' AND scope_id = ?)")
+        params.append(attempt_id)
+    if not where:
+        return {
+            "configured": False,
+            "scope_type": "",
+            "scope_id": "",
+            "currency": currency,
+            "soft_limit": 0,
+            "hard_limit": 0,
+            "remaining_to_soft": None,
+            "remaining_to_hard": None,
+            "status": "not_configured",
+        }
+    account_rows = rows(
+        conn,
+        f"SELECT * FROM budget_accounts WHERE status != 'archived' AND ({' OR '.join(where)}) ORDER BY updated_at DESC LIMIT 1",
+        tuple(params),
+    )
+    if not account_rows:
+        return {
+            "configured": False,
+            "scope_type": "",
+            "scope_id": "",
+            "currency": currency,
+            "soft_limit": 0,
+            "hard_limit": 0,
+            "remaining_to_soft": None,
+            "remaining_to_hard": None,
+            "status": "not_configured",
+        }
+    account = account_rows[0]
+    soft_limit = float(account.get("soft_limit") or 0)
+    hard_limit = float(account.get("hard_limit") or 0)
+    remaining_to_soft = round(soft_limit - total_amount, 6) if soft_limit else None
+    remaining_to_hard = round(hard_limit - total_amount, 6) if hard_limit else None
+    status = "within_limit"
+    if hard_limit and total_amount >= hard_limit:
+        status = "hard_exceeded"
+    elif soft_limit and total_amount >= soft_limit:
+        status = "soft_exceeded"
+    return {
+        "configured": True,
+        "budget_account_id": account.get("budget_account_id", ""),
+        "scope_type": account.get("scope_type", ""),
+        "scope_id": account.get("scope_id", ""),
+        "currency": account.get("currency") or currency,
+        "soft_limit": soft_limit,
+        "hard_limit": hard_limit,
+        "remaining_to_soft": remaining_to_soft,
+        "remaining_to_hard": remaining_to_hard,
+        "status": status,
+    }
+
+
+def budget_summary(conn: sqlite3.Connection, *, task_id: str = "", employee_id: str = "", trace_id: str = "", attempt_id: str = "") -> dict:
+    events = list_budget_events(conn, task_id=task_id, employee_id=employee_id, trace_id=trace_id, attempt_id=attempt_id, limit=500)
+    by_employee: dict[str, float] = {}
+    by_task: dict[str, float] = {}
+    by_project: dict[str, float] = {}
+    by_cost_type: dict[str, float] = {}
+    by_model: dict[str, float] = {}
+    by_provider: dict[str, float] = {}
+    by_currency: dict[str, float] = {}
+    by_employee_by_currency: dict[str, dict[str, float]] = {}
+    by_task_by_currency: dict[str, dict[str, float]] = {}
+    by_task_event_count: dict[str, int] = {}
+    by_task_token_input: dict[str, int] = {}
+    by_task_token_output: dict[str, int] = {}
+    by_task_runtime_seconds: dict[str, int] = {}
+    by_project_by_currency: dict[str, dict[str, float]] = {}
+    by_project_event_count: dict[str, int] = {}
+    by_project_token_input: dict[str, int] = {}
+    by_project_token_output: dict[str, int] = {}
+    by_project_runtime_seconds: dict[str, int] = {}
+    by_cost_type_by_currency: dict[str, dict[str, float]] = {}
+    task_project_ids: dict[str, list[str]] = {}
+    task_ids = sorted({str(item.get("task_id") or "") for item in events if str(item.get("task_id") or "")})
+    if task_ids:
+        placeholders = ",".join("?" for _ in task_ids)
+        for row in rows(conn, f"SELECT project_id, task_id FROM project_tasks WHERE task_id IN ({placeholders}) ORDER BY project_id ASC", tuple(task_ids)):
+            task_project_ids.setdefault(str(row["task_id"]), []).append(str(row["project_id"]))
+    currencies = sorted({str(item.get("currency") or "USD") for item in events})
+    for item in events:
+        amount = float(item.get("amount") or 0)
+        currency_key = str(item.get("currency") or "USD")
+        employee_key = str(item.get("employee_id") or "")
+        task_key = str(item.get("task_id") or "")
+        cost_key = str(item.get("cost_type") or "unknown")
+        model_key = str(item.get("model_name") or "")
+        provider_key = str(item.get("provider") or "")
+        token_input = int(item.get("token_input") or 0)
+        token_output = int(item.get("token_output") or 0)
+        runtime_seconds = int(item.get("runtime_seconds") or 0)
+        by_currency[currency_key] = round(by_currency.get(currency_key, 0.0) + amount, 6)
+        if employee_key:
+            by_employee[employee_key] = round(by_employee.get(employee_key, 0.0) + amount, 6)
+            employee_currency = by_employee_by_currency.setdefault(employee_key, {})
+            employee_currency[currency_key] = round(employee_currency.get(currency_key, 0.0) + amount, 6)
+        if task_key:
+            by_task[task_key] = round(by_task.get(task_key, 0.0) + amount, 6)
+            task_currency = by_task_by_currency.setdefault(task_key, {})
+            task_currency[currency_key] = round(task_currency.get(currency_key, 0.0) + amount, 6)
+            by_task_event_count[task_key] = by_task_event_count.get(task_key, 0) + 1
+            by_task_token_input[task_key] = by_task_token_input.get(task_key, 0) + token_input
+            by_task_token_output[task_key] = by_task_token_output.get(task_key, 0) + token_output
+            by_task_runtime_seconds[task_key] = by_task_runtime_seconds.get(task_key, 0) + runtime_seconds
+            for project_id in task_project_ids.get(task_key, []):
+                by_project[project_id] = round(by_project.get(project_id, 0.0) + amount, 6)
+                project_currency = by_project_by_currency.setdefault(project_id, {})
+                project_currency[currency_key] = round(project_currency.get(currency_key, 0.0) + amount, 6)
+                by_project_event_count[project_id] = by_project_event_count.get(project_id, 0) + 1
+                by_project_token_input[project_id] = by_project_token_input.get(project_id, 0) + token_input
+                by_project_token_output[project_id] = by_project_token_output.get(project_id, 0) + token_output
+                by_project_runtime_seconds[project_id] = by_project_runtime_seconds.get(project_id, 0) + runtime_seconds
+        by_cost_type[cost_key] = round(by_cost_type.get(cost_key, 0.0) + amount, 6)
+        cost_currency = by_cost_type_by_currency.setdefault(cost_key, {})
+        cost_currency[currency_key] = round(cost_currency.get(currency_key, 0.0) + amount, 6)
+        if model_key:
+            by_model[model_key] = round(by_model.get(model_key, 0.0) + amount, 6)
+        if provider_key:
+            by_provider[provider_key] = round(by_provider.get(provider_key, 0.0) + amount, 6)
+    total_amount = round(sum(float(item.get("amount") or 0) for item in events), 6)
+    currency = currencies[0] if len(currencies) == 1 else ("mixed" if currencies else "USD")
+    limits = budget_limit_summary(conn, task_id=task_id, employee_id=employee_id, trace_id=trace_id, attempt_id=attempt_id, total_amount=total_amount, currency=currency)
+    return {
+        "event_count": len(events),
+        "total_amount": total_amount,
+        "total_amounts_by_currency": by_currency,
+        "currency": currency,
+        "currencies": currencies,
+        "token_input": sum(int(item.get("token_input") or 0) for item in events),
+        "token_output": sum(int(item.get("token_output") or 0) for item in events),
+        "runtime_seconds": sum(int(item.get("runtime_seconds") or 0) for item in events),
+        "by_currency": by_currency,
+        "by_employee": by_employee,
+        "by_employee_by_currency": by_employee_by_currency,
+        "by_task": by_task,
+        "by_task_by_currency": by_task_by_currency,
+        "by_task_event_count": by_task_event_count,
+        "by_task_token_input": by_task_token_input,
+        "by_task_token_output": by_task_token_output,
+        "by_task_runtime_seconds": by_task_runtime_seconds,
+        "by_project": by_project,
+        "by_project_by_currency": by_project_by_currency,
+        "by_project_event_count": by_project_event_count,
+        "by_project_token_input": by_project_token_input,
+        "by_project_token_output": by_project_token_output,
+        "by_project_runtime_seconds": by_project_runtime_seconds,
+        "by_cost_type": by_cost_type,
+        "by_cost_type_by_currency": by_cost_type_by_currency,
+        "by_model": by_model,
+        "by_provider": by_provider,
+        "limit_status": limits["status"],
+        "budget_limits": limits,
+    }
+
+
+def record_budget_event_internal(
+    conn: sqlite3.Connection,
+    *,
+    budget_event_id: str = "",
+    budget_account_id: str = "",
+    trace_id: str = "",
+    task_id: str = "",
+    attempt_id: str = "",
+    employee_id: str,
+    cost_type: str,
+    amount: float,
+    currency: str = "USD",
+    token_input: int = 0,
+    token_output: int = 0,
+    model_name: str = "",
+    provider: str = "",
+    runtime_seconds: int = 0,
+    summary: str = "",
+    metadata: dict | None = None,
+) -> dict:
+    if task_id:
+        require_task(conn, task_id)
+    if employee_id:
+        require_employee(conn, employee_id)
+    attempt = row_by_id(conn, "execution_attempts", "attempt_id", attempt_id) if attempt_id else {}
+    resolved_task_id = task_id or str(attempt.get("task_id", "") or "")
+    resolved_trace_id = trace_id or trace_id_for_task(conn, resolved_task_id, str(attempt.get("trace_id", "") or ""))
+    ts = now()
+    item = {
+        "budget_event_id": budget_event_id or f"budget-event-{datetime.now().strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:8]}",
+        "budget_account_id": budget_account_id,
+        "trace_id": resolved_trace_id,
+        "task_id": resolved_task_id,
+        "attempt_id": attempt_id,
+        "employee_id": employee_id,
+        "cost_type": cost_type,
+        "amount": float(amount),
+        "currency": currency or "USD",
+        "token_input": int(token_input or 0),
+        "token_output": int(token_output or 0),
+        "model_name": model_name,
+        "provider": provider,
+        "runtime_seconds": int(runtime_seconds or 0),
+        "summary": summary,
+        "created_at": ts,
+        "metadata_json": json.dumps(metadata or {}, ensure_ascii=False),
+    }
+    conn.execute(
+        """
+        INSERT INTO budget_events(
+          budget_event_id, budget_account_id, trace_id, task_id, attempt_id, employee_id,
+          cost_type, amount, currency, token_input, token_output, model_name, provider,
+          runtime_seconds, summary, created_at, metadata_json
+        )
+        VALUES (
+          :budget_event_id, :budget_account_id, :trace_id, :task_id, :attempt_id, :employee_id,
+          :cost_type, :amount, :currency, :token_input, :token_output, :model_name, :provider,
+          :runtime_seconds, :summary, :created_at, :metadata_json
+        )
+        """,
+        item,
+    )
+    conn.commit()
+    event = record_event(conn, "budget.spent", employee_id, task_id=resolved_task_id, trace_id=resolved_trace_id, payload={"budget_event_id": item["budget_event_id"], "attempt_id": attempt_id, "amount": item["amount"], "currency": item["currency"], "cost_type": cost_type, "token_input": item["token_input"], "token_output": item["token_output"]})
+    audit(conn, employee_id, "budget.record", item["budget_event_id"], {"task_id": resolved_task_id, "attempt_id": attempt_id, "amount": item["amount"], "currency": item["currency"], "event_id": event["id"]})
+    current_summary = budget_summary(conn, task_id=resolved_task_id, employee_id=employee_id, trace_id=resolved_trace_id, attempt_id=attempt_id)
+    limits = current_summary.get("budget_limits", {}) if isinstance(current_summary.get("budget_limits"), dict) else {}
+    approval: dict = {}
+    approval_event: dict = {}
+    if str(limits.get("status") or "") in {"soft_exceeded", "hard_exceeded"}:
+        approval_id = f"budget-overrun-{resolved_task_id or item['budget_event_id']}"
+        approval_result = create_approval_internal(
+            conn,
+            source=employee_id,
+            action="budget_overrun",
+            reason=f"Budget {limits.get('status')} for task={resolved_task_id or '-'} amount={current_summary.get('total_amount')} {current_summary.get('currency')}",
+            target=employee_id,
+            risk="P0" if limits.get("status") == "hard_exceeded" else "P1",
+            approval_id=approval_id,
+            metadata={
+                "task_id": resolved_task_id,
+                "trace_id": resolved_trace_id,
+                "attempt_id": attempt_id,
+                "budget_event_id": item["budget_event_id"],
+                "budget_account_id": limits.get("budget_account_id", ""),
+                "budget_amount": current_summary.get("total_amount", 0),
+                "currency": current_summary.get("currency") or item["currency"],
+                "limit_status": limits.get("status", ""),
+                "soft_limit": limits.get("soft_limit", 0),
+                "hard_limit": limits.get("hard_limit", 0),
+            },
+        )
+        approval = approval_result.get("approval", {})
+        approval_event = approval_result.get("event", {})
+    return {
+        "budget_event": hydrate_budget_event(row_by_id(conn, "budget_events", "budget_event_id", item["budget_event_id"])),
+        "event_id": event["id"],
+        "budget_limits": limits,
+        "approval": approval,
+        "approval_event": approval_event,
+    }
+
+
 def task_attempts(conn: sqlite3.Connection, task_id: str) -> list[dict]:
     attempts = rows(conn, "SELECT * FROM execution_attempts WHERE task_id = ? ORDER BY started_at ASC", (task_id,))
     return [hydrate_execution_attempt(attempt) for attempt in attempts]
+
+
+def task_attempt_history(attempts: list[dict]) -> dict:
+    chain = []
+    for index, attempt in enumerate(attempts):
+        metadata = attempt.get("metadata", {}) if isinstance(attempt.get("metadata", {}), dict) else {}
+        previous_attempt_id = str(metadata.get("previous_attempt_id", "") or "")
+        reason = str(metadata.get("reason", "") or metadata.get("retry_reason", "") or "")
+        chain.append(
+            {
+                "index": index + 1,
+                "attempt_id": attempt.get("attempt_id", ""),
+                "previous_attempt_id": previous_attempt_id,
+                "trace_id": attempt.get("trace_id", ""),
+                "employee_id": attempt.get("employee_id", ""),
+                "adapter_type": attempt.get("adapter_type", ""),
+                "status": attempt.get("status", ""),
+                "reason": reason,
+                "started_at": attempt.get("started_at", ""),
+                "finished_at": attempt.get("finished_at", ""),
+            }
+        )
+    latest = chain[-1] if chain else {}
+    trace_id = str(latest.get("trace_id", "") or (chain[0].get("trace_id", "") if chain else ""))
+    return {
+        "total": len(chain),
+        "trace_id": trace_id,
+        "latest_attempt_id": latest.get("attempt_id", ""),
+        "latest_status": latest.get("status", ""),
+        "latest_employee_id": latest.get("employee_id", ""),
+        "chain": chain,
+        "recovery_summary": "old attempts retained; retry/reassign creates a new attempt with the same trace_id and previous_attempt_id.",
+    }
+
+
+def task_evidence_records(conn: sqlite3.Connection, task_id: str) -> list[dict]:
+    records = rows(
+        conn,
+        """
+        SELECT evidence_id, trace_id, task_id, attempt_id, employee_id, artifact_id,
+               type, path_or_url, summary, checksum, is_final, metadata_json, created_at
+        FROM evidence
+        WHERE task_id = ?
+        ORDER BY created_at DESC
+        """,
+        (task_id,),
+    )
+    for record in records:
+        raw_path = record.pop("path_or_url", "")
+        record["display"] = sanitize_evidence_path_for_display(raw_path)
+        metadata = parse_json_arg(record.get("metadata_json", "{}") or "{}", {})
+        record["metadata"] = metadata if isinstance(metadata, dict) else {}
+        record["acceptance_decision"] = evidence_acceptance_decision(record)
+    return records
+
+
+def task_control_plane_timeline(
+    *,
+    events: list[dict],
+    attempts: list[dict],
+    runtime_sessions: list[dict],
+    tool_calls: list[dict],
+    budget_events: list[dict],
+    evidence_records: list[dict],
+) -> list[dict]:
+    timeline: list[dict] = []
+
+    def add(item: dict) -> None:
+        timestamp = str(item.get("timestamp") or "")
+        if not timestamp:
+            return
+        timeline.append(item)
+
+    for event in events:
+        payload = parse_json_arg(event.get("payload_json", "{}") or "{}", {})
+        if not isinstance(payload, dict):
+            payload = {}
+        add(
+            {
+                "kind": "task_event",
+                "id": event.get("id", ""),
+                "event_id": event.get("id", ""),
+                "event_type": event.get("event_type", ""),
+                "ledger_action": payload.get("ledger_action", ""),
+                "task_id": event.get("task_id", ""),
+                "trace_id": event.get("trace_id", ""),
+                "employee_id": event.get("source_agent", ""),
+                "attempt_id": payload.get("attempt_id", ""),
+                "reason": payload.get("reason", ""),
+                "status": event.get("event_type", ""),
+                "timestamp": event.get("created_at", ""),
+                "summary": sanitize_log_text(str(payload.get("message") or payload.get("summary") or event.get("event_type") or "")),
+            }
+        )
+    for attempt in attempts:
+        add(
+            {
+                "kind": "attempt",
+                "id": attempt.get("attempt_id", ""),
+                "attempt_id": attempt.get("attempt_id", ""),
+                "task_id": attempt.get("task_id", ""),
+                "trace_id": attempt.get("trace_id", ""),
+                "employee_id": attempt.get("employee_id", ""),
+                "status": attempt.get("status", ""),
+                "timestamp": attempt.get("started_at", ""),
+                "summary": f"attempt {attempt.get('status', '')} via {attempt.get('adapter_type', '')}".strip(),
+            }
+        )
+        if attempt.get("finished_at"):
+            add(
+                {
+                    "kind": "attempt",
+                    "id": f"{attempt.get('attempt_id', '')}:finished",
+                    "attempt_id": attempt.get("attempt_id", ""),
+                    "task_id": attempt.get("task_id", ""),
+                    "trace_id": attempt.get("trace_id", ""),
+                    "employee_id": attempt.get("employee_id", ""),
+                    "status": attempt.get("status", ""),
+                    "timestamp": attempt.get("finished_at", ""),
+                    "summary": f"attempt finished: {attempt.get('status', '')}",
+                }
+            )
+    for session in runtime_sessions:
+        add(
+            {
+                "kind": "runtime_session",
+                "id": session.get("session_id", ""),
+                "session_id": session.get("session_id", ""),
+                "attempt_id": session.get("attempt_id", ""),
+                "task_id": session.get("task_id", ""),
+                "trace_id": session.get("trace_id", ""),
+                "employee_id": session.get("employee_id", ""),
+                "status": session.get("status", ""),
+                "timestamp": session.get("started_at", ""),
+                "summary": f"{session.get('runtime_type', '') or 'runtime'} session {session.get('status', '')}".strip(),
+            }
+        )
+    for tool_call in tool_calls:
+        add(
+            {
+                "kind": "tool_call",
+                "id": tool_call.get("tool_call_id", ""),
+                "tool_call_id": tool_call.get("tool_call_id", ""),
+                "attempt_id": tool_call.get("attempt_id", ""),
+                "session_id": tool_call.get("session_id", ""),
+                "task_id": tool_call.get("task_id", ""),
+                "trace_id": tool_call.get("trace_id", ""),
+                "employee_id": tool_call.get("employee_id", ""),
+                "status": tool_call.get("status", ""),
+                "timestamp": tool_call.get("started_at", ""),
+                "summary": sanitize_log_text(f"{tool_call.get('tool_name', '')}: {tool_call.get('output_summary') or tool_call.get('input_summary') or tool_call.get('error_message') or ''}"),
+            }
+        )
+    for item in budget_events:
+        add(
+            {
+                "kind": "budget_event",
+                "id": item.get("budget_event_id", ""),
+                "budget_event_id": item.get("budget_event_id", ""),
+                "attempt_id": item.get("attempt_id", ""),
+                "task_id": item.get("task_id", ""),
+                "trace_id": item.get("trace_id", ""),
+                "employee_id": item.get("employee_id", ""),
+                "status": item.get("cost_type", ""),
+                "timestamp": item.get("created_at", ""),
+                "summary": f"{item.get('amount', 0)} {item.get('currency', 'USD')} · input={item.get('token_input', 0)} output={item.get('token_output', 0)} · {item.get('summary', '')}".strip(),
+            }
+        )
+    for evidence in evidence_records:
+        display = evidence.get("display", {}) if isinstance(evidence.get("display"), dict) else {}
+        add(
+            {
+                "kind": "evidence",
+                "id": evidence.get("evidence_id", ""),
+                "evidence_id": evidence.get("evidence_id", ""),
+                "attempt_id": evidence.get("attempt_id", ""),
+                "task_id": evidence.get("task_id", ""),
+                "trace_id": evidence.get("trace_id", ""),
+                "employee_id": evidence.get("employee_id", ""),
+                "status": "final" if evidence.get("is_final") else "draft",
+                "timestamp": evidence.get("created_at", ""),
+                "summary": sanitize_log_text(str(evidence.get("summary") or display.get("relative_path") or evidence.get("evidence_id") or "")),
+            }
+        )
+    return sorted(timeline, key=lambda item: (str(item.get("timestamp") or ""), str(item.get("kind") or ""), str(item.get("id") or "")))
+
+
+CONTROL_EVENT_ACTIONS = {
+    "task.probe": "probe",
+    "supervisor.correction_requested": "correction",
+    "supervisor.cancel_requested": "cancel",
+    "task.retrying": "retry",
+    "task.reassigned": "reassign",
+    "task.reopened": "reopen",
+}
+
+
+def task_control_action_summary(*, approvals: list[dict], events: list[dict], attempts: list[dict]) -> dict:
+    pending_actions: set[str] = set()
+    pending_rows = []
+    for approval in approvals:
+        if str(approval.get("status") or "") != "pending":
+            continue
+        action = str(approval.get("action") or "")
+        normalized = action.removeprefix("task_control.").removeprefix("task.")
+        pending_actions.add(normalized)
+        detail = approval.get("detail", {}) if isinstance(approval.get("detail", {}), dict) else {}
+        metadata = detail.get("metadata", {}) if isinstance(detail.get("metadata", {}), dict) else {}
+        pending_rows.append(
+            {
+                "approval_id": approval.get("id", ""),
+                "action": normalized,
+                "raw_action": action,
+                "attempt_id": metadata.get("attempt_id", ""),
+                "risk": detail.get("risk", ""),
+                "reason": detail.get("request_reason") or detail.get("reason") or "",
+                "created_at": approval.get("created_at", ""),
+            }
+        )
+    executed_rows = []
+    for event in events:
+        event_type = str(event.get("event_type") or "")
+        action = CONTROL_EVENT_ACTIONS.get(event_type)
+        if not action:
+            continue
+        payload = parse_json_arg(event.get("payload_json", "{}") or "{}", {})
+        if not isinstance(payload, dict):
+            payload = {}
+        executed_rows.append(
+            {
+                "event_id": event.get("id", ""),
+                "event_type": event_type,
+                "action": action,
+                "attempt_id": payload.get("attempt_id", ""),
+                "by": event.get("source_agent", ""),
+                "reason": payload.get("reason") or payload.get("message") or "",
+                "created_at": event.get("created_at", ""),
+            }
+        )
+    executed_rows.sort(key=lambda item: str(item.get("created_at") or ""))
+    latest_executed = executed_rows[-1] if executed_rows else {}
+    latest_attempt = attempts[-1] if attempts else {}
+    latest_attempt_status = str(latest_attempt.get("status") or "")
+    owner_next_action = "monitor task progress and evidence"
+    if latest_executed.get("action") == "cancel" or latest_attempt_status == "cancelled":
+        owner_next_action = "old attempt is cancelled; retry or reassign only after owner decision"
+    elif pending_rows:
+        owner_next_action = "review pending owner approvals before executing controls"
+    elif latest_executed.get("action") == "correction":
+        owner_next_action = "wait for worker correction ack or fresh progress"
+    elif latest_executed.get("action") in {"retry", "reassign", "reopen"}:
+        owner_next_action = "monitor new attempt heartbeat, progress, and evidence"
+    return {
+        "pending_owner_approvals": len(pending_rows),
+        "pending_actions": sorted(pending_actions),
+        "pending": pending_rows,
+        "executed_control_actions": len(executed_rows),
+        "latest_executed_action": latest_executed.get("action", ""),
+        "latest_event_type": latest_executed.get("event_type", ""),
+        "latest_event_id": latest_executed.get("event_id", ""),
+        "latest_attempt_id": latest_attempt.get("attempt_id", ""),
+        "latest_attempt_status": latest_attempt_status,
+        "executed": executed_rows[-10:],
+        "owner_next_action": owner_next_action,
+        "summary": f"pending={len(pending_rows)} executed={len(executed_rows)} latest={latest_executed.get('action', '-') or '-'}",
+    }
+
+
+def owner_action_next_step(action: str, *, pending: bool = False) -> str:
+    if pending:
+        return "review owner approval request before real execution"
+    if action == "probe":
+        return "wait for worker response or escalate to Hermes correction if progress remains stagnant"
+    if action == "correction":
+        return "wait for worker correction ack or fresh progress"
+    if action == "cancel":
+        return "verify process stopped and ignore late evidence"
+    if action in {"retry", "reassign", "reopen"}:
+        return "monitor new attempt heartbeat, progress, and evidence"
+    return "monitor task progress and evidence"
+
+
+def task_owner_action_timeline(*, approvals: list[dict], events: list[dict]) -> list[dict]:
+    timeline: list[dict] = []
+    for approval in approvals:
+        detail = approval.get("detail", {}) if isinstance(approval.get("detail", {}), dict) else {}
+        metadata = detail.get("metadata", {}) if isinstance(detail.get("metadata", {}), dict) else {}
+        action = str(approval.get("action") or "").removeprefix("task_control.").removeprefix("task.")
+        timeline.append(
+            {
+                "kind": "pending_approval" if str(approval.get("status") or "") == "pending" else "approval",
+                "action": action,
+                "status": approval.get("status", ""),
+                "approval_id": approval.get("id", ""),
+                "task_id": metadata.get("task_id", ""),
+                "attempt_id": metadata.get("attempt_id", ""),
+                "actor": approval.get("source_agent", ""),
+                "event_type": "approval.requested",
+                "reason": detail.get("request_reason") or approval.get("reason", ""),
+                "created_at": approval.get("created_at", ""),
+                "requires_owner_approval": True,
+                "owner_next_action": owner_action_next_step(action, pending=True),
+            }
+        )
+    for event in events:
+        event_type = str(event.get("event_type") or "")
+        action = CONTROL_EVENT_ACTIONS.get(event_type)
+        if not action:
+            continue
+        payload = parse_json_arg(event.get("payload_json", "{}") or "{}", {})
+        if not isinstance(payload, dict):
+            payload = {}
+        requires_owner_approval = action in {"correction", "cancel", "retry", "reassign", "reopen"}
+        timeline.append(
+            {
+                "kind": "executed_control",
+                "action": action,
+                "status": "executed",
+                "event_id": event.get("id", ""),
+                "event_type": event_type,
+                "task_id": event.get("task_id", ""),
+                "attempt_id": payload.get("attempt_id", ""),
+                "actor": event.get("source_agent", ""),
+                "reason": payload.get("reason") or payload.get("message") or "",
+                "created_at": event.get("created_at", ""),
+                "requires_owner_approval": requires_owner_approval,
+                "owner_next_action": owner_action_next_step(action),
+            }
+        )
+    kind_order = {"pending_approval": 0, "approval": 1, "executed_control": 2}
+    return sorted(timeline, key=lambda item: (str(item.get("created_at") or ""), kind_order.get(str(item.get("kind") or ""), 9), str(item.get("action") or "")))
+
+
+def task_completion_contract(task: dict, evidence_records: list[dict]) -> dict:
+    status = str(task.get("status") or "").lower()
+    done_like = status in {"completed", "done", "success"}
+    final_records = [record for record in evidence_records if bool(record.get("is_final"))]
+    safe_final_records = [record for record in final_records if bool((record.get("display") or {}).get("allowed"))]
+    accepted_final_records = [record for record in safe_final_records if (record.get("acceptance_decision") or {}).get("status") == "accepted"]
+    rejected_final_records = [record for record in final_records if (record.get("acceptance_decision") or {}).get("status") == "rejected"]
+    legacy_evidence_path_present = bool(str(task.get("evidence_path") or "").strip())
+    if not done_like:
+        reason = "not_done"
+        valid = True
+        summary = "Task is not in a done-like state yet; final evidence is required before completion."
+    elif final_records:
+        reason = "final_evidence_present"
+        valid = True
+        summary = f"Task completion has {len(final_records)} task-bound final evidence record(s)."
+    else:
+        reason = "missing_final_evidence"
+        valid = False
+        summary = "Done-like task is invalid until task_id/attempt_id-bound final evidence is submitted."
+    return {
+        "done_like": done_like,
+        "valid": valid,
+        "reason": reason,
+        "final_evidence_count": len(final_records),
+        "safe_final_evidence_count": len(safe_final_records),
+        "accepted_final_evidence_count": len(accepted_final_records),
+        "rejected_final_evidence_count": len(rejected_final_records),
+        "acceptance_status": "accepted" if accepted_final_records else ("rejected" if rejected_final_records and not accepted_final_records else "pending"),
+        "legacy_evidence_path_present": legacy_evidence_path_present,
+        "summary": summary,
+    }
+
+
+def task_ceo_acceptance_contract(
+    *,
+    task: dict,
+    attempts: list[dict],
+    runtime_sessions: list[dict],
+    tool_calls: list[dict],
+    budget_events: list[dict],
+    evidence_records: list[dict],
+    completion_contract: dict,
+    approvals: list[dict],
+    events: list[dict],
+) -> dict:
+    latest_attempt = attempts[-1] if attempts else {}
+    if latest_attempt and not latest_attempt.get("long_task_state"):
+        latest_attempt = {**latest_attempt, **long_task_state_for_attempt(latest_attempt)}
+    metadata = parse_json_arg(task.get("metadata_json", "{}") or "{}", {})
+    if not isinstance(metadata, dict):
+        metadata = {}
+    latest_state = str(latest_attempt.get("long_task_state") or latest_attempt.get("status") or task.get("status") or "unknown")
+    done_like = bool(completion_contract.get("done_like"))
+    completion_valid = bool(completion_contract.get("valid"))
+    final_evidence_count = int(completion_contract.get("final_evidence_count") or 0)
+    pending_approvals = [item for item in approvals if str(item.get("status") or "") == "pending"]
+    failed_tools = [item for item in tool_calls if str(item.get("status") or "") in {"failed", "blocked", "cancelled"}]
+    blocking_reasons: list[str] = []
+    if done_like and not completion_valid:
+        blocking_reasons.append(str(completion_contract.get("reason") or "completion_invalid"))
+    if latest_state in {"blocked", "failed", "stale", "heartbeat_stale", "progress_stagnant", "cancelled"}:
+        blocking_reasons.append(latest_state)
+    if pending_approvals:
+        blocking_reasons.append("pending_owner_approval")
+    if failed_tools:
+        blocking_reasons.append("failed_or_blocked_tool_calls")
+    if task.get("id") and attempts and not runtime_sessions:
+        blocking_reasons.append("runtime_session_missing")
+    if attempts and not tool_calls and latest_state not in {"submitted", "queued", "claimed", "starting"}:
+        blocking_reasons.append("tool_call_ledger_missing")
+
+    status = "monitor"
+    owner_next_action = "monitor task heartbeat, progress, tool calls, budget, and evidence"
+    if done_like and completion_valid:
+        status = "ready_for_owner_acceptance"
+        owner_next_action = "review final evidence and accept delivery"
+    if latest_state in {"submitted", "queued", "claimed", "starting", "running", "correcting"}:
+        status = "needs_progress"
+        owner_next_action = "monitor progress; send probe or correction if it becomes stagnant"
+    if blocking_reasons:
+        status = "blocked"
+        owner_next_action = "resolve blocking reasons before accepting task"
+    if "missing_final_evidence" in blocking_reasons:
+        owner_next_action = "attach or promote task-bound final evidence before accepting completion"
+    elif "pending_owner_approval" in blocking_reasons:
+        owner_next_action = "review pending owner approvals before real execution"
+    elif latest_state in {"progress_stagnant", "heartbeat_stale"}:
+        owner_next_action = "send probe, inspect sanitized logs, or request Hermes correction"
+    elif latest_state in {"blocked", "failed", "stale"}:
+        owner_next_action = "review blocker, then retry, reassign, or request correction"
+    elif latest_state == "cancelled":
+        owner_next_action = "do not accept late evidence from cancelled attempt; retry or reassign if needed"
+
+    control_events = [item for item in events if CONTROL_EVENT_ACTIONS.get(str(item.get("event_type") or ""))]
+    return {
+        "task_id": task.get("id", ""),
+        "status": status,
+        "current_state": latest_state,
+        "current_attempt_id": latest_attempt.get("attempt_id", ""),
+        "trace_id": latest_attempt.get("trace_id", "") or metadata.get("trace_id", ""),
+        "ready_for_acceptance": status == "ready_for_owner_acceptance",
+        "blocking_reasons": list(dict.fromkeys(reason for reason in blocking_reasons if reason)),
+        "owner_next_action": owner_next_action,
+        "ledger_counts": {
+            "attempts": len(attempts),
+            "runtime_sessions": len(runtime_sessions),
+            "tool_calls": len(tool_calls),
+            "failed_tool_calls": len(failed_tools),
+            "budget_events": len(budget_events),
+            "evidence_records": len(evidence_records),
+            "final_evidence": final_evidence_count,
+            "pending_approvals": len(pending_approvals),
+            "control_events": len(control_events),
+        },
+        "truth_rules": {
+            "completion_requires_final_evidence": True,
+            "completion_requires_matching_task_id": True,
+            "heartbeat_is_completion": False,
+            "ack_is_completion": False,
+            "stdout_is_completion": False,
+            "cancelled_attempt_can_complete": False,
+        },
+    }
+
+
+def task_supervisor_state(attempts: list[dict]) -> tuple[dict, dict]:
+    state = {
+        "corrections_requested": 0,
+        "corrections_acknowledged": 0,
+        "last_correction": {},
+        "blocked_reason": "",
+        "last_blocked_at": "",
+    }
+    latest = attempts[-1] if attempts else {}
+    for attempt in attempts:
+        supervisor_state = attempt.get("supervisor_state", {})
+        if not isinstance(supervisor_state, dict):
+            continue
+        state["corrections_requested"] += int(supervisor_state.get("corrections_requested", 0) or 0)
+        state["corrections_acknowledged"] += int(supervisor_state.get("corrections_acknowledged", 0) or 0)
+        if supervisor_state.get("last_correction"):
+            state["last_correction"] = supervisor_state["last_correction"]
+        if supervisor_state.get("blocked_reason"):
+            state["blocked_reason"] = supervisor_state["blocked_reason"]
+        if supervisor_state.get("last_blocked_at"):
+            state["last_blocked_at"] = supervisor_state["last_blocked_at"]
+    summary = {
+        "latest_attempt_id": latest.get("attempt_id", ""),
+        "latest_attempt_status": latest.get("status", ""),
+        "latest_employee_id": latest.get("employee_id", ""),
+        "needs_ack": state["corrections_requested"] > state["corrections_acknowledged"],
+        "correction_balance": state["corrections_requested"] - state["corrections_acknowledged"],
+        "blocked": bool(state["blocked_reason"]),
+    }
+    return state, summary
+
+
+def task_progress_events(events: list[dict]) -> list[dict]:
+    progress_events = []
+    for event in events:
+        if event.get("event_type") != "task.progress":
+            continue
+        payload = parse_json_arg(event.get("payload_json", "{}") or "{}", {})
+        if not isinstance(payload, dict):
+            payload = {}
+        progress_events.append(
+            {
+                "event_id": event.get("id", ""),
+                "trace_id": event.get("trace_id", ""),
+                "task_id": event.get("task_id", ""),
+                "employee_id": payload.get("employee_id") or event.get("source_agent", ""),
+                "attempt_id": payload.get("attempt_id", ""),
+                "progress_state": payload.get("progress_state", ""),
+                "progress_layer": payload.get("progress_layer", ""),
+                "progress_label": payload.get("progress_label", ""),
+                "message": payload.get("message", ""),
+                "progress": payload.get("progress"),
+                "payload": payload.get("payload", {}),
+                "created_at": event.get("created_at", ""),
+            }
+        )
+    return progress_events
+
+
+def record_task_probe_internal(
+    conn: sqlite3.Connection,
+    *,
+    task_id: str,
+    actor: str,
+    attempt_id: str = "",
+    message: str,
+    reason: str = "",
+) -> dict:
+    actor = resolve_employee_alias(actor)
+    require_employee(conn, actor)
+    task = require_task(conn, task_id)
+    attempt: dict = {}
+    trace_id = str(task.get("trace_id") or "")
+    if attempt_id:
+        attempt = row_by_id(conn, "execution_attempts", "attempt_id", attempt_id)
+        if attempt["task_id"] != task_id:
+            raise SystemExit("attempt does not belong to task")
+        trace_id = str(attempt.get("trace_id") or trace_id)
+    payload = {
+        "attempt_id": attempt_id,
+        "by": actor,
+        "message": message,
+        "reason": reason or "progress_probe",
+        "ledger_action": "task.probe",
+        "non_mutating": True,
+        "external_send": False,
+    }
+    event = record_event(conn, "task.probe", actor, task_id=task_id, trace_id=trace_id, payload=payload)
+    audit(conn, actor, "task.probe", task_id, {"attempt_id": attempt_id, "reason": payload["reason"], "message": message, "event_id": event["id"]})
+    return {"task_id": task_id, "attempt_id": attempt_id, "event_id": event["id"], "probe": payload, "attempt": attempt}
+
+
+def task_correction_events(events: list[dict]) -> list[dict]:
+    correction_events = []
+    for event in events:
+        event_type = str(event.get("event_type", ""))
+        if event_type not in {"supervisor.correction_requested", "supervisor.correction_acknowledged"}:
+            continue
+        payload = parse_json_arg(event.get("payload_json", "{}") or "{}", {})
+        if not isinstance(payload, dict):
+            payload = {}
+        correction_events.append(
+            {
+                "event_id": event.get("id", ""),
+                "event_type": event_type,
+                "task_id": event.get("task_id", ""),
+                "trace_id": event.get("trace_id", ""),
+                "source_agent": event.get("source_agent", ""),
+                "attempt_id": str(payload.get("attempt_id", "") or ""),
+                "message": str(payload.get("message", "") or ""),
+                "ack": event_type == "supervisor.correction_acknowledged",
+                "created_at": event.get("created_at", ""),
+            }
+        )
+    return correction_events
 
 
 def latest_active_attempt_for_task(conn: sqlite3.Connection, task_id: str, employee_id: str) -> dict | None:
@@ -1343,6 +2833,25 @@ def cmd_task_progress(args: argparse.Namespace) -> int:
         emit({"ok": False, "error": str(exc), "task_id": args.task_id, "agent": agent, "attempt_id": args.attempt_id})
         return 2
     emit({"ok": True, "task_id": args.task_id, "agent": agent, **result})
+    return 0
+
+
+def cmd_task_probe(args: argparse.Namespace) -> int:
+    conn = connect()
+    actor = resolve_employee_alias(args.by)
+    try:
+        result = record_task_probe_internal(
+            conn,
+            task_id=args.task_id,
+            actor=actor,
+            attempt_id=args.attempt_id,
+            message=args.message,
+            reason=args.reason,
+        )
+    except SystemExit as exc:
+        emit({"ok": False, "error": str(exc), "task_id": args.task_id, "by": actor, "attempt_id": args.attempt_id})
+        return 2
+    emit({"ok": True, "task_id": args.task_id, "by": actor, **result})
     return 0
 
 
@@ -1510,24 +3019,34 @@ def has_v3_file_flow(conn: sqlite3.Connection, task_id: str) -> bool:
 
 
 def final_evidence_for_path(conn: sqlite3.Connection, task_id: str, evidence_path: str) -> dict | None:
-    row = conn.execute(
+    def path_variants(value: str) -> set[str]:
+        variants = {str(value or "")}
+        if value:
+            try:
+                variants.add(str(Path(value).resolve()))
+            except (OSError, RuntimeError):
+                pass
+        return {item for item in variants if item}
+
+    evidence_path_variants = path_variants(evidence_path)
+    evidence_rows = rows(
+        conn,
         """
         SELECT * FROM evidence
         WHERE task_id = ?
-          AND path_or_url = ?
           AND is_final = 1
         ORDER BY created_at DESC
-        LIMIT 1
         """,
-        (task_id, evidence_path),
-    ).fetchone()
-    if row:
-        return dict(row)
+        (task_id,),
+    )
+    for evidence_row in evidence_rows:
+        if path_variants(evidence_row.get("path_or_url", "")) & evidence_path_variants:
+            return evidence_row
     artifact_rows = rows(conn, "SELECT artifact_id, metadata_json FROM artifacts WHERE task_id = ? AND is_final = 1", (task_id,))
     matching_artifact_ids = []
     for artifact in artifact_rows:
         metadata = parse_json_arg(artifact.get("metadata_json", ""), {})
-        if isinstance(metadata, dict) and metadata.get("original_path") == evidence_path:
+        if isinstance(metadata, dict) and path_variants(str(metadata.get("original_path") or "")) & evidence_path_variants:
             matching_artifact_ids.append(artifact["artifact_id"])
     if not matching_artifact_ids:
         return None
@@ -1576,6 +3095,39 @@ def auto_promote_workspace_evidence(conn: sqlite3.Connection, *, task_id: str, a
         metadata={"registered_by": "task.done.auto_promote"},
     )
     promoted = promote_artifact_to_evidence_internal(conn, artifact_id=artifact["artifact"]["artifact_id"], by=agent, summary=summary)
+    return promoted["evidence"]
+
+
+def ensure_final_evidence_for_existing_path(conn: sqlite3.Connection, *, task_id: str, agent: str, evidence_path: str, summary: str) -> dict | None:
+    path = Path(evidence_path)
+    if not evidence_path or not path.exists() or not path.is_file():
+        return None
+    existing = final_evidence_for_path(conn, task_id, str(path))
+    if existing:
+        return existing
+    promoted = auto_promote_workspace_evidence(conn, task_id=task_id, agent=agent, evidence_path=str(path), summary=summary)
+    if promoted:
+        return promoted
+    workspace_root = Path(task_workspace(conn, task_id)["path"]).resolve()
+    safe_name = safe_path_token(path.name or "runtime-verification-evidence.txt")
+    copied_path = workspace_root / "evidence" / safe_name
+    copied_path.parent.mkdir(parents=True, exist_ok=True)
+    if copied_path.resolve() != path.resolve():
+        copied_path.write_bytes(path.read_bytes())
+    path = copied_path
+    artifact = register_artifact_internal(
+        conn,
+        task_id=task_id,
+        employee_id=agent,
+        path=str(path),
+        artifact_type=path.suffix.lstrip(".") or "file",
+        name=path.name,
+        stage="final",
+        summary=summary or "runtime verification evidence",
+        is_final=True,
+        metadata={"registered_by": "runtime.verify_adapters.legacy_path", "original_path": str(Path(evidence_path))},
+    )
+    promoted = promote_artifact_to_evidence_internal(conn, artifact_id=artifact["artifact"]["artifact_id"], by=agent, summary=summary or "runtime verification evidence")
     return promoted["evidence"]
 
 
@@ -1718,6 +3270,11 @@ def resolve_notification_target(target: str) -> tuple[str, str]:
         if not chat_id:
             raise ValueError("telegram target chat id is required")
         return "telegram", chat_id
+    if raw.startswith("slack:"):
+        webhook_id = raw.split(":", 1)[1].strip()
+        if not webhook_id:
+            raise ValueError("slack webhook id is required")
+        return "slack", webhook_id
     if raw:
         return "telegram", raw
     raise ValueError("notification target is required")
@@ -1757,6 +3314,52 @@ def send_telegram_notification(*, token: str, chat_id: str, text: str, timeout: 
     }
 
 
+def send_slack_webhook(webhook_url: str, payload: dict, timeout: int = 20) -> dict:
+    if not webhook_url:
+        raise ValueError("slack webhook url is not configured")
+    data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    request = urllib.request.Request(webhook_url, data=data, method="POST")
+    request.add_header("Content-Type", "application/json")
+    with urllib.request.urlopen(request, timeout=timeout) as response:
+        body = response.read().decode("utf-8", errors="replace")
+    return {"ok": True, "platform": "slack", "message_id": body or "ok"}
+
+
+class NotificationDispatcher:
+    def __init__(self, settings: dict):
+        self.settings = settings or {}
+
+    def send_macos_alert(self, title: str, body: str, kind: str = "general") -> dict:
+        text = f"{title}\n{body}".strip() if title else body
+        return send_macos_notification(text=text, title=title or "Company Kernel", subtitle=kind)
+
+    def send_telegram_message(self, chat_id: str, text: str, account_id: str = "") -> dict:
+        accounts = self.settings.get("telegram_accounts", {}) if isinstance(self.settings.get("telegram_accounts"), dict) else {}
+        account = accounts.get(account_id, {}) if account_id else next(iter(accounts.values()), {})
+        token_env = str(account.get("bot_token_env", "") or "")
+        return send_telegram_notification(token=os.environ.get(token_env, ""), chat_id=chat_id, text=text)
+
+    def send_slack_webhook(self, webhook_url: str, payload: dict) -> dict:
+        return send_slack_webhook(webhook_url, payload)
+
+    def send(self, target: str, *, title: str = "", body: str = "", kind: str = "general", account_id: str = "", dry_run: bool = False) -> dict:
+        platform, address = resolve_notification_target(target)
+        text = f"{title}\n{body}".strip() if title else body
+        result = {"ok": True, "dry_run": dry_run, "platform": platform, "kind": kind, "target": target}
+        if dry_run:
+            return result
+        if platform == "macos":
+            return {**result, **self.send_macos_alert(title or "Company Kernel", body, kind)}
+        if platform == "telegram":
+            return {**result, **self.send_telegram_message(address, text, account_id)}
+        if platform == "slack":
+            webhooks = self.settings.get("slack_webhooks", {}) if isinstance(self.settings.get("slack_webhooks"), dict) else {}
+            hook = webhooks.get(address, {}) if isinstance(webhooks.get(address, {}), dict) else {}
+            webhook_env = str(hook.get("webhook_url_env", "") or "")
+            return {**result, **self.send_slack_webhook(os.environ.get(webhook_env, ""), {"text": text, "kind": kind})}
+        return {**result, "ok": False, "error": f"unsupported notification platform: {platform}"}
+
+
 def notification_send_result(*, message: str, target: str = "", account_id: str = "", subject: str = "", kind: str = "general", dry_run: bool = False) -> dict:
     settings = notification_settings()
     notifications = settings["employee_notifications"]
@@ -1778,24 +3381,10 @@ def notification_send_result(*, message: str, target: str = "", account_id: str 
     if platform != "macos" and not account:
         return {"ok": False, "error": "notification account is not configured", "account": account_id}
     if platform != "telegram":
-        if platform != "macos":
-            return {"ok": False, "error": f"unsupported notification platform: {platform}"}
-        text = f"{subject}\n{message}".strip() if subject else message
-        result = {
-            "ok": True,
-            "dry_run": dry_run,
-            "platform": platform,
-            "kind": kind,
-            "account": account_id,
-            "target": f"macos:{chat_id}",
-            "token_env": "",
-            "token_configured": True,
-        }
-        if dry_run:
-            return result
+        result = {"ok": True, "dry_run": dry_run, "platform": platform, "kind": kind, "account": account_id, "target": f"{platform}:{chat_id}", "token_env": "", "token_configured": True}
         try:
-            sent = send_macos_notification(text=text, title=subject or "Company Kernel", subtitle=kind)
-        except (OSError, subprocess.SubprocessError, TimeoutError) as exc:
+            sent = NotificationDispatcher(settings).send(f"{platform}:{chat_id}", title=subject or "Company Kernel", body=message, kind=kind, account_id=account_id, dry_run=dry_run)
+        except (ValueError, OSError, subprocess.SubprocessError, urllib.error.URLError, TimeoutError) as exc:
             return {**result, "ok": False, "error": str(exc)}
         return {**result, **sent}
     token_env = str(account.get("bot_token_env", "") or "")
@@ -2209,7 +3798,607 @@ def count_spool_files(spool_dir: Path) -> dict:
     }
 
 
-def openclaw_guard_health() -> dict:
+def openclaw_runtime_inventory(conn: sqlite3.Connection | None = None) -> dict:
+    root = openclaw_root()
+    agents_dir = root / "agents"
+    telegram_dir = root / "telegram"
+    registered = set()
+    if conn is not None:
+        registered = {str(row["id"]) for row in rows(conn, "SELECT id FROM employees")}
+    registered_aliases = set(registered)
+    for employee_id in registered:
+        registered_aliases.add(employee_id.replace("-", "_"))
+        registered_aliases.add(employee_id.replace("_", "-"))
+
+    def canonical_openclaw_id(value: str) -> str:
+        return value.replace("-", "_")
+
+    def is_registered_openclaw_id(value: str) -> bool:
+        canonical = canonical_openclaw_id(value)
+        return value in registered_aliases or canonical in registered_aliases or canonical.replace("_", "-") in registered_aliases
+
+    agent_dirs = {}
+    if agents_dir.exists():
+        for path in sorted(agents_dir.iterdir()):
+            if not path.is_dir() or path.name.startswith("."):
+                continue
+            session_file = path / "sessions" / "sessions.json"
+            session_payload = load_json_or_default(session_file, {})
+            session_count = len(session_payload) if isinstance(session_payload, dict) else 0
+            normalized_id = canonical_openclaw_id(path.name)
+            agent_dirs[path.name] = {
+                "id": path.name,
+                "normalized_id": normalized_id,
+                "path": str(path),
+                "session_file": str(session_file),
+                "session_file_exists": session_file.exists(),
+                "session_count": session_count,
+                "registered": is_registered_openclaw_id(path.name),
+            }
+    spools = {}
+    if telegram_dir.exists():
+        for spool_dir in sorted(telegram_dir.glob("ingress-spool-*")):
+            account = spool_dir.name.removeprefix("ingress-spool-")
+            normalized_id = canonical_openclaw_id(account)
+            profile = count_spool_files(spool_dir)
+            profile.update(
+                {
+                    "id": account,
+                    "normalized_id": normalized_id,
+                    "registered": is_registered_openclaw_id(account),
+                }
+            )
+            spools[account] = profile
+    discovered_ids = {canonical_openclaw_id(item["id"]) for item in agent_dirs.values()}
+    discovered_ids.update(canonical_openclaw_id(item["id"]) for item in spools.values())
+    discovered_ids.update(item["normalized_id"] for item in agent_dirs.values() if item.get("normalized_id"))
+    discovered_ids.update(item["normalized_id"] for item in spools.values() if item.get("normalized_id"))
+    missing = sorted(item for item in discovered_ids if item and not is_registered_openclaw_id(item))
+    return {
+        "openclaw_root": str(root),
+        "agents_dir": str(agents_dir),
+        "telegram_dir": str(telegram_dir),
+        "registered_employee_ids": sorted(registered),
+        "agent_dirs": agent_dirs,
+        "telegram_spools": spools,
+        "counts": {
+            "agent_dirs": len(agent_dirs),
+            "telegram_spools": len(spools),
+            "registered": len(registered),
+            "missing_registered": len(missing),
+        },
+        "missing_registered": missing,
+        "note": "Read-only inventory. It discovers OpenClaw runtime agents/spools and marks whether they are registered in Company Kernel; it does not onboard or modify them.",
+    }
+
+
+def openclaw_runtime_inventory_summary(inventory: dict) -> dict:
+    agent_dirs = inventory.get("agent_dirs") or {}
+    telegram_spools = inventory.get("telegram_spools") or {}
+    missing_registered = list(inventory.get("missing_registered") or [])
+    session_total = sum(int(item.get("session_count") or 0) for item in agent_dirs.values() if isinstance(item, dict))
+    spool_pending = sum(int(item.get("pending") or 0) for item in telegram_spools.values() if isinstance(item, dict))
+    spool_processing = sum(int(item.get("processing") or 0) for item in telegram_spools.values() if isinstance(item, dict))
+    stale_processing = sum(int(item.get("stale_processing") or 0) for item in telegram_spools.values() if isinstance(item, dict))
+    recommended_actions = []
+    if missing_registered:
+        recommended_actions.append("register_discovered_openclaw_agents")
+    if stale_processing:
+        recommended_actions.append("inspect_stale_telegram_spool_processing")
+    if spool_pending or spool_processing:
+        recommended_actions.append("monitor_openclaw_telegram_spools")
+    health = "attention_required" if recommended_actions else "green"
+    return {
+        "ok": True,
+        "mode": "read_only",
+        "health": health,
+        "openclaw_root": inventory.get("openclaw_root", ""),
+        "mutates_openclaw": False,
+        "counts": {
+            "agent_dirs": int((inventory.get("counts") or {}).get("agent_dirs") or len(agent_dirs)),
+            "telegram_spools": int((inventory.get("counts") or {}).get("telegram_spools") or len(telegram_spools)),
+            "registered": int((inventory.get("counts") or {}).get("registered") or len(inventory.get("registered_employee_ids") or [])),
+            "missing_registered": len(missing_registered),
+            "sessions": session_total,
+            "spool_pending": spool_pending,
+            "spool_processing": spool_processing,
+            "stale_processing": stale_processing,
+        },
+        "missing_registered": missing_registered[:20],
+        "recommended_actions": recommended_actions or ["no_action_required"],
+        "note": "Owner-readable OpenClaw runtime summary. Full details are available without --summary.",
+    }
+
+
+def _openclaw_json_sample(path: Path) -> dict:
+    payload = load_json_or_default(path, {})
+    if not isinstance(payload, dict):
+        return {"file": str(path), "parse_error": "json_root_not_object"}
+    return {
+        "file": str(path),
+        "source_agent": str(payload.get("source_agent") or payload.get("source") or ""),
+        "target_agent": str(payload.get("target_agent") or payload.get("target") or ""),
+        "type": str(payload.get("type") or payload.get("task_type") or ""),
+        "priority": str(payload.get("priority") or ""),
+        "status": str(payload.get("status") or ""),
+        "action": str(payload.get("action") or ""),
+        "updated_at": str(payload.get("updated_at") or payload.get("created_at") or ""),
+    }
+
+
+def _openclaw_agent_bus_state(root: Path, *, sample_limit: int = 5) -> dict:
+    bus_root = root / "ops" / "agent_bus"
+    states: dict[str, dict] = {}
+    counts: dict[str, int] = {}
+    for state in ["inbox", "running", "done", "failed"]:
+        state_root = bus_root / state
+        agents: dict[str, dict] = {}
+        total = 0
+        if state_root.exists():
+            for agent_dir in sorted(path for path in state_root.iterdir() if path.is_dir()):
+                files = sorted(agent_dir.glob("*.json"))
+                total += len(files)
+                agents[agent_dir.name] = {
+                    "count": len(files),
+                    "samples": [_openclaw_json_sample(path) for path in files[:sample_limit]],
+                }
+        states[state] = agents
+        counts[f"bus_{state}"] = total
+    return {
+        "root": str(bus_root),
+        "exists": bus_root.exists(),
+        "states": states,
+        "counts": counts,
+    }
+
+
+def _openclaw_approval_state(root: Path, *, sample_limit: int = 5) -> dict:
+    approvals_root = root / "ops" / "approvals"
+    states: dict[str, dict] = {}
+    counts: dict[str, int] = {}
+    for state in ["pending", "approved", "denied", "archived", "notify_pending", "notify_done", "notify_failed"]:
+        state_root = approvals_root / state
+        files = sorted(state_root.glob("*.json")) if state_root.exists() else []
+        states[state] = {
+            "count": len(files),
+            "samples": [_openclaw_json_sample(path) for path in files[:sample_limit]],
+        }
+        counts[f"approval_{state}"] = len(files)
+    return {
+        "root": str(approvals_root),
+        "exists": approvals_root.exists(),
+        "states": states,
+        "counts": counts,
+    }
+
+
+def openclaw_native_status() -> dict:
+    root = openclaw_root()
+    bus = _openclaw_agent_bus_state(root)
+    approvals = _openclaw_approval_state(root)
+    supervisor_path = root / "reports" / "openclaw-agent-supervisor-state.json"
+    supervisor_payload = load_json_or_default(supervisor_path, {})
+    supervisor = {
+        "path": str(supervisor_path),
+        "exists": supervisor_path.exists(),
+        "ok": bool(supervisor_payload.get("ok")) if isinstance(supervisor_payload, dict) else False,
+        "last_run_at": str(supervisor_payload.get("last_run_at") or supervisor_payload.get("at") or "") if isinstance(supervisor_payload, dict) else "",
+        "agents": supervisor_payload.get("agents", {}) if isinstance(supervisor_payload, dict) else {},
+        "summary": supervisor_payload.get("summary", {}) if isinstance(supervisor_payload, dict) else {},
+    }
+    counts = {}
+    counts.update(bus["counts"])
+    counts.update(approvals["counts"])
+    return {
+        "ok": True,
+        "mode": "read_only",
+        "openclaw_root": str(root),
+        "agent_bus": {
+            "root": bus["root"],
+            "exists": bus["exists"],
+            **bus["states"],
+        },
+        "approvals": {
+            "root": approvals["root"],
+            "exists": approvals["exists"],
+            **approvals["states"],
+        },
+        "supervisor": supervisor,
+        "counts": counts,
+        "safety": {
+            "mutates_openclaw": False,
+            "dispatch_policy": "Read-only status only. Future dispatch must use ops_task_bus.py submit and owner approval for real sends.",
+            "forbidden": [
+                "do not modify OpenClaw callback fast path",
+                "do not enable legacy Telegram polling watcher",
+                "do not bypass agent_bus for native OpenClaw employees",
+            ],
+        },
+        "note": "OpenClaw Native Adapter status is read-only and maps native bus/approvals/supervisor into Company Kernel observability.",
+    }
+
+
+def openclaw_native_status_summary(status: dict) -> dict:
+    counts = dict(status.get("counts") or {})
+    attention_keys = [
+        "bus_inbox",
+        "bus_running",
+        "bus_failed",
+        "approval_pending",
+        "approval_notify_pending",
+        "approval_notify_failed",
+    ]
+    attention_total = sum(int(counts.get(key) or 0) for key in attention_keys)
+    recommended_actions: list[str] = []
+    if attention_total:
+        recommended_actions.append("drain_openclaw_pending_items")
+    if int(counts.get("approval_pending") or 0):
+        recommended_actions.append("review_owner_approvals")
+    if int(counts.get("approval_notify_pending") or 0) or int(counts.get("approval_notify_failed") or 0):
+        recommended_actions.append("check_async_approval_notifications")
+    if not recommended_actions:
+        recommended_actions.append("no_action_required")
+    supervisor = status.get("supervisor") if isinstance(status.get("supervisor"), dict) else {}
+    return {
+        "ok": bool(status.get("ok")),
+        "mode": status.get("mode", "read_only"),
+        "health": "attention_required" if attention_total else "green",
+        "openclaw_root": status.get("openclaw_root", ""),
+        "mutates_openclaw": bool(((status.get("safety") or {}).get("mutates_openclaw"))),
+        "counts": {key: int(counts.get(key) or 0) for key in attention_keys},
+        "supervisor": {
+            "ok": bool(supervisor.get("ok")),
+            "last_run_at": str(supervisor.get("last_run_at") or ""),
+        },
+        "recommended_actions": recommended_actions,
+        "note": "Owner-readable OpenClaw native queue summary. Full details are available without --summary.",
+    }
+
+
+def openclaw_native_dispatch_plan(
+    *,
+    source: str,
+    target: str,
+    task_type: str,
+    priority: str,
+    goal: str,
+    next_command: str,
+    expected_evidence: str,
+    rollback: str,
+    task_id: str = "",
+) -> dict:
+    source = source.strip()
+    target = target.strip()
+    task_type = task_type.strip()
+    priority = (priority.strip() or "P2").upper()
+    goal = goal.strip()
+    next_command = next_command.strip()
+    expected_evidence = expected_evidence.strip()
+    rollback = rollback.strip()
+    task_id = task_id.strip()
+    missing = [
+        name
+        for name, value in {
+            "source": source,
+            "target": target,
+            "type": task_type,
+            "goal": goal,
+            "next_command": next_command,
+            "expected_evidence": expected_evidence,
+            "rollback": rollback,
+        }.items()
+        if not value
+    ]
+    if missing:
+        return {
+            "ok": False,
+            "dry_run": True,
+            "mutates_openclaw": False,
+            "error": "missing required OpenClaw agent_bus dispatch fields",
+            "missing": missing,
+        }
+    payload = {
+        "source_agent": source,
+        "target_agent": target,
+        "type": task_type,
+        "priority": priority,
+        "payload": {
+            "goal": goal,
+            "next_command": next_command,
+            "expected_evidence": expected_evidence,
+            "origin": "company_kernel_openclaw_native_adapter",
+        },
+        "rollback": rollback,
+    }
+    if task_id:
+        payload["payload"]["kernel_task_id"] = task_id
+    submit_command_preview = (
+        "python3 /Users/owner/openclaw/scripts/ops_task_bus.py submit "
+        f"--source-agent {source} --target-agent {target} --type {task_type} --priority {priority} "
+        "--payload '<payload-json>' --rollback '<rollback-text>'"
+    )
+    return {
+        "ok": True,
+        "dry_run": True,
+        "mutates_openclaw": False,
+        "openclaw_root": str(openclaw_root()),
+        "payload": payload,
+        "dispatch_contract": {
+            "command": "ops_task_bus.py submit",
+            "bus": "agent_bus",
+            "allowed_execution": "owner_approved_only",
+            "default_mode": "dry_run",
+        },
+        "submit_command_preview": submit_command_preview,
+        "safety": {
+            "does_not_write_bus": True,
+            "does_not_call_openclaw_deliver": True,
+            "does_not_touch_callback_or_watcher": True,
+            "requires_owner_approval_for_execute": True,
+        },
+        "note": "Dry-run dispatch plan only. It prepares the official OpenClaw agent_bus submit contract but does not write OpenClaw files.",
+    }
+
+
+def openclaw_native_dispatch_execute(
+    *,
+    source: str,
+    target: str,
+    task_type: str,
+    priority: str,
+    goal: str,
+    next_command: str,
+    expected_evidence: str,
+    rollback: str,
+    approval_id: str = "",
+    task_id: str = "",
+) -> dict:
+    plan = openclaw_native_dispatch_plan(
+        source=source,
+        target=target,
+        task_type=task_type,
+        priority=priority,
+        goal=goal,
+        next_command=next_command,
+        expected_evidence=expected_evidence,
+        rollback=rollback,
+        task_id=task_id,
+    )
+    if not plan.get("ok"):
+        return plan
+    approval_action = "openclaw_native_dispatch"
+    conn = connect()
+    try:
+        gate = approved_gate(conn, approval_id, approval_action, source.strip(), target.strip())
+    finally:
+        conn.close()
+    if not gate.get("allowed"):
+        return {
+            "ok": False,
+            "dry_run": True,
+            "mutates_openclaw": False,
+            "error": "owner approval required",
+            "approval_action": approval_action,
+            "approval_id": approval_id,
+            "gate": gate,
+            "plan": plan,
+        }
+
+    payload = json.loads(json.dumps(plan["payload"], ensure_ascii=False))
+    dispatch_id = f"kernel-openclaw-dispatch-{datetime.now().strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:8]}"
+    created_at = datetime.now(timezone.utc).isoformat()
+    payload["payload"]["kernel_approval_id"] = approval_id
+    payload["payload"]["kernel_dispatch_id"] = dispatch_id
+    payload["payload"]["kernel_created_at"] = created_at
+    inbox = openclaw_root() / "ops" / "agent_bus" / "inbox" / target.strip()
+    inbox.mkdir(parents=True, exist_ok=True)
+    path = inbox / f"{dispatch_id}.json"
+    payload["created_at"] = created_at
+    payload["kernel_origin"] = "company_kernel_openclaw_native_adapter"
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    return {
+        "ok": True,
+        "dry_run": False,
+        "mutates_openclaw": True,
+        "execution_mode": "ops_task_bus_file_write",
+        "approval_id": approval_id,
+        "file": str(path),
+        "payload": payload,
+        "plan": plan,
+        "safety": {
+            "used_owner_approval": True,
+            "does_not_call_openclaw_deliver": True,
+            "does_not_touch_callback_or_watcher": True,
+        },
+    }
+
+
+def _openclaw_native_result_task_id(payload: dict) -> str:
+    nested = payload.get("payload", {}) if isinstance(payload.get("payload", {}), dict) else {}
+    for key in ("kernel_task_id", "task_id"):
+        value = str(nested.get(key) or payload.get(key) or "").strip()
+        if value:
+            return value
+    return ""
+
+
+def _openclaw_native_result_agent(payload: dict, fallback: str = "") -> str:
+    for key in ("source_agent", "employee_id", "agent"):
+        value = str(payload.get(key) or "").strip()
+        if value:
+            return value
+    nested = payload.get("payload", {}) if isinstance(payload.get("payload", {}), dict) else {}
+    for key in ("source_agent", "employee_id", "agent"):
+        value = str(nested.get(key) or "").strip()
+        if value:
+            return value
+    return fallback
+
+
+def _openclaw_native_result_summary(payload: dict, state: str) -> str:
+    nested = payload.get("payload", {}) if isinstance(payload.get("payload", {}), dict) else {}
+    for key in ("summary", "message", "result", "receipt"):
+        value = str(nested.get(key) or payload.get(key) or "").strip()
+        if value:
+            return value
+    return f"OpenClaw native {state} result imported"
+
+
+def _openclaw_native_result_evidence(payload: dict, source_file: Path) -> str:
+    nested = payload.get("payload", {}) if isinstance(payload.get("payload", {}), dict) else {}
+    for key in ("evidence_path", "evidence", "report_path", "path"):
+        value = str(nested.get(key) or payload.get(key) or "").strip()
+        if value:
+            return value
+    return str(source_file)
+
+
+def _openclaw_native_result_blocker(payload: dict) -> str:
+    nested = payload.get("payload", {}) if isinstance(payload.get("payload", {}), dict) else {}
+    for key in ("blocker", "error", "reason", "message"):
+        value = str(nested.get(key) or payload.get(key) or "").strip()
+        if value:
+            return value
+    return "OpenClaw native failed result imported"
+
+
+def _openclaw_native_imported_event(conn: sqlite3.Connection, path: Path) -> sqlite3.Row | None:
+    needle = str(path)
+    rows = conn.execute(
+        """
+        SELECT *
+        FROM company_events
+        WHERE event_type = 'openclaw_native.result_imported'
+          AND payload_json LIKE ?
+        ORDER BY created_at DESC
+        """,
+        (f"%{needle}%",),
+    ).fetchall()
+    for row in rows:
+        try:
+            payload = json.loads(row["payload_json"] or "{}")
+        except json.JSONDecodeError:
+            continue
+        if payload.get("file") == needle:
+            return row
+    return None
+
+
+def openclaw_native_import_results(*, limit: int = 50, agent: str = "") -> dict:
+    root = openclaw_root()
+    bus_root = root / "ops" / "agent_bus"
+    candidates: list[tuple[str, str, Path]] = []
+    for state in ("done", "failed"):
+        state_root = bus_root / state
+        if not state_root.exists():
+            continue
+        agent_dirs = [state_root / agent] if agent else sorted(path for path in state_root.iterdir() if path.is_dir())
+        for agent_dir in agent_dirs:
+            if not agent_dir.exists():
+                continue
+            for path in sorted(agent_dir.glob("*.json")):
+                candidates.append((state, agent_dir.name, path))
+    processed: list[dict] = []
+    skipped: list[dict] = []
+    counts = {"processed": 0, "completed": 0, "blocked": 0, "skipped": 0, "already_imported": 0}
+    conn = connect()
+    try:
+        for state, result_agent, path in candidates[: max(0, int(limit))]:
+            try:
+                payload = json.loads(path.read_text(encoding="utf-8"))
+            except json.JSONDecodeError as exc:
+                skipped.append({"file": str(path), "reason": f"invalid json: {exc}"})
+                counts["skipped"] += 1
+                continue
+            if not isinstance(payload, dict):
+                skipped.append({"file": str(path), "reason": "payload is not object"})
+                counts["skipped"] += 1
+                continue
+            task_id = _openclaw_native_result_task_id(payload)
+            if not task_id:
+                skipped.append({"file": str(path), "reason": "missing kernel_task_id"})
+                counts["skipped"] += 1
+                continue
+            task = conn.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
+            if not task:
+                skipped.append({"file": str(path), "reason": "kernel task not found", "task_id": task_id})
+                counts["skipped"] += 1
+                continue
+            imported_event = _openclaw_native_imported_event(conn, path)
+            if imported_event:
+                skipped.append({"file": str(path), "reason": "already_imported", "task_id": task_id, "event_id": imported_event["id"]})
+                counts["skipped"] += 1
+                counts["already_imported"] += 1
+                continue
+            employee_id = _openclaw_native_result_agent(payload, result_agent)
+            trace_id = trace_id_for_task(conn, task_id)
+            existing = conn.execute(
+                "SELECT evidence_id FROM evidence WHERE task_id = ? AND metadata_json LIKE ?",
+                (task_id, f"%{str(path)}%"),
+            ).fetchone()
+            if state == "done":
+                summary = _openclaw_native_result_summary(payload, state)
+                evidence_path = _openclaw_native_result_evidence(payload, path)
+                if not existing:
+                    evidence_id = f"evidence-openclaw-native-{datetime.now().strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:8]}"
+                    conn.execute(
+                        """
+                        INSERT INTO evidence(evidence_id, trace_id, task_id, attempt_id, employee_id, artifact_id, type, path_or_url, summary, checksum, is_final, metadata_json, created_at)
+                        VALUES (?, ?, ?, '', ?, '', 'openclaw_native_result', ?, ?, '', 1, ?, ?)
+                        """,
+                        (
+                            evidence_id,
+                            trace_id,
+                            task_id,
+                            employee_id,
+                            evidence_path,
+                            summary,
+                            json.dumps({"openclaw_result_file": str(path), "openclaw_state": state, "raw": payload}, ensure_ascii=False),
+                            now(),
+                        ),
+                    )
+                conn.execute(
+                    "UPDATE tasks SET status = 'completed', claimed_by = CASE WHEN claimed_by = '' THEN ? ELSE claimed_by END, summary = ?, evidence_path = ?, blocker = '', updated_at = ? WHERE id = ?",
+                    (employee_id, summary, evidence_path, now(), task_id),
+                )
+                event_type = "openclaw_native.result_imported"
+                counts["completed"] += 1
+            else:
+                blocker = _openclaw_native_result_blocker(payload)
+                conn.execute(
+                    "UPDATE tasks SET status = 'blocked', claimed_by = CASE WHEN claimed_by = '' THEN ? ELSE claimed_by END, blocker = ?, updated_at = ? WHERE id = ?",
+                    (employee_id, blocker, now(), task_id),
+                )
+                record_event(conn, "task.blocked", employee_id, task_id=task_id, trace_id=trace_id, payload={"blocker": blocker, "openclaw_result_file": str(path)})
+                event_type = "openclaw_native.result_imported"
+                counts["blocked"] += 1
+            event = record_event(
+                conn,
+                event_type,
+                employee_id,
+                task_id=task_id,
+                trace_id=trace_id,
+                payload={"state": state, "file": str(path), "payload": payload, "read_only_openclaw": True},
+            )
+            audit(conn, employee_id, event_type, task_id, {"state": state, "file": str(path), "event_id": event["id"]})
+            conn.commit()
+            counts["processed"] += 1
+            processed.append({"task_id": task_id, "state": state, "employee_id": employee_id, "file": str(path), "event_id": event["id"]})
+    finally:
+        conn.close()
+    return {
+        "ok": True,
+        "openclaw_root": str(root),
+        "read_only_openclaw": True,
+        "mutates_openclaw": False,
+        "counts": counts,
+        "processed": processed,
+        "skipped": skipped,
+        "note": "Imports OpenClaw native done/failed result files into Company Kernel ledger without moving or editing OpenClaw files.",
+    }
+
+
+def openclaw_guard_health(conn: sqlite3.Connection | None = None) -> dict:
     root = openclaw_root()
     telegram_dir = root / "telegram"
     launch_agents = Path.home() / "Library" / "LaunchAgents"
@@ -2243,6 +4432,7 @@ def openclaw_guard_health() -> dict:
             "risk": "conflicts_with_openclaw_telegram_getupdates" if watcher_plist.exists() else "",
         },
         "telegram_spools": spools,
+        "runtime_inventory": openclaw_runtime_inventory(conn),
         "backlog_accounts": backlog_accounts,
         "note": "Read-only guard. It detects conditions that can break OpenClaw native Telegram routing; it does not start, stop, or poll Telegram.",
     }
@@ -2553,7 +4743,27 @@ def employee_has_managed_runtime_evidence(conn: sqlite3.Connection, employee_id:
         """,
         (row["task_id"], employee_id),
     ).fetchone()
-    return True if evidence_row else bool(evidence_path)
+    return bool(evidence_row)
+
+
+def employee_has_adapter_task_evidence(conn: sqlite3.Connection, employee_id: str) -> bool:
+    row = conn.execute(
+        """
+        SELECT id, title, evidence_path
+        FROM tasks
+        WHERE target_agent = ?
+          AND status = 'completed'
+          AND evidence_path != ''
+          AND title LIKE 'Runtime adapter dry-run check:%'
+        ORDER BY updated_at DESC
+        LIMIT 1
+        """,
+        (employee_id,),
+    ).fetchone()
+    if not row:
+        return False
+    evidence_path = str(row["evidence_path"] or "")
+    return bool(evidence_path and Path(evidence_path).exists())
 
 
 def employee_has_runtime_evidence(employee_id: str, conn: sqlite3.Connection | None = None) -> bool:
@@ -2569,7 +4779,7 @@ def employee_has_runtime_evidence(employee_id: str, conn: sqlite3.Connection | N
         else:
             return True
     if conn is not None:
-        return employee_has_managed_runtime_evidence(conn, employee_id)
+        return employee_has_managed_runtime_evidence(conn, employee_id) or employee_has_adapter_task_evidence(conn, employee_id)
     return False
 
 
@@ -2587,21 +4797,46 @@ def latest_attempt_for_employee(conn: sqlite3.Connection, employee_id: str) -> d
     return dict(row) if row else {}
 
 
+def employee_has_fresh_heartbeat(conn: sqlite3.Connection, employee_id: str, *, stale_minutes: int = 15) -> bool:
+    row = conn.execute("SELECT last_seen_at FROM heartbeats WHERE agent_id = ?", (employee_id,)).fetchone()
+    if not row:
+        return False
+    return parse_time(row["last_seen_at"]) >= datetime.now(timezone.utc) - timedelta(minutes=stale_minutes)
+
+
 def classify_agent_matrix_row(conn: sqlite3.Connection, employee: dict, attendance: dict) -> dict:
     employee_id = employee["id"]
+    runtime = str(employee.get("runtime") or "")
     attendance_status = str(attendance.get("status") or "missing")
     runtime_ok = employee_has_runtime_evidence(employee_id, conn)
+    direct_ok = employee_has_verified_direct_evidence(employee_id)
     latest_attempt = latest_attempt_for_employee(conn, employee_id)
+    has_task_attempt = bool(latest_attempt)
+    has_live_heartbeat = employee_has_fresh_heartbeat(conn, employee_id)
+    has_live_attendance = attendance_status == "online"
+    has_live_or_task_evidence = has_live_attendance or has_task_attempt
     employee_status = str(employee.get("status") or "")
     if employee_status == "missing":
         level = "no_reply"
         reason = "employee_not_registered"
-    elif attendance_status != "online":
-        level = "no_reply"
-        reason = f"attendance_{attendance_status}"
     elif employee_status == "candidate":
         level = "candidate_only"
         reason = "candidate_requires_structured_runtime_evidence_before_activation"
+    elif runtime == "skill" and employee_status == "active" and runtime_ok:
+        level = "active_ready"
+        reason = "skill_runtime_evidence_no_direct_chat_required"
+    elif runtime != "openclaw" and employee_status == "active" and runtime_ok and has_live_or_task_evidence:
+        level = "active_ready"
+        reason = "adapter_runtime_evidence_no_openclaw_session_required"
+    elif runtime != "openclaw" and employee_status == "active" and runtime_ok:
+        level = "active_limited"
+        reason = "runtime_evidence_without_live_task_or_direct_attendance"
+    elif runtime == "openclaw" and employee_status == "active" and (runtime_ok or direct_ok):
+        level = "active_ready"
+        reason = "openclaw_direct_or_runtime_evidence_verified"
+    elif attendance_status != "online":
+        level = "no_reply"
+        reason = f"attendance_{attendance_status}"
     elif latest_attempt.get("status") in {"failed", "stale"}:
         level = "unsafe"
         reason = f"latest_attempt_{latest_attempt['status']}"
@@ -2623,8 +4858,9 @@ def classify_agent_matrix_row(conn: sqlite3.Connection, employee: dict, attendan
         "reason": reason,
         "checks": {
             "attendance": attendance_status,
-            "direct": "verified" if employee_has_verified_direct_evidence(employee_id) else "not_verified",
-            "runtime": "verified" if runtime_ok else "missing",
+            "heartbeat": "fresh" if has_live_heartbeat else "missing_or_stale",
+            "direct": "verified" if direct_ok else "not_verified",
+            "runtime": "verified" if runtime_ok and (runtime == "skill" or runtime == "openclaw" or has_live_or_task_evidence) else ("verified_limited" if runtime_ok else "missing"),
             "task": "supported" if employee_status == "active" else "not_active",
             "progress": "observable" if latest_attempt else "not_checked",
             "evidence": "runtime_evidence" if runtime_ok else "missing",
@@ -2639,19 +4875,32 @@ def cmd_agent_matrix(args: argparse.Namespace) -> int:
     conn = connect()
     requested = parse_csv(args.agents)
     if requested:
-        placeholders = ",".join("?" for _ in requested)
+        resolved_requested: list[tuple[str, str]] = []
+        for employee_id in requested:
+            resolved_requested.append((employee_id, resolve_employee_alias(employee_id)))
+        canonical_ids = list(dict.fromkeys(resolved for _raw, resolved in resolved_requested))
+        placeholders = ",".join("?" for _ in canonical_ids)
         known = {
             row["id"]: dict(row)
-            for row in conn.execute(f"SELECT * FROM employees WHERE id IN ({placeholders}) ORDER BY id", tuple(requested)).fetchall()
+            for row in conn.execute(f"SELECT * FROM employees WHERE id IN ({placeholders}) ORDER BY id", tuple(canonical_ids)).fetchall()
         }
-        employees = []
-        for employee_id in requested:
-            employees.append(known.get(employee_id, {"id": employee_id, "name": employee_id, "runtime": "unknown", "status": "missing"}))
+        employee_specs = []
+        for requested_id, canonical_id in resolved_requested:
+            employee = known.get(canonical_id, {"id": canonical_id, "name": requested_id, "runtime": "unknown", "status": "missing"})
+            employee_specs.append((requested_id, canonical_id, employee))
     else:
-        employees = rows(conn, "SELECT * FROM employees WHERE status IN ('active', 'candidate') ORDER BY id")
+        employee_specs = [(employee["id"], employee["id"], employee) for employee in rows(conn, "SELECT * FROM employees WHERE status IN ('active', 'candidate') ORDER BY id")]
     attendance_report = load_latest_attendance()
     attendance_by_agent = attendance_row_map(attendance_report)
-    matrix_rows = [classify_agent_matrix_row(conn, employee, attendance_by_agent.get(employee["id"], {})) for employee in employees]
+    matrix_rows = []
+    for requested_id, canonical_id, employee in employee_specs:
+        attendance = attendance_by_agent.get(canonical_id, attendance_by_agent.get(requested_id, {}))
+        row = classify_agent_matrix_row(conn, employee, attendance)
+        if requested_id != canonical_id:
+            row["requested_agent"] = requested_id
+            row["canonical_agent"] = canonical_id
+            row["alias_of"] = canonical_id
+        matrix_rows.append(row)
     counts = {}
     for row in matrix_rows:
         counts[row["level"]] = counts.get(row["level"], 0) + 1
@@ -2664,6 +4913,59 @@ def cmd_agent_matrix(args: argparse.Namespace) -> int:
         "rule": "online attendance is not enough for active_ready; active_ready requires active employee plus structured runtime evidence",
     }
     emit(report)
+    return 0
+
+
+def skill_manifest_summary(manifest_path: Path) -> dict:
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        return {
+            "ok": False,
+            "id": manifest_path.parent.name,
+            "name": manifest_path.parent.name,
+            "manifest_path": str(manifest_path),
+            "error": str(exc),
+        }
+    runtime = manifest.get("runtime", {}) if isinstance(manifest.get("runtime", {}), dict) else {}
+    permissions = manifest.get("permissions", {}) if isinstance(manifest.get("permissions", {}), dict) else {}
+    pricing = manifest.get("pricing", {}) if isinstance(manifest.get("pricing", {}), dict) else {}
+    acceptance = manifest.get("acceptance", {}) if isinstance(manifest.get("acceptance", {}), dict) else {}
+    return {
+        "ok": True,
+        "id": str(manifest.get("id") or manifest_path.parent.name),
+        "name": str(manifest.get("name") or manifest_path.parent.name),
+        "version": str(manifest.get("version") or ""),
+        "description": str(manifest.get("description") or ""),
+        "manifest_path": str(manifest_path),
+        "runtime_type": str(runtime.get("type") or ""),
+        "workspace_permission": str(permissions.get("workspace") or ""),
+        "network": bool(permissions.get("network", False)),
+        "secrets_count": len(permissions.get("secrets", []) if isinstance(permissions.get("secrets", []), list) else []),
+        "pricing_unit": str(pricing.get("unit") or ""),
+        "pricing_amount": pricing.get("amount", ""),
+        "pricing_currency": str(pricing.get("currency") or ""),
+        "final_artifact": str(acceptance.get("final_artifact") or ""),
+        "evidence_required": bool(acceptance.get("evidence_required", False)),
+    }
+
+
+def skill_registry() -> dict:
+    skills = []
+    if SKILL_PACKAGES_DIR.exists():
+        for manifest_path in sorted(SKILL_PACKAGES_DIR.glob("*/skill.json")):
+            skills.append(skill_manifest_summary(manifest_path))
+    return {
+        "ok": True,
+        "root": str(SKILL_PACKAGES_DIR),
+        "count": len(skills),
+        "skills": skills,
+        "rule": "read-only registry; skill execution still requires Kernel task, authorized task workspace, artifact registration, and evidence promotion",
+    }
+
+
+def cmd_skill_list(args: argparse.Namespace) -> int:
+    emit(skill_registry())
     return 0
 
 
@@ -2762,6 +5064,775 @@ def rows(conn: sqlite3.Connection, sql: str, params: tuple = ()) -> list[dict]:
     return [dict(r) for r in conn.execute(sql, params).fetchall()]
 
 
+def clamp_audit_limit(limit: int | str | None) -> int:
+    try:
+        value = int(limit or 50)
+    except (TypeError, ValueError):
+        value = 50
+    return max(1, min(value, 200))
+
+
+def audit_evidence_records(conn: sqlite3.Connection, *, task_id: str = "", employee_id: str = "", limit: int | str | None = 50) -> list[dict]:
+    sql = """
+        SELECT evidence_id, trace_id, task_id, attempt_id, employee_id, artifact_id,
+               type, path_or_url, summary, checksum, is_final, metadata_json, created_at
+        FROM evidence
+    """
+    params: list[object] = []
+    conditions = []
+    if task_id:
+        conditions.append("task_id = ?")
+        params.append(task_id)
+    if employee_id:
+        conditions.append("employee_id = ?")
+        params.append(employee_id)
+    if conditions:
+        sql += " WHERE " + " AND ".join(conditions)
+    sql += " ORDER BY created_at DESC LIMIT ?"
+    params.append(clamp_audit_limit(limit))
+    evidence = rows(conn, sql, tuple(params))
+    for item in evidence:
+        raw_path = item.pop("path_or_url", "")
+        item["display"] = sanitize_evidence_path_for_display(raw_path)
+        item["is_final"] = bool(item.get("is_final"))
+        metadata = parse_json_arg(item.get("metadata_json", "{}") or "{}", {})
+        item["metadata"] = metadata if isinstance(metadata, dict) else {}
+        item["acceptance_decision"] = evidence_acceptance_decision(item)
+    return evidence
+
+
+def evidence_acceptance_decision(item: dict) -> dict:
+    metadata = item.get("metadata", {}) if isinstance(item.get("metadata", {}), dict) else parse_json_arg(str(item.get("metadata_json", "{}") or "{}"), {})
+    if not isinstance(metadata, dict):
+        metadata = {}
+    decision = metadata.get("acceptance", {}) if isinstance(metadata.get("acceptance", {}), dict) else {}
+    status = str(decision.get("status") or "pending")
+    return {
+        "status": status,
+        "by": str(decision.get("by") or ""),
+        "summary": sanitize_log_text(str(decision.get("summary") or "")),
+        "reason": sanitize_log_text(str(decision.get("reason") or "")),
+        "decided_at": str(decision.get("decided_at") or ""),
+        "event_id": str(decision.get("event_id") or ""),
+    }
+
+
+def evidence_acceptance_context(item: dict, display: dict) -> dict:
+    task_id = str(item.get("task_id") or "")
+    attempt_id = str(item.get("attempt_id") or "")
+    checksum = str(item.get("checksum") or "")
+    preview_allowed = bool(display.get("allowed"))
+    is_final = bool(item.get("is_final"))
+    task_bound = bool(task_id)
+    attempt_bound = bool(attempt_id)
+    can_accept = preview_allowed and task_bound and attempt_bound and is_final
+    decision = evidence_acceptance_decision(item)
+    if not preview_allowed:
+        state = "blocked_by_preview_policy"
+    elif not task_bound or not attempt_bound:
+        state = "missing_binding_context"
+    elif not is_final:
+        state = "unacceptable_draft"
+    else:
+        state = "reviewable_final_evidence"
+    return {
+        "evidence_id": str(item.get("evidence_id") or ""),
+        "trace_id": str(item.get("trace_id") or ""),
+        "task_id": task_id,
+        "attempt_id": attempt_id,
+        "employee_id": str(item.get("employee_id") or ""),
+        "artifact_id": str(item.get("artifact_id") or ""),
+        "is_final": is_final,
+        "preview_allowed": preview_allowed,
+        "task_bound": task_bound,
+        "attempt_bound": attempt_bound,
+        "checksum_status": "recorded" if checksum else "missing",
+        "can_accept": can_accept,
+        "state": state,
+        "decision": decision,
+        "accepted": decision.get("status") == "accepted",
+        "rejected": decision.get("status") == "rejected",
+        "summary": sanitize_log_text(str(item.get("summary") or "")),
+    }
+
+
+def decide_evidence_internal(conn: sqlite3.Connection, *, evidence_id: str, by: str, status: str, summary: str = "", reason: str = "") -> dict:
+    actor = resolve_employee_alias(by)
+    require_employee(conn, actor)
+    if status not in {"accepted", "rejected"}:
+        raise SystemExit("status must be accepted or rejected")
+    evidence = row_by_id(conn, "evidence", "evidence_id", evidence_id)
+    display = sanitize_evidence_path_for_display(str(evidence.get("path_or_url") or ""))
+    acceptance = evidence_acceptance_context(evidence, display)
+    if status == "accepted" and not acceptance.get("can_accept"):
+        return {"ok": False, "error": "evidence is not acceptable", "acceptance": acceptance, "evidence_id": evidence_id}
+    metadata = parse_json_arg(evidence.get("metadata_json", "{}") or "{}", {})
+    if not isinstance(metadata, dict):
+        metadata = {}
+    event_type = "evidence.accepted" if status == "accepted" else "evidence.rejected"
+    ts = now()
+    decision = {
+        "status": status,
+        "by": actor,
+        "summary": summary,
+        "reason": reason,
+        "decided_at": ts,
+    }
+    metadata["acceptance"] = decision
+    conn.execute("UPDATE evidence SET metadata_json = ? WHERE evidence_id = ?", (json.dumps(metadata, ensure_ascii=False), evidence_id))
+    conn.commit()
+    event = record_event(
+        conn,
+        event_type,
+        actor,
+        task_id=str(evidence.get("task_id") or ""),
+        trace_id=str(evidence.get("trace_id") or ""),
+        payload={"evidence_id": evidence_id, "attempt_id": evidence.get("attempt_id", ""), "summary": summary, "reason": reason},
+    )
+    decision["event_id"] = event["id"]
+    metadata["acceptance"] = decision
+    conn.execute("UPDATE evidence SET metadata_json = ? WHERE evidence_id = ?", (json.dumps(metadata, ensure_ascii=False), evidence_id))
+    audit(conn, actor, "evidence.accept" if status == "accepted" else "evidence.reject", evidence_id, {"task_id": evidence.get("task_id", ""), "attempt_id": evidence.get("attempt_id", ""), "event_id": event["id"], "summary": summary, "reason": reason})
+    audit_row = conn.execute("SELECT id, actor, action, target, detail_json, created_at FROM audit_logs WHERE target = ? ORDER BY id DESC LIMIT 1", (evidence_id,)).fetchone()
+    updated = row_by_id(conn, "evidence", "evidence_id", evidence_id)
+    raw_path = updated.pop("path_or_url", "")
+    updated["display"] = sanitize_evidence_path_for_display(raw_path)
+    updated["is_final"] = bool(updated.get("is_final"))
+    updated["metadata"] = metadata
+    updated["acceptance_decision"] = evidence_acceptance_decision(updated)
+    audit_payload = dict(audit_row) if audit_row else {}
+    if audit_payload:
+        audit_payload["detail"] = parse_json_arg(audit_payload.pop("detail_json", "{}") or "{}", {})
+    return {"ok": True, "evidence": updated, "event": event, "audit": audit_payload}
+
+
+def safe_evidence_content(conn: sqlite3.Connection, evidence_id: str, *, max_bytes: int = 65536) -> dict:
+    safe_id = str(evidence_id or "").strip()
+    if not safe_id or "/" in safe_id:
+        display = sanitize_evidence_path_for_display("")
+        return {"ok": False, "error": "invalid evidence id", "evidence_id": safe_id, "display": display, "acceptance": evidence_acceptance_context({"evidence_id": safe_id}, display), "content": {"text": ""}}
+    record = conn.execute(
+        """
+        SELECT evidence_id, trace_id, task_id, attempt_id, employee_id, artifact_id,
+               type, path_or_url, summary, checksum, is_final, metadata_json, created_at
+        FROM evidence
+        WHERE evidence_id = ?
+        """,
+        (safe_id,),
+    ).fetchone()
+    if not record:
+        display = sanitize_evidence_path_for_display("")
+        return {"ok": False, "error": "evidence not found", "evidence_id": safe_id, "display": display, "acceptance": evidence_acceptance_context({"evidence_id": safe_id}, display), "content": {"text": ""}}
+    item = dict(record)
+    raw_path = item.pop("path_or_url", "")
+    metadata = parse_json_arg(item.get("metadata_json", "{}") or "{}", {})
+    item["metadata"] = metadata if isinstance(metadata, dict) else {}
+    display = sanitize_evidence_path_for_display(raw_path)
+    payload = {
+        "ok": bool(display.get("allowed")),
+        "evidence": item,
+        "display": display,
+        "acceptance": evidence_acceptance_context(item, display),
+        "content": {
+            "text": "",
+            "truncated": False,
+            "bytes": 0,
+            "mode": "blocked" if not display.get("allowed") else "text",
+            "policy": "read-only sanitized evidence preview; no downloads and no absolute paths",
+        },
+    }
+    if not display.get("allowed"):
+        payload["error"] = display.get("reason") or "evidence path blocked by display policy"
+        return payload
+    candidate = Path(str(raw_path or "")).expanduser()
+    if not candidate.is_absolute():
+        candidate = ROOT / candidate
+    try:
+        path = candidate.resolve()
+    except OSError:
+        payload["ok"] = False
+        payload["error"] = "sanitized evidence file missing"
+        payload["content"]["mode"] = "missing"
+        return payload
+    size = path.stat().st_size
+    payload["content"]["bytes"] = size
+    if size > max_bytes:
+        payload["content"]["truncated"] = True
+    data = path.read_bytes()[:max_bytes]
+    try:
+        payload["content"]["text"] = data.decode("utf-8")
+    except UnicodeDecodeError:
+        payload["content"]["mode"] = "binary"
+        payload["content"]["text"] = ""
+    return payload
+
+
+def audit_artifact_records(conn: sqlite3.Connection, *, task_id: str = "", limit: int | str | None = 50) -> list[dict]:
+    sql = """
+        SELECT artifact_id, trace_id, task_id, parent_task_id, employee_id, artifact_type,
+               name, path, mime_type, stage, version, status, is_input, is_output, is_final,
+               summary, checksum, metadata_json, created_at, updated_at
+        FROM artifacts
+    """
+    params: list[object] = []
+    if task_id:
+        sql += " WHERE task_id = ?"
+        params.append(task_id)
+    sql += " ORDER BY created_at DESC LIMIT ?"
+    params.append(clamp_audit_limit(limit))
+    artifacts = rows(conn, sql, tuple(params))
+    for item in artifacts:
+        raw_path = item.pop("path", "")
+        item["display"] = sanitize_evidence_path_for_display(raw_path)
+        item["is_input"] = bool(item.get("is_input"))
+        item["is_output"] = bool(item.get("is_output"))
+        item["is_final"] = bool(item.get("is_final"))
+    return artifacts
+
+
+def audit_handoff_records(conn: sqlite3.Connection, *, task_id: str = "", limit: int | str | None = 50) -> list[dict]:
+    sql = """
+        SELECT handoff_id, trace_id, from_task_id, to_task_id, from_employee_id, to_employee_id,
+               summary, artifacts_json, known_issues, next_steps, required_actions,
+               acceptance_notes, status, created_at, updated_at
+        FROM handoffs
+    """
+    params: list[object] = []
+    if task_id:
+        sql += " WHERE from_task_id = ? OR to_task_id = ?"
+        params.extend([task_id, task_id])
+    sql += " ORDER BY created_at DESC LIMIT ?"
+    params.append(clamp_audit_limit(limit))
+    handoffs = rows(conn, sql, tuple(params))
+    for item in handoffs:
+        item["artifacts"] = parse_json_arg(item.pop("artifacts_json", "") or "[]", [])
+    return handoffs
+
+
+def mermaid_node_id(raw: str) -> str:
+    return re.sub(r"[^A-Za-z0-9_]", "_", raw)
+
+
+def trace_file_flow_graph(conn: sqlite3.Connection, trace_id: str) -> dict:
+    safe_trace_id = str(trace_id or "").strip()
+    artifact_rows = rows(
+        conn,
+        """
+        SELECT artifact_id, task_id, employee_id, name, path, stage, status, version, is_final, summary, created_at
+        FROM artifacts
+        WHERE trace_id = ?
+        ORDER BY created_at ASC, artifact_id ASC
+        """,
+        (safe_trace_id,),
+    )
+    handoff_rows = audit_handoff_records(conn, limit=200)
+    handoff_rows = [item for item in handoff_rows if item.get("trace_id") == safe_trace_id]
+    evidence_rows = rows(
+        conn,
+        """
+        SELECT evidence_id, task_id, attempt_id, employee_id, artifact_id, path_or_url, summary, is_final, created_at
+        FROM evidence
+        WHERE trace_id = ?
+        ORDER BY created_at ASC, evidence_id ASC
+        """,
+        (safe_trace_id,),
+    )
+    nodes: list[dict] = []
+    edges: list[dict] = []
+    task_ids = {str(row.get("task_id") or "") for row in artifact_rows}
+    task_ids.update(str(row.get("task_id") or "") for row in evidence_rows)
+    for handoff in handoff_rows:
+        task_ids.add(str(handoff.get("from_task_id") or ""))
+        task_ids.add(str(handoff.get("to_task_id") or ""))
+    for metadata_row in rows(conn, "SELECT task_id, metadata_json FROM task_metadata ORDER BY task_id ASC"):
+        metadata = parse_json_arg(metadata_row.get("metadata_json", "") or "{}", {})
+        if metadata.get("trace_id") == safe_trace_id:
+            task_ids.add(str(metadata_row.get("task_id") or ""))
+    task_ids = {task_id for task_id in task_ids if task_id}
+    task_rows = []
+    if task_ids:
+        placeholders = ",".join("?" for _ in task_ids)
+        task_rows = rows(
+            conn,
+            f"""
+            SELECT id, source_agent, target_agent, title, status, claimed_by, created_at, updated_at
+            FROM tasks
+            WHERE id IN ({placeholders})
+            ORDER BY created_at ASC, id ASC
+            """,
+            tuple(sorted(task_ids)),
+        )
+
+    def add_node(node_id: str, kind: str, label: str, **extra: object) -> None:
+        if any(node["id"] == node_id for node in nodes):
+            return
+        nodes.append({"id": node_id, "kind": kind, "label": label, **extra})
+
+    for task in task_rows:
+        add_node(
+            f"task:{task['id']}",
+            "task",
+            str(task.get("title") or task["id"]),
+            task_id=task["id"],
+            status=task.get("status", ""),
+            target_agent=task.get("target_agent", ""),
+        )
+    artifact_by_id = {}
+    for artifact in artifact_rows:
+        artifact_id = artifact["artifact_id"]
+        artifact_by_id[artifact_id] = artifact
+        display = sanitize_evidence_path_for_display(artifact.get("path", ""))
+        add_node(
+            f"artifact:{artifact_id}",
+            "artifact",
+            str(artifact.get("name") or artifact_id),
+            artifact_id=artifact_id,
+            task_id=artifact.get("task_id", ""),
+            stage=artifact.get("stage", ""),
+            status=artifact.get("status", ""),
+            version=artifact.get("version", ""),
+            display=display,
+        )
+        if artifact.get("task_id"):
+            edges.append({"from": f"task:{artifact['task_id']}", "to": f"artifact:{artifact_id}", "label": "created artifact"})
+    for handoff in handoff_rows:
+        handoff_id = handoff["handoff_id"]
+        add_node(
+            f"handoff:{handoff_id}",
+            "handoff",
+            str(handoff.get("summary") or handoff_id),
+            handoff_id=handoff_id,
+            status=handoff.get("status", ""),
+            from_task_id=handoff.get("from_task_id", ""),
+            to_task_id=handoff.get("to_task_id", ""),
+        )
+        if handoff.get("from_task_id"):
+            edges.append({"from": f"task:{handoff['from_task_id']}", "to": f"handoff:{handoff_id}", "label": "handoff"})
+        if handoff.get("to_task_id"):
+            edges.append({"from": f"handoff:{handoff_id}", "to": f"task:{handoff['to_task_id']}", "label": "accepted by"})
+        for artifact_id in handoff.get("artifacts", []):
+            if artifact_id in artifact_by_id:
+                edges.append({"from": f"artifact:{artifact_id}", "to": f"handoff:{handoff_id}", "label": "included"})
+    for evidence in evidence_rows:
+        evidence_id = evidence["evidence_id"]
+        display = sanitize_evidence_path_for_display(evidence.get("path_or_url", ""))
+        add_node(
+            f"evidence:{evidence_id}",
+            "evidence",
+            str(evidence.get("summary") or evidence_id),
+            evidence_id=evidence_id,
+            task_id=evidence.get("task_id", ""),
+            artifact_id=evidence.get("artifact_id", ""),
+            is_final=bool(evidence.get("is_final")),
+            display=display,
+        )
+        if evidence.get("artifact_id"):
+            edges.append({"from": f"artifact:{evidence['artifact_id']}", "to": f"evidence:{evidence_id}", "label": "promoted evidence"})
+        elif evidence.get("task_id"):
+            edges.append({"from": f"task:{evidence['task_id']}", "to": f"evidence:{evidence_id}", "label": "submitted evidence"})
+
+    mermaid_lines = ["graph LR"]
+    for node in nodes:
+        label = str(node.get("label") or node["id"]).replace('"', "'")
+        mermaid_lines.append(f'  {mermaid_node_id(node["id"])}["{label}"]')
+    for edge in edges:
+        label = str(edge.get("label") or "").replace('"', "'")
+        mermaid_lines.append(f'  {mermaid_node_id(edge["from"])} -->|{label}| {mermaid_node_id(edge["to"])}')
+    return {
+        "ok": True,
+        "kind": "trace_file_flow",
+        "trace_id": safe_trace_id,
+        "counts": {"tasks": len(task_rows), "artifacts": len(artifact_rows), "handoffs": len(handoff_rows), "evidence": len(evidence_rows), "nodes": len(nodes), "edges": len(edges)},
+        "nodes": nodes,
+        "edges": edges,
+        "mermaid": "\n".join(mermaid_lines),
+    }
+
+
+def audit_failure_records(conn: sqlite3.Connection, *, task_id: str = "", limit: int | str | None = 50) -> list[dict]:
+    safe_limit = clamp_audit_limit(limit)
+    params: list[object] = []
+    task_clause = ""
+    if task_id:
+        task_clause = " AND id = ?"
+        params.append(task_id)
+    failed_tasks = rows(
+        conn,
+        f"""
+        SELECT id, source_agent, target_agent, status, blocker, summary, updated_at
+        FROM tasks
+        WHERE (status IN ('blocked', 'failed', 'stale') OR blocker != '')
+          {task_clause}
+        ORDER BY updated_at DESC
+        LIMIT ?
+        """,
+        tuple([*params, safe_limit]),
+    )
+    params = []
+    attempt_clause = ""
+    if task_id:
+        attempt_clause = " AND task_id = ?"
+        params.append(task_id)
+    failed_attempts = rows(
+        conn,
+        f"""
+        SELECT attempt_id, trace_id, task_id, employee_id, adapter_type, status,
+               error_message, started_at, finished_at
+        FROM execution_attempts
+        WHERE status IN ('failed', 'stale', 'cancelled')
+          {attempt_clause}
+        ORDER BY COALESCE(finished_at, started_at) DESC
+        LIMIT ?
+        """,
+        tuple([*params, safe_limit]),
+    )
+    params = []
+    adapter_clause = ""
+    if task_id:
+        adapter_clause = " AND task_id = ?"
+        params.append(task_id)
+    failed_adapter_runs = rows(
+        conn,
+        f"""
+        SELECT id, trace_id, agent_id, task_id, command, ok, processed, attempt,
+               result_json, created_at, acknowledged_at, acknowledgement_reason
+        FROM adapter_runs
+        WHERE ok = 0
+          {adapter_clause}
+        ORDER BY created_at DESC
+        LIMIT ?
+        """,
+        tuple([*params, safe_limit]),
+    )
+    failures = []
+    for item in failed_tasks:
+        failures.append(
+            {
+                "kind": "task",
+                "id": item["id"],
+                "task_id": item["id"],
+                "agent_id": item.get("target_agent", ""),
+                "status": item.get("status", ""),
+                "message": sanitize_log_text(item.get("blocker") or item.get("summary") or ""),
+                "created_at": item.get("updated_at", ""),
+                "acknowledged": False,
+            }
+        )
+    for item in failed_attempts:
+        failures.append(
+            {
+                "kind": "attempt",
+                "id": item["attempt_id"],
+                "attempt_id": item["attempt_id"],
+                "trace_id": item.get("trace_id", ""),
+                "task_id": item.get("task_id", ""),
+                "agent_id": item.get("employee_id", ""),
+                "status": item.get("status", ""),
+                "message": sanitize_log_text(item.get("error_message") or ""),
+                "created_at": item.get("finished_at") or item.get("started_at") or "",
+                "acknowledged": False,
+            }
+        )
+    for item in failed_adapter_runs:
+        raw_result_json = item.pop("result_json", "{}")
+        try:
+            result = json.loads(raw_result_json or "{}")
+        except json.JSONDecodeError:
+            result = {"raw": raw_result_json}
+        summary = summarize_adapter_result(result)
+        failures.append(
+            {
+                "kind": "adapter_run",
+                "id": item["id"],
+                "run_id": item["id"],
+                "trace_id": item.get("trace_id", ""),
+                "task_id": item.get("task_id", ""),
+                "agent_id": item.get("agent_id", ""),
+                "status": "failed",
+                "message": summary.get("sanitized_log", ""),
+                "created_at": item.get("created_at", ""),
+                "acknowledged": bool(item.get("acknowledged_at")),
+                "acknowledgement_reason": sanitize_log_text(item.get("acknowledgement_reason") or ""),
+            }
+        )
+    failures.sort(key=lambda item: str(item.get("created_at") or ""), reverse=True)
+    return failures[:safe_limit]
+
+
+def cmd_audit_evidence(args: argparse.Namespace) -> int:
+    conn = connect_readonly()
+    try:
+        evidence = audit_evidence_records(conn, task_id=args.task_id, employee_id=args.employee_id, limit=args.limit)
+    finally:
+        conn.close()
+    emit({"ok": True, "source": "companyctl audit evidence", "evidence": evidence})
+    return 0
+
+
+def cmd_audit_artifacts(args: argparse.Namespace) -> int:
+    conn = connect_readonly()
+    try:
+        artifacts = audit_artifact_records(conn, task_id=args.task_id, limit=args.limit)
+    finally:
+        conn.close()
+    emit({"ok": True, "source": "companyctl audit artifacts", "artifacts": artifacts})
+    return 0
+
+
+def cmd_audit_handoffs(args: argparse.Namespace) -> int:
+    conn = connect_readonly()
+    try:
+        handoffs = audit_handoff_records(conn, task_id=args.task_id, limit=args.limit)
+    finally:
+        conn.close()
+    emit({"ok": True, "source": "companyctl audit handoffs", "handoffs": handoffs})
+    return 0
+
+
+def cmd_audit_failures(args: argparse.Namespace) -> int:
+    conn = connect_readonly()
+    try:
+        failures = audit_failure_records(conn, task_id=args.task_id, limit=args.limit)
+    finally:
+        conn.close()
+    emit({"ok": True, "source": "companyctl audit failures", "failures": failures})
+    return 0
+
+
+def cmd_trace_timeline(args: argparse.Namespace) -> int:
+    from . import company_trace
+
+    conn = connect_readonly()
+    try:
+        trace_id = company_trace.resolve_trace_id(conn, args.trace_id, args.task_id)
+        trace = company_trace.load_trace(conn, trace_id)
+    finally:
+        conn.close()
+    emit(company_trace.safe_trace_payload(trace))
+    return 0
+
+
+def cmd_runtime_session_start(args: argparse.Namespace) -> int:
+    conn = connect()
+    try:
+        payload = start_runtime_session_internal(
+            conn,
+            session_id=args.session_id,
+            employee_id=args.employee,
+            adapter_type=args.adapter_type,
+            runtime_type=args.runtime_type,
+            pid=args.pid,
+            session_key=args.session_key,
+            task_id=args.task_id,
+            attempt_id=args.attempt_id,
+        )
+    finally:
+        conn.close()
+    emit({"ok": True, **payload})
+    return 0
+
+
+def cmd_runtime_session_heartbeat(args: argparse.Namespace) -> int:
+    conn = connect()
+    try:
+        payload = heartbeat_runtime_session_internal(conn, session_id=args.session_id, status=args.status, progress=args.progress)
+    finally:
+        conn.close()
+    emit({"ok": True, **payload})
+    return 0
+
+
+def cmd_runtime_session_stop(args: argparse.Namespace) -> int:
+    conn = connect()
+    try:
+        payload = stop_runtime_session_internal(conn, session_id=args.session_id, status=args.status, error=args.error)
+    finally:
+        conn.close()
+    emit({"ok": True, **payload})
+    return 0
+
+
+def cmd_runtime_session_list(args: argparse.Namespace) -> int:
+    conn = connect_readonly()
+    try:
+        sessions = list_runtime_sessions(conn, employee_id=args.employee, task_id=args.task_id, trace_id=args.trace_id, limit=args.limit)
+    finally:
+        conn.close()
+    emit({"ok": True, "runtime_sessions": sessions})
+    return 0
+
+
+def cmd_tool_call_start(args: argparse.Namespace) -> int:
+    conn = connect()
+    try:
+        payload = start_tool_call_internal(
+            conn,
+            tool_call_id=args.tool_call_id,
+            trace_id=args.trace_id,
+            task_id=args.task_id,
+            attempt_id=args.attempt_id,
+            employee_id=args.employee,
+            session_id=args.session_id,
+            tool_name=args.tool_name,
+            tool_type=args.tool_type,
+            input_summary=args.input_summary,
+            risk_level=args.risk_level,
+            approval_id=args.approval_id,
+        )
+    finally:
+        conn.close()
+    emit({"ok": True, **payload})
+    return 0
+
+
+def cmd_tool_call_finish(args: argparse.Namespace) -> int:
+    conn = connect()
+    try:
+        payload = finish_tool_call_internal(conn, tool_call_id=args.tool_call_id, status=args.status, output_summary=args.output_summary, error=args.error)
+    finally:
+        conn.close()
+    emit({"ok": True, **payload})
+    return 0
+
+
+def cmd_tool_call_list(args: argparse.Namespace) -> int:
+    conn = connect_readonly()
+    try:
+        tool_calls = list_tool_calls(conn, employee_id=args.employee, task_id=args.task_id, trace_id=args.trace_id, attempt_id=args.attempt_id, session_id=args.session_id, limit=args.limit)
+    finally:
+        conn.close()
+    emit({"ok": True, "tool_calls": tool_calls})
+    return 0
+
+
+def cmd_budget_record(args: argparse.Namespace) -> int:
+    conn = connect()
+    try:
+        payload = record_budget_event_internal(
+            conn,
+            budget_event_id=args.budget_event_id,
+            budget_account_id=args.budget_account_id,
+            task_id=args.task_id,
+            trace_id=args.trace_id,
+            attempt_id=args.attempt_id,
+            employee_id=args.employee,
+            cost_type=args.cost_type,
+            amount=float(args.amount),
+            currency=args.currency,
+            token_input=args.token_input,
+            token_output=args.token_output,
+            model_name=args.model_name,
+            provider=args.provider,
+            runtime_seconds=args.runtime_seconds,
+            summary=args.summary,
+        )
+    finally:
+        conn.close()
+    emit({"ok": True, **payload})
+    return 0
+
+
+def cmd_budget_summary(args: argparse.Namespace) -> int:
+    conn = connect_readonly()
+    try:
+        summary = budget_summary(conn, task_id=args.task_id, employee_id=args.employee, trace_id=args.trace_id, attempt_id=args.attempt_id)
+        events = list_budget_events(conn, task_id=args.task_id, employee_id=args.employee, trace_id=args.trace_id, attempt_id=args.attempt_id, limit=args.limit)
+    finally:
+        conn.close()
+    emit({"ok": True, "summary": summary, "budget_events": events})
+    return 0
+
+
+TERMINAL_WORKSPACE_STATUSES = {"done", "failed", "cancelled"}
+
+
+def directory_size_bytes(path: Path) -> int:
+    if not path.exists():
+        return 0
+    if path.is_file():
+        return path.stat().st_size
+    total = 0
+    for item in path.rglob("*"):
+        if item.is_file() and not item.is_symlink():
+            total += item.stat().st_size
+    return total
+
+
+def workspace_prune_preview(conn: sqlite3.Connection, *, older_than_days: int = 30, limit: int = 100) -> dict:
+    safe_days = max(1, int(older_than_days or 30))
+    safe_limit = max(1, min(int(limit or 100), 500))
+    cutoff = datetime.now(timezone.utc).astimezone() - timedelta(days=safe_days)
+    candidates = []
+    for item in rows(
+        conn,
+        """
+        SELECT tw.task_id, tw.trace_id, tw.path, tw.manifest_path, tw.updated_at,
+               t.status, t.target_agent, t.title, t.updated_at AS task_updated_at
+        FROM task_workspaces tw
+        JOIN tasks t ON t.id = tw.task_id
+        ORDER BY tw.updated_at ASC
+        """,
+    ):
+        status = str(item.get("status") or "")
+        if status not in TERMINAL_WORKSPACE_STATUSES:
+            continue
+        try:
+            updated = parse_time(str(item.get("updated_at") or item.get("task_updated_at") or ""))
+        except (TypeError, ValueError):
+            continue
+        if updated >= cutoff:
+            continue
+        workspace_path = Path(str(item.get("path") or "")).expanduser().resolve()
+        try:
+            relative = workspace_path.relative_to(TASK_WORKSPACE_ROOT.resolve())
+        except ValueError:
+            continue
+        candidates.append(
+            {
+                "task_id": item["task_id"],
+                "trace_id": item.get("trace_id", ""),
+                "status": status,
+                "target_agent": item.get("target_agent", ""),
+                "title": item.get("title", ""),
+                "updated_at": item.get("updated_at", ""),
+                "age_days": max(0, int((datetime.now(timezone.utc).astimezone() - updated).total_seconds() // 86400)),
+                "workspace": str(relative),
+                "manifest": str(Path(str(item.get("manifest_path") or "")).name),
+                "bytes": directory_size_bytes(workspace_path),
+            }
+        )
+        if len(candidates) >= safe_limit:
+            break
+    return {
+        "ok": True,
+        "dry_run": True,
+        "policy": {
+            "mode": "preview_only",
+            "older_than_days": safe_days,
+            "terminal_statuses": sorted(TERMINAL_WORKSPACE_STATUSES),
+            "root": str(TASK_WORKSPACE_ROOT),
+        },
+        "summary": {
+            "candidates": len(candidates),
+            "bytes_reclaimable": sum(int(item.get("bytes") or 0) for item in candidates),
+        },
+        "candidates": candidates,
+    }
+
+
+def cmd_workspace_prune(args: argparse.Namespace) -> int:
+    if not args.dry_run:
+        emit({"ok": False, "error": "workspace prune is preview-only in this phase; pass --dry-run"})
+        return 2
+    conn = connect_readonly()
+    try:
+        preview = workspace_prune_preview(conn, older_than_days=args.older_than_days, limit=args.limit)
+    finally:
+        conn.close()
+    emit(preview)
+    return 0
+
+
 def is_human_owner_employee(employee: dict) -> bool:
     return employee.get("id") == "owner" or employee.get("role") == "human-owner" or employee.get("runtime") == "human"
 
@@ -2797,15 +5868,17 @@ def cmd_employee_update(args: argparse.Namespace) -> int:
         "status": args.status or current["status"],
         "updated_at": now(),
     }
-    if args.status == "active" and not employee_has_verified_direct_evidence(employee_id):
+    if args.status == "active" and not (
+        employee_has_verified_direct_evidence(employee_id) or employee_has_runtime_evidence(employee_id, conn)
+    ):
         conn.close()
         emit(
             {
                 "ok": False,
-                "error": "employee activation requires 2-4 verified direct communication rounds",
+                "error": "employee activation requires verified direct communication or structured runtime evidence",
                 "employee_id": employee_id,
                 "status": current["status"],
-                "required_command": f"bin/companyctl employee verify-direct --id {employee_id} --from main --rounds 3 --activate",
+                "required_command": f"bin/companyctl employee verify-direct --id {employee_id} --from main --rounds 3 --activate OR bin/companyctl runtime verify-adapters --agents {employee_id} --allow-candidate",
             }
         )
         return 2
@@ -2859,6 +5932,142 @@ def cmd_employee_update(args: argparse.Namespace) -> int:
     return 0
 
 
+def employee_sandbox_profile(employee: dict, permissions: dict, profile_name: str = "default") -> dict:
+    runtime = str(employee.get("runtime") or "")
+    safe_profile = str(employee.get("sandbox_profile") or profile_name or "default")
+    config = sandboxing.load_profiles()
+    runtime_profiles = config.get("profiles", {}).get(runtime, {})
+    configured = safe_profile in runtime_profiles or "default" in runtime_profiles
+    profile = sandboxing.profile_for(runtime, safe_profile, config)
+    requires_approval_for = permissions.get("requires_approval_for", [])
+    if not isinstance(requires_approval_for, list):
+        requires_approval_for = []
+    readonly_paths = profile.get("readonly_paths", [])
+    writable_paths = profile.get("writable_paths", [])
+    return {
+        "runtime": runtime,
+        "profile": safe_profile,
+        "source": "configured" if configured else "runtime_fallback",
+        "isolation": str(profile.get("isolation") or "none"),
+        "network": str(profile.get("network") or "default"),
+        "image": str(profile.get("image") or ""),
+        "workspace_scope": "workspace_only",
+        "readonly_paths_count": len(readonly_paths) if isinstance(readonly_paths, list) else 0,
+        "writable_paths_count": len(writable_paths) if isinstance(writable_paths, list) else 0,
+        "permissions": {
+            "can_submit_tasks": bool(permissions.get("can_submit_tasks", True)),
+            "can_claim_tasks": bool(permissions.get("can_claim_tasks", True)),
+            "can_modify_kernel": bool(permissions.get("can_modify_kernel", False)),
+            "requires_approval_for": [str(item) for item in requires_approval_for],
+        },
+    }
+
+
+def employee_ceo_work_contract(
+    *,
+    employee: dict,
+    current_activity: dict,
+    operational_summary: dict,
+    runtime_sessions: list[dict],
+    tool_calls: list[dict],
+    budget_summary: dict,
+    evidence_records: list[dict],
+) -> dict:
+    latest_session = runtime_sessions[0] if runtime_sessions else {}
+    latest_tool = tool_calls[0] if tool_calls else {}
+    latest_evidence = evidence_records[0] if evidence_records else {}
+    failed_or_blocked_tools = [
+        item
+        for item in tool_calls
+        if str(item.get("status") or "") in {"failed", "blocked", "cancelled"}
+    ]
+    final_evidence = [
+        item
+        for item in evidence_records
+        if bool(item.get("is_final")) or str(item.get("stage") or "") == "final"
+    ]
+    warnings: list[str] = []
+    current_state = str(operational_summary.get("current_state") or current_activity.get("long_task_state") or current_activity.get("task_status") or "idle")
+    if current_state in {"blocked", "failed", "stale", "heartbeat_stale", "progress_stagnant"}:
+        warnings.append(current_state)
+    if failed_or_blocked_tools:
+        warnings.append("failed_or_blocked_tool_calls")
+    if current_activity.get("task_id") and not tool_calls:
+        warnings.append("tool_call_ledger_missing")
+    if current_state in {"completed", "done", "success"} and not final_evidence:
+        warnings.append("completion_without_final_evidence")
+    if str(employee.get("status") or "") == "candidate":
+        warnings.append("candidate_not_active")
+
+    mode = "idle"
+    if current_activity.get("task_id"):
+        mode = "monitor"
+    if warnings:
+        mode = "owner_attention"
+    if current_state in {"blocked", "failed", "stale", "progress_stagnant", "heartbeat_stale"}:
+        mode = "intervene"
+
+    return {
+        "employee_id": employee.get("id", ""),
+        "employee_status": employee.get("status", ""),
+        "runtime": employee.get("runtime", ""),
+        "current_task": {
+            "task_id": current_activity.get("task_id", ""),
+            "title": current_activity.get("task_title", ""),
+            "state": current_state or "idle",
+            "task_status": current_activity.get("task_status", ""),
+            "attempt_id": current_activity.get("attempt_id", ""),
+            "attempt_status": current_activity.get("attempt_status", ""),
+            "trace_id": current_activity.get("trace_id", ""),
+            "session_id": latest_session.get("session_id", ""),
+            "heartbeat_state": current_activity.get("heartbeat_state", ""),
+            "progress_state": current_activity.get("progress_state", ""),
+            "progress_age_seconds": current_activity.get("progress_age_seconds", 0),
+            "latest_progress": current_activity.get("latest_progress", {}),
+        },
+        "runtime_sessions": {
+            "total": len(runtime_sessions),
+            "latest_session_id": latest_session.get("session_id", ""),
+            "latest_status": latest_session.get("status", ""),
+            "latest_runtime_type": latest_session.get("runtime_type", ""),
+        },
+        "tool_calls": {
+            "total": len(tool_calls),
+            "failed_or_blocked": len(failed_or_blocked_tools),
+            "latest_tool_call_id": latest_tool.get("tool_call_id", ""),
+            "latest_tool_name": latest_tool.get("tool_name", ""),
+            "latest_status": latest_tool.get("status", ""),
+        },
+        "budget": {
+            "event_count": budget_summary.get("event_count", 0),
+            "currency": budget_summary.get("currency", "USD"),
+            "total_amount": budget_summary.get("total_amount", 0),
+            "token_input": budget_summary.get("token_input", 0),
+            "token_output": budget_summary.get("token_output", 0),
+            "runtime_seconds": budget_summary.get("runtime_seconds", 0),
+            "limit_status": budget_summary.get("limit_status", "ok"),
+        },
+        "evidence": {
+            "total": len(evidence_records),
+            "final_count": len(final_evidence),
+            "latest_evidence_id": latest_evidence.get("evidence_id", ""),
+            "latest_summary": latest_evidence.get("summary", ""),
+        },
+        "owner_review": {
+            "mode": mode,
+            "warnings": warnings,
+            "next_action": operational_summary.get("owner_next_action", "inspect employee work before assigning more tasks"),
+        },
+        "truth_rules": {
+            "completion_requires_final_evidence": True,
+            "heartbeat_is_completion": False,
+            "chat_reply_is_completion": False,
+            "stdout_is_completion": False,
+            "candidate_can_auto_assign": False,
+        },
+    }
+
+
 def employee_file_bundle(conn: sqlite3.Connection, employee_id: str) -> dict:
     employee_id = resolve_employee_alias(employee_id)
     row = conn.execute("SELECT * FROM employees WHERE id = ?", (employee_id,)).fetchone()
@@ -2879,12 +6088,307 @@ def employee_file_bundle(conn: sqlite3.Connection, employee_id: str) -> dict:
         },
     )
     heartbeat = load_json_or_default(paths["heartbeat"], {})
+    sandbox_profile = employee_sandbox_profile(profile, permissions)
+    task_rows = rows(
+        conn,
+        """
+        SELECT *
+        FROM tasks
+        WHERE source_agent = ? OR target_agent = ? OR claimed_by = ?
+        ORDER BY
+          CASE
+            WHEN LOWER(status) IN ('submitted', 'claimed', 'running', 'waiting_approval', 'blocked', 'stale', 'retrying') THEN 0
+            ELSE 1
+          END ASC,
+          updated_at DESC,
+          created_at DESC
+        LIMIT 50
+        """,
+        (employee_id, employee_id, employee_id),
+    )
+    attempt_rows = [
+        hydrate_execution_attempt(item)
+        for item in rows(
+            conn,
+            "SELECT * FROM execution_attempts WHERE employee_id = ? ORDER BY started_at DESC, rowid DESC LIMIT 50",
+            (employee_id,),
+        )
+    ]
+    runtime_sessions = list_runtime_sessions(conn, employee_id=employee_id, limit=50)
+    tool_calls = list_tool_calls(conn, employee_id=employee_id, limit=100)
+    budget_events = list_budget_events(conn, employee_id=employee_id, limit=100)
+    employee_budget_summary = budget_summary(conn, employee_id=employee_id)
+    evidence_records = [item for item in audit_evidence_records(conn, limit=200) if item.get("employee_id") == employee_id][:50]
+    task_rollups: dict[str, dict] = {}
+    for task in task_rows:
+        task_id = str(task.get("id") or "")
+        task_rollups[task_id] = {
+            "attempt_count": 0,
+            "latest_attempt_id": "",
+            "latest_attempt_status": "",
+            "runtime_session_count": 0,
+            "tool_call_count": 0,
+            "failed_tool_call_count": 0,
+            "latest_tool_call_id": "",
+            "latest_tool_name": "",
+            "latest_tool_status": "",
+            "budget_event_count": 0,
+            "budget_total": 0.0,
+            "budget_currency": "",
+            "token_input": 0,
+            "token_output": 0,
+            "runtime_seconds": 0,
+            "evidence_count": 0,
+            "has_final_evidence": False,
+        }
+    for attempt in attempt_rows:
+        task_id = str(attempt.get("task_id") or "")
+        if task_id in task_rollups:
+            task_rollups[task_id]["attempt_count"] += 1
+            if not task_rollups[task_id]["latest_attempt_id"]:
+                task_rollups[task_id]["latest_attempt_id"] = str(attempt.get("attempt_id") or "")
+                task_rollups[task_id]["latest_attempt_status"] = str(attempt.get("status") or "")
+    for session in runtime_sessions:
+        task_id = str(session.get("task_id") or "")
+        if task_id in task_rollups:
+            task_rollups[task_id]["runtime_session_count"] += 1
+    for tool_call in tool_calls:
+        task_id = str(tool_call.get("task_id") or "")
+        if task_id in task_rollups:
+            task_rollups[task_id]["tool_call_count"] += 1
+            if str(tool_call.get("status") or "") in {"failed", "blocked", "cancelled"}:
+                task_rollups[task_id]["failed_tool_call_count"] += 1
+            if not task_rollups[task_id]["latest_tool_call_id"]:
+                task_rollups[task_id]["latest_tool_call_id"] = str(tool_call.get("tool_call_id") or "")
+                task_rollups[task_id]["latest_tool_name"] = str(tool_call.get("tool_name") or "")
+                task_rollups[task_id]["latest_tool_status"] = str(tool_call.get("status") or "")
+    for budget_event in budget_events:
+        task_id = str(budget_event.get("task_id") or "")
+        if task_id in task_rollups:
+            rollup = task_rollups[task_id]
+            rollup["budget_event_count"] += 1
+            rollup["budget_total"] = round(float(rollup["budget_total"]) + float(budget_event.get("amount") or 0), 10)
+            rollup["budget_currency"] = str(budget_event.get("currency") or rollup["budget_currency"] or "")
+            rollup["token_input"] += int(budget_event.get("token_input") or 0)
+            rollup["token_output"] += int(budget_event.get("token_output") or 0)
+            rollup["runtime_seconds"] += int(budget_event.get("runtime_seconds") or 0)
+    for evidence in evidence_records:
+        task_id = str(evidence.get("task_id") or "")
+        if task_id in task_rollups:
+            task_rollups[task_id]["evidence_count"] += 1
+            if bool(evidence.get("is_final")) or str(evidence.get("stage") or "") == "final":
+                task_rollups[task_id]["has_final_evidence"] = True
+
+    enriched_tasks = [{**dict(item), **task_rollups.get(str(item.get("id") or ""), {})} for item in task_rows]
+    status_counts: dict[str, int] = {}
+    def effective_task_status(task: dict) -> str:
+        attempt_status = str(task.get("latest_attempt_status") or "").lower()
+        if attempt_status in {"starting", "running", "correcting"}:
+            return "running"
+        if attempt_status in {"failed", "blocked", "stale", "cancelled", "success"}:
+            return "completed" if attempt_status == "success" else attempt_status
+        return str(task.get("status") or "unknown").lower() or "unknown"
+
+    for task in enriched_tasks:
+        status = effective_task_status(task)
+        status_counts[status] = status_counts.get(status, 0) + 1
+    def employee_task_owner_actions(task: dict) -> list[dict]:
+        task_id = str(task.get("id") or "")
+        attempt_id = str(task.get("latest_attempt_id") or "")
+        status = effective_task_status(task)
+
+        def action(action_id: str, label: str, api: str = "", *, method: str = "GET", requires_owner_approval: bool = False, dry_run_default: bool = True, dangerous: bool = False) -> dict:
+            return {
+                "id": action_id,
+                "label": label,
+                "api": api,
+                "method": method,
+                "task_id": task_id,
+                "attempt_id": attempt_id,
+                "requires_owner_approval": requires_owner_approval,
+                "dry_run_default": dry_run_default,
+                "dangerous": dangerous,
+            }
+
+        if status in {"submitted", "claimed", "running", "retrying"}:
+            return [
+                action("view_task", "View Task", f"/v1/tasks/{task_id}"),
+                action("view_trace", "View Trace"),
+            ]
+        if status in {"blocked", "stale", "waiting_approval"}:
+            return [
+                action("view_task", "View Task", f"/v1/tasks/{task_id}"),
+                action("request_correction", "Request Correction", f"/v1/tasks/{task_id}/correct", method="POST", requires_owner_approval=True),
+                action("retry", "Retry", f"/v1/tasks/{task_id}/retry", method="POST", requires_owner_approval=True),
+                action("reassign", "Reassign", f"/v1/tasks/{task_id}/reassign", method="POST", requires_owner_approval=True),
+            ]
+        if status in {"failed", "cancelled"}:
+            return [
+                action("view_task", "View Task", f"/v1/tasks/{task_id}"),
+                action("retry", "Retry", f"/v1/tasks/{task_id}/retry", method="POST", requires_owner_approval=True),
+                action("reassign", "Reassign", f"/v1/tasks/{task_id}/reassign", method="POST", requires_owner_approval=True),
+            ]
+        if status in {"completed", "done", "success"} and bool(task.get("has_final_evidence")):
+            return [
+                action("review_evidence", "Review Evidence", f"/v1/tasks/{task_id}"),
+                action("view_trace", "View Trace"),
+            ]
+        if status in {"completed", "done", "success"}:
+            return [
+                action("review_task", "Review Task", f"/v1/tasks/{task_id}"),
+                action("view_trace", "View Trace"),
+            ]
+        return [action("view_task", "View Task", f"/v1/tasks/{task_id}")]
+
+    for task in enriched_tasks:
+        task["owner_actions"] = employee_task_owner_actions(task)
+    attention_counts = {
+        "running_tasks": sum(1 for item in enriched_tasks if effective_task_status(item) in {"submitted", "claimed", "running", "retrying"}),
+        "blocked_tasks": sum(1 for item in enriched_tasks if effective_task_status(item) in {"blocked", "stale", "waiting_approval"}),
+        "failed_tasks": sum(1 for item in enriched_tasks if effective_task_status(item) in {"failed", "cancelled"}),
+        "failed_tool_calls": sum(int(item.get("failed_tool_call_count") or 0) for item in enriched_tasks),
+        "completion_invalid_tasks": sum(
+            1
+            for item in enriched_tasks
+            if effective_task_status(item) in {"completed", "done", "success"} and not bool(item.get("has_final_evidence"))
+        ),
+        "tasks_with_final_evidence": sum(1 for item in enriched_tasks if bool(item.get("has_final_evidence"))),
+    }
+    work_history_summary = (
+        f"{len(enriched_tasks)} tasks · {attention_counts['running_tasks']} running · "
+        f"{attention_counts['blocked_tasks']} blocked · {attention_counts['failed_tasks']} failed · "
+        f"{attention_counts['failed_tool_calls']} failed tool calls · {attention_counts['tasks_with_final_evidence']} final evidence"
+    )
+    current_tasks = [dict(item) for item in enriched_tasks if str(item.get("status", "")).lower() in {"submitted", "claimed", "running", "waiting_approval", "blocked", "stale", "retrying"}][:10]
+    recent_tasks = [dict(item) for item in enriched_tasks[:10]]
+    active_attempt_statuses = {"starting", "running", "correcting"}
+    current_attempt = next((dict(item) for item in attempt_rows if str(item.get("status") or "") in active_attempt_statuses), {})
+    current_task_id = str(current_attempt.get("task_id") or (current_tasks[0].get("id") if current_tasks else "") or "")
+    current_task = next((dict(item) for item in enriched_tasks if str(item.get("id") or "") == current_task_id), {})
+    latest_progress: dict = {}
+    if current_task_id:
+        progress_events = rows(
+            conn,
+            """
+            SELECT *
+            FROM company_events
+            WHERE task_id = ? AND event_type = 'task.progress'
+            ORDER BY created_at DESC
+            LIMIT 20
+            """,
+            (current_task_id,),
+        )
+        for event in progress_events:
+            try:
+                payload = json.loads(event.get("payload_json", "{}") or "{}")
+            except json.JSONDecodeError:
+                payload = {}
+            if not isinstance(payload, dict):
+                payload = {}
+            if current_attempt and str(payload.get("attempt_id") or "") != str(current_attempt.get("attempt_id") or ""):
+                continue
+            latest_progress = {
+                "event_id": event.get("id", ""),
+                "created_at": event.get("created_at", ""),
+                "attempt_id": payload.get("attempt_id", ""),
+                "progress_state": payload.get("progress_state", ""),
+                "progress_layer": payload.get("progress_layer", ""),
+                "progress_label": payload.get("progress_label", ""),
+                "message": payload.get("message", ""),
+                "progress": payload.get("progress"),
+            }
+            break
+    current_trace_id = ""
+    if current_attempt:
+        current_trace_id = str(current_attempt.get("trace_id") or "")
+    elif current_task_id:
+        current_trace_id = trace_id_for_task(conn, current_task_id)
+    current_activity = {
+        "employee_id": employee_id,
+        "task_id": current_task_id,
+        "task_title": str(current_task.get("title") or ""),
+        "task_status": str(current_task.get("status") or ""),
+        "attempt_id": str(current_attempt.get("attempt_id") or ""),
+        "attempt_status": str(current_attempt.get("status") or ""),
+        "trace_id": current_trace_id,
+        "active_task_count": len(current_tasks),
+        "latest_progress": latest_progress,
+    }
+    if current_attempt:
+        current_activity.update(long_task_state_for_attempt(current_attempt))
+    failed_tool_call_count = sum(1 for item in tool_calls if str(item.get("status") or "") in {"failed", "blocked", "cancelled"})
+    final_evidence_count = sum(1 for item in evidence_records if bool(item.get("is_final")) or str(item.get("stage") or "") == "final")
+    owner_next_action = "idle: assign a task when work is available"
+    if current_task_id:
+        owner_next_action = "monitor current task progress, tool calls, budget, and evidence"
+    current_state = str(current_activity.get("long_task_state") or current_activity.get("task_status") or current_activity.get("attempt_status") or "")
+    if current_state in {"blocked", "failed", "stale", "heartbeat_stale", "progress_stagnant"}:
+        owner_next_action = "review blocker, then correct, cancel, retry, or reassign"
+    operational_summary = {
+        "employee_id": employee_id,
+        "current_task_id": current_task_id,
+        "current_task_title": current_activity.get("task_title", ""),
+        "current_attempt_id": str(current_attempt.get("attempt_id") or ""),
+        "current_trace_id": current_trace_id,
+        "current_state": current_state or "idle",
+        "task_count": len(task_rows),
+        "current_task_count": len(current_tasks),
+        "attempt_count": len(attempt_rows),
+        "runtime_session_count": len(runtime_sessions),
+        "tool_call_count": len(tool_calls),
+        "failed_tool_call_count": failed_tool_call_count,
+        "budget_event_count": len(budget_events),
+        "budget_total": employee_budget_summary.get("total_amount", 0),
+        "budget_currency": employee_budget_summary.get("currency", "USD"),
+        "token_input": employee_budget_summary.get("token_input", 0),
+        "token_output": employee_budget_summary.get("token_output", 0),
+        "runtime_seconds": employee_budget_summary.get("runtime_seconds", 0),
+        "evidence_count": len(evidence_records),
+        "final_evidence_count": final_evidence_count,
+        "owner_next_action": owner_next_action,
+    }
+    ceo_work_contract = employee_ceo_work_contract(
+        employee=profile,
+        current_activity=current_activity,
+        operational_summary=operational_summary,
+        runtime_sessions=runtime_sessions,
+        tool_calls=tool_calls,
+        budget_summary=employee_budget_summary,
+        evidence_records=evidence_records,
+    )
     return {
         "employee": profile,
         "profile": file_profile,
         "capabilities": capabilities,
         "permissions": permissions,
+        "sandbox_profile": sandbox_profile,
         "heartbeat": heartbeat,
+        "work_history": {
+            "current_tasks": current_tasks,
+            "recent_tasks": recent_tasks,
+            "tasks": enriched_tasks,
+            "status_counts": status_counts,
+            "attention_counts": attention_counts,
+            "summary": work_history_summary,
+            "counts": {
+                "tasks": len(task_rows),
+                "current_tasks": len(current_tasks),
+                "attempts": len(attempt_rows),
+                "runtime_sessions": len(runtime_sessions),
+                "tool_calls": len(tool_calls),
+                "budget_events": len(budget_events),
+                "evidence_records": len(evidence_records),
+            },
+        },
+        "attempts": attempt_rows,
+        "current_activity": current_activity,
+        "operational_summary": operational_summary,
+        "ceo_work_contract": ceo_work_contract,
+        "runtime_sessions": runtime_sessions,
+        "tool_calls": tool_calls,
+        "budget_events": budget_events,
+        "budget_summary": employee_budget_summary,
+        "evidence_records": evidence_records,
         "files": {key: str(value) for key, value in paths.items()},
     }
 
@@ -3317,6 +6821,167 @@ def cmd_employee_import_openclaw(args: argparse.Namespace) -> int:
         role = "operator" if agent_id == "main" else "business-agent"
         imported.append(upsert_employee(conn, agent_id, name, role, "openclaw", workspace, dry_run=args.dry_run))
     emit({"ok": True, "dry_run": args.dry_run, "count": len(imported), "imported": imported})
+    return 0
+
+
+def load_openclaw_config_agents(config_path: Path) -> dict[str, dict]:
+    if not config_path.exists():
+        return {}
+    obj = json.loads(config_path.read_text(encoding="utf-8"))
+    agents = {}
+    for agent in obj.get("agents", {}).get("list", []):
+        agent_id = str(agent.get("id") or "").strip()
+        if not agent_id:
+            continue
+        agents[agent_id] = dict(agent)
+    return agents
+
+
+def openclaw_employee_sync_plan(config_path: Path) -> list[dict]:
+    config_agents = load_openclaw_config_agents(config_path)
+    inventory = openclaw_runtime_inventory()
+    planned: dict[str, dict] = {}
+    for agent_id, agent in config_agents.items():
+        name = str(agent.get("identityName") or agent.get("name") or agent_id)
+        workspace = str(agent.get("workspace") or openclaw_root())
+        planned[agent_id] = {
+            "id": agent_id,
+            "name": name,
+            "role": "operator" if agent_id == "main" else "business-agent",
+            "runtime": "openclaw",
+            "workspace": workspace,
+            "status": "active",
+            "source": "openclaw_config",
+        }
+    for agent in inventory.get("agent_dirs", {}).values():
+        agent_id = str(agent.get("id") or "").strip()
+        if not agent_id or agent_id in planned:
+            continue
+        planned[agent_id] = {
+            "id": agent_id,
+            "name": agent_id,
+            "role": "runtime-agent",
+            "runtime": "openclaw",
+            "workspace": str(Path(agent.get("path") or openclaw_root())),
+            "status": "candidate",
+            "source": "openclaw_runtime_dir",
+        }
+    return sorted(planned.values(), key=lambda item: (item["status"] != "active", item["id"]))
+
+
+def upsert_employee_with_status(conn: sqlite3.Connection, employee: dict, *, dry_run: bool) -> dict:
+    status = str(employee.get("status") or "candidate")
+    if status not in {"active", "candidate", "archived"}:
+        status = "candidate"
+    profile = {
+        "id": employee["id"],
+        "name": employee["name"],
+        "role": employee["role"],
+        "runtime": employee["runtime"],
+        "workspace": employee["workspace"],
+        "status": status,
+        "source": employee.get("source", ""),
+        "created_at": now(),
+    }
+    files = write_employee_files(employee["id"], profile, dry_run=dry_run)
+    if dry_run:
+        return {"employee": profile, "files": files}
+    ensure_runtime(conn, employee["runtime"])
+    ts = now()
+    conn.execute(
+        """
+        INSERT INTO employees(id, name, role, runtime, workspace, status, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET
+          name = excluded.name,
+          role = excluded.role,
+          runtime = excluded.runtime,
+          workspace = excluded.workspace,
+          status = CASE
+            WHEN excluded.status = 'active' THEN 'active'
+            WHEN employees.status = 'active' THEN employees.status
+            ELSE excluded.status
+          END,
+          updated_at = excluded.updated_at
+        """,
+        (employee["id"], employee["name"], employee["role"], employee["runtime"], employee["workspace"], status, ts, ts),
+    )
+    communication = sync_employee_name_alias(employee["id"], employee["name"], dry_run=False)
+    audit(conn, "companyctl", "employee.openclaw_sync", employee["id"], {**profile, "communication": communication})
+    return {"employee": profile, "files": files, "communication": communication}
+
+
+def cmd_employee_sync_openclaw_runtime(args: argparse.Namespace) -> int:
+    config_path = Path(args.config)
+    plan = openclaw_employee_sync_plan(config_path)
+    conn = connect()
+    synced = []
+    skipped = []
+    try:
+        existing = {row["id"]: dict(row) for row in conn.execute("SELECT * FROM employees")}
+        for employee in plan:
+            if args.active_only and employee["status"] != "active":
+                continue
+            current = existing.get(employee["id"])
+            if current and current.get("runtime") != "openclaw" and employee.get("source") == "openclaw_runtime_dir":
+                skipped.append({"id": employee["id"], "reason": f"existing_runtime_{current.get('runtime')}"})
+                continue
+            synced.append(upsert_employee_with_status(conn, employee, dry_run=args.dry_run))
+        if not args.dry_run:
+            conn.commit()
+    finally:
+        conn.close()
+    counts = {
+        "active": sum(1 for item in plan if item["status"] == "active"),
+        "candidate": sum(1 for item in plan if item["status"] == "candidate"),
+        "synced": len(synced),
+        "skipped": len(skipped),
+    }
+    emit({"ok": True, "dry_run": args.dry_run, "config": str(config_path), "counts": counts, "employees": [item["employee"] for item in synced], "skipped": skipped})
+    return 0
+
+
+def sync_openclaw_heartbeats(conn: sqlite3.Connection, *, dry_run: bool) -> dict:
+    inventory = openclaw_runtime_inventory(conn)
+    agent_dirs = inventory.get("agent_dirs", {})
+    spools = inventory.get("telegram_spools", {})
+    employees = rows(conn, "SELECT id, status FROM employees WHERE runtime = 'openclaw' ORDER BY id")
+    synced = []
+    skipped = []
+    for employee in employees:
+        employee_id = employee["id"]
+        if employee["status"] != "active":
+            skipped.append({"id": employee_id, "reason": f"status_{employee['status']}"})
+            continue
+        agent = agent_dirs.get(employee_id) or agent_dirs.get(employee_id.replace("_", "-"))
+        spool = spools.get(employee_id) or spools.get(employee_id.replace("-", "_"))
+        session_count = int((agent or {}).get("session_count", 0) or 0)
+        spool_exists = bool((spool or {}).get("exists"))
+        if not agent and not spool:
+            skipped.append({"id": employee_id, "reason": "openclaw_runtime_not_found"})
+            continue
+        metadata = {
+            "source": "openclaw-runtime-sync",
+            "runtime_agent_found": bool(agent),
+            "telegram_spool_found": spool_exists,
+            "session_count": session_count,
+            "spool_pending": int((spool or {}).get("pending", 0) or 0),
+            "spool_processing": int((spool or {}).get("processing", 0) or 0),
+            "note": "Read-only heartbeat derived from OpenClaw runtime inventory; it does not prove task completion.",
+        }
+        if not dry_run:
+            heartbeat_internal(conn, employee_id, metadata)
+        synced.append({"id": employee_id, **metadata})
+    return {"ok": True, "dry_run": dry_run, "synced": synced, "skipped": skipped, "counts": {"synced": len(synced), "skipped": len(skipped)}}
+
+
+def cmd_employee_sync_openclaw_heartbeats(args: argparse.Namespace) -> int:
+    conn = connect()
+    try:
+        result = sync_openclaw_heartbeats(conn, dry_run=args.dry_run)
+    finally:
+        conn.close()
+    emit(result)
     return 0
 
 
@@ -3784,7 +7449,12 @@ def detect_route_approval_action(title: str, description: str, explicit_action: 
     actions = load_policy_config().get("route_approval", {}).get("actions", DEFAULT_ROUTE_APPROVAL_ACTIONS)
     for action, keywords in actions.items():
         for keyword in keywords:
-            if keyword.lower() in text:
+            normalized = keyword.lower().strip()
+            if not normalized:
+                continue
+            if normalized.isascii() and re.search(rf"(?<![a-z0-9]){re.escape(normalized)}(?![a-z0-9])", text):
+                return action
+            if not normalized.isascii() and normalized in text:
                 return action
     return ""
 
@@ -3861,13 +7531,14 @@ def submit_task_internal(
     priority: str = "P2",
     task_id: str = "",
     metadata: dict | None = None,
+    allow_candidate: bool = False,
 ) -> dict:
     source = resolve_employee_alias(source)
     target = resolve_employee_alias(target)
     require_employee(conn, source)
     require_employee(conn, target)
     inactive = require_active_employee(conn, target, "task.submit")
-    if inactive:
+    if inactive and not allow_candidate:
         raise SystemExit(json.dumps(inactive, ensure_ascii=False))
     policy = require_communication_allowed(source, target, "task.submit")
     tid = task_id or f"task-{datetime.now().strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:6]}"
@@ -3923,7 +7594,18 @@ def complete_task_internal(
     if task["status"] not in completable_statuses:
         raise ValueError(f"task is not completable in status {task['status']}")
     auto_promote_workspace_evidence(conn, task_id=task_id, agent=agent, evidence_path=evidence, summary=summary)
-    if has_v3_file_flow(conn, task_id) and not final_evidence_for_path(conn, task_id, evidence):
+    completed_attempt = conn.execute(
+        """
+        SELECT * FROM execution_attempts
+        WHERE task_id = ?
+          AND employee_id = ?
+          AND status IN ('starting', 'running', 'correcting')
+        ORDER BY started_at DESC
+        LIMIT 1
+        """,
+        (task_id, agent),
+    ).fetchone()
+    if (completed_attempt or has_v3_file_flow(conn, task_id)) and not final_evidence_for_path(conn, task_id, evidence):
         raise ValueError("task done requires promoted final evidence for v3 file-flow tasks")
     cur = conn.execute(
         "UPDATE tasks SET status = 'completed', claimed_by = CASE WHEN claimed_by = '' THEN ? ELSE claimed_by END, summary = ?, evidence_path = ?, blocker = '', updated_at = ? WHERE id = ? AND (target_agent = ? OR claimed_by = ?)",
@@ -3931,12 +7613,23 @@ def complete_task_internal(
     )
     if cur.rowcount == 0:
         raise SystemExit(f"task not found or not owned by agent: {task_id}")
+    completed_attempt_id = ""
+    if completed_attempt:
+        completed_attempt_id = completed_attempt["attempt_id"]
+        conn.execute(
+            "UPDATE execution_attempts SET status = 'success', finished_at = ?, error_message = '' WHERE attempt_id = ?",
+            (now(), completed_attempt_id),
+        )
+        conn.execute(
+            "UPDATE evidence SET attempt_id = ? WHERE task_id = ? AND is_final = 1 AND attempt_id = ''",
+            (completed_attempt_id, task_id),
+        )
     conn.execute("DELETE FROM locks WHERE resource_key = ?", (f"task:{task_id}",))
     synced_plan_items = sync_project_plan_for_task(conn, task_id=task_id, task_status="completed", actor=agent)
     conn.commit()
-    event = record_event(conn, "task.done", agent, task_id=task_id, payload={"summary": summary, "evidence": evidence})
-    audit(conn, agent, "task.done", task_id, {"summary": summary, "evidence": evidence, "event_id": event["id"]})
-    return {"task_id": task_id, "status": "completed", "evidence": evidence, "event_id": event["id"], "synced_plan_items": synced_plan_items}
+    event = record_event(conn, "task.done", agent, task_id=task_id, payload={"summary": summary, "evidence": evidence, "attempt_id": completed_attempt_id})
+    audit(conn, agent, "task.done", task_id, {"summary": summary, "evidence": evidence, "attempt_id": completed_attempt_id, "event_id": event["id"]})
+    return {"task_id": task_id, "status": "completed", "evidence": evidence, "attempt_id": completed_attempt_id, "event_id": event["id"], "synced_plan_items": synced_plan_items}
 
 
 def write_task_inbox_file(task: dict) -> str:
@@ -4372,7 +8065,14 @@ def cmd_message_direct(args: argparse.Namespace) -> int:
         "receipt_file": receipt_record["file"] if receipt_record else "",
         "stderr": cp.stderr[-2000:],
     }
-    if cp.returncode != 0 or delivery_failed:
+    adapter_blocked = bool(adapter_payload.get("blocked_execution")) and not delivery_failed
+    if adapter_blocked:
+        result["adapter_blocked"] = {
+            "blocked_execution": True,
+            "blocker": str(adapter_payload.get("blocker") or adapter_payload.get("error") or "adapter reported blocked execution"),
+            "status_delivery": adapter_payload.get("status_delivery", {}),
+        }
+    elif cp.returncode != 0 or delivery_failed:
         reason = str(delivery_status.get("errorMessage") or cp.stderr[-1000:] or cp.stdout[-1000:] or f"direct command exit_code={cp.returncode}")
         result["employee_unavailable"] = mark_employee_unavailable(conn, target, reason)
         conn.commit()
@@ -4881,6 +8581,35 @@ def task_conversation_ids(metadata: dict) -> list[str]:
     if isinstance(values, str):
         values = [values] if values else []
     return [str(value) for value in values if str(value)]
+
+
+def task_conversation_summary(conn: sqlite3.Connection, metadata: dict) -> dict:
+    items = []
+    total_messages = 0
+    for conversation_id in task_conversation_ids(metadata):
+        conv = conn.execute("SELECT * FROM conversations WHERE id = ?", (conversation_id,)).fetchone()
+        if not conv:
+            continue
+        try:
+            participants = json.loads(conv["participants_json"] or "[]")
+        except json.JSONDecodeError:
+            participants = []
+        message_rows = rows(conn, "SELECT * FROM conversation_messages WHERE conversation_id = ? ORDER BY created_at ASC", (conversation_id,))
+        total_messages += len(message_rows)
+        latest = message_rows[-1] if message_rows else {}
+        items.append(
+            {
+                "conversation_id": conversation_id,
+                "title": conv["title"],
+                "status": conv["status"],
+                "participants": participants,
+                "message_count": len(message_rows),
+                "latest_message": latest.get("body", "") if latest else "",
+                "latest_source_agent": latest.get("source_agent", "") if latest else "",
+                "latest_at": latest.get("created_at", "") if latest else conv["updated_at"],
+            }
+        )
+    return {"counts": {"conversations": len(items), "messages": total_messages}, "items": items}
 
 
 def cmd_task_discuss(args: argparse.Namespace) -> int:
@@ -5409,7 +9138,107 @@ def approval_detail(raw: str) -> dict:
 def normalize_approval(row: sqlite3.Row | dict) -> dict:
     obj = dict(row)
     obj["detail"] = approval_detail(obj.pop("reason", ""))
+    detail = obj["detail"] if isinstance(obj.get("detail"), dict) else {}
+    if detail.get("evidence"):
+        detail["evidence_display"] = sanitize_evidence_path_for_display(str(detail.get("evidence") or ""))
+        detail["evidence"] = sanitize_log_text(detail.get("evidence", ""))
+    if detail.get("request_reason"):
+        detail["request_reason"] = sanitize_log_text(detail.get("request_reason", ""))
+    obj["safety"] = {
+        "dry_run": bool(detail.get("dry_run", False)),
+        "external_send_executed": bool(detail.get("external_send_executed", False)),
+        "resolution_mode": str(detail.get("resolution_mode") or ("mock" if detail.get("mock_resolve") else "")),
+        "requires_owner_approval": True,
+        "summary": str(detail.get("safety_note") or ("no external delivery executed" if detail.get("mock_resolve") else "owner approval required before real external delivery")),
+    }
     return obj
+
+
+HIGH_RISK_APPROVAL_ACTIONS = {
+    "external_send",
+    "telegram_send",
+    "openclaw_send",
+    "rule_change",
+    "delete_file",
+    "sensitive_file",
+    "publish",
+    "payment",
+    "compensation",
+    "salary",
+    "penalty",
+    "budget_overrun",
+    "budget.overrun",
+}
+
+
+def approval_is_high_risk(approval: dict) -> bool:
+    action = str(approval.get("action") or "")
+    detail = approval.get("detail", {}) if isinstance(approval.get("detail", {}), dict) else {}
+    risk = str(detail.get("risk") or "").upper()
+    return action in HIGH_RISK_APPROVAL_ACTIONS or risk in {"P0", "P1"}
+
+
+def approval_control_summary(approvals: list[dict]) -> dict:
+    by_status: dict[str, int] = {}
+    by_action: dict[str, int] = {}
+    high_risk_actions: set[str] = set()
+    pending_high_risk_actions: set[str] = set()
+    real_execution_blockers: dict[str, int] = {}
+    dry_run_resolved = 0
+    external_send_executed = 0
+    for approval in approvals:
+        status = str(approval.get("status") or "")
+        action = str(approval.get("action") or "")
+        safety = approval.get("safety", {}) if isinstance(approval.get("safety", {}), dict) else {}
+        by_status[status] = by_status.get(status, 0) + 1
+        by_action[action] = by_action.get(action, 0) + 1
+        if approval_is_high_risk(approval):
+            high_risk_actions.add(action)
+            if status == "pending":
+                pending_high_risk_actions.add(action)
+        if safety.get("dry_run"):
+            dry_run_resolved += 1
+        if safety.get("external_send_executed"):
+            external_send_executed += 1
+        if (
+            status in {"pending", "requested", "waiting_approval"}
+            and action in {"external_send", "telegram_send", "openclaw_send"}
+            and not safety.get("external_send_executed")
+        ):
+            real_execution_blockers["external_send"] = real_execution_blockers.get("external_send", 0) + 1
+        if action in {"budget_overrun", "budget.overrun"} and status == "pending":
+            real_execution_blockers["budget_overrun"] = real_execution_blockers.get("budget_overrun", 0) + 1
+    pending_owner_action_count = sum(
+        count for status, count in by_status.items() if status in {"pending", "requested", "waiting_approval"}
+    )
+    blocked_real_execution_count = sum(real_execution_blockers.values())
+    queue_health = "owner_action_required" if pending_owner_action_count or blocked_real_execution_count else "clear"
+    if queue_health == "owner_action_required":
+        blocker_rows = ", ".join(f"{kind}={count}" for kind, count in sorted(real_execution_blockers.items())) or "no real execution blockers"
+        pending_rows = ", ".join(sorted(pending_high_risk_actions)) or "no pending high-risk actions"
+        owner_next_action = f"review pending high-risk approvals ({pending_rows}); blocked real execution: {blocker_rows}"
+    else:
+        owner_next_action = "no pending owner approval actions; monitor queue"
+    return {
+        "total": len(approvals),
+        "by_status": by_status,
+        "by_action": by_action,
+        "high_risk_actions": sorted(high_risk_actions),
+        "pending_high_risk_actions": sorted(pending_high_risk_actions),
+        "pending_owner_action_count": pending_owner_action_count,
+        "blocked_real_execution_count": blocked_real_execution_count,
+        "queue_health": queue_health,
+        "owner_next_action": owner_next_action,
+        "default_policy": "dry_run_until_owner_approval",
+        "dry_run_resolved": dry_run_resolved,
+        "external_send_executed": external_send_executed,
+        "real_external_send_requires_owner_approval": True,
+        "real_execution_blockers": real_execution_blockers,
+        "summary": (
+            "Pending high-risk approvals block real execution; "
+            "historical dry-run/mock-resolved approvals are audit history."
+        ),
+    }
 
 
 def write_approval_state(approval: dict) -> str:
@@ -5638,13 +9467,31 @@ def create_approval_internal(
     row = conn.execute("SELECT * FROM approvals WHERE id = ?", (aid,)).fetchone()
     approval = normalize_approval(row)
     path = write_approval_state(approval)
+    approval_event = record_event(
+        conn,
+        "approval.requested",
+        source,
+        task_id=str((metadata or {}).get("task_id", "") or ""),
+        trace_id=str((metadata or {}).get("trace_id", "") or ""),
+        payload={
+            "approval_id": aid,
+            "action": action,
+            "target": detail["target"],
+            "risk": risk,
+            "metadata": metadata or {},
+        },
+    )
+    approval_event_processed_at = now()
+    conn.execute("UPDATE company_events SET processed_at = ? WHERE id = ?", (approval_event_processed_at, approval_event["id"]))
+    conn.commit()
+    approval_event["processed_at"] = approval_event_processed_at
     audit(conn, source, "approval.request", aid, approval)
     notification = notification_send_result(
         kind="approval",
         subject=f"Company Kernel approval required: {aid}",
         message=f"source={source}\naction={action}\nrisk={risk or '-'}\ntarget={detail['target'] or '-'}\nreason={reason}\nevidence={evidence or '-'}",
     )
-    return {"approval": approval, "file": path, "notification": notification}
+    return {"approval": approval, "file": path, "notification": notification, "event": approval_event}
 
 
 def cmd_approval_list(args: argparse.Namespace) -> int:
@@ -5663,18 +9510,85 @@ def cmd_approval_list(args: argparse.Namespace) -> int:
     where = "WHERE " + " AND ".join(clauses) if clauses else ""
     params.append(args.limit)
     approvals = [normalize_approval(r) for r in conn.execute(f"SELECT * FROM approvals {where} ORDER BY updated_at DESC LIMIT ?", tuple(params)).fetchall()]
-    emit({"ok": True, "approvals": approvals})
+    emit({"ok": True, "approvals": approvals, "approval_control_summary": approval_control_summary(approvals)})
     return 0
+
+
+def approval_detail_bundle(conn: sqlite3.Connection, approval_id: str) -> dict:
+    safe_id = str(approval_id or "").strip()
+    if not safe_id or "/" in safe_id:
+        return {"ok": False, "error": "invalid approval_id", "approval_id": safe_id}
+    row = conn.execute("SELECT * FROM approvals WHERE id = ?", (safe_id,)).fetchone()
+    if not row:
+        return {"ok": False, "error": "approval not found", "approval_id": safe_id}
+    approval = normalize_approval(row)
+    detail = approval.get("detail", {}) if isinstance(approval.get("detail"), dict) else {}
+    metadata = detail.get("metadata", {}) if isinstance(detail.get("metadata"), dict) else {}
+    task_id = str(metadata.get("task_id") or "")
+    trace_id = str(metadata.get("trace_id") or "")
+    task_row = conn.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone() if task_id else None
+    task_payload = dict(task_row) if task_row else {}
+    if task_payload:
+        raw_evidence_path = task_payload.pop("evidence_path", "")
+        task_payload["evidence"] = sanitize_evidence_path_for_display(raw_evidence_path)
+        if not trace_id:
+            trace_id = trace_id_for_task(conn, task_id, "")
+    event_rows = rows(
+        conn,
+        """
+        SELECT id, trace_id, event_type, source_agent, task_id, payload_json, created_at, processed_at
+        FROM company_events
+        WHERE payload_json LIKE ? OR task_id = ?
+        ORDER BY created_at ASC
+        LIMIT 100
+        """,
+        (f"%{safe_id}%", task_id),
+    )
+    sanitized_events = []
+    for event in event_rows:
+        raw_payload = event.get("payload_json", "")
+        try:
+            payload = json.loads(raw_payload or "{}")
+        except json.JSONDecodeError:
+            payload = {"raw": sanitize_log_text(raw_payload)}
+        clean_payload = sanitize_json_like(payload)
+        sanitized_events.append(
+            {
+                **event,
+                "payload": clean_payload,
+                "payload_json": json.dumps(clean_payload, ensure_ascii=False, sort_keys=True),
+            }
+        )
+    audit_rows = rows(conn, "SELECT id, actor, action, target, detail_json, created_at FROM audit_logs WHERE target = ? ORDER BY created_at ASC LIMIT 100", (safe_id,))
+    sanitized_audit = []
+    for item in audit_rows:
+        raw_detail = item.pop("detail_json", "{}")
+        try:
+            parsed = json.loads(raw_detail or "{}")
+        except json.JSONDecodeError:
+            parsed = {"raw": sanitize_log_text(raw_detail)}
+        sanitized_audit.append({**item, "detail": sanitize_json_like(parsed)})
+    return {
+        "ok": True,
+        "source": "/v1/approvals/{approval_id}",
+        "approval": approval,
+        "task": task_payload,
+        "events": sanitized_events,
+        "audit_logs": sanitized_audit,
+        "approval_control_summary": approval_control_summary([approval]),
+        "evidence_records": task_evidence_records(conn, task_id) if task_id else [],
+        "budget_summary": budget_summary(conn, task_id=task_id, trace_id=trace_id),
+        "redaction_policy": sanitized_log_policy(),
+    }
 
 
 def cmd_approval_show(args: argparse.Namespace) -> int:
     conn = connect()
-    row = conn.execute("SELECT * FROM approvals WHERE id = ?", (args.approval_id,)).fetchone()
-    if not row:
-        emit({"ok": False, "error": "approval not found", "approval_id": args.approval_id})
+    payload = approval_detail_bundle(conn, args.approval_id)
+    if not payload.get("ok"):
+        emit(payload)
         return 1
-    approval = normalize_approval(row)
-    emit({"ok": True, "approval": approval})
+    emit(payload)
     return 0
 
 
@@ -5696,6 +9610,16 @@ def decide_approval(args: argparse.Namespace, status: str) -> int:
             "decided_at": now(),
         }
     )
+    if status == "resolved":
+        detail.update(
+            {
+                "mock_resolve": True,
+                "dry_run": True,
+                "external_send_executed": False,
+                "resolution_mode": "mock",
+                "safety_note": "Mock resolve only records an owner decision; it never triggers Telegram/OpenClaw/external_send delivery.",
+            }
+        )
     conn.execute(
         "UPDATE approvals SET status = ?, reason = ?, updated_at = ? WHERE id = ?",
         (status, json.dumps(detail, ensure_ascii=False), now(), args.approval_id),
@@ -5704,7 +9628,21 @@ def decide_approval(args: argparse.Namespace, status: str) -> int:
     approval = normalize_approval(conn.execute("SELECT * FROM approvals WHERE id = ?", (args.approval_id,)).fetchone())
     path = write_approval_state(approval)
     audit(conn, actor, f"approval.{status}", args.approval_id, approval)
-    emit({"ok": True, "approval": approval, "file": path})
+    event_type = f"approval.{status}"
+    event = record_event(
+        conn,
+        event_type,
+        actor,
+        task_id=str(detail.get("metadata", {}).get("task_id", "") or ""),
+        payload={
+            "approval_id": args.approval_id,
+            "status": status,
+            "reason": args.reason,
+            "dry_run": bool(detail.get("dry_run", False)),
+            "external_send_executed": bool(detail.get("external_send_executed", False)),
+        },
+    )
+    emit({"ok": True, "approval": approval, "file": path, "event": event})
     return 0
 
 
@@ -5716,6 +9654,13 @@ def cmd_approval_deny(args: argparse.Namespace) -> int:
     return decide_approval(args, "denied")
 
 
+def cmd_approval_resolve(args: argparse.Namespace) -> int:
+    if not args.mock:
+        emit({"ok": False, "error": "resolve requires --mock; real external execution must use explicit approve/deny plus a delivery worker"})
+        return 2
+    return decide_approval(args, "resolved")
+
+
 def cmd_task_list(args: argparse.Namespace) -> int:
     conn = connect()
     where = ""
@@ -5724,7 +9669,15 @@ def cmd_task_list(args: argparse.Namespace) -> int:
         agent = resolve_employee_alias(args.agent)
         where = "WHERE target_agent = ? OR source_agent = ? OR claimed_by = ?"
         params = (agent, agent, agent)
-    emit({"ok": True, "tasks": rows(conn, f"SELECT * FROM tasks {where} ORDER BY created_at DESC", params)})
+    tasks = rows(conn, f"SELECT * FROM tasks {where} ORDER BY created_at DESC", params)
+    generated_at = now()
+    for task in tasks:
+        attempt = latest_attempt_for_task(conn, task["id"])
+        hydrated_attempt = hydrate_execution_attempt(attempt) if attempt else {}
+        task["current_attempt"] = hydrated_attempt
+        if attempt:
+            task.update(long_task_state_for_attempt(hydrated_attempt, generated_at=generated_at))
+    emit({"ok": True, "tasks": tasks})
     return 0
 
 
@@ -5737,6 +9690,73 @@ def task_approvals(conn: sqlite3.Connection, task_id: str) -> list[dict]:
         if metadata.get("task_id") == task_id or task_id in json.dumps(detail, ensure_ascii=False):
             matched.append(approval)
     return matched
+
+
+def task_control_context_bundle(conn: sqlite3.Connection, task_id: str) -> dict:
+    safe_task_id = str(task_id or "").strip()
+    if not safe_task_id or "/" in safe_task_id:
+        return {"ok": False, "error": "invalid task_id", "task_id": safe_task_id}
+    task = conn.execute("SELECT * FROM tasks WHERE id = ?", (safe_task_id,)).fetchone()
+    if not task:
+        return {"ok": False, "error": "task not found", "task_id": safe_task_id}
+    task_payload = dict(task)
+    raw_evidence_path = task_payload.pop("evidence_path", "")
+    task_payload["evidence"] = sanitize_evidence_path_for_display(raw_evidence_path)
+    event_rows = rows(conn, "SELECT id, trace_id, event_type, source_agent, task_id, payload_json, created_at, processed_at FROM company_events WHERE task_id = ? ORDER BY created_at ASC LIMIT 200", (safe_task_id,))
+    sanitized_events = []
+    for event in event_rows:
+        raw_payload = event.get("payload_json", "")
+        try:
+            payload = json.loads(raw_payload or "{}")
+        except json.JSONDecodeError:
+            payload = {"raw": sanitize_log_text(raw_payload)}
+        clean_payload = sanitize_json_like(payload)
+        sanitized_events.append({**event, "payload": clean_payload, "payload_json": json.dumps(clean_payload, ensure_ascii=False, sort_keys=True)})
+    audit_rows = rows(conn, "SELECT id, actor, action, target, detail_json, created_at FROM audit_logs WHERE target = ? ORDER BY created_at ASC LIMIT 200", (safe_task_id,))
+    sanitized_audit = []
+    for item in audit_rows:
+        raw_detail = item.pop("detail_json", "{}")
+        try:
+            parsed = json.loads(raw_detail or "{}")
+        except json.JSONDecodeError:
+            parsed = {"raw": sanitize_log_text(raw_detail)}
+        sanitized_audit.append({**item, "detail": sanitize_json_like(parsed)})
+    attempts = task_attempts(conn, safe_task_id)
+    trace_id = trace_id_for_task(conn, safe_task_id, "")
+    evidence_records = task_evidence_records(conn, safe_task_id)
+    completion_contract = task_completion_contract(task_payload, evidence_records)
+    runtime_sessions = list_runtime_sessions(conn, task_id=safe_task_id, limit=50)
+    tool_calls = list_tool_calls(conn, task_id=safe_task_id, limit=100)
+    budget_events = list_budget_events(conn, task_id=safe_task_id, trace_id=trace_id, limit=100)
+    approvals = task_approvals(conn, safe_task_id)
+    return {
+        "ok": True,
+        "source": "task_control_context",
+        "task": task_payload,
+        "attempts": attempts,
+        "attempt_history": task_attempt_history(attempts),
+        "runtime_sessions": runtime_sessions,
+        "tool_calls": tool_calls,
+        "events": sanitized_events,
+        "audit_logs": sanitized_audit,
+        "budget_summary": budget_summary(conn, task_id=safe_task_id, trace_id=trace_id),
+        "budget_events": budget_events,
+        "evidence_records": evidence_records,
+        "completion_contract": completion_contract,
+        "ceo_acceptance_contract": task_ceo_acceptance_contract(
+            task=task_payload,
+            attempts=attempts,
+            runtime_sessions=runtime_sessions,
+            tool_calls=tool_calls,
+            budget_events=budget_events,
+            evidence_records=evidence_records,
+            completion_contract=completion_contract,
+            approvals=approvals,
+            events=sanitized_events,
+        ),
+        "approvals": approvals,
+        "redaction_policy": sanitized_log_policy(),
+    }
 
 
 def cmd_task_show(args: argparse.Namespace) -> int:
@@ -5785,24 +9805,108 @@ def cmd_task_show(args: argparse.Namespace) -> int:
     lock = conn.execute("SELECT * FROM locks WHERE resource_key = ?", (f"task:{task_id}",)).fetchone()
     task_obj = dict(task)
     evidence_path = task_obj.get("evidence_path", "")
-    evidence = {
-        "path": evidence_path,
-        "exists": bool(evidence_path and Path(evidence_path).exists()),
-    }
+    evidence = sanitize_evidence_path_for_display(evidence_path)
     audit_rows = rows(conn, "SELECT * FROM audit_logs WHERE target = ? ORDER BY created_at ASC", (task_id,))
+    attempts = task_attempts(conn, task_id)
+    attempt_history = task_attempt_history(attempts)
+    evidence_records = task_evidence_records(conn, task_id)
+    completion_contract = task_completion_contract(task_obj, evidence_records)
+    runtime_sessions = list_runtime_sessions(conn, task_id=task_id, limit=50)
+    tool_calls = list_tool_calls(conn, task_id=task_id, limit=100)
+    budget_events = list_budget_events(conn, task_id=task_id, limit=100)
+    task_budget_summary = budget_summary(conn, task_id=task_id)
+    control_plane_timeline = task_control_plane_timeline(
+        events=events,
+        attempts=attempts,
+        runtime_sessions=runtime_sessions,
+        tool_calls=tool_calls,
+        budget_events=budget_events,
+        evidence_records=evidence_records,
+    )
+    projects = task_project_costs(conn, task_id)
+    sanitized_logs = []
+    log_policy = sanitized_log_policy()
+    for run in rows(
+        conn,
+        """
+        SELECT id, trace_id, agent_id, task_id, command, ok, processed, attempt, result_json, created_at
+        FROM adapter_runs
+        WHERE task_id = ?
+        ORDER BY created_at DESC
+        LIMIT 20
+        """,
+        (task_id,),
+    ):
+        raw_result_json = run.pop("result_json", "{}")
+        try:
+            result = json.loads(raw_result_json or "{}")
+        except json.JSONDecodeError:
+            result = {"raw": raw_result_json}
+        summary = summarize_adapter_result(result)
+        sanitized_logs.append(
+            {
+                "run_id": run["id"],
+                "trace_id": run.get("trace_id", ""),
+                "agent_id": run.get("agent_id", ""),
+                "task_id": run.get("task_id", ""),
+                "command": run.get("command", ""),
+                "ok": bool(run.get("ok")),
+                "processed": bool(run.get("processed")),
+                "attempt": run.get("attempt", 0),
+                "created_at": run.get("created_at", ""),
+                "sanitized_log": summary.get("sanitized_log", ""),
+                "progress_file": summary.get("progress_file", ""),
+                "raw_available": False,
+                "log_policy": log_policy,
+            }
+        )
+    supervisor_state, correction_summary = task_supervisor_state(attempts)
+    approvals = task_approvals(conn, task_id)
+    ceo_acceptance_contract = task_ceo_acceptance_contract(
+        task=task_obj,
+        attempts=attempts,
+        runtime_sessions=runtime_sessions,
+        tool_calls=tool_calls,
+        budget_events=budget_events,
+        evidence_records=evidence_records,
+        completion_contract=completion_contract,
+        approvals=approvals,
+        events=events,
+    )
     emit(
         {
             "ok": True,
             "task": task_obj,
             "metadata": metadata,
             "evidence": evidence,
+            "evidence_records": evidence_records,
+            "completion_contract": completion_contract,
+            "ceo_acceptance_contract": ceo_acceptance_contract,
+            "completion_invalid": bool(completion_contract.get("done_like")) and not bool(completion_contract.get("valid")),
+            "completion_invalid_reason": "" if bool(completion_contract.get("valid")) else str(completion_contract.get("reason", "")),
+            "final_evidence_count": int(completion_contract.get("final_evidence_count") or 0),
             "blocker": task_obj.get("blocker", ""),
             "parents": parents,
             "children": children,
             "events": events,
             "hook_runs": hook_runs,
-            "attempts": task_attempts(conn, task_id),
-            "approvals": task_approvals(conn, task_id),
+            "attempts": attempts,
+            "attempt_history": attempt_history,
+            "runtime_sessions": runtime_sessions,
+            "tool_calls": tool_calls,
+            "budget_events": budget_events,
+            "budget_summary": task_budget_summary,
+            "control_plane_timeline": control_plane_timeline,
+            "projects": projects,
+            "conversation_summary": task_conversation_summary(conn, metadata),
+            "progress_events": task_progress_events(events),
+            "correction_events": task_correction_events(events),
+            "sanitized_logs": sanitized_logs,
+            "supervisor_state": supervisor_state,
+            "correction_summary": correction_summary,
+            "approvals": approvals,
+            "control_action_summary": task_control_action_summary(approvals=approvals, events=events, attempts=attempts),
+            "owner_action_timeline": task_owner_action_timeline(approvals=approvals, events=events),
             "lock": dict(lock) if lock else {},
             "audit_logs": audit_rows,
         }
@@ -5815,6 +9919,51 @@ def cmd_task_children(args: argparse.Namespace) -> int:
     result = task_with_children(conn, args.task_id)
     emit({"ok": True, **result})
     return 0
+
+
+def cmd_openclaw_native_status(args: argparse.Namespace) -> int:
+    status = openclaw_native_status()
+    emit(openclaw_native_status_summary(status) if args.summary else status)
+    return 0
+
+
+def cmd_openclaw_dispatch_plan(args: argparse.Namespace) -> int:
+    result = openclaw_native_dispatch_plan(
+        source=args.source,
+        target=args.target,
+        task_type=args.type,
+        priority=args.priority,
+        goal=args.goal,
+        next_command=args.next_command,
+        expected_evidence=args.expected_evidence,
+        rollback=args.rollback,
+        task_id=args.task_id,
+    )
+    emit(result)
+    return 0 if result.get("ok") else 1
+
+
+def cmd_openclaw_dispatch_execute(args: argparse.Namespace) -> int:
+    result = openclaw_native_dispatch_execute(
+        source=args.source,
+        target=args.target,
+        task_type=args.type,
+        priority=args.priority,
+        goal=args.goal,
+        next_command=args.next_command,
+        expected_evidence=args.expected_evidence,
+        rollback=args.rollback,
+        approval_id=args.approval_id,
+        task_id=args.task_id,
+    )
+    emit(result)
+    return 0 if result.get("ok") else 1
+
+
+def cmd_openclaw_import_results(args: argparse.Namespace) -> int:
+    result = openclaw_native_import_results(limit=args.limit, agent=args.agent)
+    emit(result)
+    return 0 if result.get("ok") else 1
 
 
 def parse_split_item(raw: str) -> dict:
@@ -6063,6 +10212,20 @@ def cmd_task_evidence_promote(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_task_evidence_accept(args: argparse.Namespace) -> int:
+    conn = connect()
+    result = decide_evidence_internal(conn, evidence_id=args.evidence_id, by=args.by, status="accepted", summary=args.summary)
+    emit(result)
+    return 0 if result.get("ok") else 1
+
+
+def cmd_task_evidence_reject(args: argparse.Namespace) -> int:
+    conn = connect()
+    result = decide_evidence_internal(conn, evidence_id=args.evidence_id, by=args.by, status="rejected", summary=args.summary, reason=args.reason)
+    emit(result)
+    return 0 if result.get("ok") else 1
+
+
 def cmd_task_handoff_create(args: argparse.Namespace) -> int:
     conn = connect()
     from_employee = resolve_employee_alias(args.from_employee)
@@ -6110,7 +10273,11 @@ def cmd_task_attempt_start(args: argparse.Namespace) -> int:
 
 def cmd_task_attempt_finish(args: argparse.Namespace) -> int:
     conn = connect()
-    result = finish_execution_attempt_internal(conn, attempt_id=args.attempt_id, status=args.status, error=args.error)
+    try:
+        result = finish_execution_attempt_internal(conn, attempt_id=args.attempt_id, status=args.status, error=args.error)
+    except ValueError as exc:
+        emit({"ok": False, "error": str(exc), "attempt_id": args.attempt_id})
+        return 2
     emit({"ok": True, **result})
     return 0
 
@@ -6188,11 +10355,12 @@ def cmd_task_reopen(args: argparse.Namespace) -> int:
     )
     conn.execute("DELETE FROM locks WHERE resource_key = ?", (f"task:{args.task_id}",))
     synced_plan_items = sync_project_plan_for_task(conn, task_id=args.task_id, task_status=args.status, actor=actor)
+    event = record_event(conn, "task.reopened", actor, task_id=args.task_id, payload={"reason": args.reason, "status": args.status})
     conn.commit()
     updated = dict(conn.execute("SELECT * FROM tasks WHERE id = ?", (args.task_id,)).fetchone())
     task_file = write_task_inbox_file(updated)
-    audit(conn, actor, "task.reopen", args.task_id, {"reason": args.reason, "status": args.status, "file": task_file})
-    emit({"ok": True, "task": updated, "file": task_file, "synced_plan_items": synced_plan_items})
+    audit(conn, actor, "task.reopen", args.task_id, {"reason": args.reason, "status": args.status, "file": task_file, "event_id": event["id"]})
+    emit({"ok": True, "task": updated, "file": task_file, "synced_plan_items": synced_plan_items, "event_id": event["id"]})
     return 0
 
 
@@ -6210,6 +10378,9 @@ def cmd_task_reassign(args: argparse.Namespace) -> int:
         emit({"ok": False, "error": "actor cannot reassign task", "task_id": args.task_id, "by": actor})
         return 2
     policy = require_communication_allowed(actor, target, "task.submit")
+    previous_target = task["target_agent"]
+    previous_attempt = latest_attempt_for_task(conn, args.task_id)
+    previous_attempt_id = previous_attempt["attempt_id"] if previous_attempt else ""
     conn.execute(
         "UPDATE tasks SET target_agent = ?, status = 'submitted', claimed_by = '', blocker = '', updated_at = ? WHERE id = ?",
         (target, now(), args.task_id),
@@ -6218,10 +10389,25 @@ def cmd_task_reassign(args: argparse.Namespace) -> int:
     synced_plan_items = sync_project_plan_owner_for_task(conn, task_id=args.task_id, owner=target, actor=actor)
     conn.commit()
     updated = dict(conn.execute("SELECT * FROM tasks WHERE id = ?", (args.task_id,)).fetchone())
-    attempt = start_execution_attempt_internal(conn, task_id=args.task_id, employee_id=target, adapter_type="reassign", metadata={"reason": args.reason, "by": actor})
+    attempt_result = start_execution_attempt_internal(
+        conn,
+        task_id=args.task_id,
+        employee_id=target,
+        adapter_type="reassign",
+        metadata={"reason": args.reason, "by": actor, "previous_attempt_id": previous_attempt_id},
+    )
+    attempt = hydrate_execution_attempt(row_by_id(conn, "execution_attempts", "attempt_id", attempt_result["attempt"]["attempt_id"]))
+    event = record_event(
+        conn,
+        "task.reassigned",
+        actor,
+        task_id=args.task_id,
+        trace_id=attempt["trace_id"],
+        payload={"from": previous_target, "to": target, "reason": args.reason, "attempt_id": attempt["attempt_id"], "previous_attempt_id": previous_attempt_id},
+    )
     task_file = write_task_inbox_file({**updated, "metadata": task_metadata(conn, args.task_id), "communication_policy": policy})
-    audit(conn, actor, "task.reassign", args.task_id, {"to": target, "reason": args.reason, "file": task_file, "attempt_id": attempt["attempt"]["attempt_id"]})
-    emit({"ok": True, "task": updated, "file": task_file, "attempt": attempt["attempt"], "synced_plan_items": synced_plan_items})
+    audit(conn, actor, "task.reassign", args.task_id, {"from": previous_target, "to": target, "reason": args.reason, "file": task_file, "attempt_id": attempt["attempt_id"], "previous_attempt_id": previous_attempt_id, "event_id": event["id"]})
+    emit({"ok": True, "task": updated, "file": task_file, "attempt": attempt, "event_id": event["id"], "synced_plan_items": synced_plan_items})
     return 0
 
 
@@ -6444,6 +10630,43 @@ def project_tasks(conn: sqlite3.Connection, project_id: str) -> list[dict]:
         """,
         (project_id,),
     )
+
+
+def task_project_costs(conn: sqlite3.Connection, task_id: str) -> list[dict]:
+    projects = rows(
+        conn,
+        """
+        SELECT p.*
+        FROM project_tasks pt
+        JOIN projects p ON p.id = pt.project_id
+        WHERE pt.task_id = ?
+        ORDER BY p.updated_at DESC
+        """,
+        (task_id,),
+    )
+    summary = budget_summary(conn)
+    by_currency = summary.get("by_project_by_currency", {}) if isinstance(summary.get("by_project_by_currency"), dict) else {}
+    by_events = summary.get("by_project_event_count", {}) if isinstance(summary.get("by_project_event_count"), dict) else {}
+    by_input = summary.get("by_project_token_input", {}) if isinstance(summary.get("by_project_token_input"), dict) else {}
+    by_output = summary.get("by_project_token_output", {}) if isinstance(summary.get("by_project_token_output"), dict) else {}
+    by_runtime = summary.get("by_project_runtime_seconds", {}) if isinstance(summary.get("by_project_runtime_seconds"), dict) else {}
+    enriched = []
+    for project in projects:
+        project_id = str(project.get("id") or "")
+        project_currency = by_currency.get(project_id, {}) if isinstance(by_currency.get(project_id, {}), dict) else {}
+        enriched.append(
+            {
+                **project,
+                "budget_by_currency": project_currency,
+                "budget_total": round(sum(float(amount or 0) for amount in project_currency.values()), 6),
+                "budget_currency": next(iter(project_currency.keys()), "USD") if len(project_currency) <= 1 else "mixed",
+                "budget_event_count": int(by_events.get(project_id, 0) or 0),
+                "token_input": int(by_input.get(project_id, 0) or 0),
+                "token_output": int(by_output.get(project_id, 0) or 0),
+                "runtime_seconds": int(by_runtime.get(project_id, 0) or 0),
+            }
+        )
+    return enriched
 
 
 def project_plan_items(conn: sqlite3.Connection, project_id: str) -> list[dict]:
@@ -6853,6 +11076,57 @@ def parse_json_output(raw: str) -> dict:
         return {"raw": raw}
 
 
+def load_json_file(path: Path) -> dict:
+    try:
+        parsed = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def skill_package_for_employee(conn: sqlite3.Connection, employee_id: str) -> str:
+    employee = conn.execute("SELECT workspace FROM employees WHERE id = ?", (employee_id,)).fetchone()
+    candidates: list[str] = []
+    if employee:
+        workspace = Path(str(employee["workspace"] or "")).expanduser()
+        for path in [workspace / "profile.json", workspace / "capabilities.json", EMPLOYEES_DIR / employee_id / "profile.json", EMPLOYEES_DIR / employee_id / "capabilities.json"]:
+            data = load_json_file(path)
+            for key in ("skill_package", "skill_package_path", "package", "package_path"):
+                value = str(data.get(key) or "").strip()
+                if value:
+                    candidates.append(value)
+            for section_key in ("skill", "package", "runtime"):
+                section = data.get(section_key)
+                if isinstance(section, dict):
+                    for key in ("manifest", "manifest_path", "skill_json", "path"):
+                        value = str(section.get(key) or "").strip()
+                        if value:
+                            candidates.append(value)
+    for raw in candidates:
+        path = Path(raw).expanduser()
+        if not path.is_absolute():
+            path = (ROOT / path).resolve()
+        if path.is_dir():
+            path = path / "skill.json"
+        if path.exists():
+            return str(path)
+
+    manifests = sorted(SKILL_PACKAGES_DIR.glob("*/skill.json"))
+    matches = []
+    token = employee_id.removesuffix("-skill")
+    for manifest_path in manifests:
+        manifest = load_json_file(manifest_path)
+        manifest_employee = str(manifest.get("employee_id") or "").strip()
+        manifest_id = str(manifest.get("id") or manifest_path.parent.name).strip()
+        if manifest_employee == employee_id or manifest_id in {employee_id, token, manifest_path.parent.name} or token == manifest_path.parent.name:
+            matches.append(manifest_path)
+    if len(matches) == 1:
+        return str(matches[0])
+    if not matches and len(manifests) == 1:
+        return str(manifests[0])
+    return ""
+
+
 def run_companyctl_json(args: list[str]) -> tuple[int, dict, str]:
     cp = subprocess.run([str(ROOT / "bin" / "companyctl"), *args], cwd=str(ROOT), text=True, capture_output=True)
     return cp.returncode, parse_json_output(cp.stdout), cp.stderr
@@ -6901,7 +11175,7 @@ def cmd_runtime_adapter_runs(args: argparse.Namespace) -> int:
         conn,
         f"""
         SELECT id, trace_id, agent_id, task_id, command, ok, processed, attempt, next_retry_at,
-               acknowledged_at, acknowledged_by, acknowledgement_reason, created_at
+               acknowledged_at, acknowledged_by, acknowledgement_reason, result_json, created_at
         FROM adapter_runs
         {where_sql}
         ORDER BY created_at DESC
@@ -6909,17 +11183,37 @@ def cmd_runtime_adapter_runs(args: argparse.Namespace) -> int:
         """,
         tuple([*params, args.limit]),
     )
+    for adapter_run in adapter_runs:
+        raw_result_json = adapter_run.pop("result_json", "{}")
+        try:
+            result = json.loads(raw_result_json or "{}")
+        except json.JSONDecodeError:
+            result = {"raw": raw_result_json}
+        adapter_run["sanitized_log"] = summarize_adapter_result(result).get("sanitized_log", "")
     emit({"ok": True, "adapter_runs": adapter_runs})
     return 0
 
 
 def summarize_adapter_result(result: dict) -> dict:
     runs = []
+    log_parts = [
+        str(result.get("stdout", "")),
+        str(result.get("stderr", "")),
+        str(result.get("companyctl_stdout", "")),
+        str(result.get("companyctl_stderr", "")),
+        str(result.get("reply", "")),
+        str(result.get("blocker", "")),
+        str(result.get("error", "")),
+    ]
     for run in result.get("runs", []):
         if not isinstance(run, dict):
             continue
         command_result = run.get("result", {})
         parsed = run.get("parsed_stdout", {})
+        if isinstance(command_result, dict):
+            log_parts.extend([str(command_result.get("stdout", "")), str(command_result.get("stderr", ""))])
+        if isinstance(parsed, dict):
+            log_parts.extend([str(parsed.get("summary", "")), str(parsed.get("blocker", "")), str(parsed.get("error", ""))])
         report_path = str(parsed.get("report", "")) if isinstance(parsed, dict) else ""
         progress_state = ""
         progress_task_id = ""
@@ -6964,7 +11258,27 @@ def summarize_adapter_result(result: dict) -> dict:
         "processed": result.get("processed", 0),
         "at": result.get("at", ""),
         "state_file": result.get("state_file", ""),
+        "sanitized_log": sanitize_log_text("\n".join(part for part in log_parts if part), max_length=1600),
         "runs": runs,
+    }
+
+
+def sanitized_log_policy() -> dict:
+    return {
+        "mode": "sanitized_only",
+        "summary": "raw stdout/stderr hidden; secrets and sensitive paths are redacted before dashboard/API display",
+        "source_fields": [
+            "stdout",
+            "stderr",
+            "companyctl_stdout",
+            "companyctl_stderr",
+            "reply",
+            "blocker",
+            "error",
+            "runs.result.stdout",
+            "runs.result.stderr",
+            "runs.parsed_stdout.summary",
+        ],
     }
 
 
@@ -7066,8 +11380,30 @@ def cmd_runtime_retry_adapter_run(args: argparse.Namespace) -> int:
     return 0
 
 
+def resolve_runtime_verify_source(conn: sqlite3.Connection, requested: str = "") -> str:
+    requested = (requested or "").strip()
+    if requested:
+        row = conn.execute("SELECT id FROM employees WHERE id = ?", (requested,)).fetchone()
+        if row:
+            return requested
+        raise ValueError(f"unknown source employee: {requested}")
+    for candidate in ("openclaw-main", "main", "owner"):
+        row = conn.execute("SELECT id FROM employees WHERE id = ?", (candidate,)).fetchone()
+        if row:
+            return candidate
+    row = conn.execute("SELECT id FROM employees WHERE status = 'active' ORDER BY id LIMIT 1").fetchone()
+    if row:
+        return row["id"]
+    raise ValueError("no source employee available for runtime verification")
+
+
 def cmd_runtime_verify_adapters(args: argparse.Namespace) -> int:
     conn = connect()
+    try:
+        source = resolve_runtime_verify_source(conn, args.source)
+    except ValueError as exc:
+        emit({"ok": False, "error": str(exc)})
+        return 1
     agents = adapter_verify_agents(conn, parse_csv(args.agents))
     results = []
     for emp in agents:
@@ -7088,37 +11424,86 @@ def cmd_runtime_verify_adapters(args: argparse.Namespace) -> int:
             continue
         existing = conn.execute("SELECT status, evidence_path FROM tasks WHERE id = ?", (task_id,)).fetchone()
         if not existing:
-            submit_code, submit_payload, submit_stderr = run_companyctl_json(
-                [
-                    "task",
-                    "submit",
-                    "--from",
-                    args.source,
-                    "--to",
-                    emp["id"],
-                    "--task-id",
-                    task_id,
-                    "--title",
-                    title,
-                    "--description",
-                    "Adapter dry-run check task. Adapter must claim, write evidence, complete, and heartbeat.",
-                    "--priority",
-                    "P3",
-                ]
-            )
-            if submit_code != 0:
-                result.update({"error": "task submit failed", "submit_stdout": submit_payload, "submit_stderr": submit_stderr})
+            if args.allow_candidate:
+                try:
+                    submit_payload = submit_task_internal(
+                        conn,
+                        source=source,
+                        target=emp["id"],
+                        task_id=task_id,
+                        title=title,
+                        description="Adapter dry-run check task. Adapter must claim, write evidence, complete, and heartbeat.",
+                        priority="P3",
+                        metadata={"runtime_verify": True, "allow_candidate": True},
+                        allow_candidate=True,
+                    )
+                except SystemExit as exc:
+                    result.update({"error": "task submit failed", "submit_stdout": parse_json_output(str(exc)), "submit_stderr": ""})
+                    results.append(result)
+                    continue
+                result["candidate_verification"] = True
+            else:
+                submit_code, submit_payload, submit_stderr = run_companyctl_json(
+                    [
+                        "task",
+                        "submit",
+                        "--from",
+                        source,
+                        "--to",
+                        emp["id"],
+                        "--task-id",
+                        task_id,
+                        "--title",
+                        title,
+                        "--description",
+                        "Adapter dry-run check task. Adapter must claim, write evidence, complete, and heartbeat.",
+                        "--priority",
+                        "P3",
+                    ]
+                )
+                if submit_code != 0:
+                    result.update({"error": "task submit failed", "submit_stdout": submit_payload, "submit_stderr": submit_stderr})
+                    results.append(result)
+                    continue
+                conn.close()
+                conn = connect()
+        cmd = [str(ROOT / "bin" / command), "--agent", emp["id"]]
+        if runtime == "skill":
+            package = skill_package_for_employee(conn, emp["id"])
+            if not package:
+                result["error"] = "skill package not found for employee"
                 results.append(result)
                 continue
-            conn.close()
-            conn = connect()
-        cmd = [str(ROOT / "bin" / command), "--agent", emp["id"]]
+            result["package"] = package
+            cmd.extend(["--package", package])
         if args.execute:
             cmd.append("--execute")
+        active_attempt = conn.execute(
+            """
+            SELECT * FROM execution_attempts
+            WHERE task_id = ?
+              AND employee_id = ?
+              AND status IN ('starting', 'running', 'correcting')
+            ORDER BY started_at DESC
+            LIMIT 1
+            """,
+            (task_id, emp["id"]),
+        ).fetchone()
+        if not active_attempt:
+            active_attempt = start_execution_attempt_internal(
+                conn,
+                task_id=task_id,
+                employee_id=emp["id"],
+                adapter_type="runtime-verify",
+                metadata={"runtime_verify": True, "command": command},
+                status="running",
+            )["attempt"]
         cp = subprocess.run(cmd, cwd=str(ROOT), text=True, capture_output=True)
         current = conn.execute("SELECT status, evidence_path, blocker FROM tasks WHERE id = ?", (task_id,)).fetchone()
         hb = conn.execute("SELECT last_seen_at FROM heartbeats WHERE agent_id = ?", (emp["id"],)).fetchone()
         evidence = current["evidence_path"] if current else ""
+        final_evidence_record = ensure_final_evidence_for_existing_path(conn, task_id=task_id, agent=emp["id"], evidence_path=evidence, summary="runtime verification evidence") if current and evidence else None
+        final_evidence = bool(final_evidence_record)
         result.update(
             {
                 "exit_code": cp.returncode,
@@ -7127,11 +11512,13 @@ def cmd_runtime_verify_adapters(args: argparse.Namespace) -> int:
                 "task_status": current["status"] if current else "",
                 "evidence": evidence,
                 "evidence_exists": bool(evidence and Path(evidence).exists()),
+                "final_evidence": final_evidence,
+                "final_evidence_id": final_evidence_record.get("evidence_id", "") if isinstance(final_evidence_record, dict) else "",
                 "blocker": current["blocker"] if current else "",
                 "heartbeat": hb["last_seen_at"] if hb else "",
             }
         )
-        result["ok"] = cp.returncode == 0 and result["task_status"] == "completed" and result["evidence_exists"] and bool(result["heartbeat"])
+        result["ok"] = cp.returncode == 0 and result["task_status"] == "completed" and result["evidence_exists"] and final_evidence and bool(result["heartbeat"])
         results.append(result)
     scheduler_result = {}
     if args.run_scheduler:
@@ -7151,12 +11538,12 @@ def cmd_runtime_verify_adapters(args: argparse.Namespace) -> int:
         ok = False
     audit_error = ""
     try:
-        audit(conn, "companyctl", "runtime.verify_adapters", "", {"execute": args.execute, "agents": [r["agent"] for r in results], "ok": ok, "scheduler": scheduler_result})
+        audit(conn, "companyctl", "runtime.verify_adapters", "", {"execute": args.execute, "source": source, "agents": [r["agent"] for r in results], "ok": ok, "scheduler": scheduler_result})
     except sqlite3.OperationalError as exc:
         audit_error = str(exc)
         if "readonly" not in audit_error.lower():
             raise
-    emit({"ok": ok, "execute": args.execute, "count": len(results), "results": results, "scheduler": scheduler_result, "audit_error": audit_error})
+    emit({"ok": ok, "execute": args.execute, "source": source, "count": len(results), "results": results, "scheduler": scheduler_result, "audit_error": audit_error})
     return 0 if ok else 1
 
 
@@ -7200,13 +11587,18 @@ def cmd_doctor(args: argparse.Namespace) -> int:
             "failed_adapter_runs": conn.execute("SELECT COUNT(*) FROM adapter_runs WHERE ok = 0 AND acknowledged_at = ''").fetchone()[0],
         }
         heartbeat_cutoff = datetime.now(timezone.utc).astimezone() - timedelta(minutes=15)
+        active_ai_employee_filter = """
+            e.status = 'active'
+            AND COALESCE(e.runtime, '') != 'human'
+            AND COALESCE(e.role, '') NOT IN ('human-owner', 'owner')
+        """
         missing_heartbeats = rows(
             conn,
-            """
+            f"""
             SELECT e.id, e.runtime
             FROM employees e
             LEFT JOIN heartbeats h ON h.agent_id = e.id
-            WHERE e.status = 'active' AND h.agent_id IS NULL
+            WHERE {active_ai_employee_filter} AND h.agent_id IS NULL
             ORDER BY e.id
             """,
         )
@@ -7216,11 +11608,11 @@ def cmd_doctor(args: argparse.Namespace) -> int:
         stale_heartbeats = []
         idle_employees = []
         for row in conn.execute(
-            """
+            f"""
             SELECT e.id, e.runtime, h.last_seen_at
             FROM employees e
             JOIN heartbeats h ON h.agent_id = e.id
-            WHERE e.status = 'active'
+            WHERE {active_ai_employee_filter}
             ORDER BY e.id
             """
         ).fetchall():
@@ -7253,7 +11645,7 @@ def cmd_doctor(args: argparse.Namespace) -> int:
                 stale_locks.append(dict(lock))
         daemon = daemon_health()
         launchd = launchd_health()
-        openclaw_guard = openclaw_guard_health()
+        openclaw_guard = openclaw_guard_health(conn)
         issues = []
         if not daemon["ok"]:
             issues.append(daemon["reason"] or "daemon_unhealthy")
@@ -7351,6 +11743,39 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="companyctl", description="Company Kernel command interface")
     sub = parser.add_subparsers(dest="cmd", required=True)
 
+    openclaw_cmd = sub.add_parser("openclaw")
+    openclaw_sub = openclaw_cmd.add_subparsers(dest="openclaw_cmd", required=True)
+    openclaw_native = openclaw_sub.add_parser("native-status")
+    openclaw_native.add_argument("--summary", action="store_true")
+    openclaw_native.set_defaults(func=cmd_openclaw_native_status)
+    openclaw_dispatch = openclaw_sub.add_parser("dispatch-plan")
+    openclaw_dispatch.add_argument("--source", required=True)
+    openclaw_dispatch.add_argument("--target", required=True)
+    openclaw_dispatch.add_argument("--type", required=True)
+    openclaw_dispatch.add_argument("--priority", default="P2")
+    openclaw_dispatch.add_argument("--goal", required=True)
+    openclaw_dispatch.add_argument("--next-command", required=True)
+    openclaw_dispatch.add_argument("--expected-evidence", required=True)
+    openclaw_dispatch.add_argument("--rollback", required=True)
+    openclaw_dispatch.add_argument("--task-id", default="")
+    openclaw_dispatch.set_defaults(func=cmd_openclaw_dispatch_plan)
+    openclaw_execute = openclaw_sub.add_parser("dispatch-execute")
+    openclaw_execute.add_argument("--source", required=True)
+    openclaw_execute.add_argument("--target", required=True)
+    openclaw_execute.add_argument("--type", required=True)
+    openclaw_execute.add_argument("--priority", default="P2")
+    openclaw_execute.add_argument("--goal", required=True)
+    openclaw_execute.add_argument("--next-command", required=True)
+    openclaw_execute.add_argument("--expected-evidence", required=True)
+    openclaw_execute.add_argument("--rollback", required=True)
+    openclaw_execute.add_argument("--approval-id", default="")
+    openclaw_execute.add_argument("--task-id", default="")
+    openclaw_execute.set_defaults(func=cmd_openclaw_dispatch_execute)
+    openclaw_import = openclaw_sub.add_parser("import-results")
+    openclaw_import.add_argument("--limit", type=int, default=50)
+    openclaw_import.add_argument("--agent", default="")
+    openclaw_import.set_defaults(func=cmd_openclaw_import_results)
+
     emp = sub.add_parser("employee")
     emp_sub = emp.add_subparsers(dest="employee_cmd", required=True)
     emp_create = emp_sub.add_parser("create")
@@ -7422,6 +11847,14 @@ def build_parser() -> argparse.ArgumentParser:
     emp_import_openclaw.add_argument("--config", default=str(openclaw_root() / "openclaw.json"))
     emp_import_openclaw.add_argument("--dry-run", action="store_true")
     emp_import_openclaw.set_defaults(func=cmd_employee_import_openclaw)
+    emp_sync_openclaw = emp_sub.add_parser("sync-openclaw-runtime")
+    emp_sync_openclaw.add_argument("--config", default=str(openclaw_root() / "openclaw.json"))
+    emp_sync_openclaw.add_argument("--active-only", action="store_true", help="only sync agents declared in openclaw.json as active employees")
+    emp_sync_openclaw.add_argument("--dry-run", action="store_true")
+    emp_sync_openclaw.set_defaults(func=cmd_employee_sync_openclaw_runtime)
+    emp_sync_openclaw_hb = emp_sub.add_parser("sync-openclaw-heartbeats")
+    emp_sync_openclaw_hb.add_argument("--dry-run", action="store_true")
+    emp_sync_openclaw_hb.set_defaults(func=cmd_employee_sync_openclaw_heartbeats)
     emp_onboard = emp_sub.add_parser("onboard")
     emp_onboard.add_argument("--id", required=True)
     emp_onboard.add_argument("--name", required=True)
@@ -7455,6 +11888,11 @@ def build_parser() -> argparse.ArgumentParser:
     emp_offboard.add_argument("--hard-delete", action="store_true", help="delete only Company Kernel-managed employee files/workspace")
     emp_offboard.add_argument("--dry-run", action="store_true")
     emp_offboard.set_defaults(func=cmd_employee_offboard)
+
+    skill = sub.add_parser("skill")
+    skill_sub = skill.add_subparsers(dest="skill_cmd", required=True)
+    skill_list = skill_sub.add_parser("list")
+    skill_list.set_defaults(func=cmd_skill_list)
 
     attendance = sub.add_parser("attendance")
     attendance_sub = attendance.add_subparsers(dest="attendance_cmd", required=True)
@@ -7598,6 +12036,17 @@ def build_parser() -> argparse.ArgumentParser:
     task_evidence_promote.add_argument("--summary", default="")
     task_evidence_promote.add_argument("--type", default="")
     task_evidence_promote.set_defaults(func=cmd_task_evidence_promote)
+    task_evidence_accept = task_evidence_sub.add_parser("accept")
+    task_evidence_accept.add_argument("--evidence-id", required=True)
+    task_evidence_accept.add_argument("--by", required=True)
+    task_evidence_accept.add_argument("--summary", default="")
+    task_evidence_accept.set_defaults(func=cmd_task_evidence_accept)
+    task_evidence_reject = task_evidence_sub.add_parser("reject")
+    task_evidence_reject.add_argument("--evidence-id", required=True)
+    task_evidence_reject.add_argument("--by", required=True)
+    task_evidence_reject.add_argument("--summary", default="")
+    task_evidence_reject.add_argument("--reason", default="")
+    task_evidence_reject.set_defaults(func=cmd_task_evidence_reject)
     task_handoff = task_sub.add_parser("handoff")
     task_handoff_sub = task_handoff.add_subparsers(dest="handoff_cmd", required=True)
     task_handoff_create = task_handoff_sub.add_parser("create")
@@ -7654,6 +12103,13 @@ def build_parser() -> argparse.ArgumentParser:
     task_progress.add_argument("--payload", default="")
     task_progress.add_argument("--at", default="")
     task_progress.set_defaults(func=cmd_task_progress)
+    task_probe = task_sub.add_parser("probe")
+    task_probe.add_argument("--task-id", required=True)
+    task_probe.add_argument("--by", required=True)
+    task_probe.add_argument("--attempt-id", default="")
+    task_probe.add_argument("--message", required=True)
+    task_probe.add_argument("--reason", default="progress_probe")
+    task_probe.set_defaults(func=cmd_task_probe)
     task_correct = task_sub.add_parser("correct")
     task_correct.add_argument("--task-id", required=True)
     task_correct.add_argument("--attempt-id", required=True)
@@ -7980,7 +12436,7 @@ def build_parser() -> argparse.ArgumentParser:
     approval_request.add_argument("--approval-id", default="")
     approval_request.set_defaults(func=cmd_approval_request)
     approval_list = approval_sub.add_parser("list")
-    approval_list.add_argument("--status", choices=["pending", "approved", "denied", "all"], default="pending")
+    approval_list.add_argument("--status", choices=["pending", "approved", "denied", "resolved", "all"], default="pending")
     approval_list.add_argument("--agent", default="")
     approval_list.add_argument("--action", default="")
     approval_list.add_argument("--limit", type=int, default=50)
@@ -7998,6 +12454,47 @@ def build_parser() -> argparse.ArgumentParser:
     approval_deny.add_argument("--by", required=True)
     approval_deny.add_argument("--reason", default="")
     approval_deny.set_defaults(func=cmd_approval_deny)
+    approval_resolve = approval_sub.add_parser("resolve")
+    approval_resolve.add_argument("--approval-id", required=True)
+    approval_resolve.add_argument("--by", required=True)
+    approval_resolve.add_argument("--reason", default="")
+    approval_resolve.add_argument("--mock", action="store_true", help="record a dry-run/mock resolution without triggering external delivery")
+    approval_resolve.set_defaults(func=cmd_approval_resolve)
+
+    audit_parser = sub.add_parser("audit")
+    audit_sub = audit_parser.add_subparsers(dest="audit_cmd", required=True)
+    audit_evidence = audit_sub.add_parser("evidence")
+    audit_evidence.add_argument("--task-id", default="")
+    audit_evidence.add_argument("--employee-id", "--employee", default="")
+    audit_evidence.add_argument("--limit", type=int, default=50)
+    audit_evidence.set_defaults(func=cmd_audit_evidence)
+    audit_artifacts = audit_sub.add_parser("artifacts")
+    audit_artifacts.add_argument("--task-id", default="")
+    audit_artifacts.add_argument("--limit", type=int, default=50)
+    audit_artifacts.set_defaults(func=cmd_audit_artifacts)
+    audit_handoffs = audit_sub.add_parser("handoffs")
+    audit_handoffs.add_argument("--task-id", default="")
+    audit_handoffs.add_argument("--limit", type=int, default=50)
+    audit_handoffs.set_defaults(func=cmd_audit_handoffs)
+    audit_failures = audit_sub.add_parser("failures")
+    audit_failures.add_argument("--task-id", default="")
+    audit_failures.add_argument("--limit", type=int, default=50)
+    audit_failures.set_defaults(func=cmd_audit_failures)
+
+    trace_parser = sub.add_parser("trace")
+    trace_sub = trace_parser.add_subparsers(dest="trace_cmd", required=True)
+    trace_timeline = trace_sub.add_parser("timeline")
+    trace_timeline.add_argument("--trace-id", default="")
+    trace_timeline.add_argument("--task-id", default="")
+    trace_timeline.set_defaults(func=cmd_trace_timeline)
+
+    workspace = sub.add_parser("workspace")
+    workspace_sub = workspace.add_subparsers(dest="workspace_cmd", required=True)
+    workspace_prune = workspace_sub.add_parser("prune")
+    workspace_prune.add_argument("--dry-run", action="store_true")
+    workspace_prune.add_argument("--older-than-days", type=int, default=30)
+    workspace_prune.add_argument("--limit", type=int, default=100)
+    workspace_prune.set_defaults(func=cmd_workspace_prune)
 
     lock = sub.add_parser("lock")
     lock_sub = lock.add_subparsers(dest="lock_cmd", required=True)
@@ -8041,8 +12538,9 @@ def build_parser() -> argparse.ArgumentParser:
     runtime_test.set_defaults(func=cmd_runtime_test)
     runtime_verify_adapters = runtime_sub.add_parser("verify-adapters")
     runtime_verify_adapters.add_argument("--agents", default="", help="comma-separated employee ids; defaults to all adapter-backed employees")
-    runtime_verify_adapters.add_argument("--source", default="openclaw-main")
+    runtime_verify_adapters.add_argument("--source", default="", help="source employee for verification tasks; default auto-detects openclaw-main/main")
     runtime_verify_adapters.add_argument("--task-id-prefix", default="task-runtime-verify")
+    runtime_verify_adapters.add_argument("--allow-candidate", action="store_true", help="allow safe dry-run verification tasks for candidate employees without enabling normal scheduling")
     runtime_verify_adapters.add_argument("--execute", action="store_true", help="run real adapter execution; default is safe dry-run")
     runtime_verify_adapters.add_argument("--run-scheduler", action=argparse.BooleanOptionalAction, default=True, help="process generated events after adapter verification")
     runtime_verify_adapters.set_defaults(func=cmd_runtime_verify_adapters)
@@ -8069,6 +12567,91 @@ def build_parser() -> argparse.ArgumentParser:
     runtime_retry_adapter_run.add_argument("--reason", required=True)
     runtime_retry_adapter_run.add_argument("--task-id", default="")
     runtime_retry_adapter_run.set_defaults(func=cmd_runtime_retry_adapter_run)
+    runtime_session = runtime_sub.add_parser("session")
+    runtime_session_sub = runtime_session.add_subparsers(dest="runtime_session_cmd", required=True)
+    runtime_session_start = runtime_session_sub.add_parser("start")
+    runtime_session_start.add_argument("--session-id", default="")
+    runtime_session_start.add_argument("--employee", required=True)
+    runtime_session_start.add_argument("--adapter-type", default="")
+    runtime_session_start.add_argument("--runtime-type", default="")
+    runtime_session_start.add_argument("--pid", default="")
+    runtime_session_start.add_argument("--session-key", default="")
+    runtime_session_start.add_argument("--task-id", default="")
+    runtime_session_start.add_argument("--attempt-id", default="")
+    runtime_session_start.set_defaults(func=cmd_runtime_session_start)
+    runtime_session_heartbeat = runtime_session_sub.add_parser("heartbeat")
+    runtime_session_heartbeat.add_argument("--session-id", required=True)
+    runtime_session_heartbeat.add_argument("--status", default="active")
+    runtime_session_heartbeat.add_argument("--progress", action="store_true")
+    runtime_session_heartbeat.set_defaults(func=cmd_runtime_session_heartbeat)
+    runtime_session_stop = runtime_session_sub.add_parser("stop")
+    runtime_session_stop.add_argument("--session-id", required=True)
+    runtime_session_stop.add_argument("--status", choices=["stopped", "failed", "stale", "cancelled"], default="stopped")
+    runtime_session_stop.add_argument("--error", default="")
+    runtime_session_stop.set_defaults(func=cmd_runtime_session_stop)
+    runtime_session_list = runtime_session_sub.add_parser("list")
+    runtime_session_list.add_argument("--employee", default="")
+    runtime_session_list.add_argument("--task-id", default="")
+    runtime_session_list.add_argument("--trace-id", default="")
+    runtime_session_list.add_argument("--limit", type=int, default=50)
+    runtime_session_list.set_defaults(func=cmd_runtime_session_list)
+
+    tool_call = sub.add_parser("tool-call")
+    tool_call_sub = tool_call.add_subparsers(dest="tool_call_cmd", required=True)
+    tool_call_start = tool_call_sub.add_parser("start")
+    tool_call_start.add_argument("--tool-call-id", default="")
+    tool_call_start.add_argument("--trace-id", default="")
+    tool_call_start.add_argument("--task-id", default="")
+    tool_call_start.add_argument("--attempt-id", default="")
+    tool_call_start.add_argument("--employee", required=True)
+    tool_call_start.add_argument("--session-id", default="")
+    tool_call_start.add_argument("--tool-name", required=True)
+    tool_call_start.add_argument("--tool-type", default="other")
+    tool_call_start.add_argument("--input-summary", default="")
+    tool_call_start.add_argument("--risk-level", default="")
+    tool_call_start.add_argument("--approval-id", default="")
+    tool_call_start.set_defaults(func=cmd_tool_call_start)
+    tool_call_finish = tool_call_sub.add_parser("finish")
+    tool_call_finish.add_argument("--tool-call-id", required=True)
+    tool_call_finish.add_argument("--status", choices=["success", "failed", "blocked", "cancelled"], required=True)
+    tool_call_finish.add_argument("--output-summary", default="")
+    tool_call_finish.add_argument("--error", default="")
+    tool_call_finish.set_defaults(func=cmd_tool_call_finish)
+    tool_call_list = tool_call_sub.add_parser("list")
+    tool_call_list.add_argument("--employee", default="")
+    tool_call_list.add_argument("--task-id", default="")
+    tool_call_list.add_argument("--trace-id", default="")
+    tool_call_list.add_argument("--attempt-id", default="")
+    tool_call_list.add_argument("--session-id", default="")
+    tool_call_list.add_argument("--limit", type=int, default=50)
+    tool_call_list.set_defaults(func=cmd_tool_call_list)
+
+    budget = sub.add_parser("budget")
+    budget_sub = budget.add_subparsers(dest="budget_cmd", required=True)
+    budget_record = budget_sub.add_parser("record")
+    budget_record.add_argument("--budget-event-id", default="")
+    budget_record.add_argument("--budget-account-id", default="")
+    budget_record.add_argument("--task-id", default="")
+    budget_record.add_argument("--trace-id", default="")
+    budget_record.add_argument("--attempt-id", default="")
+    budget_record.add_argument("--employee", required=True)
+    budget_record.add_argument("--cost-type", required=True)
+    budget_record.add_argument("--amount", required=True)
+    budget_record.add_argument("--currency", default="USD")
+    budget_record.add_argument("--token-input", type=int, default=0)
+    budget_record.add_argument("--token-output", type=int, default=0)
+    budget_record.add_argument("--model-name", default="")
+    budget_record.add_argument("--provider", default="")
+    budget_record.add_argument("--runtime-seconds", type=int, default=0)
+    budget_record.add_argument("--summary", default="")
+    budget_record.set_defaults(func=cmd_budget_record)
+    budget_summary_cmd = budget_sub.add_parser("summary")
+    budget_summary_cmd.add_argument("--task-id", default="")
+    budget_summary_cmd.add_argument("--trace-id", default="")
+    budget_summary_cmd.add_argument("--attempt-id", default="")
+    budget_summary_cmd.add_argument("--employee", default="")
+    budget_summary_cmd.add_argument("--limit", type=int, default=50)
+    budget_summary_cmd.set_defaults(func=cmd_budget_summary)
 
     doctor = sub.add_parser("doctor")
     doctor.add_argument("--summary", action="store_true", help="return compact health counts for low-token alert checks")

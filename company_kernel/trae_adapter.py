@@ -10,10 +10,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from .adapter_result import execution_detail
+from .db_paths import ensure_db_parent, resolve_db_path
 
 
 ROOT = Path(os.environ.get("OPENCLAW_COMPANY_KERNEL_ROOT", Path(__file__).resolve().parents[1])).resolve()
-DB_PATH = ROOT / "company.sqlite"
+DB_PATH = resolve_db_path(ROOT)
 DEFAULT_WORKSPACE = Path(os.environ.get("COMPANY_TRAE_WORKSPACE", str(Path.home()))).expanduser().resolve()
 
 
@@ -26,7 +27,7 @@ def emit(obj: dict) -> None:
 
 
 def connect() -> sqlite3.Connection:
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(ensure_db_parent(DB_PATH))
     conn.row_factory = sqlite3.Row
     conn.executescript((ROOT / "company_kernel" / "schema.sql").read_text(encoding="utf-8"))
     conn.commit()

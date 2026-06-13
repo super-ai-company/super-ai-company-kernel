@@ -6,15 +6,18 @@ import os
 import shutil
 import sqlite3
 import subprocess
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
+from . import companyctl
 from .adapter_result import execution_detail
+from .db_paths import ensure_db_parent, resolve_db_path
 from .sandboxing import wrap_command
 
 
 ROOT = Path(os.environ.get("OPENCLAW_COMPANY_KERNEL_ROOT", Path(__file__).resolve().parents[1])).resolve()
-DB_PATH = ROOT / "company.sqlite"
+DB_PATH = resolve_db_path(ROOT)
 CODEX_AGENT = "codex"
 DEFAULT_WORKSPACE = Path(
     os.environ.get("OPENCLAW_HERMES_WORKSPACE", str(Path.home() / ".hermes"))
@@ -30,7 +33,7 @@ def emit(obj: dict) -> None:
 
 
 def connect() -> sqlite3.Connection:
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(ensure_db_parent(DB_PATH))
     conn.row_factory = sqlite3.Row
     conn.executescript((ROOT / "company_kernel" / "schema.sql").read_text(encoding="utf-8"))
     conn.commit()
@@ -41,6 +44,15 @@ def run_companyctl(args: list[str]) -> tuple[int, str, str]:
     env = {**os.environ, "OPENCLAW_COMPANY_KERNEL_ROOT": str(ROOT)}
     cp = subprocess.run([str(ROOT / "bin" / "companyctl"), *args], cwd=str(ROOT), text=True, capture_output=True, env=env)
     return cp.returncode, cp.stdout, cp.stderr
+
+
+def run_companyctl_json(args: list[str]) -> tuple[int, dict, str]:
+    code, out, err = run_companyctl(args)
+    try:
+        payload = json.loads(out or "{}")
+    except json.JSONDecodeError:
+        payload = {"ok": False, "raw": out}
+    return code, payload, err
 
 
 def employee_workspace(agent: str) -> Path | None:
@@ -162,6 +174,33 @@ def write_report(path: Path, task: sqlite3.Row, *, executed: bool, status: str, 
     )
 
 
+def task_workspace_path(task_id: str) -> Path:
+    conn = connect()
+    try:
+        workspace = conn.execute("SELECT path FROM task_workspaces WHERE task_id = ?", (task_id,)).fetchone()
+        if workspace:
+            return Path(workspace["path"])
+        metadata = conn.execute("SELECT metadata_json FROM task_metadata WHERE task_id = ?", (task_id,)).fetchone()
+        trace_id = ""
+        if metadata:
+            try:
+                trace_id = str(json.loads(metadata["metadata_json"] or "{}").get("trace_id") or "")
+            except json.JSONDecodeError:
+                trace_id = ""
+        created = companyctl.ensure_task_workspace(conn, task_id, trace_id)
+        return Path(created["path"])
+    finally:
+        conn.close()
+
+
+def copy_report_to_task_evidence(task_id: str, report: Path) -> Path:
+    evidence_dir = task_workspace_path(task_id) / "evidence"
+    evidence_dir.mkdir(parents=True, exist_ok=True)
+    target = evidence_dir / f"hermes-adapter-report-{datetime.now().strftime('%Y%m%d-%H%M%S')}.md"
+    target.write_bytes(report.read_bytes())
+    return target
+
+
 def build_hermes_command(prompt: Path, model: str, provider: str) -> list[str]:
     cmd = ["hermes", "-z", prompt.read_text(encoding="utf-8")]
     if model:
@@ -251,15 +290,113 @@ def process(args: argparse.Namespace) -> int:
             }
         )
         return done_code
+    run_code, run_payload, run_err = run_companyctl_json(["task", "run", "--task-id", task["id"], "--agent", args.agent, "--by", args.agent, "--adapter-type", "hermes", "--session-key", f"hermes:{task['id']}"])
+    if run_code != 0:
+        emit({"ok": False, "error": "attempt start failed", "task_id": task["id"], "companyctl": run_payload, "stderr": run_err[-1000:]})
+        return run_code
+    attempt = run_payload["attempt"]
+    attempt_id = attempt["attempt_id"]
+    trace_id = str(attempt.get("trace_id", ""))
+    session_id = f"hermes-session-{args.agent}-{task['id']}"
+    session_code, session_payload, session_err = run_companyctl_json(
+        [
+            "runtime",
+            "session",
+            "start",
+            "--session-id",
+            session_id,
+            "--employee",
+            args.agent,
+            "--adapter-type",
+            "hermes",
+            "--runtime-type",
+            "cli",
+            "--session-key",
+            f"hermes:{task['id']}",
+            "--task-id",
+            task["id"],
+            "--attempt-id",
+            attempt_id,
+        ]
+    )
+    if session_code != 0:
+        emit({"ok": False, "error": "runtime session start failed", "task_id": task["id"], "attempt": attempt, "companyctl": session_payload, "stderr": session_err[-1000:]})
+        return session_code
+    tool_call_id = f"hermes-tool-{args.agent}-{task['id']}"
+    run_companyctl_json(
+        [
+            "tool-call",
+            "start",
+            "--tool-call-id",
+            tool_call_id,
+            "--trace-id",
+            trace_id,
+            "--task-id",
+            task["id"],
+            "--attempt-id",
+            attempt_id,
+            "--employee",
+            args.agent,
+            "--session-id",
+            session_id,
+            "--tool-name",
+            "hermes.oneshot",
+            "--tool-type",
+            "cli",
+            "--input-summary",
+            f"hermes -z provider={args.provider or '-'} model={args.model or '-'}",
+            "--risk-level",
+            "low",
+        ]
+    )
+    run_companyctl(["task", "progress", "--task-id", task["id"], "--agent", args.agent, "--attempt-id", attempt_id, "--state", "acknowledged", "--message", "Hermes adapter acknowledged managed execution", "--progress", "5"])
+    started_monotonic = time.monotonic()
     code, cmd = run_hermes(artifact["prompt"], artifact["output"], workspace, args.model, args.provider, args.isolation, args.sandbox_profile)
+    runtime_seconds = max(0, int(round(time.monotonic() - started_monotonic)))
     if code == 0:
         detail = execution_detail(cmd, artifact["output"], success=True)
         write_report(artifact["report"], task, executed=True, status="completed", detail=detail, prompt=artifact["prompt"], output=artifact["output"])
-        done_code, done_out, done_err = run_companyctl(["task", "done", "--agent", args.agent, "--task-id", task["id"], "--summary", detail, "--evidence", str(artifact["report"])])
+        evidence_report = copy_report_to_task_evidence(task["id"], artifact["report"])
+        done_code, done_out, done_err = run_companyctl(["task", "done", "--agent", args.agent, "--task-id", task["id"], "--summary", detail, "--evidence", str(evidence_report)])
+        tool_status = "success"
+        attempt_status = "success"
+        session_status = "stopped"
     else:
         detail = execution_detail(cmd, artifact["output"], exit_code=code, success=False)
         write_report(artifact["report"], task, executed=True, status="blocked", detail=detail, prompt=artifact["prompt"], output=artifact["output"])
         done_code, done_out, done_err = run_companyctl(["task", "block", "--agent", args.agent, "--task-id", task["id"], "--blocker", detail])
+        tool_status = "failed"
+        attempt_status = "failed"
+        session_status = "failed"
+    _, tool_payload, _ = run_companyctl_json(["tool-call", "finish", "--tool-call-id", tool_call_id, "--status", tool_status, "--output-summary", detail[:500], "--error", "" if code == 0 else detail[:500]])
+    _, budget_payload, _ = run_companyctl_json(
+        [
+            "budget",
+            "record",
+            "--task-id",
+            task["id"],
+            "--attempt-id",
+            attempt_id,
+            "--employee",
+            args.agent,
+            "--cost-type",
+            "hermes_runtime",
+            "--amount",
+            "0",
+            "--currency",
+            "USD",
+            "--model-name",
+            args.model or "",
+            "--provider",
+            args.provider or "hermes",
+            "--runtime-seconds",
+            str(runtime_seconds),
+            "--summary",
+            f"hermes -z exit_code={code}",
+        ]
+    )
+    _, finish_payload, finish_err = run_companyctl_json(["task", "attempt", "finish", "--attempt-id", attempt_id, "--status", attempt_status, "--error", "" if code == 0 else detail[:500]])
+    _, stopped_session, _ = run_companyctl_json(["runtime", "session", "stop", "--session-id", session_id, "--status", session_status, "--error", "" if code == 0 else detail[:500]])
     run_companyctl(["heartbeat", "--agent", args.agent])
     emit(
         {
@@ -268,11 +405,16 @@ def process(args: argparse.Namespace) -> int:
             "executed": True,
             "task_id": task["id"],
             "hermes_exit_code": code,
+            "attempt": finish_payload.get("attempt", attempt),
+            "runtime_session": stopped_session.get("session", session_payload.get("session", {})),
+            "tool_call": tool_payload.get("tool_call", {}),
+            "budget_event": budget_payload.get("budget_event", {}),
             "prompt": str(artifact["prompt"]),
             "output": str(artifact["output"]),
             "report": str(artifact["report"]),
             "companyctl_stdout": done_out,
             "companyctl_stderr": done_err,
+            "companyctl_finish_stderr": finish_err[-1000:],
             "codex_pm_supervisor": {"exit_code": pm_code, "stdout": pm_out, "stderr": pm_err, "result": pm_result},
         }
     )

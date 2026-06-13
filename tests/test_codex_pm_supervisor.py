@@ -150,6 +150,42 @@ class CodexPmSupervisorTest(unittest.TestCase):
         self.assertEqual("working", result["progress_state"])
         self.assertEqual(result["evidence_path"], str(progress.resolve()))
 
+    def test_stalled_supervisor_result_notifies_human_once(self) -> None:
+        self._write_progress("working")
+        with mock.patch.object(codex_pm_supervisor.companyctl, "notification_send_result", return_value={"ok": True, "platform": "macos"}) as notify:
+            result = codex_pm_supervisor.supervise_once(agent="codex", now_ts="2026-06-06T00:40:00+07:00", stale_minutes=10)
+
+        self.assertTrue(result["ok"], result)
+        self.assertEqual("stalled", result["status"])
+        self.assertEqual({"ok": True, "platform": "macos"}, result["notification"])
+        notify.assert_called_once()
+        _, kwargs = notify.call_args
+        self.assertEqual("error", kwargs["kind"])
+        self.assertEqual("Company Kernel supervisor escalation", kwargs["subject"])
+        self.assertIn("Codex 卡住", kwargs["message"])
+
+    def test_stalled_supervisor_queues_notification_when_sync_send_fails(self) -> None:
+        self._write_progress("working")
+        with mock.patch.object(codex_pm_supervisor.companyctl, "notification_send_result", return_value={"ok": False, "error": "route unavailable"}):
+            result = codex_pm_supervisor.supervise_once(agent="codex", now_ts="2026-06-06T00:40:00+07:00", stale_minutes=10)
+
+        self.assertTrue(result["ok"], result)
+        self.assertEqual("stalled", result["status"])
+        self.assertFalse(result["notification"]["ok"])
+        self.assertIn("queued_notification", result)
+        self.assertEqual("progress.notification", result["queued_notification"]["event_type"])
+        conn = sqlite3.connect(self.db)
+        try:
+            row = conn.execute("SELECT event_type, processed_at, payload_json FROM company_events WHERE id = ?", (result["queued_notification"]["event_id"],)).fetchone()
+        finally:
+            conn.close()
+        self.assertIsNotNone(row)
+        self.assertEqual("progress.notification", row[0])
+        self.assertEqual("", row[1])
+        payload = json.loads(row[2])
+        self.assertEqual("pending", payload["delivery_status"])
+        self.assertEqual("supervisor_escalation", payload["kind"])
+
     def test_workspace_override_reads_progress_from_explicit_dev_workspace(self) -> None:
         explicit_workspace = self.root / "dev-workspace" / "codex"
         explicit_workspace.mkdir(parents=True)
