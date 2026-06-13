@@ -144,3 +144,21 @@ class AdapterRunNoiseTest(unittest.TestCase):
                 mock.patch.object(company_daemon.companyctl, "trace_id_for_task", lambda c, t, x: "trace-x"):
             company_daemon.record_adapter_run(state)
         self.assertTrue(recorded["insert"], "run with a task_id must be recorded")
+
+
+class ReconcileGateTest(unittest.TestCase):
+    """maybe_reconcile_status only runs when enabled and the interval elapsed."""
+
+    def test_disabled_returns_empty(self):
+        self.assertEqual([], company_daemon.maybe_reconcile_status({}))
+        self.assertEqual([], company_daemon.maybe_reconcile_status({"reconcile_status": {"enabled": False}}))
+
+    def test_recent_run_is_skipped(self):
+        import tempfile, os
+        from pathlib import Path as P
+        with tempfile.TemporaryDirectory() as tmp:
+            sp = P(tmp) / "reconcile.json"
+            sp.write_text(json.dumps({"at": iso(datetime.now(timezone.utc))}), encoding="utf-8")
+            with mock.patch.object(company_daemon, "RECONCILE_STATE_PATH", sp):
+                out = company_daemon.maybe_reconcile_status({"reconcile_status": {"enabled": True, "interval_hours": 6}})
+        self.assertEqual([], out, "a run within the interval must be skipped")

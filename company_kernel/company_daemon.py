@@ -4,6 +4,7 @@ import argparse
 import json
 import os
 import subprocess
+import sys
 import time
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -397,6 +398,31 @@ def summarize_state(state: dict) -> dict:
     }
 
 
+RECONCILE_STATE_PATH = STATE_DIR / "reconcile.json"
+
+
+def maybe_reconcile_status(config: dict) -> list[dict]:
+    """Periodically re-probe every employee so the active roster reflects reality.
+    Heavy (runs real CLIs), so gated by an interval like backups."""
+    cfg = config.get("reconcile_status") or {}
+    if not cfg.get("enabled", False):
+        return []
+    interval_hours = float(cfg.get("interval_hours", 6) or 6)
+    if RECONCILE_STATE_PATH.exists():
+        try:
+            last = json.loads(RECONCILE_STATE_PATH.read_text(encoding="utf-8")).get("at", "")
+            if last:
+                age_h = (datetime.now(timezone.utc).astimezone() - datetime.fromisoformat(last)).total_seconds() / 3600.0
+                if age_h < interval_hours:
+                    return []
+        except (json.JSONDecodeError, ValueError, OSError):
+            pass
+    result = run_cmd([sys.executable, "-m", "company_kernel.reconcile_status"])
+    RECONCILE_STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    RECONCILE_STATE_PATH.write_text(json.dumps({"at": now()}, ensure_ascii=False) + "\n", encoding="utf-8")
+    return [{"step": "reconcile.status", "result": {"returncode": result.get("returncode", 1), "stdout": "", "stderr": ""}}]
+
+
 def tick(config: dict) -> dict:
     results = []
     if config.get("sync_openclaw_runtime", False):
@@ -423,6 +449,7 @@ def tick(config: dict) -> dict:
     for result in check_unclaimed_tasks(config):
         results.append({"step": "watchdog.unclaimed-task", "result": result})
     results.extend(maybe_backup(config))
+    results.extend(maybe_reconcile_status(config))
     state = {"ok": all(item["result"].get("returncode", 1) == 0 for item in results), "at": now(), "results": results}
     path = write_state(state)
     state["state_file"] = str(path)
