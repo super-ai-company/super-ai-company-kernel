@@ -25,9 +25,9 @@
 ## 升级任务清单（按优先级）
 
 ### P0 — 上线硬阻断
-1. **网关鉴权**：当前任何能访问端口的人都能派任务/批审批/删员工。需加 token 鉴权（`Authorization: Bearer`）+ 写操作校验 `by` 身份。`--host` 默认 127.0.0.1 是唯一现有防线。
-2. **审计可信化**：API 的 `by` 字段来自请求体、不可验证。需把鉴权身份与审计 actor 绑定。
-3. **company.sqlite 备份/恢复**：唯一数据源无自动备份。需定时快照 + 一键恢复脚本。
+1. ✅ **网关鉴权（已完成）**：`COMPANY_KERNEL_API_TOKEN` 开启后所有 `/v1` 数据/写操作需 `Authorization: Bearer`，否则 401。控制台壳层不需 token，加载后提示输入并存 localStorage。设置方法：在 launchd plist 的 EnvironmentVariables 加 `COMPANY_KERNEL_API_TOKEN`。
+2. **审计可信化**（仍待办）：API 的 `by` 字段来自请求体、不可验证。需把鉴权身份与审计 actor 绑定（鉴权已就位，此项为增强）。
+3. ✅ **company.sqlite 备份/恢复（已完成）**：`bin/company-backup snapshot/list/restore`，SQLite 在线备份 API + 完整性校验 + 滚动保留；daemon 每 24h 自动快照（config `backup`）；restore 需 `--yes` 且先自动备份当前库。
 
 ### P1 — 可用性关键
 4. **控制台发起新对话**：补"新建会话"表单（选参与者+标题+首条消息）。← 本轮先做
