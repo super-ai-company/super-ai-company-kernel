@@ -23,6 +23,10 @@
     "interval_hours": 24,
     "keep": 14
   },
+  "reconcile_status": {
+    "enabled": true,
+    "interval_hours": 6
+  },
   "adapter_workers": [
     {
       "agent": "codex",
