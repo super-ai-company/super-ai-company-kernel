@@ -646,12 +646,23 @@ def route_get(path: str, query: dict[str, list[str]]) -> tuple[int, dict]:
         conn = companyctl.connect()
         try:
             rows = conn.execute(
-                "SELECT id, event_type, source_agent, task_id, created_at, processed_at, trace_id FROM company_events ORDER BY created_at DESC LIMIT ?",
+                "SELECT id, event_type, source_agent, task_id, created_at, processed_at, trace_id, payload_json FROM company_events ORDER BY created_at DESC LIMIT ?",
                 (limit,),
             ).fetchall()
         finally:
             conn.close()
-        return HTTPStatus.OK, {"ok": True, "events": [dict(row) for row in rows]}
+        events = []
+        for row in rows:
+            event = dict(row)
+            raw = event.pop("payload_json", "") or ""
+            try:
+                payload = json.loads(raw) if raw else {}
+            except (json.JSONDecodeError, TypeError):
+                payload = {"raw": str(raw)}
+            # Sanitize secrets / local paths before exposing over the API.
+            event["payload"] = json.loads(companyctl.sanitize_log_text(json.dumps(payload, ensure_ascii=False)))
+            events.append(event)
+        return HTTPStatus.OK, {"ok": True, "events": events}
     if path == "/v1/heartbeats":
         conn = companyctl.connect()
         try:

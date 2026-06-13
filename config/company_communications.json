@@ -35,7 +35,10 @@
     "Trae": "trae",
     "Antigravity": "antigravity",
     "Codex": "codex",
-    "Ecommerce Copy Skill": "ecommerce-copy-skill"
+    "Ecommerce Copy Skill": "ecommerce-copy-skill",
+    "Hermes Supervisor": "default",
+    "hermes-supervisor": "default",
+    "car-rental": "nestcar"
   },
   "employees": {
     "video-ops": {
@@ -599,6 +602,18 @@
     },
     "ecommerce-copy-skill": {
       "display_name": "Ecommerce Copy Skill"
+    },
+    "default": {
+      "display_name": "Hermes Supervisor"
+    },
+    "car-rental": {
+      "display_name": "car-rental"
+    },
+    "claude-code": {
+      "display_name": "claude-code"
+    },
+    "gpt5": {
+      "display_name": "gpt5"
     }
   },
   "channels": {

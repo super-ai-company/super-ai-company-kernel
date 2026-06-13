@@ -1,0 +1,25 @@
+{
+  "agent_id": "default",
+  "runtime": "openclaw",
+  "role": "business-agent",
+  "skills": [
+    "business-ops",
+    "agent-bus",
+    "workspace-operations"
+  ],
+  "tools": [
+    "openclaw",
+    "oc bus"
+  ],
+  "preferred_task_types": [
+    "business-agent-task",
+    "line-ops",
+    "workspace-task"
+  ],
+  "handoff": {
+    "can_receive_tasks": true,
+    "can_send_messages": true,
+    "requires_adapter": true
+  },
+  "updated_at": "2026-06-13T13:21:54+07:00"
+}

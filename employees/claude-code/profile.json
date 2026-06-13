@@ -1,0 +1,10 @@
+{
+  "id": "claude-code",
+  "name": "claude-code",
+  "role": "runtime-agent",
+  "runtime": "openclaw",
+  "workspace": "/Users/owner/openclaw/agents/claude-code",
+  "status": "candidate",
+  "source": "openclaw_runtime_dir",
+  "created_at": "2026-06-13T13:28:34+07:00"
+}
