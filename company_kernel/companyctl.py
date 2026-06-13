@@ -5922,6 +5922,106 @@ def cmd_verifier_accuracy(args: argparse.Namespace) -> int:
     return 0
 
 
+def a2a_telegram_keyboard(request: dict) -> dict:
+    """Build the Telegram inline-keyboard payload the operator's approval bot posts.
+    callback_data encodes the decision + request id (Telegram caps callback_data at 64 bytes)."""
+    rid = request["a2a_request_id"]
+    text = (
+        "🔐 Agent-to-Agent 申请\n"
+        f"发起: {request['source_agent']} → {request['target_agent']}\n"
+        f"动作: {request['action']}\n"
+        f"请求ID: {rid}"
+    )
+    return {
+        "text": text,
+        "reply_markup": {
+            "inline_keyboard": [[
+                {"text": "✅ 同意", "callback_data": f"a2a:approve:{rid}"},
+                {"text": "❌ 拒绝", "callback_data": f"a2a:deny:{rid}"},
+            ]]
+        },
+    }
+
+
+def record_a2a_request_internal(conn: sqlite3.Connection, *, source_agent: str, target_agent: str,
+                                action: str, payload: str) -> dict:
+    """Queue an agent-to-agent request for owner approval. Default-deny: nothing crosses
+    until a human (or rule) approves, and every decision is audited."""
+    rid = f"a2a-{datetime.now().strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:6]}"
+    ts = now()
+    src = resolve_employee_alias(source_agent) if source_agent else ""
+    tgt = resolve_employee_alias(target_agent) if target_agent else ""
+    conn.execute(
+        "INSERT INTO a2a_requests(a2a_request_id, source_agent, target_agent, action, payload, status, created_at) VALUES(?,?,?,?,?,'pending',?)",
+        (rid, src, tgt, action or "", payload or "", ts),
+    )
+    conn.commit()
+    record_event(conn, "a2a.requested", src, payload={"a2a_request_id": rid, "target_agent": tgt, "action": action})
+    audit(conn, src, "a2a.request", rid, {"target_agent": tgt, "action": action})
+    request = {"a2a_request_id": rid, "source_agent": src, "target_agent": tgt, "action": action, "payload": payload, "status": "pending", "created_at": ts}
+    request["telegram"] = a2a_telegram_keyboard(request)
+    return request
+
+
+def decide_a2a_internal(conn: sqlite3.Connection, *, a2a_request_id: str, by: str, decision: str) -> dict:
+    if decision not in {"approved", "denied"}:
+        raise SystemExit("decision must be approved or denied")
+    row = conn.execute("SELECT * FROM a2a_requests WHERE a2a_request_id = ?", (a2a_request_id,)).fetchone()
+    if not row:
+        return {"ok": False, "error": "a2a request not found", "a2a_request_id": a2a_request_id}
+    if row["status"] != "pending":
+        return {"ok": False, "error": f"already {row['status']}", "a2a_request_id": a2a_request_id, "status": row["status"]}
+    actor = resolve_employee_alias(by) if by else ""
+    ts = now()
+    conn.execute("UPDATE a2a_requests SET status = ?, decided_by = ?, decided_at = ? WHERE a2a_request_id = ?", (decision, actor, ts, a2a_request_id))
+    conn.commit()
+    record_event(conn, "a2a.approved" if decision == "approved" else "a2a.denied", actor, payload={"a2a_request_id": a2a_request_id, "source_agent": row["source_agent"], "target_agent": row["target_agent"]})
+    audit(conn, actor, "a2a.approve" if decision == "approved" else "a2a.deny", a2a_request_id, {"source_agent": row["source_agent"], "target_agent": row["target_agent"], "action": row["action"]})
+    return {"ok": True, "a2a_request_id": a2a_request_id, "status": decision, "decided_by": actor, "decided_at": ts, "allowed": decision == "approved"}
+
+
+def cmd_a2a_request(args: argparse.Namespace) -> int:
+    conn = connect()
+    try:
+        payload = record_a2a_request_internal(conn, source_agent=args.source, target_agent=args.target, action=args.action, payload=args.payload)
+    finally:
+        conn.close()
+    emit({"ok": True, **payload})
+    return 0
+
+
+def cmd_a2a_approve(args: argparse.Namespace) -> int:
+    conn = connect()
+    try:
+        result = decide_a2a_internal(conn, a2a_request_id=args.request_id, by=args.by, decision="approved")
+    finally:
+        conn.close()
+    emit(result)
+    return 0 if result.get("ok") else 1
+
+
+def cmd_a2a_deny(args: argparse.Namespace) -> int:
+    conn = connect()
+    try:
+        result = decide_a2a_internal(conn, a2a_request_id=args.request_id, by=args.by, decision="denied")
+    finally:
+        conn.close()
+    emit(result)
+    return 0 if result.get("ok") else 1
+
+
+def cmd_a2a_list(args: argparse.Namespace) -> int:
+    conn = connect_readonly()
+    try:
+        where = "WHERE status = ?" if args.status else ""
+        params = (args.status, args.limit) if args.status else (args.limit,)
+        items = rows(conn, f"SELECT a2a_request_id, source_agent, target_agent, action, status, decided_by, created_at FROM a2a_requests {where} ORDER BY created_at DESC LIMIT ?", params)
+    finally:
+        conn.close()
+    emit({"ok": True, "a2a_requests": items})
+    return 0
+
+
 def cmd_budget_summary(args: argparse.Namespace) -> int:
     conn = connect_readonly()
     try:
@@ -12868,6 +12968,27 @@ def build_parser() -> argparse.ArgumentParser:
 
     verifier_accuracy = sub.add_parser("verifier-accuracy")
     verifier_accuracy.set_defaults(func=cmd_verifier_accuracy)
+
+    a2a = sub.add_parser("a2a")
+    a2a_sub = a2a.add_subparsers(dest="a2a_cmd", required=True)
+    a2a_request = a2a_sub.add_parser("request")
+    a2a_request.add_argument("--source", required=True)
+    a2a_request.add_argument("--target", required=True)
+    a2a_request.add_argument("--action", default="")
+    a2a_request.add_argument("--payload", default="")
+    a2a_request.set_defaults(func=cmd_a2a_request)
+    a2a_approve = a2a_sub.add_parser("approve")
+    a2a_approve.add_argument("--request-id", required=True)
+    a2a_approve.add_argument("--by", default="")
+    a2a_approve.set_defaults(func=cmd_a2a_approve)
+    a2a_deny = a2a_sub.add_parser("deny")
+    a2a_deny.add_argument("--request-id", required=True)
+    a2a_deny.add_argument("--by", default="")
+    a2a_deny.set_defaults(func=cmd_a2a_deny)
+    a2a_list = a2a_sub.add_parser("list")
+    a2a_list.add_argument("--status", default="")
+    a2a_list.add_argument("--limit", type=int, default=50)
+    a2a_list.set_defaults(func=cmd_a2a_list)
 
     budget = sub.add_parser("budget")
     budget_sub = budget.add_subparsers(dest="budget_cmd", required=True)

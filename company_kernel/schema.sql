@@ -447,3 +447,15 @@ CREATE TABLE IF NOT EXISTS verifier_runs (
   reviewed_at TEXT NOT NULL DEFAULT '',
   created_at TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS a2a_requests (
+  a2a_request_id TEXT PRIMARY KEY,
+  source_agent TEXT NOT NULL DEFAULT '',
+  target_agent TEXT NOT NULL DEFAULT '',
+  action TEXT NOT NULL DEFAULT '',
+  payload TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL DEFAULT 'pending',
+  decided_by TEXT NOT NULL DEFAULT '',
+  decided_at TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL
+);

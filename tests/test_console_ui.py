@@ -117,3 +117,30 @@ class GatewayPathDecodingTest(unittest.TestCase):
         # gateway must hand route_post the DECODED path, so companyctl gets the real id
         self.assertIn(raw_id, captured["path"])
         self.assertNotIn("%", captured["path"])
+
+
+class MetricsEndpointsTest(ConsoleUiTest):
+    """The two survival-metric endpoints power the console Metrics tab."""
+
+    def test_economics_endpoint(self) -> None:
+        status, ctype, body = self.fetch("/v1/economics")
+        self.assertEqual(HTTPStatus.OK, status)
+        data = json.loads(body)
+        self.assertTrue(data["ok"])
+        self.assertIn("by_task_type", data)
+        self.assertIn("totals", data)
+
+    def test_verifier_accuracy_endpoint(self) -> None:
+        status, ctype, body = self.fetch("/v1/verifier-accuracy")
+        self.assertEqual(HTTPStatus.OK, status)
+        data = json.loads(body)
+        self.assertTrue(data["ok"])
+        self.assertIn("by_kind", data)
+        self.assertIn("accuracy", data["totals"])
+
+    def test_console_has_metrics_tab(self) -> None:
+        _, _, body = self.fetch("/")
+        self.assertIn('data-v="metrics"', body)
+        self.assertIn("loadMetrics", body)
+        self.assertIn("/v1/economics", body)
+        self.assertIn("/v1/verifier-accuracy", body)

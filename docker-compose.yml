@@ -1,0 +1,24 @@
+services:
+  company-kernel:
+    build: .
+    image: company-kernel:latest
+    container_name: company-kernel
+    restart: unless-stopped
+    ports:
+      - "8765:8765"
+    volumes:
+      - company-kernel-data:/data
+    environment:
+      COMPANY_KERNEL_API_HOST: "0.0.0.0"
+      COMPANY_KERNEL_API_PORT: "8765"
+      COMPANY_KERNEL_DB_PATH: "/data/company.sqlite"
+      # Bearer-token auth (optional but recommended for any non-loopback exposure):
+      # COMPANY_KERNEL_API_TOKEN: "change-me"
+      # Private-deployment license (leave enforcement off for self-host/dev):
+      # COMPANY_KERNEL_LICENSE_ENFORCE: "1"
+      # COMPANY_KERNEL_LICENSE_KEY: "CK1.xxxxx.yyyyy"
+      # COMPANY_KERNEL_LICENSE_SECRET: "vendor-secret"
+    command: ["all"]
+
+volumes:
+  company-kernel-data:
