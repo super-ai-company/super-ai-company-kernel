@@ -5582,7 +5582,7 @@ class CompanyKernelCoreTest(unittest.TestCase):
 
         def fake_run_codex(task_card: Path, workspace: Path, output: Path, events: Path, sandbox: str, model: str, isolation: str, sandbox_profile: str, timeout_seconds: int = 1800) -> tuple[int, str]:
             calls.append({"task_card": task_card, "workspace": workspace, "output": output, "events": events, "sandbox": sandbox, "model": model, "isolation": isolation, "sandbox_profile": sandbox_profile})
-            output.write_text("codex completed\n", encoding="utf-8")
+            output.write_text("codex completed\nSTATUS: completed\n", encoding="utf-8")
             events.write_text(json.dumps({"event": "done"}, ensure_ascii=False) + "\n", encoding="utf-8")
             return 0, f"codex exec -C {workspace} -s {sandbox}"
 

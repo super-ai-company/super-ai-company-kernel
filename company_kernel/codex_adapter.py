@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import shutil
 import sqlite3
 import subprocess
@@ -181,6 +182,56 @@ def send_source_progress(agent: str, source: str, body: str) -> dict:
     return {"ok": code == 0, "exit_code": code, "message_id": message_id, "payload": payload, "stderr": err[-1000:]}
 
 
+WORKSPACE_DIRECTIVE = re.compile(r"^\s*(?:工作区|workspace)\s*[:：]\s*(\S+)\s*$", re.IGNORECASE | re.MULTILINE)
+VERDICT_RE = re.compile(r"^\s*STATUS\s*[:：]\s*(completed|done|blocked)\b\s*[-—–:：]?\s*(.*)$", re.IGNORECASE | re.MULTILINE)
+
+
+def resolve_task_workspace(task: sqlite3.Row, default: Path) -> tuple[Path, str]:
+    """Honor a per-task `工作区: /abs/path` (or `workspace: /abs/path`) directive in the description.
+
+    Returns (workspace, error). A non-empty error means the directive is invalid and the
+    task must be blocked instead of silently running in the wrong directory.
+    """
+    text = str(task["description"] or "")
+    match = WORKSPACE_DIRECTIVE.search(text)
+    if not match:
+        return default, ""
+    raw = match.group(1)
+    candidate = Path(raw).expanduser()
+    if not candidate.is_absolute():
+        return default, f"task workspace directive must be an absolute path, got: {raw}"
+    candidate = candidate.resolve()
+    if candidate == ROOT or ROOT in candidate.parents:
+        return default, (
+            "task workspace directive points inside Company Kernel; "
+            "kernel self-modification must go through the RFC/approval flow, not a worker task"
+        )
+    if not candidate.is_dir():
+        return default, f"task workspace directive does not exist or is not a directory: {candidate}"
+    return candidate, ""
+
+
+def parse_verdict(output: Path) -> tuple[str, str]:
+    """Read codex's final message and extract its explicit self-verdict.
+
+    Returns (verdict, reason) where verdict is one of: completed / blocked / missing.
+    Exit code 0 only proves the codex PROCESS ended normally — the task outcome must
+    come from an explicit `STATUS:` line, otherwise `done` would silently hide blockers.
+    """
+    try:
+        text = output.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return "missing", "no codex output captured"
+    matches = list(VERDICT_RE.finditer(text))
+    if not matches:
+        return "missing", ""
+    last = matches[-1]
+    verdict = last.group(1).lower()
+    if verdict == "done":
+        verdict = "completed"
+    return verdict, (last.group(2) or "").strip()
+
+
 def build_task_card(task: sqlite3.Row, workspace: Path, sandbox: str) -> str:
     return "\n".join(
         [
@@ -214,6 +265,16 @@ def build_task_card(task: sqlite3.Row, workspace: Path, sandbox: str) -> str:
             "",
             "- Return changed files, verification commands and results, blocker/risk, and next action.",
             "- If no code change is safe, explain why and return a blocker.",
+            "",
+            "## Required final verdict (MANDATORY)",
+            "",
+            "The LAST line of your final message MUST be exactly one of:",
+            "",
+            "- `STATUS: completed` — only when every acceptance criterion actually passed",
+            "- `STATUS: blocked - <one concrete reason>` — when anything failed, is missing, or could not be verified",
+            "",
+            "Without this line the kernel treats the task as NOT done and blocks it for human review.",
+            "Never output `STATUS: completed` when verification did not actually pass.",
             "",
             "## Company Kernel Metadata",
             "",
@@ -530,13 +591,21 @@ def process(args: argparse.Namespace) -> int:
         run_companyctl(["heartbeat", "--agent", args.agent])
         emit({"ok": True, "processed": 0, "agent": args.agent, "note": "no submitted Codex task"})
         return 0
-    workspace = Path(args.workspace or emp["workspace"] or DEFAULT_WORKSPACE).expanduser()
+    default_workspace = Path(args.workspace or emp["workspace"] or DEFAULT_WORKSPACE).expanduser()
+    workspace, workspace_error = resolve_task_workspace(task, default_workspace)
     artifact = paths(args.agent, task["id"])
     artifact["task_card"].write_text(build_task_card(task, workspace, args.sandbox), encoding="utf-8")
     claim_code, claim_out, claim_err = run_companyctl(["task", "claim", "--agent", args.agent, "--task-id", task["id"]])
     if claim_code != 0:
         emit({"ok": False, "error": "claim failed", "stdout": claim_out, "stderr": claim_err})
         return claim_code
+    if workspace_error:
+        blocker = f"invalid task workspace directive: {workspace_error}"
+        write_report(artifact["report"], task, executed=False, status="blocked", detail=blocker, task_card=artifact["task_card"], output=artifact["last_message"])
+        done_code, done_out, done_err = run_companyctl(["task", "block", "--agent", args.agent, "--task-id", task["id"], "--blocker", blocker])
+        run_companyctl(["heartbeat", "--agent", args.agent])
+        emit({"ok": done_code == 0, "processed": 1, "executed": False, "verdict": "workspace_invalid", "task_id": task["id"], "blocker": blocker, "report": str(artifact["report"]), "companyctl_stdout": done_out, "companyctl_stderr": done_err})
+        return done_code
     if not args.execute:
         detail = "Codex adapter dry-run generated task card. Use --execute to run codex exec."
         write_report(artifact["report"], task, executed=False, status="completed", detail=detail, task_card=artifact["task_card"], output=artifact["last_message"])
@@ -546,15 +615,28 @@ def process(args: argparse.Namespace) -> int:
         return done_code
     code, cmd = run_codex(artifact["task_card"], workspace, artifact["last_message"], artifact["events"], args.sandbox, args.model, args.isolation, args.sandbox_profile, timeout_seconds=args.timeout_seconds)
     if code == 0:
+        verdict, verdict_reason = parse_verdict(artifact["last_message"])
+    else:
+        verdict, verdict_reason = "crashed", f"codex exec exit_code={code}"
+    if verdict == "completed":
         detail = execution_detail(cmd, artifact["last_message"], success=True)
         write_report(artifact["report"], task, executed=True, status="completed", detail=detail, task_card=artifact["task_card"], output=artifact["last_message"])
         done_code, done_out, done_err = run_companyctl(["task", "done", "--agent", args.agent, "--task-id", task["id"], "--summary", detail, "--evidence", str(artifact["report"])])
     else:
-        detail = execution_detail(cmd, artifact["last_message"], exit_code=code, success=False)
+        if verdict == "blocked":
+            header = f"codex verdict: blocked — {verdict_reason or 'no reason given'}"
+        elif verdict == "missing":
+            header = "codex output has no `STATUS:` verdict line; exit code 0 alone does not prove completion — blocked for human review"
+        else:
+            header = f"codex execution failed: {verdict_reason}"
+        detail = header + "\n\n" + execution_detail(cmd, artifact["last_message"], exit_code=code, success=False)
         write_report(artifact["report"], task, executed=True, status="blocked", detail=detail, task_card=artifact["task_card"], output=artifact["last_message"])
         done_code, done_out, done_err = run_companyctl(["task", "block", "--agent", args.agent, "--task-id", task["id"], "--blocker", detail])
     run_companyctl(["heartbeat", "--agent", args.agent])
-    emit({"ok": done_code == 0 and code == 0, "processed": 1, "executed": True, "task_id": task["id"], "codex_exit_code": code, "task_card": str(artifact["task_card"]), "last_message": str(artifact["last_message"]), "events": str(artifact["events"]), "report": str(artifact["report"]), "companyctl_stdout": done_out, "companyctl_stderr": done_err})
+    # ok=False only for infrastructure failures (crash/timeout) so the daemon retry policy
+    # re-runs those; deterministic verdict blocks must NOT auto-retry into the same wall.
+    infra_failure = code != 0
+    emit({"ok": done_code == 0 and not infra_failure, "processed": 1, "executed": True, "verdict": verdict, "verdict_reason": verdict_reason, "task_id": task["id"], "codex_exit_code": code, "task_card": str(artifact["task_card"]), "last_message": str(artifact["last_message"]), "events": str(artifact["events"]), "report": str(artifact["report"]), "companyctl_stdout": done_out, "companyctl_stderr": done_err})
     return done_code if done_code != 0 else code
 
 

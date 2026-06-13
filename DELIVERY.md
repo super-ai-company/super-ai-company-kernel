@@ -51,6 +51,13 @@ Implemented and verified:
 - New unclaimed-task watchdog: each tick the daemon alerts `owner-shift` (config `watchdog`) once per task that stays `submitted` beyond `unclaimed_minutes` (default 10), so a broken relay chain is detected in minutes instead of silently dying.
 - New tests in `tests/test_daemon_watchdog_and_timeout.py` (watchdog dedup, disabled mode, timeout blocking with evidence).
 
+## 2026-06-13 Verdict Gate and Per-Task Workspace
+
+- Codex queue tasks now require an explicit final `STATUS: completed` or `STATUS: blocked - <reason>` line in codex output. Exit code 0 without a verdict no longer marks tasks done — they block for human review, eliminating the "done but actually blocked" false positive found during the Damov4 pilot.
+- Verdict-based blocks emit ok=true at adapter level (deterministic outcome, no auto-retry); only crashes/timeouts remain infra failures eligible for the daemon retry policy.
+- Task descriptions can carry `工作区: /abs/path` (or `workspace: /abs/path`); the codex adapter validates it (absolute, existing, not inside Company Kernel) and runs codex exec there, giving per-task write scope. Invalid directives block the task before execution.
+- 19 new tests in `tests/test_codex_verdict_and_workspace.py` cover verdict parsing, workspace resolution, and full queue-path integration for every branch.
+
 ## Verification Commands
 
 ```bash

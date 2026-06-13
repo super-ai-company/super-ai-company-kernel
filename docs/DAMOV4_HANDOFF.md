@@ -22,6 +22,8 @@ bin/companyctl project create --project-id damov4 --title "Damov4 POS" \
   --owner claude --goal "<项目一句话目标>" --acceptance "<验收1>;<验收2>"
 
 # 派任务给 codex（任务卡写得越细，codex 干得越好：目标、涉及文件路径、验收标准、禁止事项）
+# 重要：描述里的 `工作区: /绝对路径` 会真实生效——codex 将在该目录执行并获得写权限。
+# 路径必须是已存在的绝对路径；指向 Company Kernel 自身会被拒绝（内核变更走 RFC）。
 bin/companyctl task submit --from claude --to codex \
   --title "<动词开头的明确目标>" \
   --description "工作区: <代码仓库绝对路径>
@@ -43,6 +45,12 @@ bin/companyctl task reopen --task-id <id> --by claude --reason "<哪里不合格
 # 项目整体验收
 bin/companyctl project review --project-id damov4
 ```
+
+### 裁决门（必须知道：done 不再可能是假象）
+
+- codex 的最终输出必须以 `STATUS: completed` 或 `STATUS: blocked - <原因>` 结尾（任务卡会自动要求它）。
+- 只有显式 `STATUS: completed` 才会把任务标成 completed；输出缺标记或标 blocked 一律进入 blocked 状态等待人工/PM 复核。
+- 所以你看到 completed 就可以初步信任；看到 blocked 先读 blocker 字段（已含 codex 给出的原因和输出摘要），需要时再抽查 evidence。
 
 ### 执行机制（你不用管，但要知道）
 
