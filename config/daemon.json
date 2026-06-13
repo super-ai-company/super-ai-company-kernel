@@ -15,6 +15,11 @@
     "from": "openclaw-main",
     "max_alerts_per_tick": 5
   },
+  "backup": {
+    "enabled": true,
+    "interval_hours": 24,
+    "keep": 14
+  },
   "adapter_workers": [
     {
       "agent": "codex",
@@ -24,6 +29,8 @@
         "--execute",
         "--sandbox",
         "workspace-write",
+        "--model",
+        "gpt-5.5",
         "--timeout-seconds",
         "1800"
       ],

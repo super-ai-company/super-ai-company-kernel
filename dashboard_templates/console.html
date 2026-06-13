@@ -286,7 +286,8 @@ async function detectApi() {
   for (const base of API_CANDIDATES()) {
     try {
       const res = await fetch(base + "/v1/health", {signal: AbortSignal.timeout(2500)});
-      if (res.ok) { API = base; $("connBanner").style.display = "none"; return true; }
+      // 401 still means the gateway is reachable (just needs a token) — treat as connected
+      if (res.ok || res.status === 401) { API = base; $("connBanner").style.display = "none"; return true; }
     } catch (e) {}
   }
   $("connBanner").style.display = "flex";
@@ -310,11 +311,22 @@ const ago = t => { if(!t) return "从未"; const s = (Date.now()-new Date(t))/1e
   if(s<60) return Math.floor(s)+" 秒前"; if(s<3600) return Math.floor(s/60)+" 分钟前"; if(s<86400) return Math.floor(s/3600)+" 小时前"; return Math.floor(s/86400)+" 天前"; };
 const isOnDuty = hb => hb && (Date.now()-new Date(hb)) < 10*60*1000;
 
+function apiToken() { return localStorage.getItem("ck_api_token") || ""; }
+function setApiToken(t) { if (t) localStorage.setItem("ck_api_token", t); else localStorage.removeItem("ck_api_token"); }
 async function api(path, opts={}) {
-  const res = await fetch(API+path, {headers:{"Content-Type":"application/json"}, ...opts,
+  const headers = {"Content-Type":"application/json", ...(opts.headers||{})};
+  const tok = apiToken();
+  if (tok) headers["Authorization"] = "Bearer " + tok;
+  const res = await fetch(API+path, {headers, ...opts,
     body: opts.body ? JSON.stringify(opts.body) : undefined});
   let data = {};
   try { data = await res.json(); } catch(e) {}
+  if (res.status === 401) {
+    // gateway requires a token; prompt once and retry
+    const entered = prompt("此内核已启用鉴权，请输入 API token（COMPANY_KERNEL_API_TOKEN）：");
+    if (entered) { setApiToken(entered.trim()); return api(path, opts); }
+    throw new Error("需要 API token 才能访问");
+  }
   if (!res.ok) throw new Error(data.error || data.stderr || ("HTTP "+res.status));
   return data;
 }

@@ -20,6 +20,23 @@ CONSOLE_TEMPLATE = Path(
 ).resolve() / "dashboard_templates" / "console.html"
 CONSOLE_PATHS = {"/", "/console", "/ui", "/index.html"}
 
+# Auth is opt-in: set COMPANY_KERNEL_API_TOKEN to require a Bearer token on every API
+# call. When unset, the gateway stays open (relies on 127.0.0.1 binding) for backward
+# compatibility. The console shell (GET /) and CORS preflight never require the token so
+# the page can load and then prompt the user for it; all data/mutation endpoints do.
+def api_token() -> str:
+    return str(os.environ.get("COMPANY_KERNEL_API_TOKEN", "") or "").strip()
+
+
+def request_authorized(headers) -> bool:
+    token = api_token()
+    if not token:
+        return True  # auth disabled
+    provided = str(headers.get("Authorization", "") or "")
+    if provided.lower().startswith("bearer "):
+        provided = provided[7:].strip()
+    return bool(provided) and provided == token
+
 
 API_VERSION = "v1"
 API_CAPABILITIES = [
@@ -1125,6 +1142,13 @@ class ApiHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(raw)
 
+    def require_auth(self) -> bool:
+        """Return True if the request may proceed; else send 401 and return False."""
+        if request_authorized(self.headers):
+            return True
+        self.send_json(HTTPStatus.UNAUTHORIZED, {"ok": False, "error": "unauthorized: missing or invalid Bearer token"})
+        return False
+
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
         if parsed.path in CONSOLE_PATHS:
@@ -1133,11 +1157,15 @@ class ApiHandler(BaseHTTPRequestHandler):
             else:
                 self.send_html(HTTPStatus.NOT_FOUND, "<h1>console template missing</h1><p>expected at dashboard_templates/console.html</p>")
             return
+        if not self.require_auth():
+            return
         query = parse_qs(parsed.query)
         status, payload = route_get(unquote(parsed.path), query)
         self.send_json(status, payload)
 
     def do_POST(self) -> None:
+        if not self.require_auth():
+            return
         try:
             body = self.read_json()
         except ValueError as exc:
@@ -1153,6 +1181,8 @@ class ApiHandler(BaseHTTPRequestHandler):
         self.send_json(status, payload)
 
     def do_PATCH(self) -> None:
+        if not self.require_auth():
+            return
         try:
             body = self.read_json()
         except ValueError as exc:
@@ -1168,6 +1198,8 @@ class ApiHandler(BaseHTTPRequestHandler):
         self.send_json(status, payload)
 
     def do_DELETE(self) -> None:
+        if not self.require_auth():
+            return
         try:
             body = self.read_json()
         except ValueError as exc:
