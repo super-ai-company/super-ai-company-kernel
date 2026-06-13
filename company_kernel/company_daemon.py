@@ -138,6 +138,12 @@ def run_adapter(worker: dict) -> dict:
 
 def record_adapter_run(state: dict) -> None:
     task_id = adapter_state_task_id(state)
+    # Don't pollute health/retry with non-actionable runs: a tick where the worker
+    # claimed no task and produced no work (e.g. "no submitted task", or an environment
+    # gap like "codex command not found" before any claim) is not a task failure.
+    # Only record when a task was involved OR real work was processed.
+    if not task_id and int(state.get("processed", 0) or 0) == 0:
+        return
     conn = companyctl.connect()
     try:
         trace_id = companyctl.trace_id_for_task(conn, task_id, state.get("trace_id", ""))

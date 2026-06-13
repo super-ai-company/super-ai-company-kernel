@@ -4,6 +4,7 @@ import json
 import threading
 import unittest
 import urllib.request
+from unittest import mock
 from http import HTTPStatus
 
 from company_kernel import api_gateway
@@ -69,3 +70,50 @@ class ConsoleUiTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class GatewayPathDecodingTest(unittest.TestCase):
+    """Approval/task IDs with non-ASCII chars must survive percent-encoding through the gateway.
+
+    Reproduces the live bug where console approve failed for IDs like
+    'approval-route-S04-只读态-...': encodeURIComponent encoded the Chinese chars and the
+    gateway looked them up still-encoded, so the lookup missed and approval failed.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.server = api_gateway.ThreadingHTTPServer(("127.0.0.1", 0), api_gateway.ApiHandler)
+        cls.server.quiet = True
+        cls.port = cls.server.server_address[1]
+        cls.thread = threading.Thread(target=cls.server.serve_forever, daemon=True)
+        cls.thread.start()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.server.shutdown()
+        cls.server.server_close()
+
+    def test_encoded_chinese_id_is_decoded_before_routing(self):
+        import urllib.parse
+        captured = {}
+
+        def fake_route_post(path, body):
+            captured["path"] = path
+            from http import HTTPStatus
+            return HTTPStatus.OK, {"ok": True, "echo_path": path}
+
+        raw_id = "approval-route-S04-只读态-预结单标注-kernel_change"
+        encoded = urllib.parse.quote(raw_id)
+        self.assertNotEqual(raw_id, encoded, "test id must actually need encoding")
+
+        with mock.patch.object(api_gateway, "route_post", fake_route_post):
+            data = json.dumps({"by": "owner", "reason": "test"}).encode()
+            req = urllib.request.Request(
+                f"http://127.0.0.1:{self.port}/v1/approvals/{encoded}/approve",
+                data=data, headers={"Content-Type": "application/json"}, method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=10) as res:
+                self.assertEqual(200, res.status)
+        # gateway must hand route_post the DECODED path, so companyctl gets the real id
+        self.assertIn(raw_id, captured["path"])
+        self.assertNotIn("%", captured["path"])

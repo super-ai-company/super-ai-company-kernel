@@ -103,3 +103,44 @@ class CodexTimeoutTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class AdapterRunNoiseTest(unittest.TestCase):
+    """Non-actionable adapter ticks (no task, no work) must not be recorded as failures."""
+
+    def test_no_task_no_work_run_is_not_recorded(self):
+        recorded = {"called": False}
+
+        class FakeConn:
+            def execute(self, *a, **k):
+                recorded["called"] = True
+                class C:
+                    def fetchone(self_): return [0]
+                return C()
+            def commit(self): pass
+            def close(self): pass
+
+        with mock.patch.object(company_daemon.companyctl, "connect", lambda: FakeConn()):
+            company_daemon.record_adapter_run({"agent": "codex", "ok": False, "processed": 0, "runs": [], "at": iso(datetime.now(timezone.utc))})
+        self.assertFalse(recorded["called"], "empty no-task run should be skipped, not inserted")
+
+    def test_run_with_task_is_recorded(self):
+        recorded = {"insert": False}
+
+        class FakeConn:
+            def execute(self, sql, *a, **k):
+                if sql.strip().upper().startswith("INSERT"):
+                    recorded["insert"] = True
+                class C:
+                    def fetchone(self_): return {"max_attempt": 0}
+                return C()
+            def commit(self): pass
+            def close(self): pass
+
+        state = {"agent": "codex", "ok": False, "processed": 1,
+                 "runs": [{"parsed_stdout": {"task_id": "task-x"}}], "at": iso(datetime.now(timezone.utc)),
+                 "retry_policy": {"max_attempts": 3}}
+        with mock.patch.object(company_daemon.companyctl, "connect", lambda: FakeConn()), \
+                mock.patch.object(company_daemon.companyctl, "trace_id_for_task", lambda c, t, x: "trace-x"):
+            company_daemon.record_adapter_run(state)
+        self.assertTrue(recorded["insert"], "run with a task_id must be recorded")

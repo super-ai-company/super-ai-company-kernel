@@ -10,7 +10,7 @@
       "external_send": ["external send", "外发", "发送给客户", "发给客户", "发布", "publish"],
       "production_deploy": ["production deploy", "deploy", "上线", "生产部署"],
       "secret_change": ["secret", "token", "password", "密钥", "密码"],
-      "kernel_change": ["kernel", "schema", "approval rule", "内核", "审批规则", "通信协议"]
+      "kernel_change": ["company kernel", "companyctl", "company_kernel", "approval rule", "审批规则", "公司内核", "内核制度", "内核schema"]
     }
   }
 }

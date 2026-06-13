@@ -9,7 +9,7 @@ import threading
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 
 from . import companyctl
 from . import company_dashboard
@@ -1134,7 +1134,7 @@ class ApiHandler(BaseHTTPRequestHandler):
                 self.send_html(HTTPStatus.NOT_FOUND, "<h1>console template missing</h1><p>expected at dashboard_templates/console.html</p>")
             return
         query = parse_qs(parsed.query)
-        status, payload = route_get(parsed.path, query)
+        status, payload = route_get(unquote(parsed.path), query)
         self.send_json(status, payload)
 
     def do_POST(self) -> None:
@@ -1145,7 +1145,7 @@ class ApiHandler(BaseHTTPRequestHandler):
             return
         parsed = urlparse(self.path)
         try:
-            status, payload = route_post(parsed.path, body)
+            status, payload = route_post(unquote(parsed.path), body)
         except SystemExit as exc:
             status, payload = HTTPStatus.BAD_REQUEST, {"ok": False, "error": str(exc)}
         except ValueError as exc:
@@ -1160,7 +1160,7 @@ class ApiHandler(BaseHTTPRequestHandler):
             return
         parsed = urlparse(self.path)
         try:
-            status, payload = route_patch(parsed.path, body)
+            status, payload = route_patch(unquote(parsed.path), body)
         except SystemExit as exc:
             status, payload = HTTPStatus.BAD_REQUEST, {"ok": False, "error": str(exc)}
         except ValueError as exc:
@@ -1175,7 +1175,7 @@ class ApiHandler(BaseHTTPRequestHandler):
             return
         parsed = urlparse(self.path)
         try:
-            status, payload = route_delete(parsed.path, body)
+            status, payload = route_delete(unquote(parsed.path), body)
         except SystemExit as exc:
             status, payload = HTTPStatus.BAD_REQUEST, {"ok": False, "error": str(exc)}
         except ValueError as exc:
