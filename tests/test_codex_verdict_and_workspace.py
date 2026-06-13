@@ -285,3 +285,28 @@ class CostGateTest(unittest.TestCase):
                 contextlib.redirect_stdout(captured):
             codex_adapter.main(["--agent", "codex", "--execute", "--max-cost", "5"])
         self.assertTrue(ran["called"], "under the cap codex should run")
+
+
+class VerifierGateIntegrationTest(QueueVerdictIntegrationTest):
+    """Even when the agent says STATUS: completed, a failing verifier blocks the task."""
+
+    def test_numeric_verifier_fail_blocks_despite_completed(self):
+        task = fake_task(description="算总额\n验收: numeric: 101062.00")
+        # agent claims completed but its output has the wrong number
+        result = self.run_adapter(task, "total=999\nSTATUS: completed\n")
+        self.assertEqual("verifier_failed", result["verdict"])
+        self.assertIn("block", self.verbs())
+        self.assertNotIn("done", self.verbs())
+
+    def test_numeric_verifier_pass_completes(self):
+        task = fake_task(description="算总额\n验收: numeric: 101062.00")
+        result = self.run_adapter(task, "result total=101062.00 done\nSTATUS: completed\n")
+        self.assertEqual("completed", result["verdict"])
+        self.assertIn("done", self.verbs())
+
+    def test_human_verifier_routes_to_review(self):
+        task = fake_task(description="设计稿\n验收: human")
+        result = self.run_adapter(task, "做完了\nSTATUS: completed\n")
+        self.assertEqual("needs_human", result["verdict"])
+        self.assertIn("block", self.verbs())
+        self.assertNotIn("done", self.verbs())

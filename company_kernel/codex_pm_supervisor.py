@@ -63,11 +63,51 @@ def active_task(conn: sqlite3.Connection, agent: str) -> sqlite3.Row | None:
     ).fetchone()
 
 
+# Lifecycle order of progress states, used only as a final tie-breaker when
+# mtime and the filename timestamp suffix are identical (synthetic/same-tick
+# writes). In production each file carries a distinct microsecond suffix.
+_STATE_RANK = {
+    "received": 0,
+    "acknowledged": 1,
+    "in_progress": 2,
+    "completed": 3,
+    "blocked": 4,
+    "stalled": 5,
+    "failed": 6,
+}
+
+
+def _state_rank_from_name(stem: str) -> int:
+    remainder = stem[len("progress_"):] if stem.startswith("progress_") else stem
+    for state, rank in _STATE_RANK.items():
+        if remainder == state or remainder.startswith(state + "_"):
+            return rank
+    return 99
+
+
+def progress_sort_key(path: Path) -> tuple[float, str, int]:
+    """Deterministic chronological key.
+
+    Filesystem mtime resolution can be as coarse as 1s, so multiple progress
+    files written in the same tick would tie and sort nondeterministically.
+    The filename carries a microsecond timestamp suffix
+    (``progress_<state>_<task_id>_<YYYYMMDD-HHMMSS-micros>.json``); we use it as
+    the primary tie-breaker so order is stable regardless of mtime granularity,
+    then fall back to lifecycle rank for fully synthetic same-instant writes.
+    """
+    try:
+        mtime = path.stat().st_mtime
+    except OSError:
+        mtime = 0.0
+    suffix = path.stem.rsplit("_", 1)[-1]
+    return (mtime, suffix, _state_rank_from_name(path.stem))
+
+
 def progress_files(workspace: Path) -> list[Path]:
     reports = workspace / "reports"
     if not reports.exists():
         return []
-    return sorted(reports.glob("progress_*.json"), key=lambda p: p.stat().st_mtime, reverse=True)
+    return sorted(reports.glob("progress_*.json"), key=progress_sort_key, reverse=True)
 
 
 def progress_task_id(data: dict[str, Any]) -> str:
@@ -90,7 +130,7 @@ def progress_history(workspace: Path, task_id: str) -> list[dict[str, Any]]:
     items: list[dict[str, Any]] = []
     if not task_id:
         return items
-    for path in sorted(progress_files(workspace), key=lambda p: p.stat().st_mtime):
+    for path in sorted(progress_files(workspace), key=progress_sort_key):
         data = load_json(path)
         report = data.get("report")
         if not isinstance(report, dict):

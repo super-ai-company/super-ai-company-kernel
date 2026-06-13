@@ -15,6 +15,7 @@ from . import companyctl
 from .adapter_result import compact_output, execution_detail
 from .db_paths import ensure_db_parent, resolve_db_path
 from .sandboxing import wrap_command
+from .verifiers import parse_verifier, verify_result
 
 
 ROOT = Path(os.environ.get("OPENCLAW_COMPANY_KERNEL_ROOT", Path(__file__).resolve().parents[1])).resolve()
@@ -745,6 +746,19 @@ def process(args: argparse.Namespace) -> int:
         verdict, verdict_reason = parse_verdict(artifact["last_message"])
     else:
         verdict, verdict_reason = "crashed", f"codex exec exit_code={code}"
+    # Pluggable verifier: when the agent claims completed, an external verifier (declared in
+    # the task card) has the final say. Agent self-report alone never marks a task done.
+    if verdict == "completed":
+        vkind, varg = parse_verifier(task["description"] or "")
+        if vkind != "status":
+            output_text = artifact["last_message"].read_text(encoding="utf-8", errors="replace") if artifact["last_message"].exists() else ""
+            vresult, vdetail = verify_result(vkind, varg, workspace=workspace, output_text=output_text, agent_verdict=verdict)
+            if vresult == "pass":
+                verdict_reason = f"verifier[{vkind}] pass: {vdetail}"
+            elif vresult == "needs_human":
+                verdict, verdict_reason = "needs_human", f"verifier[{vkind}]: {vdetail}"
+            else:  # fail / error
+                verdict, verdict_reason = "verifier_failed", f"verifier[{vkind}] {vresult}: {vdetail}"
     if verdict == "completed":
         detail = execution_detail(cmd, artifact["last_message"], success=True)
         write_report(artifact["report"], task, executed=True, status="completed", detail=detail, task_card=artifact["task_card"], output=artifact["last_message"])
@@ -758,6 +772,10 @@ def process(args: argparse.Namespace) -> int:
             header = f"codex verdict: blocked — {verdict_reason or 'no reason given'}"
         elif verdict == "missing":
             header = "codex output has no `STATUS:` verdict line; exit code 0 alone does not prove completion — blocked for human review"
+        elif verdict == "verifier_failed":
+            header = f"agent claimed completed but the result verifier rejected it — {verdict_reason}"
+        elif verdict == "needs_human":
+            header = f"result requires human verification — {verdict_reason}"
         else:
             header = f"codex execution failed: {verdict_reason}"
         detail = header + "\n\n" + execution_detail(cmd, artifact["last_message"], exit_code=code, success=False)
