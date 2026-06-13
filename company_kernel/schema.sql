@@ -431,3 +431,19 @@ CREATE TABLE IF NOT EXISTS budget_events (
   created_at TEXT NOT NULL,
   metadata_json TEXT NOT NULL DEFAULT '{}'
 );
+
+CREATE TABLE IF NOT EXISTS verifier_runs (
+  verifier_run_id TEXT PRIMARY KEY,
+  task_id TEXT NOT NULL DEFAULT '',
+  attempt_id TEXT NOT NULL DEFAULT '',
+  employee_id TEXT NOT NULL DEFAULT '',
+  kind TEXT NOT NULL DEFAULT 'status',
+  arg TEXT NOT NULL DEFAULT '',
+  result TEXT NOT NULL DEFAULT '',
+  agent_verdict TEXT NOT NULL DEFAULT '',
+  detail TEXT NOT NULL DEFAULT '',
+  human_review TEXT NOT NULL DEFAULT '',
+  reviewed_by TEXT NOT NULL DEFAULT '',
+  reviewed_at TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL
+);

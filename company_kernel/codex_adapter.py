@@ -78,6 +78,73 @@ def task_cost_so_far(task_id: str) -> float:
         conn.close()
 
 
+_TOKEN_KEY_PAIRS = (
+    ("input_tokens", "output_tokens"),
+    ("prompt_tokens", "completion_tokens"),
+    ("token_input", "token_output"),
+    ("inputTokens", "outputTokens"),
+)
+
+
+def _scan_token_dicts(node, found: list[tuple[int, int]]) -> None:
+    """Recursively collect (input, output) token pairs from any nested dict."""
+    if isinstance(node, dict):
+        for in_key, out_key in _TOKEN_KEY_PAIRS:
+            if in_key in node or out_key in node:
+                try:
+                    ti = int(node.get(in_key, 0) or 0)
+                    to = int(node.get(out_key, 0) or 0)
+                except (TypeError, ValueError):
+                    ti, to = 0, 0
+                if ti or to:
+                    found.append((ti, to))
+        for value in node.values():
+            _scan_token_dicts(value, found)
+    elif isinstance(node, list):
+        for value in node:
+            _scan_token_dicts(value, found)
+
+
+def parse_token_usage(events: Path) -> tuple[int, int]:
+    """Extract real token usage from a codex `exec --json` event stream.
+
+    codex emits cumulative token-count events under varying shapes
+    (`token_count`, nested `total_token_usage`, OpenAI-style `usage`), so we
+    scan every JSON line for any recognized input/output token pair and keep
+    the maximum seen — cumulative counts mean the largest is the run total.
+    Returns (0, 0) when no usage is present (older codex, non-JSON output)."""
+    if not events or not events.exists():
+        return 0, 0
+    max_in = max_out = 0
+    try:
+        text = events.read_text(encoding="utf-8")
+    except OSError:
+        return 0, 0
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line[0] not in "{[":
+            continue
+        try:
+            obj = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        found: list[tuple[int, int]] = []
+        _scan_token_dicts(obj, found)
+        for ti, to in found:
+            max_in = max(max_in, ti)
+            max_out = max(max_out, to)
+    return max_in, max_out
+
+
+def run_cost(token_input: int, token_output: int, runtime_seconds: int) -> float:
+    """Cost of a single run: token-based when usage is captured, else runtime
+    fallback. Shares companyctl.estimate_task_cost so cost-gate, economics, and
+    ledger all agree on one formula."""
+    rates = (companyctl.load_pricing_config().get("cost_rates") or {})
+    ev = {"amount": 0, "token_input": token_input, "token_output": token_output, "runtime_seconds": runtime_seconds}
+    return round(companyctl.estimate_task_cost(ev, rates), 6)
+
+
 def next_codex_task(agent: str) -> sqlite3.Row | None:
     conn = connect()
     try:
@@ -748,17 +815,22 @@ def process(args: argparse.Namespace) -> int:
         verdict, verdict_reason = "crashed", f"codex exec exit_code={code}"
     # Pluggable verifier: when the agent claims completed, an external verifier (declared in
     # the task card) has the final say. Agent self-report alone never marks a task done.
+    verifier_kind = verifier_arg = verifier_result = verifier_detail = ""
     if verdict == "completed":
         vkind, varg = parse_verifier(task["description"] or "")
+        verifier_kind, verifier_arg = vkind, varg
         if vkind != "status":
             output_text = artifact["last_message"].read_text(encoding="utf-8", errors="replace") if artifact["last_message"].exists() else ""
             vresult, vdetail = verify_result(vkind, varg, workspace=workspace, output_text=output_text, agent_verdict=verdict)
+            verifier_result, verifier_detail = vresult, vdetail
             if vresult == "pass":
                 verdict_reason = f"verifier[{vkind}] pass: {vdetail}"
             elif vresult == "needs_human":
                 verdict, verdict_reason = "needs_human", f"verifier[{vkind}]: {vdetail}"
             else:  # fail / error
                 verdict, verdict_reason = "verifier_failed", f"verifier[{vkind}] {vresult}: {vdetail}"
+        else:
+            verifier_result, verifier_detail = "pass", "agent STATUS: completed (no external verifier declared)"
     if verdict == "completed":
         detail = execution_detail(cmd, artifact["last_message"], success=True)
         write_report(artifact["report"], task, executed=True, status="completed", detail=detail, task_card=artifact["task_card"], output=artifact["last_message"])
@@ -785,6 +857,9 @@ def process(args: argparse.Namespace) -> int:
         attempt_status = "failed"
         session_status = "failed"
     _, tool_payload, _ = run_companyctl_json(["tool-call", "finish", "--tool-call-id", tool_call_id, "--status", tool_status, "--output-summary", detail[:500], "--error", "" if code == 0 else detail[:500]])
+    token_input, token_output = parse_token_usage(artifact["events"])
+    amount = run_cost(token_input, token_output, runtime_seconds)
+    cost_basis = "tokens" if (token_input or token_output) else "runtime"
     _, budget_payload, _ = run_companyctl_json(
         [
             "budget",
@@ -798,9 +873,13 @@ def process(args: argparse.Namespace) -> int:
             "--cost-type",
             "codex_runtime",
             "--amount",
-            "0",
+            str(amount),
             "--currency",
             "USD",
+            "--token-input",
+            str(token_input),
+            "--token-output",
+            str(token_output),
             "--model-name",
             args.model or "",
             "--provider",
@@ -808,9 +887,21 @@ def process(args: argparse.Namespace) -> int:
             "--runtime-seconds",
             str(runtime_seconds),
             "--summary",
-            f"codex exec exit_code={code}",
+            f"codex exec exit_code={code} cost_basis={cost_basis} in={token_input} out={token_output}",
         ]
     )
+    if verifier_kind:
+        run_companyctl([
+            "verifier", "record",
+            "--task-id", task["id"],
+            "--attempt-id", attempt_id,
+            "--employee", args.agent,
+            "--kind", verifier_kind,
+            "--arg", verifier_arg or "",
+            "--result", verifier_result or "",
+            "--agent-verdict", "completed",
+            "--detail", (verifier_detail or "")[:500],
+        ])
     _, finish_payload, finish_err = run_companyctl_json(["task", "attempt", "finish", "--attempt-id", attempt_id, "--status", attempt_status, "--error", "" if code == 0 else detail[:500]])
     _, stopped_session, _ = run_companyctl_json(["runtime", "session", "stop", "--session-id", session_id, "--status", session_status, "--error", "" if code == 0 else detail[:500]])
     run_companyctl(["heartbeat", "--agent", args.agent])

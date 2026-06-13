@@ -5193,6 +5193,7 @@ def decide_evidence_internal(conn: sqlite3.Connection, *, evidence_id: str, by: 
     metadata["acceptance"] = decision
     conn.execute("UPDATE evidence SET metadata_json = ? WHERE evidence_id = ?", (json.dumps(metadata, ensure_ascii=False), evidence_id))
     audit(conn, actor, "evidence.accept" if status == "accepted" else "evidence.reject", evidence_id, {"task_id": evidence.get("task_id", ""), "attempt_id": evidence.get("attempt_id", ""), "event_id": event["id"], "summary": summary, "reason": reason})
+    link_human_review_to_verifier(conn, str(evidence.get("task_id") or ""), status, actor)
     audit_row = conn.execute("SELECT id, actor, action, target, detail_json, created_at FROM audit_logs WHERE target = ? ORDER BY id DESC LIMIT 1", (evidence_id,)).fetchone()
     updated = row_by_id(conn, "evidence", "evidence_id", evidence_id)
     raw_path = updated.pop("path_or_url", "")
@@ -5811,6 +5812,111 @@ def cmd_economics(args: argparse.Namespace) -> int:
     conn = connect_readonly()
     try:
         emit({"ok": True, **compute_economics(conn)})
+    finally:
+        conn.close()
+    return 0
+
+
+def record_verifier_run_internal(conn: sqlite3.Connection, *, task_id: str, attempt_id: str,
+                                 employee_id: str, kind: str, arg: str, result: str,
+                                 agent_verdict: str, detail: str) -> dict:
+    """Log one verifier judgment so its accuracy can be sampled against later human review."""
+    verifier_run_id = f"verifier-{datetime.now().strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:8]}"
+    ts = now()
+    conn.execute(
+        """INSERT INTO verifier_runs(verifier_run_id, task_id, attempt_id, employee_id, kind, arg,
+             result, agent_verdict, detail, human_review, reviewed_by, reviewed_at, created_at)
+           VALUES(?,?,?,?,?,?,?,?,?,'','','',?)""",
+        (verifier_run_id, task_id or "", attempt_id or "", resolve_employee_alias(employee_id) if employee_id else "",
+         (kind or "status").lower(), arg or "", (result or "").lower(), agent_verdict or "", detail or "", ts),
+    )
+    conn.commit()
+    return {"verifier_run_id": verifier_run_id, "task_id": task_id, "kind": kind, "result": result, "created_at": ts}
+
+
+def link_human_review_to_verifier(conn: sqlite3.Connection, task_id: str, status: str, reviewer: str) -> None:
+    """When a human accepts/rejects a task's evidence, stamp the latest unreviewed verifier
+    run for that task. This is the ground-truth signal for verifier accuracy."""
+    if not task_id or status not in {"accepted", "rejected"}:
+        return
+    row = conn.execute(
+        "SELECT verifier_run_id FROM verifier_runs WHERE task_id = ? AND human_review = '' ORDER BY created_at DESC, rowid DESC LIMIT 1",
+        (task_id,),
+    ).fetchone()
+    if not row:
+        return
+    conn.execute(
+        "UPDATE verifier_runs SET human_review = ?, reviewed_by = ?, reviewed_at = ? WHERE verifier_run_id = ?",
+        (status, resolve_employee_alias(reviewer) if reviewer else "", now(), row["verifier_run_id"]),
+    )
+    conn.commit()
+
+
+def compute_verifier_accuracy(conn: sqlite3.Connection) -> dict:
+    """Per-kind sampling accuracy: how often the verifier's verdict agreed with the human
+    review that later sampled it. A verifier 'pass' that a human accepts is correct; a 'pass'
+    a human rejects is a false-positive (the worst case for outcome-based pay). A withhold
+    (fail/needs_human/error) that a human rejects is correct; one a human accepts is a
+    false-negative (verifier was too strict)."""
+    rows_all = rows(conn, "SELECT kind, result, human_review FROM verifier_runs")
+    buckets: dict = {}
+    for r in rows_all:
+        kind = str(r.get("kind") or "status")
+        result = str(r.get("result") or "")
+        review = str(r.get("human_review") or "")
+        b = buckets.setdefault(kind, {
+            "kind": kind, "total": 0, "pass": 0, "withhold": 0,
+            "reviewed": 0, "correct": 0, "false_positive": 0, "false_negative": 0,
+        })
+        b["total"] += 1
+        passed = result == "pass"
+        if passed:
+            b["pass"] += 1
+        else:
+            b["withhold"] += 1
+        if review in {"accepted", "rejected"}:
+            b["reviewed"] += 1
+            if passed and review == "accepted":
+                b["correct"] += 1
+            elif not passed and review == "rejected":
+                b["correct"] += 1
+            elif passed and review == "rejected":
+                b["false_positive"] += 1
+            else:  # withheld but human accepted
+                b["false_negative"] += 1
+    out = []
+    for b in sorted(buckets.values(), key=lambda x: x["kind"]):
+        b["accuracy"] = round(b["correct"] / b["reviewed"], 4) if b["reviewed"] else None
+        out.append(b)
+    totals = {
+        "total": sum(b["total"] for b in out),
+        "reviewed": sum(b["reviewed"] for b in out),
+        "correct": sum(b["correct"] for b in out),
+        "false_positive": sum(b["false_positive"] for b in out),
+        "false_negative": sum(b["false_negative"] for b in out),
+    }
+    totals["accuracy"] = round(totals["correct"] / totals["reviewed"], 4) if totals["reviewed"] else None
+    return {"by_kind": out, "totals": totals}
+
+
+def cmd_verifier_record(args: argparse.Namespace) -> int:
+    conn = connect()
+    try:
+        payload = record_verifier_run_internal(
+            conn, task_id=args.task_id, attempt_id=args.attempt_id, employee_id=args.employee,
+            kind=args.kind, arg=args.arg, result=args.result, agent_verdict=args.agent_verdict,
+            detail=args.detail,
+        )
+    finally:
+        conn.close()
+    emit({"ok": True, **payload})
+    return 0
+
+
+def cmd_verifier_accuracy(args: argparse.Namespace) -> int:
+    conn = connect_readonly()
+    try:
+        emit({"ok": True, **compute_verifier_accuracy(conn)})
     finally:
         conn.close()
     return 0
@@ -12746,6 +12852,22 @@ def build_parser() -> argparse.ArgumentParser:
 
     economics = sub.add_parser("economics")
     economics.set_defaults(func=cmd_economics)
+
+    verifier = sub.add_parser("verifier")
+    verifier_sub = verifier.add_subparsers(dest="verifier_cmd", required=True)
+    verifier_record = verifier_sub.add_parser("record")
+    verifier_record.add_argument("--task-id", default="")
+    verifier_record.add_argument("--attempt-id", default="")
+    verifier_record.add_argument("--employee", default="")
+    verifier_record.add_argument("--kind", default="status")
+    verifier_record.add_argument("--arg", default="")
+    verifier_record.add_argument("--result", default="")
+    verifier_record.add_argument("--agent-verdict", default="")
+    verifier_record.add_argument("--detail", default="")
+    verifier_record.set_defaults(func=cmd_verifier_record)
+
+    verifier_accuracy = sub.add_parser("verifier-accuracy")
+    verifier_accuracy.set_defaults(func=cmd_verifier_accuracy)
 
     budget = sub.add_parser("budget")
     budget_sub = budget.add_subparsers(dest="budget_cmd", required=True)
