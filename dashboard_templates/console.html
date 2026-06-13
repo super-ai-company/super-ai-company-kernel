@@ -116,28 +116,29 @@ label{font-size:12px;color:var(--muted);display:block;margin-bottom:4px}
 <body>
 
 <div class="topbar">
-  <div class="logo"><div class="orb">🏢</div>Super AI Company <span style="color:var(--dim);font-weight:400;font-size:12px">控制台</span></div>
+  <div class="logo"><div class="orb">🏢</div>Super AI Company <span style="color:var(--dim);font-weight:400;font-size:12px" data-i18n="console">控制台</span></div>
   <div class="healthchips" id="healthChips"></div>
   <div class="spacer"></div>
-  <span class="refresh-meta" id="refreshMeta">连接中…</span>
-  <button onclick="refreshAll(true)">⟳ 刷新</button>
+  <span class="refresh-meta" id="refreshMeta" data-i18n="connecting">连接中…</span>
+  <button onclick="toggleLang()" id="langBtn" title="中文 / English">EN</button>
+  <button onclick="refreshAll(true)"><span data-i18n="refresh">⟳ 刷新</span></button>
 </div>
 
 <div id="connBanner" style="display:none;padding:10px 20px;background:#2a1620;border-bottom:1px solid var(--bad);font-size:13px;align-items:center;gap:10px">
-  <span style="color:var(--bad)">⚠ 无法连接 Company Kernel API。</span>
-  <span style="color:var(--muted)">请先在终端运行 <code style="font-family:var(--mono)">bin/company-api-gateway</code>，或填写 API 地址：</span>
+  <span style="color:var(--bad)" data-i18n="cannotConnect">⚠ 无法连接 Company Kernel API。</span>
+  <span style="color:var(--muted)" data-i18n="runGatewayHint">请先在终端运行 <code style="font-family:var(--mono)">bin/company-api-gateway</code>，或填写 API 地址：</span>
   <input id="apiBaseInput" placeholder="http://127.0.0.1:8765" style="width:240px">
-  <button class="primary" onclick="saveApiBase()">连接</button>
+  <button class="primary" onclick="saveApiBase()" data-i18n="connect">连接</button>
 </div>
 
 <div class="tabs" id="tabs">
-  <div class="tab active" data-v="overview">总览</div>
-  <div class="tab" data-v="employees">员工 <span class="cnt" id="cntEmp">-</span></div>
-  <div class="tab" data-v="tasks">任务 <span class="cnt" id="cntTask">-</span></div>
-  <div class="tab" data-v="messages">消息</div>
-  <div class="tab" data-v="conversations">对话 <span class="cnt" id="cntConv">-</span></div>
-  <div class="tab" data-v="approvals">审批 <span class="cnt" id="cntAppr">-</span></div>
-  <div class="tab" data-v="activity">活动流</div>
+  <div class="tab active" data-v="overview"><span data-i18n="tab_overview">总览</span></div>
+  <div class="tab" data-v="employees"><span data-i18n="tab_employees">员工</span> <span class="cnt" id="cntEmp">-</span></div>
+  <div class="tab" data-v="tasks"><span data-i18n="tab_tasks">任务</span> <span class="cnt" id="cntTask">-</span></div>
+  <div class="tab" data-v="messages"><span data-i18n="tab_messages">消息</span></div>
+  <div class="tab" data-v="conversations"><span data-i18n="tab_conversations">对话</span> <span class="cnt" id="cntConv">-</span></div>
+  <div class="tab" data-v="approvals"><span data-i18n="tab_approvals">审批</span> <span class="cnt" id="cntAppr">-</span></div>
+  <div class="tab" data-v="activity"><span data-i18n="tab_activity">活动流</span></div>
 </div>
 
 <main>
@@ -147,97 +148,97 @@ label{font-size:12px;color:var(--muted);display:block;margin-bottom:4px}
   <div class="grid cards-3" id="ovCards"></div>
   <div style="height:14px"></div>
   <div class="grid" style="grid-template-columns:1fr 1fr;gap:14px">
-    <div class="card"><h3>⏳ 待审批</h3><div class="list" id="ovApprovals"><div class="empty">加载中…</div></div></div>
-    <div class="card"><h3>🔔 最新事件</h3><div class="list feed" id="ovEvents"><div class="empty">加载中…</div></div></div>
+    <div class="card"><h3 data-i18n="ov_pendingApprovals">⏳ 待审批</h3><div class="list" id="ovApprovals"><div class="empty" data-i18n="loading">加载中…</div></div></div>
+    <div class="card"><h3 data-i18n="ov_latestEvents">🔔 最新事件</h3><div class="list feed" id="ovEvents"><div class="empty" data-i18n="loading">加载中…</div></div></div>
   </div>
 </section>
 
 <!-- 员工 -->
 <section class="view" id="v-employees">
   <div class="section-head">
-    <h2>AI 员工</h2><span class="hint">心跳 10 分钟内 = 在岗</span>
+    <h2 data-i18n="emp_title">AI 员工</h2><span class="hint" data-i18n="emp_hint">心跳 10 分钟内 = 在岗</span>
     <div class="spacer"></div>
-    <button onclick="toggleNewEmp()">＋ 新增员工</button>
-    <button class="primary" onclick="attendanceSweep()">📋 全员考勤探测</button>
+    <button onclick="toggleNewEmp()" data-i18n="emp_add">＋ 新增员工</button>
+    <button class="primary" onclick="attendanceSweep()" data-i18n="emp_sweep">📋 全员考勤探测</button>
   </div>
   <div class="card" id="newEmpForm" style="display:none;margin-bottom:14px">
-    <h3>🧑‍💼 新增员工（onboard）</h3>
+    <h3 data-i18n="emp_onboardTitle">🧑‍💼 新增员工（onboard）</h3>
     <div class="form-grid">
       <div><label>ID</label><input id="neId" placeholder="qa-bot"></div>
-      <div><label>名称</label><input id="neName" placeholder="QA Bot"></div>
-      <div><label>角色</label><input id="neRole" placeholder="developer"></div>
-      <div><label>运行时</label><select id="neRuntime"><option>codex</option><option>hermes</option><option>openclaw</option><option>claude</option><option>trae</option><option>antigravity</option><option>local</option></select></div>
-      <div class="full"><label>工作区（绝对路径）</label><input id="neWorkspace" placeholder="/Users/owner/项目路径"></div>
-      <div><label>技能（逗号分隔）</label><input id="neSkills" placeholder="python,review"></div>
-      <div><label>可对话对象（逗号分隔）</label><input id="neCanTalk" placeholder="codex,hermes"></div>
+      <div><label data-i18n="f_name">名称</label><input id="neName" placeholder="QA Bot"></div>
+      <div><label data-i18n="f_role">角色</label><input id="neRole" placeholder="developer"></div>
+      <div><label data-i18n="f_runtime">运行时</label><select id="neRuntime"><option>codex</option><option>hermes</option><option>openclaw</option><option>claude</option><option>trae</option><option>antigravity</option><option>local</option></select></div>
+      <div class="full"><label data-i18n="f_workspace">工作区（绝对路径）</label><input id="neWorkspace" placeholder="/path/to/project"></div>
+      <div><label data-i18n="f_skills">技能（逗号分隔）</label><input id="neSkills" placeholder="python,review"></div>
+      <div><label data-i18n="f_canTalk">可对话对象（逗号分隔）</label><input id="neCanTalk" placeholder="codex,hermes"></div>
     </div>
-    <button class="primary" onclick="addEmployee()">注册员工</button>
-    <span class="hint" style="margin-left:8px">注册后如需自动接任务，再在 daemon.json 启用 worker</span>
+    <button class="primary" onclick="addEmployee()" data-i18n="emp_register">注册员工</button>
+    <span class="hint" style="margin-left:8px" data-i18n="emp_registerHint">注册后如需自动接任务，再在 daemon.json 启用 worker</span>
   </div>
   <div class="grid cards-3" id="empGrid"></div>
 </section>
 
 <!-- 任务 -->
 <section class="view" id="v-tasks">
-  <div class="section-head"><h2>任务看板</h2><span class="hint">点击卡片查看详情与证据</span></div>
+  <div class="section-head"><h2 data-i18n="task_title">任务看板</h2><span class="hint" data-i18n="task_hint">点击卡片查看详情与证据</span></div>
   <div class="card" style="margin-bottom:14px">
-    <h3>➕ 派发新任务</h3>
+    <h3 data-i18n="task_new">➕ 派发新任务</h3>
     <div class="form-grid">
-      <div><label>发起人</label><select id="tFrom"></select></div>
-      <div><label>执行人</label><select id="tTo"></select></div>
-      <div><label>优先级</label><select id="tPrio"><option>P1</option><option>P0</option><option>P2</option><option>P3</option></select></div>
-      <div class="full"><label>标题</label><input id="tTitle" placeholder="任务标题"></div>
-      <div class="full"><label>描述（验收标准、相关文件路径写得越细，AI 员工干得越好）</label><textarea id="tDesc" rows="2"></textarea></div>
+      <div><label data-i18n="f_from">发起人</label><select id="tFrom"></select></div>
+      <div><label data-i18n="f_assignee">执行人</label><select id="tTo"></select></div>
+      <div><label data-i18n="f_priority">优先级</label><select id="tPrio"><option>P1</option><option>P0</option><option>P2</option><option>P3</option></select></div>
+      <div class="full"><label data-i18n="f_taskTitle">标题</label><input id="tTitle" data-i18n-ph="ph_taskTitle" placeholder="任务标题"></div>
+      <div class="full"><label data-i18n="f_taskDesc">描述（验收标准、相关文件路径写得越细，AI 员工干得越好）</label><textarea id="tDesc" rows="2"></textarea></div>
     </div>
-    <button class="primary" onclick="submitTask()">派发任务</button>
+    <button class="primary" onclick="submitTask()" data-i18n="task_submit">派发任务</button>
   </div>
   <div class="kanban" id="kanban"></div>
 </section>
 
 <!-- 消息 -->
 <section class="view" id="v-messages">
-  <div class="section-head"><h2>消息中心</h2>
+  <div class="section-head"><h2 data-i18n="msg_title">消息中心</h2>
     <select id="msgAgent" style="width:200px" onchange="loadMessages()"></select>
   </div>
   <div class="card" style="margin-bottom:14px">
-    <h3>✉️ 发送消息</h3>
+    <h3 data-i18n="msg_send">✉️ 发送消息</h3>
     <div class="form-grid">
-      <div><label>发件人</label><select id="mFrom"></select></div>
-      <div><label>收件人</label><select id="mTo"></select></div>
-      <div><label>模式</label><select id="mMode"><option value="record">仅记录（写入收件箱）</option><option value="direct">直连执行（实际唤起对方运行时）</option></select></div>
-      <div class="full"><label>内容</label><textarea id="mBody" rows="2" placeholder="消息内容"></textarea></div>
+      <div><label data-i18n="f_sender">发件人</label><select id="mFrom"></select></div>
+      <div><label data-i18n="f_recipient">收件人</label><select id="mTo"></select></div>
+      <div><label data-i18n="f_mode">模式</label><select id="mMode"><option value="record" data-i18n="mode_record">仅记录（写入收件箱）</option><option value="direct" data-i18n="mode_direct">直连执行（实际唤起对方运行时）</option></select></div>
+      <div class="full"><label data-i18n="f_content">内容</label><textarea id="mBody" rows="2" data-i18n-ph="ph_msgBody" placeholder="消息内容"></textarea></div>
     </div>
-    <button class="primary" onclick="sendMessage()">发送</button>
+    <button class="primary" onclick="sendMessage()" data-i18n="msg_sendBtn">发送</button>
   </div>
-  <div class="list" id="msgList"><div class="empty">选择员工查看消息</div></div>
+  <div class="list" id="msgList"><div class="empty" data-i18n="msg_pick">选择员工查看消息</div></div>
 </section>
 
 <!-- 对话 -->
 <section class="view" id="v-conversations">
-  <div class="section-head"><h2>多轮对话</h2>
+  <div class="section-head"><h2 data-i18n="conv_title">多轮对话</h2>
     <select id="convAgent" style="width:200px" onchange="loadConversations()"></select>
     <div class="spacer"></div>
-    <button class="primary" onclick="toggleNewConv()">＋ 发起新会话</button>
+    <button class="primary" onclick="toggleNewConv()" data-i18n="conv_new">＋ 发起新会话</button>
   </div>
   <div class="card" id="newConvForm" style="display:none;margin-bottom:14px">
-    <h3>🆕 发起多轮会话</h3>
+    <h3 data-i18n="conv_newTitle">🆕 发起多轮会话</h3>
     <div class="form-grid">
-      <div><label>发起人</label><select id="ncFrom"></select></div>
-      <div class="full"><label>参与者（逗号分隔的员工 ID，含发起人）</label><input id="ncParticipants" placeholder="hermes,codex,claude"></div>
-      <div class="full"><label>标题</label><input id="ncTitle" placeholder="会话标题"></div>
-      <div class="full"><label>首条消息</label><textarea id="ncBody" rows="2" placeholder="开场白 / 要讨论的问题"></textarea></div>
+      <div><label data-i18n="f_from">发起人</label><select id="ncFrom"></select></div>
+      <div class="full"><label data-i18n="f_participants">参与者（逗号分隔的员工 ID，含发起人）</label><input id="ncParticipants" placeholder="hermes,codex,claude"></div>
+      <div class="full"><label data-i18n="f_taskTitle">标题</label><input id="ncTitle" data-i18n-ph="ph_convTitle" placeholder="会话标题"></div>
+      <div class="full"><label data-i18n="f_firstMsg">首条消息</label><textarea id="ncBody" rows="2" data-i18n-ph="ph_convBody" placeholder="开场白 / 要讨论的问题"></textarea></div>
     </div>
-    <button class="primary" onclick="startConversation()">创建会话</button>
+    <button class="primary" onclick="startConversation()" data-i18n="conv_create">创建会话</button>
   </div>
   <div class="grid" style="grid-template-columns:330px 1fr;gap:14px">
-    <div class="card" style="align-self:start"><h3>会话列表</h3><div class="list" id="convList"><div class="empty">无</div></div></div>
+    <div class="card" style="align-self:start"><h3 data-i18n="conv_list">会话列表</h3><div class="list" id="convList"><div class="empty" data-i18n="none">无</div></div></div>
     <div class="card">
-      <h3 id="convTitle">选择左侧会话</h3>
+      <h3 id="convTitle" data-i18n="conv_pick">选择左侧会话</h3>
       <div class="conv-thread" id="convThread"></div>
       <div style="display:flex;gap:8px;margin-top:10px">
         <select id="convReplyAs" style="width:160px"></select>
-        <input id="convReplyBody" placeholder="以所选身份回复…" onkeydown="if(event.key==='Enter')convReply()">
-        <button class="primary" onclick="convReply()">回复</button>
+        <input id="convReplyBody" data-i18n-ph="ph_replyAs" placeholder="以所选身份回复…" onkeydown="if(event.key==='Enter')convReply()">
+        <button class="primary" onclick="convReply()" data-i18n="reply">回复</button>
       </div>
     </div>
   </div>
@@ -245,21 +246,21 @@ label{font-size:12px;color:var(--muted);display:block;margin-bottom:4px}
 
 <!-- 审批 -->
 <section class="view" id="v-approvals">
-  <div class="section-head"><h2>审批中心</h2>
+  <div class="section-head"><h2 data-i18n="appr_title">审批中心</h2>
     <select id="apprStatus" style="width:160px" onchange="loadApprovals()">
-      <option value="pending">待审批</option><option value="approved">已批准</option>
-      <option value="denied">已拒绝</option><option value="all">全部</option>
+      <option value="pending" data-i18n="st_pending">待审批</option><option value="approved" data-i18n="st_approved">已批准</option>
+      <option value="denied" data-i18n="st_denied">已拒绝</option><option value="all" data-i18n="st_all">全部</option>
     </select>
   </div>
-  <div class="list" id="apprList"><div class="empty">加载中…</div></div>
+  <div class="list" id="apprList"><div class="empty" data-i18n="loading">加载中…</div></div>
 </section>
 
 <!-- 活动流 -->
 <section class="view" id="v-activity">
-  <div class="section-head"><h2>活动流</h2><span class="hint">公司事件 + Adapter 执行记录</span></div>
+  <div class="section-head"><h2 data-i18n="act_title">活动流</h2><span class="hint" data-i18n="act_hint">公司事件 + Adapter 执行记录</span></div>
   <div class="grid" style="grid-template-columns:1fr 1fr;gap:14px">
-    <div class="card"><h3>🛰 Adapter 执行</h3><div class="list feed" id="adapterList"></div></div>
-    <div class="card"><h3>📜 公司事件</h3><div class="list feed" id="eventList"></div></div>
+    <div class="card"><h3 data-i18n="act_adapter">🛰 Adapter 执行</h3><div class="list feed" id="adapterList"></div></div>
+    <div class="card"><h3 data-i18n="act_events">📜 公司事件</h3><div class="list feed" id="eventList"></div></div>
   </div>
 </section>
 
@@ -272,6 +273,58 @@ label{font-size:12px;color:var(--muted);display:block;margin-bottom:4px}
 
 <script>
 "use strict";
+
+/* ---------- i18n (中文 / English) ---------- */
+const I18N = {
+  zh: {
+    console:"控制台", connecting:"连接中…", refresh:"⟳ 刷新", connect:"连接",
+    cannotConnect:"⚠ 无法连接 Company Kernel API。", runGatewayHint:"请先在终端运行 bin/company-api-gateway，或填写 API 地址：",
+    tab_overview:"总览", tab_employees:"员工", tab_tasks:"任务", tab_messages:"消息", tab_conversations:"对话", tab_approvals:"审批", tab_activity:"活动流",
+    ov_pendingApprovals:"⏳ 待审批", ov_latestEvents:"🔔 最新事件", loading:"加载中…", none:"无",
+    emp_title:"AI 员工", emp_hint:"心跳 10 分钟内 = 在岗", emp_add:"＋ 新增员工", emp_sweep:"📋 全员考勤探测",
+    emp_onboardTitle:"🧑‍💼 新增员工（onboard）", emp_register:"注册员工", emp_registerHint:"注册后如需自动接任务，再在 daemon.json 启用 worker",
+    f_name:"名称", f_role:"角色", f_runtime:"运行时", f_workspace:"工作区（绝对路径）", f_skills:"技能（逗号分隔）", f_canTalk:"可对话对象（逗号分隔）",
+    task_title:"任务看板", task_hint:"点击卡片查看详情与证据", task_new:"➕ 派发新任务", task_submit:"派发任务",
+    f_from:"发起人", f_assignee:"执行人", f_priority:"优先级", f_taskTitle:"标题", f_taskDesc:"描述（验收标准、相关文件路径写得越细，AI 员工干得越好）", ph_taskTitle:"任务标题",
+    msg_title:"消息中心", msg_send:"✉️ 发送消息", f_sender:"发件人", f_recipient:"收件人", f_mode:"模式",
+    mode_record:"仅记录（写入收件箱）", mode_direct:"直连执行（实际唤起对方运行时）", f_content:"内容", ph_msgBody:"消息内容", msg_sendBtn:"发送", msg_pick:"选择员工查看消息",
+    conv_title:"多轮对话", conv_new:"＋ 发起新会话", conv_newTitle:"🆕 发起多轮会话", f_participants:"参与者（逗号分隔的员工 ID，含发起人）",
+    ph_convTitle:"会话标题", f_firstMsg:"首条消息", ph_convBody:"开场白 / 要讨论的问题", conv_create:"创建会话", conv_list:"会话列表", conv_pick:"选择左侧会话", ph_replyAs:"以所选身份回复…", reply:"回复",
+    appr_title:"审批中心", st_pending:"待审批", st_approved:"已批准", st_denied:"已拒绝", st_all:"全部",
+    act_title:"活动流", act_hint:"公司事件 + Adapter 执行记录", act_adapter:"🛰 Adapter 执行", act_events:"📜 公司事件",
+    kanban_submitted:"📥 待领取", kanban_claimed:"🔧 进行中", kanban_done:"✅ 已完成", kanban_blocked:"⛔ 受阻", empty:"空",
+    on_duty:"在岗", off_duty:"离线", in_team:"在编", candidate:"候选",
+  },
+  en: {
+    console:"Console", connecting:"Connecting…", refresh:"⟳ Refresh", connect:"Connect",
+    cannotConnect:"⚠ Cannot reach Company Kernel API.", runGatewayHint:"Run bin/company-api-gateway in a terminal, or enter the API URL:",
+    tab_overview:"Overview", tab_employees:"Employees", tab_tasks:"Tasks", tab_messages:"Messages", tab_conversations:"Conversations", tab_approvals:"Approvals", tab_activity:"Activity",
+    ov_pendingApprovals:"⏳ Pending approvals", ov_latestEvents:"🔔 Latest events", loading:"Loading…", none:"None",
+    emp_title:"AI Employees", emp_hint:"heartbeat within 10 min = on duty", emp_add:"＋ Add employee", emp_sweep:"📋 Attendance sweep",
+    emp_onboardTitle:"🧑‍💼 Onboard employee", emp_register:"Register", emp_registerHint:"After registering, enable a worker in daemon.json for auto task pickup",
+    f_name:"Name", f_role:"Role", f_runtime:"Runtime", f_workspace:"Workspace (absolute path)", f_skills:"Skills (comma-separated)", f_canTalk:"Can talk to (comma-separated)",
+    task_title:"Task board", task_hint:"click a card for details & evidence", task_new:"➕ Dispatch new task", task_submit:"Dispatch",
+    f_from:"From", f_assignee:"Assignee", f_priority:"Priority", f_taskTitle:"Title", f_taskDesc:"Description (the more detail on acceptance & file paths, the better the agent does)", ph_taskTitle:"task title",
+    msg_title:"Messages", msg_send:"✉️ Send message", f_sender:"From", f_recipient:"To", f_mode:"Mode",
+    mode_record:"Record only (write to inbox)", mode_direct:"Direct execute (really invoke the runtime)", f_content:"Content", ph_msgBody:"message body", msg_sendBtn:"Send", msg_pick:"Pick an employee to view messages",
+    conv_title:"Conversations", conv_new:"＋ Start conversation", conv_newTitle:"🆕 Start a multi-round conversation", f_participants:"Participants (comma-separated employee IDs, incl. starter)",
+    ph_convTitle:"conversation title", f_firstMsg:"First message", ph_convBody:"opening line / topic to discuss", conv_create:"Create", conv_list:"Conversations", conv_pick:"Select a conversation on the left", ph_replyAs:"reply as selected identity…", reply:"Reply",
+    appr_title:"Approvals", st_pending:"Pending", st_approved:"Approved", st_denied:"Denied", st_all:"All",
+    act_title:"Activity", act_hint:"company events + adapter runs", act_adapter:"🛰 Adapter runs", act_events:"📜 Company events",
+    kanban_submitted:"📥 Queued", kanban_claimed:"🔧 In progress", kanban_done:"✅ Done", kanban_blocked:"⛔ Blocked", empty:"empty",
+    on_duty:"on duty", off_duty:"offline", in_team:"active", candidate:"candidate",
+  },
+};
+let LANG = localStorage.getItem("ck_lang") || ((navigator.language||"").toLowerCase().startsWith("zh") ? "zh" : "en");
+function t(key){ return (I18N[LANG] && I18N[LANG][key]) || (I18N.zh[key]) || key; }
+function applyLang(){
+  document.documentElement.lang = LANG === "zh" ? "zh-CN" : "en";
+  document.querySelectorAll("[data-i18n]").forEach(el => { const k = el.getAttribute("data-i18n"); if (I18N[LANG][k]!=null) el.textContent = I18N[LANG][k]; });
+  document.querySelectorAll("[data-i18n-ph]").forEach(el => { const k = el.getAttribute("data-i18n-ph"); if (I18N[LANG][k]!=null) el.placeholder = I18N[LANG][k]; });
+  const lb = document.getElementById("langBtn"); if (lb) lb.textContent = LANG === "zh" ? "EN" : "中";
+}
+function toggleLang(){ LANG = LANG === "zh" ? "en" : "zh"; localStorage.setItem("ck_lang", LANG); applyLang(); if (typeof refreshAll==="function") refreshAll(); }
+
 let API = "";   // resolved by detectApi(): same-origin → saved → default 8765
 const API_CANDIDATES = () => {
   const c = [];
@@ -384,10 +437,10 @@ async function loadEmployees() {
       <div class="emp-top">
         <div class="avatar" style="background:${color(e.id)}">${initial(e.id)}</div>
         <div style="flex:1">
-          <div class="emp-name">${esc(e.name||e.id)} <span class="dot ${duty?"ok":(e.status==="active"?"bad":"")}" style="display:inline-block;margin-left:4px" title="${duty?"在岗":"离线"}"></span></div>
+          <div class="emp-name">${esc(e.name||e.id)} <span class="dot ${duty?"ok":(e.status==="active"?"bad":"")}" style="display:inline-block;margin-left:4px" title="${duty?t('on_duty'):t('off_duty')}"></span></div>
           <div class="emp-sub">${esc(e.role||"")}</div>
         </div>
-        <span class="badge ${esc(e.status)}">${e.status==="active"?"在编":e.status==="candidate"?"候选":esc(e.status)}</span>
+        <span class="badge ${esc(e.status)}">${e.status==="active"?t('in_team'):e.status==="candidate"?t('candidate'):esc(e.status)}</span>
       </div>
       <div class="emp-meta">
         <span>⚙️ ${esc(e.runtime)}</span>
@@ -443,24 +496,24 @@ async function attendanceSweep() {
 /* ---------- tasks ---------- */
 // Each column matches a SET of kernel status values (kernel uses "completed", not "done").
 const KCOLS = [
-  ["📥 待领取", ["submitted"]],
-  ["🔧 进行中", ["claimed","in_progress","running","correcting"]],
-  ["✅ 已完成", ["completed","done","accepted"]],
-  ["⛔ 受阻", ["blocked","interrupted","failed","stalled"]],
+  ["kanban_submitted", ["submitted"]],
+  ["kanban_claimed", ["claimed","in_progress","running","correcting"]],
+  ["kanban_done", ["completed","done","accepted"]],
+  ["kanban_blocked", ["blocked","interrupted","failed","stalled"]],
 ];
 async function loadTasks() {
   const d = await api("/v1/tasks");
   TASKS = d.tasks || d.items || [];
   const open = TASKS.filter(t=>["submitted","claimed","in_progress","running","correcting"].includes(t.status)).length;
   $("cntTask").textContent = open;
-  $("kanban").innerHTML = KCOLS.map(([label,statuses])=>{
+  $("kanban").innerHTML = KCOLS.map(([labelKey,statuses])=>{ const label=t(labelKey);
     const items = TASKS.filter(t=>statuses.includes(t.status)).sort((a,b)=>(b.created_at||"").localeCompare(a.created_at||""));
     return `<div class="kcol"><h4>${label}<span>${items.length}</span></h4>` +
       (items.slice(0,30).map(t=>`<div class="tcard" onclick="showTask('${esc(t.id)}')">
           <div class="tt">${esc(t.title)}</div>
           <div class="tm"><span class="prio ${esc(t.priority||"P2")}">${esc(t.priority||"P2")}</span>
           <span>${esc(t.source_agent)} → <b>${esc(t.target_agent)}</b></span><span>${ago(t.created_at)}</span></div>
-        </div>`).join("") || `<div class="empty">空</div>`) + `</div>`;
+        </div>`).join("") || `<div class="empty">${t('empty')}</div>`) + `</div>`;
   }).join("");
 }
 async function showTask(id) {
@@ -667,7 +720,8 @@ async function refreshAll(manual=false) {
   if($("msgAgent").value) loadMessages();
   if($("convAgent").value) loadConversations();
 }
-detectApi().then(ok => { refreshAll(); if(!ok) $("refreshMeta").textContent = "API 未连接"; });
+applyLang();
+detectApi().then(ok => { refreshAll(); if(!ok) $("refreshMeta").textContent = "API 未连接 / not connected"; });
 timer = setInterval(async () => { if (!API && !(await detectApi())) return; refreshAll(); }, 15000);
 </script>
 </body>
