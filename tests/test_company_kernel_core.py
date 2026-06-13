@@ -264,6 +264,7 @@ class CompanyKernelCoreTest(unittest.TestCase):
             mock.patch.object(companyctl, "POLICY_PATH", root / "config" / "policy.json"),
             mock.patch.object(companyctl, "PROTECTED_PATHS_CONFIG", root / "config" / "protected_paths.json"),
             mock.patch.object(companyctl, "APPROVAL_STATE_DIR", root / "state" / "approvals"),
+            mock.patch.object(companyctl, "FOLLOWUP_STATE_DIR", root / "state" / "followups"),
             mock.patch.object(companyctl, "SCHEMA", root / "company_kernel" / "schema.sql"),
             mock.patch.dict("os.environ", {"HOME": str(root / "home"), "OPENCLAW_COMPANY_KERNEL_ROOT": str(root), "OPENCLAW_ROOT": str(root / "openclaw")}),
         ]
