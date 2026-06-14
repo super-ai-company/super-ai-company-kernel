@@ -101,6 +101,23 @@ def paths(agent: str, task_id: str) -> dict[str, Path]:
     }
 
 
+def build_next_command(task: sqlite3.Row) -> str:
+    """OpenClaw 总线要求每个任务带一条可执行指令(next_command)。
+    OpenClaw 员工本身具备技能、知道怎么做,这里把任务目标+说明组织成一条指令交给它,
+    让它用自己的技能/工作区执行,而不是要求外部每次手写命令。"""
+    goal = (task["title"] or "").strip() or "(无标题)"
+    desc = (task["description"] or "").strip()
+    parts = [f"作为本员工,完成 Company Kernel 指派任务:{goal}"]
+    if desc:
+        parts.append(f"任务说明:{desc}")
+    parts.append(
+        "请用你既有的技能与本员工工作区执行(可调用你的脚本/工具/命令);"
+        "完成后回填 status 与证据(report_path、exit_code、stdout_stderr、changed_files_or_none);"
+        "若缺前置条件则回 status: blocked 并写清 blocker 与下一步。"
+    )
+    return " ".join(parts)
+
+
 def build_payload(task: sqlite3.Row) -> dict:
     return {
         "task_id": task["id"],
@@ -112,6 +129,8 @@ def build_payload(task: sqlite3.Row) -> dict:
         "reply_surface": "company-kernel-message",
         "goal": task["title"],
         "description": task["description"],
+        # OpenClaw 总线必需:可执行指令。缺它会被判 missing_next_command 而失败。
+        "next_command": build_next_command(task),
         "non_goals": ["do not silently treat this as a human chat only", "do not complete without evidence"],
         "allowed_scope": ["target OpenClaw workspace only unless the task explicitly says otherwise"],
         "verification": ["return exit_code/stdout/stderr or a report path for the executed check"],
