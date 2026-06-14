@@ -450,7 +450,18 @@ def tick(config: dict) -> dict:
         results.append({"step": "watchdog.unclaimed-task", "result": result})
     results.extend(maybe_backup(config))
     results.extend(maybe_reconcile_status(config))
-    state = {"ok": all(item["result"].get("returncode", 1) == 0 for item in results), "at": now(), "results": results}
+    # 守护"整轮 ok"只反映循环基础设施是否正常,不被单个 adapter 任务的成败左右:
+    # adapter 任务失败/受阻已由 failed_adapter_runs 单独跟踪(可确认),不应把整轮守护标失败、
+    # 进而让"内核健康"徽章发红。因此计算整轮 ok 时排除 adapter.* 步骤。
+    state = {
+        "ok": all(
+            item["result"].get("returncode", 1) == 0
+            for item in results
+            if not str(item.get("step", "")).startswith("adapter.")
+        ),
+        "at": now(),
+        "results": results,
+    }
     path = write_state(state)
     state["state_file"] = str(path)
     return state
