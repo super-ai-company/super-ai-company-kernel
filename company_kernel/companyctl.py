@@ -7637,6 +7637,9 @@ def cmd_employee_offboard(args: argparse.Namespace) -> int:
                 shutil.rmtree(path)
             elif path.exists():
                 path.unlink()
+        # Cancel the deleted employee's tasks: otherwise completed tasks whose evidence lived in the
+        # now-removed employee dir trigger doctor's evidence_missing_on_disk and flag the kernel abnormal.
+        conn.execute("UPDATE tasks SET status = 'cancelled', updated_at = ? WHERE target_agent = ? AND status != 'cancelled'", (ts, employee_id))
         conn.execute("DELETE FROM employees WHERE id = ?", (employee_id,))
         conn.execute("DELETE FROM heartbeats WHERE agent_id = ?", (employee_id,))
         action = "hard-delete"
