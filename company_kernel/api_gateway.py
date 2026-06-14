@@ -1696,6 +1696,8 @@ def route_post(path: str, body: dict) -> tuple[int, dict]:
         argv = ["task", "reopen", "--task-id", task_id, "--by", str(body.get("by", "")), "--reason", str(body.get("reason", ""))]
         if body.get("status"):
             argv.extend(["--status", str(body["status"])])
+        if body.get("description"):
+            argv.extend(["--description", str(body["description"])])
         code, payload = run_companyctl(argv)
         response = {"exit_code": code, **payload}
         if code == 0:
