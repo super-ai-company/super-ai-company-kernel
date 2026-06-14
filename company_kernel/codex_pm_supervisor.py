@@ -255,6 +255,7 @@ def queue_supervisor_notification(result: dict[str, Any]) -> dict[str, Any]:
 
 ESCALATION_DEDUP_PATH = ROOT / "state" / "supervisor-escalation-dedup.json"
 ESCALATION_COOLDOWN_SECONDS = 6 * 3600  # re-remind the same stuck task at most once per 6h (else flood)
+MAX_ESCALATIONS_PER_ISSUE = 3  # circuit breaker: after N reminders of the same stuck task, stop auto-notifying
 
 
 def _load_escalation_dedup() -> dict:
@@ -278,6 +279,8 @@ def _should_escalate_now(task_id: str, fingerprint: str) -> bool:
     entry = _load_escalation_dedup().get(task_id)
     if not entry or entry.get("fingerprint") != fingerprint:
         return True  # never notified, or the issue changed — notify
+    if int(entry.get("count", 0)) >= MAX_ESCALATIONS_PER_ISSUE:
+        return False  # circuit breaker: reminded enough; stop auto-notifying, owner handles manually
     try:
         elapsed = (datetime.now(timezone.utc) - datetime.fromisoformat(entry.get("notified_at", ""))).total_seconds()
     except (ValueError, TypeError):
@@ -285,11 +288,18 @@ def _should_escalate_now(task_id: str, fingerprint: str) -> bool:
     return elapsed >= ESCALATION_COOLDOWN_SECONDS
 
 
+def _escalation_count(task_id: str, fingerprint: str) -> int:
+    entry = _load_escalation_dedup().get(task_id) or {}
+    return int(entry.get("count", 0)) if entry.get("fingerprint") == fingerprint else 0
+
+
 def _record_escalation(task_id: str, fingerprint: str) -> None:
     if not task_id:
         return
     state = _load_escalation_dedup()
-    state[task_id] = {"fingerprint": fingerprint, "notified_at": now()}
+    prev = state.get(task_id, {})
+    count = int(prev.get("count", 0)) + 1 if prev.get("fingerprint") == fingerprint else 1
+    state[task_id] = {"fingerprint": fingerprint, "notified_at": now(), "count": count}
     ESCALATION_DEDUP_PATH.parent.mkdir(parents=True, exist_ok=True)
     ESCALATION_DEDUP_PATH.write_text(json.dumps(state, ensure_ascii=False), encoding="utf-8")
 
@@ -303,8 +313,11 @@ def notify_if_escalation(result: dict[str, Any]) -> dict[str, Any]:
     task_id = str(result.get("task_id") or "").strip()
     fingerprint = _escalation_fingerprint(task_id, str(result.get("status") or ""), message)
     if not _should_escalate_now(task_id, fingerprint):
-        result["notification"] = {"ok": True, "skipped": True, "reason": "escalation deduped within cooldown"}
+        result["notification"] = {"ok": True, "skipped": True, "reason": "escalation deduped or circuit-broken (max reached)"}
         return result
+    # On the final allowed reminder, tell the owner it won't auto-notify again — handle it manually.
+    if _escalation_count(task_id, fingerprint) + 1 >= MAX_ESCALATIONS_PER_ISSUE:
+        message += f"\n⚠️ 已自动提醒 {MAX_ESCALATIONS_PER_ISSUE} 次仍未解决，后续不再自动提醒。请人工处理：补全任务说明(绝对仓库路径/验收)后重开，或丢弃。"
     reply_markup = None
     if task_id:
         reply_markup = {"inline_keyboard": [[
@@ -385,7 +398,7 @@ def supervise_once(
                 "status": "stalled",
                 "agent": agent,
                 "task_id": task["id"],
-                "human_message": f"Codex 卡住：{task_title} 没有进度证据，owner=hermes",
+                "human_message": f"Codex 卡住：{task_title} 没有进度证据（卡住，请你处理）",
                 "evidence_path": str(effective_workspace / "reports"),
                 "timestamp": ts,
                 "db_path": str(db_path),
@@ -424,7 +437,7 @@ def supervise_once(
                 "status": "blocked",
                 "agent": agent,
                 "task_id": task["id"],
-                "human_message": f"Codex 阻塞：{task_title}，owner=hermes",
+                "human_message": f"Codex 阻塞：{task_title}（卡住，请你处理）",
                 "action": action,
                 "evidence_path": evidence,
                 "latest_progress_path": evidence,
@@ -445,7 +458,7 @@ def supervise_once(
                 "status": "stalled",
                 "agent": agent,
                 "task_id": task["id"],
-                "human_message": f"Codex 卡住：{task_title} 超过 {stale_minutes} 分钟无完成，owner=hermes",
+                "human_message": f"Codex 卡住：{task_title} 超过 {stale_minutes} 分钟无完成（卡住，请你处理）",
                 "action": action,
                 "evidence_path": evidence,
                 "latest_progress_path": evidence,

@@ -437,6 +437,9 @@ def tick(config: dict) -> dict:
         results.append({"step": "scheduler.run", "result": run_companyctl("scheduler", "run")})
     if config.get("run_supervisor_delivery_loop", config.get("run_scheduler", True)):
         results.append({"step": "supervisor.delivery-loop", "result": run_companyctl("supervisor", "delivery-loop")})
+    if config.get("run_offline_reminder", True):
+        # scheduled offline reminder; --dedup self-limits to once per change / hourly so it won't spam
+        results.append({"step": "presence.offline-reminder", "result": run_companyctl("employee", "offline-report", "--notify", "--dedup")})
     for result in retry_due_adapter_runs(config):
         results.append({"step": "retry.adapter-run", "result": result})
     for agent in resolve_heartbeat_agents(config):
