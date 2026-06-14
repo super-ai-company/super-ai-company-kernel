@@ -231,6 +231,9 @@ class CompanyKernelCoreTest(unittest.TestCase):
             mock.patch.object(antigravity_adapter, "ROOT", root),
             mock.patch.object(antigravity_adapter, "DB_PATH", root / "company.sqlite"),
             mock.patch.object(antigravity_adapter, "APP_PATH", root / "Applications" / "Antigravity.app"),
+            mock.patch.object(claude_adapter, "ROOT", root),
+            mock.patch.object(claude_adapter, "DB_PATH", root / "company.sqlite"),
+            mock.patch.object(claude_adapter, "DEFAULT_WORKSPACE", root / "workspace" / "claude"),
             mock.patch.object(policy_guard, "ROOT", root),
             mock.patch.object(policy_guard, "DB_PATH", root / "company.sqlite"),
             mock.patch.object(policy_guard, "SCHEMA", root / "company_kernel" / "schema.sql"),
@@ -11762,6 +11765,23 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual("completed", task["task"]["status"])
         self.assertEqual(result["report"], task["task"]["evidence_path"])
         self.assertTrue((self.root / "employees" / "nestcar" / "heartbeat.json").exists())
+
+    def test_claude_adapter_copies_report_into_task_workspace_evidence(self) -> None:
+        # v3 file-flow 任务要求 task done 携带可提升的最终证据;claude 适配器须把报告复制进
+        # 任务工作区 evidence/(与 codex 一致),task done 才能 auto-promote 为 final。
+        task_id = "task-claude-evidence-copy"
+        code, submitted = run_cli("task", "submit", "--from", "openclaw-main", "--to", "nestcar", "--task-id", task_id, "--title", "claude 证据复制测试")
+        self.assertEqual(0, code, submitted)
+        with companyctl.connect() as conn:
+            ws = companyctl.ensure_task_workspace(conn, task_id, companyctl.trace_id_for_task(conn, task_id))
+        report = self.root / "claude-src-report.md"
+        report.write_text("claude evidence body\n", encoding="utf-8")
+
+        target = claude_adapter.copy_report_to_task_evidence(task_id, report)
+
+        self.assertEqual("evidence", target.parent.name)
+        self.assertEqual(Path(ws["path"]).resolve(), target.parent.parent.resolve())
+        self.assertEqual("claude evidence body\n", target.read_text(encoding="utf-8"))
 
     def test_openclaw_adapter_payload_injects_certified_capabilities(self) -> None:
         # 「持证上岗」:派活时把员工已认证的技能/工具注入 next_command 与 payload。

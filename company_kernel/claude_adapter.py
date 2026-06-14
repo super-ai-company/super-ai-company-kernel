@@ -9,6 +9,7 @@ import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 
+from . import companyctl
 from .adapter_result import execution_detail
 from .db_paths import ensure_db_parent, resolve_db_path
 
@@ -42,6 +43,36 @@ def run_companyctl(args: list[str]) -> tuple[int, str, str]:
 def employee(agent: str) -> sqlite3.Row | None:
     conn = connect()
     return conn.execute("SELECT * FROM employees WHERE id = ?", (agent,)).fetchone()
+
+
+def task_workspace_path(task_id: str) -> Path:
+    conn = connect()
+    try:
+        workspace = conn.execute("SELECT path FROM task_workspaces WHERE task_id = ?", (task_id,)).fetchone()
+        if workspace:
+            return Path(workspace["path"])
+        metadata = conn.execute("SELECT metadata_json FROM task_metadata WHERE task_id = ?", (task_id,)).fetchone()
+        trace_id = ""
+        if metadata:
+            try:
+                trace_id = str(json.loads(metadata["metadata_json"] or "{}").get("trace_id") or "")
+            except json.JSONDecodeError:
+                trace_id = ""
+        created = companyctl.ensure_task_workspace(conn, task_id, trace_id)
+        return Path(created["path"])
+    finally:
+        conn.close()
+
+
+def copy_report_to_task_evidence(task_id: str, report: Path) -> Path:
+    """v3 file-flow 任务要求 task done 携带「可提升的最终证据」:证据须落在任务工作区
+    的 evidence/ 目录下,task done 才会自动 promote 为 final。把员工 reports 目录下的
+    报告复制进任务工作区 evidence/(与 codex 适配器一致),让 claude 能真正完成任务。"""
+    evidence_dir = task_workspace_path(task_id) / "evidence"
+    evidence_dir.mkdir(parents=True, exist_ok=True)
+    target = evidence_dir / f"claude-adapter-report-{datetime.now().strftime('%Y%m%d-%H%M%S')}.md"
+    target.write_bytes(report.read_bytes())
+    return target
 
 
 def next_task(agent: str) -> sqlite3.Row | None:
@@ -177,7 +208,8 @@ def process(args: argparse.Namespace) -> int:
     if not args.execute:
         detail = "Claude adapter dry-run generated print prompt. Use --execute to run claude -p."
         write_report(artifact["report"], task, executed=False, status="completed", detail=detail, prompt=artifact["prompt"], output=artifact["output"])
-        done_code, done_out, done_err = run_companyctl(["task", "done", "--agent", args.agent, "--task-id", task["id"], "--summary", detail, "--evidence", str(artifact["report"])])
+        evidence_report = copy_report_to_task_evidence(task["id"], artifact["report"])
+        done_code, done_out, done_err = run_companyctl(["task", "done", "--agent", args.agent, "--task-id", task["id"], "--summary", detail, "--evidence", str(evidence_report)])
         run_companyctl(["heartbeat", "--agent", args.agent])
         emit({"ok": done_code == 0, "processed": 1, "executed": False, "task_id": task["id"], "prompt": str(artifact["prompt"]), "report": str(artifact["report"]), "companyctl_stdout": done_out, "companyctl_stderr": done_err})
         return done_code
@@ -185,7 +217,8 @@ def process(args: argparse.Namespace) -> int:
     if code == 0:
         detail = execution_detail(cmd, artifact["output"], success=True)
         write_report(artifact["report"], task, executed=True, status="completed", detail=detail, prompt=artifact["prompt"], output=artifact["output"])
-        done_code, done_out, done_err = run_companyctl(["task", "done", "--agent", args.agent, "--task-id", task["id"], "--summary", detail, "--evidence", str(artifact["report"])])
+        evidence_report = copy_report_to_task_evidence(task["id"], artifact["report"])
+        done_code, done_out, done_err = run_companyctl(["task", "done", "--agent", args.agent, "--task-id", task["id"], "--summary", detail, "--evidence", str(evidence_report)])
     else:
         detail = execution_detail(cmd, artifact["output"], exit_code=code, success=False)
         write_report(artifact["report"], task, executed=True, status="blocked", detail=detail, prompt=artifact["prompt"], output=artifact["output"])
