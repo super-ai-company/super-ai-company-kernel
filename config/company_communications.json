@@ -670,30 +670,74 @@
     "telegram_accounts": {
       "employee-notify": {
         "channel": "telegram",
-        "bot_token_env": "COMPANY_EMPLOYEE_TELEGRAM_BOT_TOKEN",
-        "default_target": "telegram:<operator-chat-id>",
-        "updated_at": "2026-06-04T01:22:08+07:00"
+        "bot_token_env": "TG_DEFAULT_BOT_TOKEN",
+        "bot_username": "shiftpcbot",
+        "default_target": "telegram:6066269036",
+        "updated_at": "2026-06-15T01:30:00+07:00"
+      },
+      "default": {
+        "channel": "telegram",
+        "bot_token_env": "TG_DEFAULT_BOT_TOKEN",
+        "bot_username": "shiftpcbot",
+        "default_target": "telegram:6066269036",
+        "updated_at": "2026-06-15T01:30:00+07:00"
+      },
+      "chindahotpot": {
+        "channel": "telegram",
+        "bot_token_env": "TG_CHINDAHOTPOT_BOT_TOKEN",
+        "bot_username": "mychindahotpotbot",
+        "updated_at": "2026-06-15T01:30:00+07:00"
+      },
+      "nestcar": {
+        "channel": "telegram",
+        "bot_token_env": "TG_NESTCAR_BOT_TOKEN",
+        "bot_username": "nestcarbot",
+        "updated_at": "2026-06-15T01:30:00+07:00"
+      },
+      "invest": {
+        "channel": "telegram",
+        "bot_token_env": "TG_INVEST_BOT_TOKEN",
+        "bot_username": "shiftinvestbot",
+        "updated_at": "2026-06-15T01:30:00+07:00"
+      },
+      "video-creator": {
+        "channel": "telegram",
+        "bot_token_env": "TG_VIDEO_CREATOR_BOT_TOKEN",
+        "bot_username": "xmanxvideomakerbot",
+        "updated_at": "2026-06-15T01:30:00+07:00"
+      },
+      "video-publisher": {
+        "channel": "telegram",
+        "bot_token_env": "TG_VIDEO_PUBLISHER_BOT_TOKEN",
+        "bot_username": "xmanxvideopublisherbot",
+        "updated_at": "2026-06-15T01:30:00+07:00"
+      },
+      "video-ops": {
+        "channel": "telegram",
+        "bot_token_env": "TG_VIDEO_OPS_BOT_TOKEN",
+        "bot_username": "xmanxvideoopsbot",
+        "updated_at": "2026-06-15T01:30:00+07:00"
       }
     },
     "employee_notifications": {
       "enabled": true,
       "channel": "telegram",
       "account": "employee-notify",
-      "target": "telegram:<operator-chat-id>",
-      "updated_at": "2026-06-04T01:22:08+07:00"
+      "target": "telegram:6066269036",
+      "updated_at": "2026-06-15T01:30:00+07:00"
     },
     "routes": {
       "approval": {
         "enabled": true,
         "account": "employee-notify",
-        "target": "telegram:<operator-chat-id>",
-        "updated_at": "2026-06-04T01:38:00+07:00"
+        "target": "telegram:6066269036",
+        "updated_at": "2026-06-15T01:30:00+07:00"
       },
       "error": {
         "enabled": true,
         "account": "employee-notify",
-        "target": "telegram:<operator-chat-id>",
-        "updated_at": "2026-06-04T01:38:00+07:00"
+        "target": "telegram:6066269036",
+        "updated_at": "2026-06-15T01:30:00+07:00"
       }
     }
   }
