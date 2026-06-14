@@ -261,9 +261,7 @@
         "video-ops",
         "video-publisher"
       ],
-      "handoff_mode": "task_or_hook",
-      "communication_paused": true,
-      "communication_paused_at": "2026-06-13T19:52:17+07:00"
+      "handoff_mode": "task_or_hook"
     },
     "chindahotpot": {
       "display_name": "chindahotpot",

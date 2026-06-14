@@ -11979,7 +11979,11 @@ def cmd_doctor(args: argparse.Namespace) -> int:
             issues.append("missing_heartbeats")
         if stale_heartbeats:
             issues.append("stale_heartbeats")
-        if pending["events"]:
+        # pending_events 宽限期:刚产生、正在被守护进程 scheduler 清理的事件不算异常;
+        # 只有滞留超过 10 分钟仍未处理(通常意味着被审批闸卡住或投递失败)才标记为 issue。
+        event_grace_cutoff = datetime.now(timezone.utc).astimezone() - timedelta(minutes=10)
+        aged_pending_events = [e for e in pending["events"] if parse_time(e["created_at"]) <= event_grace_cutoff]
+        if aged_pending_events:
             issues.append("pending_events")
         if pending["approvals"]:
             issues.append("pending_approvals")

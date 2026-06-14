@@ -35,7 +35,7 @@
       "args": [
         "--execute",
         "--sandbox",
-        "workspace-write",
+        "danger-full-access",
         "--model",
         "gpt-5.5",
         "--timeout-seconds",
@@ -64,7 +64,9 @@
       "agent": "nestcar",
       "enabled": true,
       "command": "company-openclaw-adapter",
-      "args": [],
+      "args": [
+        "--execute"
+      ],
       "max_tasks_per_tick": 1,
       "retry_policy": {
         "max_attempts": 3,
@@ -81,6 +83,90 @@
       "retry_policy": {
         "max_attempts": 2,
         "base_delay_seconds": 120,
+        "max_delay_seconds": 900
+      }
+    },
+    {
+      "agent": "chindahotpot",
+      "enabled": true,
+      "command": "company-openclaw-adapter",
+      "args": [
+        "--execute"
+      ],
+      "max_tasks_per_tick": 1,
+      "retry_policy": {
+        "max_attempts": 3,
+        "base_delay_seconds": 60,
+        "max_delay_seconds": 900
+      }
+    },
+    {
+      "agent": "krothong",
+      "enabled": true,
+      "command": "company-openclaw-adapter",
+      "args": [
+        "--execute"
+      ],
+      "max_tasks_per_tick": 1,
+      "retry_policy": {
+        "max_attempts": 3,
+        "base_delay_seconds": 60,
+        "max_delay_seconds": 900
+      }
+    },
+    {
+      "agent": "invest",
+      "enabled": true,
+      "command": "company-openclaw-adapter",
+      "args": [
+        "--execute"
+      ],
+      "max_tasks_per_tick": 1,
+      "retry_policy": {
+        "max_attempts": 3,
+        "base_delay_seconds": 60,
+        "max_delay_seconds": 900
+      }
+    },
+    {
+      "agent": "video-creator",
+      "enabled": true,
+      "command": "company-openclaw-adapter",
+      "args": [
+        "--execute"
+      ],
+      "max_tasks_per_tick": 1,
+      "retry_policy": {
+        "max_attempts": 3,
+        "base_delay_seconds": 60,
+        "max_delay_seconds": 900
+      }
+    },
+    {
+      "agent": "video-ops",
+      "enabled": true,
+      "command": "company-openclaw-adapter",
+      "args": [
+        "--execute"
+      ],
+      "max_tasks_per_tick": 1,
+      "retry_policy": {
+        "max_attempts": 3,
+        "base_delay_seconds": 60,
+        "max_delay_seconds": 900
+      }
+    },
+    {
+      "agent": "video-publisher",
+      "enabled": true,
+      "command": "company-openclaw-adapter",
+      "args": [
+        "--execute"
+      ],
+      "max_tasks_per_tick": 1,
+      "retry_policy": {
+        "max_attempts": 3,
+        "base_delay_seconds": 60,
         "max_delay_seconds": 900
       }
     }
