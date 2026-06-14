@@ -11985,10 +11985,8 @@ def cmd_doctor(args: argparse.Namespace) -> int:
         aged_pending_events = [e for e in pending["events"] if parse_time(e["created_at"]) <= event_grace_cutoff]
         if aged_pending_events:
             issues.append("pending_events")
-        if pending["approvals"]:
-            issues.append("pending_approvals")
-        if pending["rfcs"]:
-            issues.append("pending_rfcs")
+        # 待审批 / 待 RFC 是正常的"待办队列",不是内核故障:控制台已有独立的"待审批"提示,
+        # 不应让"内核健康"徽章因为有东西等你批就显示异常。仅作为计数展示,不计入 issues。
         if failed_adapter_runs:
             issues.append("adapter_failures")
         if capability_issues:

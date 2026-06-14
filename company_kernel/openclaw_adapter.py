@@ -124,10 +124,14 @@ def build_payload(task: sqlite3.Row) -> dict:
 
 
 def approval_reason(task: sqlite3.Row) -> str:
+    title = (task["title"] or "").strip() or "(无标题)"
+    desc = (task["description"] or "").strip().replace("\n", " ")
+    if len(desc) > 140:
+        desc = desc[:140] + "…"
     return (
-        f"OpenClaw adapter is about to submit Company Kernel task {task['id']} "
-        f"to OpenClaw legacy bus target {task['target_agent']}. "
-        "This can wake an external business/runtime agent and must be approved."
+        f"任务「{title}」(优先级 {task['priority']})。"
+        f"由 {task['source_agent']} 发起,交给 {task['target_agent']} 执行(经 OpenClaw)。"
+        + (f" 内容:{desc}" if desc else "")
     )
 
 
