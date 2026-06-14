@@ -11783,6 +11783,56 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual(Path(ws["path"]).resolve(), target.parent.parent.resolve())
         self.assertEqual("claude evidence body\n", target.read_text(encoding="utf-8"))
 
+    def test_openclaw_adapter_payload_resolves_deliver_to_group(self) -> None:
+        # 后台用 --deliver-to 指定群,内核经 OpenClaw 注册表把 group_code 解析为真实 target_id。
+        reg = self.root / "openclaw" / "workspace-nestcar" / "state" / "channel_target_registry.json"
+        reg.parent.mkdir(parents=True, exist_ok=True)
+        reg.write_text(
+            json.dumps(
+                {"targets": [{"key": "internal", "group_code": "internal", "target_kind": "group",
+                              "target_id": "Cinternalgroup0123456789", "target_name": "内部群", "active": True}]},
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        code, submitted = run_cli(
+            "task", "submit", "--from", "openclaw-main", "--to", "nestcar",
+            "--task-id", "task-deliverto-group", "--title", "群投递", "--deliver-to", "line:internal",
+        )
+        self.assertEqual(0, code, submitted)
+
+        captured = io.StringIO()
+        with contextlib.redirect_stdout(captured):
+            code = openclaw_adapter.main(["--agent", "nestcar"])
+        result = json.loads(captured.getvalue())
+        self.assertEqual(0, code, result)
+        payload = json.loads(Path(result["payload"]).read_text(encoding="utf-8"))
+        self.assertTrue(payload["deliver_to"]["resolved"], payload["deliver_to"])
+        self.assertEqual("Cinternalgroup0123456789", payload["deliver_to"]["target_id"])
+        self.assertEqual("registry", payload["deliver_to"]["source"])
+        self.assertIn("内部群", payload["next_command"])
+
+    def test_openclaw_adapter_deliver_to_unknown_group_blocks(self) -> None:
+        # 未知 group_code:解析失败,next_command 提示 blocked,不臆测投递目标。
+        code, submitted = run_cli(
+            "task", "submit", "--from", "openclaw-main", "--to", "nestcar",
+            "--task-id", "task-deliverto-bad", "--title", "群投递坏", "--deliver-to", "line:does-not-exist",
+        )
+        self.assertEqual(0, code, submitted)
+        captured = io.StringIO()
+        with contextlib.redirect_stdout(captured):
+            openclaw_adapter.main(["--agent", "nestcar"])
+        result = json.loads(captured.getvalue())
+        payload = json.loads(Path(result["payload"]).read_text(encoding="utf-8"))
+        self.assertFalse(payload["deliver_to"]["resolved"])
+        self.assertIn("blocked", payload["next_command"])
+
+    def test_parse_deliver_to_forms(self) -> None:
+        self.assertEqual({}, companyctl.parse_deliver_to(""))
+        self.assertEqual({"channel": "line", "group_code": "A3"}, companyctl.parse_deliver_to("line:A3"))
+        self.assertEqual({"channel": "line", "target_id": "Cabcdef0123456789abcd"}, companyctl.parse_deliver_to("line:Cabcdef0123456789abcd"))
+        self.assertEqual({"channel": "line", "group_code": "x"}, companyctl.parse_deliver_to('{"channel":"line","group_code":"x"}'))
+
     def test_openclaw_adapter_payload_injects_certified_capabilities(self) -> None:
         # 「持证上岗」:派活时把员工已认证的技能/工具注入 next_command 与 payload。
         code, submitted = run_cli(
