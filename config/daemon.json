@@ -75,10 +75,30 @@
       }
     },
     {
+      "agent": "claude",
+      "enabled": true,
+      "command": "company-claude-adapter",
+      "args": [
+        "--execute",
+        "--permission-mode",
+        "bypassPermissions"
+      ],
+      "max_tasks_per_tick": 1,
+      "retry_policy": {
+        "max_attempts": 3,
+        "base_delay_seconds": 60,
+        "max_delay_seconds": 900
+      }
+    },
+    {
       "agent": "antigravity",
-      "enabled": false,
+      "enabled": true,
       "command": "company-antigravity-adapter",
-      "args": [],
+      "args": [
+        "--managed-attempt",
+        "--by",
+        "hermes"
+      ],
       "max_tasks_per_tick": 1,
       "retry_policy": {
         "max_attempts": 2,
