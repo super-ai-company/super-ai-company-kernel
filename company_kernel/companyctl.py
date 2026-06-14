@@ -7162,10 +7162,15 @@ def openclaw_employee_sync_plan(config_path: Path) -> list[dict]:
             "status": "active",
             "source": "openclaw_config",
         }
+    # Only the openclaw config (agents.list) is the source of truth for who is a real agent.
+    # A bare leftover directory under openclaw/agents/ (e.g. gpt5, claude-code, car-rental) is NOT
+    # an employee — registering every dir produced phantom roster entries and stuck verify tasks.
     for agent in inventory.get("agent_dirs", {}).values():
         agent_id = str(agent.get("id") or "").strip()
         if not agent_id or agent_id in planned:
             continue
+        if agent_id not in config_agents:
+            continue  # directory exists but isn't a configured agent — skip, don't invent an employee
         planned[agent_id] = {
             "id": agent_id,
             "name": agent_id,
