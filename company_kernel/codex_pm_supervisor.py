@@ -253,6 +253,47 @@ def queue_supervisor_notification(result: dict[str, Any]) -> dict[str, Any]:
         conn.close()
 
 
+ESCALATION_DEDUP_PATH = ROOT / "state" / "supervisor-escalation-dedup.json"
+ESCALATION_COOLDOWN_SECONDS = 6 * 3600  # re-remind the same stuck task at most once per 6h (else flood)
+
+
+def _load_escalation_dedup() -> dict:
+    try:
+        return json.loads(ESCALATION_DEDUP_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def _escalation_fingerprint(task_id: str, status: str, message: str) -> str:
+    # Fingerprint on task_id + status ONLY. The human message varies every tick (e.g. "超过 N 分钟无完成"
+    # with a growing N), so including it would defeat dedup and keep flooding. Status change still re-notifies.
+    return f"{task_id}|{status}"
+
+
+def _should_escalate_now(task_id: str, fingerprint: str) -> bool:
+    """Dedup: skip re-sending the same escalation within the cooldown window. The supervisor runs
+    every daemon tick, so without this a single stuck task floods Telegram every few minutes."""
+    if not task_id:
+        return True
+    entry = _load_escalation_dedup().get(task_id)
+    if not entry or entry.get("fingerprint") != fingerprint:
+        return True  # never notified, or the issue changed — notify
+    try:
+        elapsed = (datetime.now(timezone.utc) - datetime.fromisoformat(entry.get("notified_at", ""))).total_seconds()
+    except (ValueError, TypeError):
+        return True
+    return elapsed >= ESCALATION_COOLDOWN_SECONDS
+
+
+def _record_escalation(task_id: str, fingerprint: str) -> None:
+    if not task_id:
+        return
+    state = _load_escalation_dedup()
+    state[task_id] = {"fingerprint": fingerprint, "notified_at": now()}
+    ESCALATION_DEDUP_PATH.parent.mkdir(parents=True, exist_ok=True)
+    ESCALATION_DEDUP_PATH.write_text(json.dumps(state, ensure_ascii=False), encoding="utf-8")
+
+
 def notify_if_escalation(result: dict[str, Any]) -> dict[str, Any]:
     if result.get("status") not in {"stalled", "blocked"}:
         return result
@@ -260,6 +301,10 @@ def notify_if_escalation(result: dict[str, Any]) -> dict[str, Any]:
     if not message:
         return result
     task_id = str(result.get("task_id") or "").strip()
+    fingerprint = _escalation_fingerprint(task_id, str(result.get("status") or ""), message)
+    if not _should_escalate_now(task_id, fingerprint):
+        result["notification"] = {"ok": True, "skipped": True, "reason": "escalation deduped within cooldown"}
+        return result
     reply_markup = None
     if task_id:
         reply_markup = {"inline_keyboard": [[
@@ -277,7 +322,9 @@ def notify_if_escalation(result: dict[str, Any]) -> dict[str, Any]:
     except Exception as exc:
         notification = {"ok": False, "error": str(exc)}
     result["notification"] = notification
-    if not notification.get("ok"):
+    if notification.get("ok"):
+        _record_escalation(task_id, fingerprint)  # remember so we don't re-flood within the cooldown
+    else:
         result["queued_notification"] = queue_supervisor_notification(result)
     return result
 
