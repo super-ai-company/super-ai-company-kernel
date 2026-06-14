@@ -5714,6 +5714,15 @@ class CompanyKernelCoreTest(unittest.TestCase):
         )
         self.assertEqual(code, 0, started)
 
+        # Fresh pending events get a 10-min grace period; only a STALE one flags the kernel abnormal.
+        stale_at = (datetime.now(timezone.utc).astimezone() - timedelta(minutes=20)).isoformat(timespec="seconds")
+        conn = companyctl.connect()
+        try:
+            conn.execute("UPDATE company_events SET created_at = ? WHERE id = ?", (stale_at, started["event_id"]))
+            conn.commit()
+        finally:
+            conn.close()
+
         code, unhealthy = run_cli("doctor")
         self.assertEqual(code, 1, unhealthy)
         self.assertFalse(unhealthy["health"]["ok"])
@@ -9184,9 +9193,9 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual(201, status, approval)
         status, health_with_pending = api_gateway.route_get("/v1/health", {})
         self.assertEqual(200, status, health_with_pending)
-        self.assertFalse(health_with_pending["ok"])
-        self.assertEqual(1, health_with_pending["exit_code"])
-        self.assertIn("pending_approvals", health_with_pending["issues"])
+        # A pending approval is a normal todo (surfaced separately), NOT an abnormal-kernel condition.
+        self.assertTrue(health_with_pending["ok"])
+        self.assertNotIn("pending_approvals", health_with_pending.get("issues", []))
 
         status, submitted = api_gateway.route_post(
             "/v1/tasks",
@@ -10273,7 +10282,9 @@ class CompanyKernelCoreTest(unittest.TestCase):
         code, synced = run_cli("employee", "sync-openclaw-runtime", "--config", str(config))
         self.assertEqual(0, code, synced)
         self.assertEqual(2, synced["counts"]["active"])
-        self.assertEqual(1, synced["counts"]["candidate"])
+        # A bare directory that is NOT in the openclaw config (e.g. 'runtime-only') must NOT become an
+        # employee — that was the source of phantom roster entries (gpt5/claude-code/car-rental).
+        self.assertEqual(0, synced["counts"]["candidate"])
 
         conn = companyctl.connect_readonly()
         try:
@@ -10282,13 +10293,13 @@ class CompanyKernelCoreTest(unittest.TestCase):
             conn.close()
         self.assertEqual("active", employees["main"]["status"])
         self.assertEqual("active", employees["nestcar"]["status"])
-        self.assertEqual("candidate", employees["runtime-only"]["status"])
+        self.assertNotIn("runtime-only", employees)  # discovered-as-dir but not registered
         self.assertEqual("openclaw", employees["nestcar"]["runtime"])
 
+        # the inventory still SEES the leftover dir (read-only) but marks it unregistered
         status, payload = api_gateway.route_get("/v1/openclaw/runtime-inventory", {})
         self.assertEqual(HTTPStatus.OK, status, payload)
-        self.assertEqual(0, payload["counts"]["missing_registered"])
-        self.assertTrue(payload["agent_dirs"]["runtime-only"]["registered"])
+        self.assertFalse(payload["agent_dirs"]["runtime-only"]["registered"])
 
     def test_employee_sync_openclaw_heartbeats_marks_active_runtime_agents_seen(self) -> None:
         config = self.root / "openclaw" / "openclaw.json"
@@ -13156,7 +13167,7 @@ class CompanyKernelCoreTest(unittest.TestCase):
         finally:
             conn.close()
 
-        state = company_daemon.tick({"version": 1, "run_repair": False, "run_scheduler": False, "heartbeat_agents": [], "run_retries": True})
+        state = company_daemon.tick({"version": 1, "run_repair": False, "run_scheduler": False, "run_offline_reminder": False, "heartbeat_agents": [], "run_retries": True})
         self.assertTrue(state["ok"], state)
         self.assertEqual(["retry.adapter-run"], [item["step"] for item in state["results"]])
 
