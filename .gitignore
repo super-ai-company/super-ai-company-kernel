@@ -7,6 +7,10 @@ company.sqlite-*
 logs/
 state/
 
+# Local secrets (Telegram/LINE tokens) — sourced by entry bins, never commit.
+config/secrets.env
+config/company_communications.json.bak-*
+
 employees/*/heartbeat.json
 employees/*/inbox/
 employees/*/outbox/
