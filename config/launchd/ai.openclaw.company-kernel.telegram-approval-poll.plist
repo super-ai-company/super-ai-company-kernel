@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>ai.openclaw.company-kernel.telegram-approval-poll</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>__COMPANY_KERNEL_ROOT__/bin/company-telegram-approval-poll</string>
+  </array>
+  <key>StartInterval</key>
+  <integer>10</integer>
+  <key>WorkingDirectory</key>
+  <string>__COMPANY_KERNEL_ROOT__</string>
+  <key>StandardOutPath</key>
+  <string>__COMPANY_KERNEL_ROOT__/logs/telegram-approval-poll.launchd.out.log</string>
+  <key>StandardErrorPath</key>
+  <string>__COMPANY_KERNEL_ROOT__/logs/telegram-approval-poll.launchd.err.log</string>
+  <key>RunAtLoad</key>
+  <true/>
+</dict>
+</plist>
