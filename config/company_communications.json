@@ -670,17 +670,17 @@
     "telegram_accounts": {
       "employee-notify": {
         "channel": "telegram",
-        "bot_token_env": "TG_DEFAULT_BOT_TOKEN",
-        "bot_username": "shiftpcbot",
+        "bot_token_env": "TG_SHIFTSHEN_BOT_TOKEN",
+        "bot_username": "super-ai-companybot",
         "default_target": "telegram:6066269036",
-        "updated_at": "2026-06-15T01:30:00+07:00"
+        "updated_at": "2026-06-15T03:30:00+07:00"
       },
       "default": {
         "channel": "telegram",
-        "bot_token_env": "TG_DEFAULT_BOT_TOKEN",
-        "bot_username": "shiftpcbot",
+        "bot_token_env": "TG_SHIFTSHEN_BOT_TOKEN",
+        "bot_username": "super-ai-companybot",
         "default_target": "telegram:6066269036",
-        "updated_at": "2026-06-15T01:30:00+07:00"
+        "updated_at": "2026-06-15T03:30:00+07:00"
       },
       "chindahotpot": {
         "channel": "telegram",
