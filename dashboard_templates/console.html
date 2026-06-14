@@ -213,7 +213,11 @@ label{font-size:12px;color:var(--muted);display:block;margin-bottom:4px}
       </div>
       <div><label data-i18n="f_priority">优先级</label><select id="tPrio"><option>P1</option><option>P0</option><option>P2</option><option>P3</option></select></div>
       <div class="full"><label data-i18n="f_taskTitle">标题</label><input id="tTitle" data-i18n-ph="ph_taskTitle" placeholder="任务标题"></div>
-      <div class="full"><label data-i18n="f_taskDesc">描述（验收标准、相关文件路径写得越细，AI 员工干得越好）</label><textarea id="tDesc" rows="2"></textarea></div>
+      <div class="full">
+        <label style="display:flex;align-items:center;gap:8px"><span data-i18n="f_taskDesc">描述（验收标准、相关文件路径写得越细，AI 员工干得越好）</span>
+          <button type="button" onclick="insertTaskTemplate(true)" style="font-size:11px;padding:2px 8px" data-i18n="task_tpl">📋 用模板</button></label>
+        <textarea id="tDesc" rows="5" onfocus="if(!this.value.trim())insertTaskTemplate(false)"></textarea>
+      </div>
     </div>
     <button class="primary" onclick="submitTask()" data-i18n="task_submit">派发任务</button>
   </div>
@@ -341,7 +345,7 @@ const I18N = {
     dlg_ok:"确定", dlg_cancel:"取消", dlg_reassign:"改派任务", dlg_reassignHint:"选择新的执行员工",
     dlg_token:"输入 API Token", dlg_tokenHint:"此内核已启用鉴权（COMPANY_KERNEL_API_TOKEN）",
     dlg_approveReason:"批准理由（可空）", dlg_denyReason:"拒绝理由（可空）", dlg_search:"搜索员工 / 群…",
-    mention_to:"执行人 / 群", mention_hint:"输入 @ 选员工或群（如 nestcar.A3 = 派给 nestcar 并发到 A3 群）", mention_deliverTo:"将投递到群",
+    mention_to:"执行人 / 群", mention_hint:"输入 @ 选员工或群（如 nestcar.A3 = 派给 nestcar 并发到 A3 群）", mention_deliverTo:"将投递到群", task_tpl:"📋 用模板",
   },
   en: {
     console:"Console", connecting:"Connecting…", refresh:"⟳ Refresh", connect:"Connect",
@@ -367,7 +371,7 @@ const I18N = {
     dlg_ok:"OK", dlg_cancel:"Cancel", dlg_reassign:"Reassign task", dlg_reassignHint:"Pick the new assignee",
     dlg_token:"Enter API Token", dlg_tokenHint:"This kernel requires auth (COMPANY_KERNEL_API_TOKEN)",
     dlg_approveReason:"Approval reason (optional)", dlg_denyReason:"Denial reason (optional)", dlg_search:"Search employee / group…",
-    mention_to:"Assignee / group", mention_hint:"Type @ to pick an employee or group (e.g. nestcar.A3 = assign nestcar and deliver to group A3)", mention_deliverTo:"Will deliver to group",
+    mention_to:"Assignee / group", mention_hint:"Type @ to pick an employee or group (e.g. nestcar.A3 = assign nestcar and deliver to group A3)", mention_deliverTo:"Will deliver to group", task_tpl:"📋 Template",
   },
 };
 let LANG = localStorage.getItem("ck_lang") || ((navigator.language||"").toLowerCase().startsWith("zh") ? "zh" : "en");
@@ -757,13 +761,24 @@ function syncDeliverPill(){
     pill.innerHTML = `<span class="deliver-pill">📤 ${t('mention_deliverTo')} <b>${esc(grp)}</b> <span class="x" onclick="clearAssignee()">✕</span></span>`;
   } else pill.innerHTML = "";
 }
+const TASK_TEMPLATE = {
+  zh: "【工作区 / 仓库绝对路径】：\n【目标 / 验收标准】：\n【关键步骤】：\n1. \n【相关文件】：\n【完成后】：回填证据（命令输出 / 截图 / 文件路径）",
+  en: "[Workspace / repo absolute path]:\n[Goal / acceptance criteria]:\n[Key steps]:\n1. \n[Related files]:\n[On done]: return evidence (command output / screenshot / file path)",
+};
+function insertTaskTemplate(force){
+  const el = $("tDesc"); const tpl = TASK_TEMPLATE[LANG] || TASK_TEMPLATE.zh;
+  if (!el.value.trim()) { el.value = tpl; el.focus(); el.setSelectionRange(tpl.indexOf("：")+1 || 0, tpl.indexOf("：")+1 || 0); }
+  else if (force) { el.value = tpl + "\n\n" + el.value; el.focus(); }
+}
 function clearAssignee(){ $("tTo").value=""; syncDeliverPill(); }
 function submitTask() {
   const {target, deliver_to} = resolveAssignee($("tTo").value);
   if(!target) return toast(LANG==='zh'?"请选择执行人（输入 @ 选员工或群）":"Pick an assignee (type @)","bad");
   const title = $("tTitle").value.trim();
   if(!title) return toast("请填写任务标题","bad");
-  const body = {from:$("tFrom").value, to:target, title, description:$("tDesc").value.trim(), priority:$("tPrio").value};
+  const desc = $("tDesc").value.trim();
+  if(desc.length < 8){ insertTaskTemplate(false); return toast(LANG==='zh'?"请把任务写清楚：已带出模板，填好仓库路径/验收/步骤再派":"Describe the task: template inserted — fill repo path / acceptance / steps","bad"); }
+  const body = {from:$("tFrom").value, to:target, title, description:desc, priority:$("tPrio").value};
   if (deliver_to) body.deliver_to = deliver_to;
   api("/v1/tasks",{method:"POST",body})
     .then(d=>{ toast("任务已派发："+(d.task?.id||"")+(deliver_to?(" → "+deliver_to):""),"ok");

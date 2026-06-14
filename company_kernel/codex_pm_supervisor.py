@@ -259,11 +259,20 @@ def notify_if_escalation(result: dict[str, Any]) -> dict[str, Any]:
     message = str(result.get("human_message") or result.get("blocker") or "").strip()
     if not message:
         return result
+    task_id = str(result.get("task_id") or "").strip()
+    reply_markup = None
+    if task_id:
+        reply_markup = {"inline_keyboard": [[
+            {"text": "🔧 让 agent 修", "callback_data": f"ck_fix:{task_id}"},
+            {"text": "👤 我来", "callback_data": f"ck_mine:{task_id}"},
+            {"text": "⏭ 跳过", "callback_data": f"ck_skip:{task_id}"},
+        ]]}
     try:
         notification = companyctl.notification_send_result(
             message=message,
             subject="Company Kernel supervisor escalation",
             kind="error",
+            reply_markup=reply_markup,
         )
     except Exception as exc:
         notification = {"ok": False, "error": str(exc)}

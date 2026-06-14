@@ -70,16 +70,34 @@ def run_companyctl(args: list[str]) -> tuple[int, str]:
     return cp.returncode, (cp.stdout or cp.stderr)
 
 
-def resolve_approval(action: str, approval_id: str) -> tuple[bool, str]:
-    verb = "approve" if action == "approve" else "deny"
-    code, out = run_companyctl(["approval", verb, "--approval-id", approval_id, "--by", OWNER, "--reason", "Telegram 一键" + ("批准" if verb == "approve" else "拒绝")])
-    if code == 0:
-        return True, ("✅ 已批准" if verb == "approve" else "❌ 已拒绝")
+def _fail_label(out: str) -> str:
     try:
         err = json.loads(out).get("error", out)
     except json.JSONDecodeError:
         err = out.strip()[:120]
-    return False, f"⚠️ 处理失败：{err}"
+    return f"⚠️ 处理失败：{err}"
+
+
+# callback_data prefix -> (companyctl argv builder, success label). None builder = ack only.
+def handle_callback(data: str) -> tuple[bool, str]:
+    """Resolve one inline-button tap. Returns (ok, label shown back to the owner)."""
+    prefix, _, ident = data.partition(":")
+    ident = ident.strip()
+    if prefix == "ck_approve":
+        code, out = run_companyctl(["approval", "approve", "--approval-id", ident, "--by", OWNER, "--reason", "Telegram 一键批准"])
+        return (True, "✅ 已批准") if code == 0 else (False, _fail_label(out))
+    if prefix == "ck_deny":
+        code, out = run_companyctl(["approval", "deny", "--approval-id", ident, "--by", OWNER, "--reason", "Telegram 一键拒绝"])
+        return (True, "❌ 已拒绝") if code == 0 else (False, _fail_label(out))
+    if prefix == "ck_fix":
+        # 让 agent 接手:把卡住的任务重新入队,worker 会重新尝试。
+        code, out = run_companyctl(["task", "reopen", "--task-id", ident, "--by", OWNER, "--status", "submitted", "--reason", "Telegram 一键:让 agent 重新处理"])
+        return (True, "🔧 已重新派给 agent 处理") if code == 0 else (False, _fail_label(out))
+    if prefix == "ck_mine":
+        return True, "👤 你来处理(已标记)"
+    if prefix == "ck_skip":
+        return True, "⏭ 已跳过"
+    return False, "⚠️ 未知操作"
 
 
 def process(args: argparse.Namespace) -> int:
@@ -101,11 +119,9 @@ def process(args: argparse.Namespace) -> int:
         if not isinstance(cb, dict):
             continue
         data = str(cb.get("data") or "")
-        if not (data.startswith("ck_approve:") or data.startswith("ck_deny:")):
+        if not data.startswith("ck_"):
             continue
-        action = "approve" if data.startswith("ck_approve:") else "deny"
-        approval_id = data.split(":", 1)[1]
-        ok, label = resolve_approval(action, approval_id)
+        ok, label = handle_callback(data)
         msg = cb.get("message", {}) if isinstance(cb.get("message"), dict) else {}
         chat_id = str((msg.get("chat", {}) or {}).get("id", ""))
         message_id = msg.get("message_id")
@@ -117,7 +133,7 @@ def process(args: argparse.Namespace) -> int:
             who = (cb.get("from", {}) or {}).get("username") or (cb.get("from", {}) or {}).get("first_name") or "owner"
             tg_api(token, "editMessageText", {"chat_id": chat_id, "message_id": message_id,
                                               "text": f"{base}\n\n— {label}（by @{who}）", "reply_markup": {"inline_keyboard": []}})
-        results.append({"approval_id": approval_id, "action": action, "ok": ok, "label": label})
+        results.append({"data": data, "ok": ok, "label": label})
     if max_uid >= offset:
         save_offset(max_uid + 1)
     emit({"ok": True, "processed": len(results), "results": results})
