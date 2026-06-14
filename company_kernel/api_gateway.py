@@ -1704,6 +1704,10 @@ def route_post(path: str, body: dict) -> tuple[int, dict]:
             response = with_control_action(response, action="reopen", event_type="task.reopened")
             response = attach_task_control_context(response, task_id)
         return (HTTPStatus.OK if code == 0 else HTTPStatus.BAD_REQUEST), response
+    if path.startswith("/v1/tasks/") and path.endswith("/discard"):
+        task_id = path.removeprefix("/v1/tasks/").removesuffix("/discard").strip("/")
+        code, payload = run_companyctl(["task", "discard", "--task-id", task_id, "--by", str(body.get("by", "")), "--reason", str(body.get("reason", "owner discarded"))])
+        return (HTTPStatus.OK if code == 0 else HTTPStatus.BAD_REQUEST), {"exit_code": code, **payload}
     if path.startswith("/v1/tasks/") and path.endswith("/retry"):
         task_id = path.removeprefix("/v1/tasks/").removesuffix("/retry").strip("/")
         if not truthy(body.get("execute")):
