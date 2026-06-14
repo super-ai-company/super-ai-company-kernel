@@ -674,6 +674,33 @@ def route_get(path: str, query: dict[str, list[str]]) -> tuple[int, dict]:
         finally:
             conn.close()
         return HTTPStatus.OK, {"ok": True, "heartbeats": [dict(row) for row in rows]}
+    if path == "/v1/delivery-targets":
+        # 群投递目标:供控制台 @mention 自动补全(@agent.group)。读各 OpenClaw agent 的注册表。
+        from . import openclaw_adapter
+        agent = query_value(query, "agent")
+        agents = [agent] if agent else [e["id"] for e in (run_companyctl(["employee", "list"])[1].get("employees") or []) if e.get("runtime") == "openclaw"]
+        out = {}
+        for ag in agents:
+            groups = []
+            for tgt in openclaw_adapter.load_channel_targets(ag):
+                if not tgt.get("target_id"):
+                    continue
+                code_label = str(tgt.get("group_code") or "").strip()
+                if not code_label:
+                    key = str(tgt.get("key") or "")
+                    segs = [s for s in key.split(":") if s and s not in {"line", "group", "store"}]
+                    code_label = segs[0] if segs else key
+                groups.append({
+                    "group_code": code_label,
+                    "target_kind": tgt.get("target_kind", "group"),
+                    "target_id": tgt.get("target_id"),
+                    "target_name": tgt.get("target_name", ""),
+                    "channel": tgt.get("channel_type", "line"),
+                    "active": bool(tgt.get("active", True)),
+                })
+            if groups:
+                out[ag] = groups
+        return HTTPStatus.OK, {"ok": True, "delivery_targets": out}
     if path == "/v1/tasks":
         argv = ["task", "list"]
         agent = query_value(query, "agent")
@@ -1501,6 +1528,11 @@ def route_post(path: str, body: dict) -> tuple[int, dict]:
             argv.extend(["--requires-approval", str(body["requires_approval"])])
         if body.get("approval_id"):
             argv.extend(["--approval-id", str(body["approval_id"])])
+        deliver_to = body.get("deliver_to")
+        if isinstance(deliver_to, dict):
+            argv.extend(["--deliver-to", json.dumps(deliver_to, ensure_ascii=False)])
+        elif isinstance(deliver_to, str) and deliver_to.strip():
+            argv.extend(["--deliver-to", deliver_to.strip()])
         code, payload = run_companyctl(argv)
         return (HTTPStatus.CREATED if code == 0 else HTTPStatus.BAD_REQUEST), {"exit_code": code, **payload}
     if path == "/v1/messages/direct":

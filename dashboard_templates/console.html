@@ -115,6 +115,21 @@ label{font-size:12px;color:var(--muted);display:block;margin-bottom:4px}
 .conv-thread{max-height:420px;overflow:auto;display:flex;flex-direction:column;gap:8px;padding:4px}
 .bubble{background:var(--bg2);border:1px solid var(--line);border-radius:10px;padding:8px 12px;font-size:13px}
 .bubble .bh{font-size:11.5px;color:var(--muted);margin-bottom:3px;display:flex;gap:8px}
+.reassign-list{display:flex;flex-direction:column;gap:6px;max-height:46vh;overflow:auto}
+.reassign-opt{display:flex;align-items:center;gap:10px;padding:8px 10px;border:1px solid var(--line);border-radius:10px;cursor:pointer;transition:.12s}
+.reassign-opt:hover{border-color:var(--accent);background:var(--card2)}
+.mention{position:relative}
+.mention-pop{position:absolute;left:0;right:0;top:calc(100% + 4px);z-index:60;background:var(--card2);border:1px solid var(--line);border-radius:10px;box-shadow:0 12px 30px rgba(0,0,0,.45);max-height:300px;overflow:auto;display:none}
+.mention-pop.open{display:block}
+.mention-grp{font-size:11px;color:var(--dim);padding:7px 12px 3px;text-transform:uppercase;letter-spacing:.04em;position:sticky;top:0;background:var(--card2)}
+.mention-item{display:flex;align-items:center;gap:9px;padding:7px 12px;cursor:pointer}
+.mention-item.active,.mention-item:hover{background:var(--accent);color:#fff}
+.mention-item.active .mi-sub,.mention-item:hover .mi-sub{color:#e8eeff}
+.mi-tag{width:22px;height:22px;border-radius:6px;display:grid;place-items:center;font-size:11px;font-weight:700;color:#fff;flex:none}
+.mi-main{font-weight:600;font-size:13px}.mi-sub{font-size:11px;color:var(--muted)}
+.mi-grp-icon{font-size:13px;width:22px;text-align:center;flex:none}
+.deliver-pill{display:inline-flex;align-items:center;gap:6px;margin-top:6px;font-size:12px;color:var(--ok);background:rgba(62,207,142,.1);border:1px solid var(--ok);border-radius:99px;padding:2px 10px}
+.deliver-pill .x{cursor:pointer;color:var(--muted)}
 @media(max-width:900px){.kanban{grid-template-columns:repeat(2,1fr)}}
 </style>
 </head>
@@ -191,7 +206,11 @@ label{font-size:12px;color:var(--muted);display:block;margin-bottom:4px}
     <h3 data-i18n="task_new">➕ 派发新任务</h3>
     <div class="form-grid">
       <div><label data-i18n="f_from">发起人</label><select id="tFrom"></select></div>
-      <div><label data-i18n="f_assignee">执行人</label><select id="tTo"></select></div>
+      <div class="mention"><label data-i18n="mention_to">执行人 / 群</label>
+        <input id="tTo" autocomplete="off" placeholder="@nestcar.A3 …" oninput="onMentionInput()" onfocus="onMentionInput()" onkeydown="mentionKey(event)" onblur="setTimeout(closeMention,150)">
+        <div class="mention-pop" id="mentionPop"></div>
+        <div id="deliverPill"></div>
+      </div>
       <div><label data-i18n="f_priority">优先级</label><select id="tPrio"><option>P1</option><option>P0</option><option>P2</option><option>P3</option></select></div>
       <div class="full"><label data-i18n="f_taskTitle">标题</label><input id="tTitle" data-i18n-ph="ph_taskTitle" placeholder="任务标题"></div>
       <div class="full"><label data-i18n="f_taskDesc">描述（验收标准、相关文件路径写得越细，AI 员工干得越好）</label><textarea id="tDesc" rows="2"></textarea></div>
@@ -319,6 +338,10 @@ const I18N = {
     act_title:"活动流", act_hint:"公司事件 + Adapter 执行记录", act_adapter:"🛰 Adapter 执行", act_events:"📜 公司事件",
     kanban_submitted:"📥 待领取", kanban_claimed:"🔧 进行中", kanban_done:"✅ 已完成", kanban_blocked:"⛔ 受阻", empty:"空",
     on_duty:"在岗", off_duty:"离线", in_team:"在编", candidate:"候选",
+    dlg_ok:"确定", dlg_cancel:"取消", dlg_reassign:"改派任务", dlg_reassignHint:"选择新的执行员工",
+    dlg_token:"输入 API Token", dlg_tokenHint:"此内核已启用鉴权（COMPANY_KERNEL_API_TOKEN）",
+    dlg_approveReason:"批准理由（可空）", dlg_denyReason:"拒绝理由（可空）", dlg_search:"搜索员工 / 群…",
+    mention_to:"执行人 / 群", mention_hint:"输入 @ 选员工或群（如 nestcar.A3 = 派给 nestcar 并发到 A3 群）", mention_deliverTo:"将投递到群",
   },
   en: {
     console:"Console", connecting:"Connecting…", refresh:"⟳ Refresh", connect:"Connect",
@@ -341,6 +364,10 @@ const I18N = {
     act_title:"Activity", act_hint:"company events + adapter runs", act_adapter:"🛰 Adapter runs", act_events:"📜 Company events",
     kanban_submitted:"📥 Queued", kanban_claimed:"🔧 In progress", kanban_done:"✅ Done", kanban_blocked:"⛔ Blocked", empty:"empty",
     on_duty:"on duty", off_duty:"offline", in_team:"active", candidate:"candidate",
+    dlg_ok:"OK", dlg_cancel:"Cancel", dlg_reassign:"Reassign task", dlg_reassignHint:"Pick the new assignee",
+    dlg_token:"Enter API Token", dlg_tokenHint:"This kernel requires auth (COMPANY_KERNEL_API_TOKEN)",
+    dlg_approveReason:"Approval reason (optional)", dlg_denyReason:"Denial reason (optional)", dlg_search:"Search employee / group…",
+    mention_to:"Assignee / group", mention_hint:"Type @ to pick an employee or group (e.g. nestcar.A3 = assign nestcar and deliver to group A3)", mention_deliverTo:"Will deliver to group",
   },
 };
 let LANG = localStorage.getItem("ck_lang") || ((navigator.language||"").toLowerCase().startsWith("zh") ? "zh" : "en");
@@ -382,6 +409,7 @@ function saveApiBase() {
 const OWNER = "owner";
 const COLORS = ["#5b8cff","#a78bfa","#3ecf8e","#f5b94d","#f0647c","#38bdf8","#fb923c","#e879f9"];
 let EMPLOYEES = [], TASKS = [], lastRefresh = 0, timer = null;
+let DELIVERY_TARGETS = {}, MENTION_OPTIONS = [], MENTION_IDX = -1;
 
 const $ = id => document.getElementById(id);
 const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
@@ -403,10 +431,10 @@ async function api(path, opts={}) {
   let data = {};
   try { data = await res.json(); } catch(e) {}
   if (res.status === 401) {
-    // gateway requires a token; prompt once and retry
-    const entered = prompt("此内核已启用鉴权，请输入 API token（COMPANY_KERNEL_API_TOKEN）：");
+    // gateway requires a token; ask via in-app dialog once and retry
+    const entered = await askText(t('dlg_token'), {placeholder:"COMPANY_KERNEL_API_TOKEN", hint:t('dlg_tokenHint')});
     if (entered) { setApiToken(entered.trim()); return api(path, opts); }
-    throw new Error("需要 API token 才能访问");
+    throw new Error(t('dlg_tokenHint'));
   }
   if (!res.ok) throw new Error(data.error || data.stderr || ("HTTP "+res.status));
   return data;
@@ -416,7 +444,30 @@ function toast(msg, kind="") {
   $("toasts").appendChild(el); setTimeout(()=>el.remove(), 5000);
 }
 function openModal(html){ $("modalContent").innerHTML = html; $("modalBg").classList.add("open"); }
-function closeModal(){ $("modalBg").classList.remove("open"); }
+function closeModal(){ $("modalBg").classList.remove("open"); window.__askResolve=null; }
+/* ---------- in-app dialogs (replace native prompt) ---------- */
+window.__askResolve = null;
+function askModal({title, html, confirmText, onConfirm, autofocus}){
+  return new Promise(resolve=>{
+    window.__askResolve = resolve;
+    openModal(`<h3>${esc(title)}</h3>${html}
+      <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:16px">
+        <button onclick="__askDone(null)">${t('dlg_cancel')}</button>
+        <button class="primary" onclick="__askConfirm()">${esc(confirmText||t('dlg_ok'))}</button>
+      </div>`);
+    window.__askConfirm = ()=>{ try{ __askDone(onConfirm ? onConfirm($("modalContent")) : true); }catch(e){ toast(e.message,"bad"); } };
+    if(autofocus){ const el=$(autofocus); if(el){ el.focus(); el.addEventListener("keydown",ev=>{ if(ev.key==="Enter"&&el.tagName!=="TEXTAREA"){ev.preventDefault();window.__askConfirm();}}); } }
+  });
+}
+function __askDone(v){ const r=window.__askResolve; closeModal(); if(r) r(v); }
+async function askText(title, {placeholder="", value="", multiline=false, confirmText="", hint=""}={}){
+  const field = multiline
+    ? `<textarea id="__askInput" rows="3" placeholder="${esc(placeholder)}">${esc(value)}</textarea>`
+    : `<input id="__askInput" placeholder="${esc(placeholder)}" value="${esc(value)}">`;
+  return askModal({title, confirmText, autofocus:"__askInput",
+    html: field + (hint?`<div class="emp-sub" style="margin-top:6px">${esc(hint)}</div>`:""),
+    onConfirm: root => { const v=root.querySelector("#__askInput").value.trim(); return v||""; }});
+}
 
 /* ---------- tabs ---------- */
 $("tabs").addEventListener("click", e => {
@@ -491,8 +542,9 @@ async function loadEmployees() {
   const opts = EMPLOYEES.map(e=>`<option value="${esc(e.id)}">${esc(e.id)}</option>`).join("");
   const withOwnerFirst = `<option value="${OWNER}">${OWNER}（我）</option>` + EMPLOYEES.filter(e=>e.id!==OWNER).map(e=>`<option value="${esc(e.id)}">${esc(e.id)}</option>`).join("");
   ["tFrom","mFrom","convReplyAs","ncFrom"].forEach(id=>{ if($(id)) $(id).innerHTML = withOwnerFirst; });
-  ["tTo","mTo"].forEach(id=>{ if($(id)) $(id).innerHTML = opts; });
+  ["mTo"].forEach(id=>{ if($(id)) $(id).innerHTML = opts; });
   ["msgAgent","convAgent"].forEach(id=>{ if($(id) && !$(id).value) $(id).innerHTML = opts; });
+  buildMentionOptions();
   // grid
   $("empGrid").innerHTML = EMPLOYEES.map(e=>{
     const hb = e.last_seen_at || e.heartbeat || "";
@@ -526,7 +578,7 @@ async function showEmployee(id) {
   } catch(e){ openModal(`<h3>员工 ${esc(id)}</h3><pre>读取失败：${esc(e.message)}</pre>`); }
 }
 function quickMsg(to){ document.querySelector('[data-v="messages"]').click(); $("mTo").value=to; $("mBody").focus(); }
-function quickTask(to){ document.querySelector('[data-v="tasks"]').click(); $("tTo").value=to; $("tTitle").focus(); }
+function quickTask(to){ document.querySelector('[data-v="tasks"]').click(); $("tTo").value=to; syncDeliverPill(); $("tTitle").focus(); }
 
 function toggleNewEmp() {
   const f = $("newEmpForm");
@@ -606,19 +658,117 @@ async function taskReopen(id) {
   } catch(e){ toast("失败："+e.message,"bad"); }
 }
 function taskReassignPrompt(id) {
-  const to = prompt("改派给哪个员工 ID？\n" + EMPLOYEES.map(e=>e.id).join(", "));
-  if(!to) return;
-  api(`/v1/tasks/${encodeURIComponent(id)}/reassign`, {method:"POST", body:{by:OWNER, to, reason:"控制台改派"}})
-    .then(()=>{ toast("已改派给 "+to,"ok"); closeModal(); loadTasks(); })
-    .catch(e=>toast("失败："+e.message,"bad"));
+  const rows = EMPLOYEES.map(e=>{
+    const duty = isOnDuty(e.last_seen_at||e.heartbeat);
+    return `<div class="reassign-opt" data-id="${esc(e.id)}" onclick="doReassign('${esc(id)}','${esc(e.id)}')">
+      <div class="avatar" style="width:30px;height:30px;border-radius:8px;font-size:12px;background:${color(e.id)}">${initial(e.id)}</div>
+      <div style="flex:1"><div style="font-weight:600">${esc(e.name||e.id)}</div>
+        <div class="emp-sub">${esc(e.role||"")} · ${esc(e.runtime||"")}</div></div>
+      <span class="dot ${duty?'ok':(e.status==='active'?'':'')}" title="${duty?t('on_duty'):t('off_duty')}"></span>
+      <span class="badge ${esc(e.status)}">${e.status==='active'?t('in_team'):t('candidate')}</span></div>`;
+  }).join("");
+  openModal(`<h3>${t('dlg_reassign')}</h3>
+    <div class="emp-sub" style="margin-bottom:10px">${t('dlg_reassignHint')}</div>
+    <input id="reassignSearch" placeholder="${t('dlg_search')}" oninput="filterReassign(this.value)" style="margin-bottom:10px">
+    <div id="reassignList" class="reassign-list">${rows}</div>`);
+  setTimeout(()=>{ const s=$("reassignSearch"); if(s) s.focus(); }, 50);
 }
-async function submitTask() {
-  const body = {from:$("tFrom").value, to:$("tTo").value, title:$("tTitle").value.trim(),
-    description:$("tDesc").value.trim(), priority:$("tPrio").value};
-  if(!body.title) return toast("请填写任务标题","bad");
-  try { const d = await api("/v1/tasks",{method:"POST",body});
-    toast("任务已派发："+(d.task?.id||""),"ok"); $("tTitle").value=""; $("tDesc").value=""; loadTasks();
-  } catch(e){ toast("派发失败："+e.message,"bad"); }
+function filterReassign(q){
+  q=(q||"").toLowerCase();
+  document.querySelectorAll("#reassignList .reassign-opt").forEach(el=>{
+    el.style.display = el.dataset.id.toLowerCase().includes(q) || el.textContent.toLowerCase().includes(q) ? "flex" : "none";
+  });
+}
+async function doReassign(id, to){
+  try { await api(`/v1/tasks/${encodeURIComponent(id)}/reassign`, {method:"POST", body:{by:OWNER, to, reason:"控制台改派"}});
+    toast("已改派给 "+to,"ok"); closeModal(); loadTasks();
+  } catch(e){ toast("失败："+e.message,"bad"); }
+}
+async function loadDeliveryTargets(){
+  try { const d = await api("/v1/delivery-targets"); DELIVERY_TARGETS = d.delivery_targets || {}; }
+  catch(e){ DELIVERY_TARGETS = {}; }
+  buildMentionOptions();
+}
+function buildMentionOptions(){
+  const opts = [];
+  for (const e of EMPLOYEES) opts.push({kind:"employee", label:e.id, target:e.id, deliver_to:"",
+    main:e.name||e.id, sub:(e.role||"")+" · "+(e.runtime||""), id:e.id});
+  for (const [ag, groups] of Object.entries(DELIVERY_TARGETS||{})) {
+    for (const g of groups) opts.push({kind:"group", label:ag+"."+g.group_code, target:ag,
+      deliver_to:(g.channel||"line")+":"+g.group_code, main:ag+" · "+g.group_code,
+      sub:(g.target_name||"")+(g.active?"":" (inactive)"), id:ag});
+  }
+  MENTION_OPTIONS = opts;
+}
+function mentionMatches(q){
+  q = (q||"").replace(/^@/,"").toLowerCase().trim();
+  const list = MENTION_OPTIONS.filter(o => !q || o.label.toLowerCase().includes(q) || o.main.toLowerCase().includes(q) || o.sub.toLowerCase().includes(q));
+  // employees first, then groups; cap for sanity
+  return list.sort((a,b)=> (a.kind===b.kind?0:(a.kind==="employee"?-1:1))).slice(0,40);
+}
+function onMentionInput(){
+  const matches = mentionMatches($("tTo").value);
+  MENTION_IDX = matches.length ? 0 : -1;
+  renderMention(matches);
+  syncDeliverPill();
+}
+function renderMention(matches){
+  const pop = $("mentionPop");
+  if (!matches.length){ pop.classList.remove("open"); pop.innerHTML=""; return; }
+  let html = "", lastKind = "";
+  matches.forEach((o,i)=>{
+    if (o.kind !== lastKind){ html += `<div class="mention-grp">${o.kind==="employee"?"👤 "+t('tab_employees'):"💬 "+(LANG==='zh'?'群 / 渠道':'Groups / channels')}</div>`; lastKind=o.kind; }
+    html += `<div class="mention-item${i===MENTION_IDX?' active':''}" data-i="${i}" onmousedown="event.preventDefault();pickMention(${i})" onmouseenter="setMentionIdx(${i})">
+      ${o.kind==="employee"
+        ? `<span class="mi-tag" style="background:${color(o.target)}">${initial(o.target)}</span>`
+        : `<span class="mi-grp-icon">💬</span>`}
+      <div style="flex:1;min-width:0"><div class="mi-main">${esc(o.label)}</div><div class="mi-sub" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(o.sub)}</div></div>
+      ${o.kind==="group"?`<span class="badge" style="border-color:var(--accent2);color:var(--accent2)">→${LANG==='zh'?'群':'group'}</span>`:""}</div>`;
+  });
+  pop.innerHTML = html; pop.classList.add("open");
+  pop._matches = matches;
+}
+function setMentionIdx(i){ MENTION_IDX=i; const pop=$("mentionPop"); pop.querySelectorAll(".mention-item").forEach(el=>el.classList.toggle("active", +el.dataset.i===i)); }
+function pickMention(i){
+  const m = ($("mentionPop")._matches||[])[i]; if(!m) return;
+  $("tTo").value = m.label; closeMention(); syncDeliverPill();
+}
+function mentionKey(ev){
+  const pop=$("mentionPop"); if(!pop.classList.contains("open")) { if(ev.key==="ArrowDown") onMentionInput(); return; }
+  const matches = pop._matches||[];
+  if (ev.key==="ArrowDown"){ ev.preventDefault(); setMentionIdx(Math.min(MENTION_IDX+1, matches.length-1)); }
+  else if (ev.key==="ArrowUp"){ ev.preventDefault(); setMentionIdx(Math.max(MENTION_IDX-1, 0)); }
+  else if (ev.key==="Enter"){ if(MENTION_IDX>=0){ ev.preventDefault(); pickMention(MENTION_IDX); } }
+  else if (ev.key==="Escape"){ closeMention(); }
+}
+function closeMention(){ const p=$("mentionPop"); p.classList.remove("open"); }
+function resolveAssignee(text){
+  text = (text||"").replace(/^@/,"").trim();
+  if (!text) return {target:"", deliver_to:""};
+  const exact = MENTION_OPTIONS.find(o=>o.label.toLowerCase()===text.toLowerCase());
+  if (exact) return {target:exact.target, deliver_to:exact.deliver_to};
+  if (text.includes(".")){ const [ag,grp]=text.split("."); return {target:ag, deliver_to:"line:"+grp}; }
+  return {target:text, deliver_to:""};
+}
+function syncDeliverPill(){
+  const {target, deliver_to} = resolveAssignee($("tTo").value);
+  const pill = $("deliverPill");
+  if (deliver_to){ const grp = deliver_to.split(":").slice(1).join(":");
+    pill.innerHTML = `<span class="deliver-pill">📤 ${t('mention_deliverTo')} <b>${esc(grp)}</b> <span class="x" onclick="clearAssignee()">✕</span></span>`;
+  } else pill.innerHTML = "";
+}
+function clearAssignee(){ $("tTo").value=""; syncDeliverPill(); }
+function submitTask() {
+  const {target, deliver_to} = resolveAssignee($("tTo").value);
+  if(!target) return toast(LANG==='zh'?"请选择执行人（输入 @ 选员工或群）":"Pick an assignee (type @)","bad");
+  const title = $("tTitle").value.trim();
+  if(!title) return toast("请填写任务标题","bad");
+  const body = {from:$("tFrom").value, to:target, title, description:$("tDesc").value.trim(), priority:$("tPrio").value};
+  if (deliver_to) body.deliver_to = deliver_to;
+  api("/v1/tasks",{method:"POST",body})
+    .then(d=>{ toast("任务已派发："+(d.task?.id||"")+(deliver_to?(" → "+deliver_to):""),"ok");
+      $("tTitle").value=""; $("tDesc").value=""; $("tTo").value=""; syncDeliverPill(); loadTasks(); })
+    .catch(e=>toast("派发失败："+e.message,"bad"));
 }
 
 /* ---------- messages ---------- */
@@ -729,7 +879,9 @@ async function loadApprovals() {
   } catch(e){ $("apprList").innerHTML = `<div class="empty">${esc(e.message)}</div>`; }
 }
 async function decide(id, action) {
-  const reason = prompt(action==="approve" ? "批准理由（可空）" : "拒绝理由（可空）") ?? "";
+  const reason = await askText(action==="approve" ? t('dlg_approveReason') : t('dlg_denyReason'),
+    {multiline:true, confirmText: action==="approve" ? "✓ "+t('dlg_ok') : "✕ "+t('dlg_ok')});
+  if (reason === null) return; // cancelled
   try { await api(`/v1/approvals/${encodeURIComponent(id)}/${action}`,{method:"POST",body:{by:OWNER, reason:reason||("控制台"+(action==="approve"?"批准":"拒绝"))}});
     toast(action==="approve"?"已批准":"已拒绝","ok"); loadApprovals();
   } catch(e){ toast("操作失败："+e.message,"bad"); }
@@ -779,7 +931,7 @@ function renderOverview() {
 /* ---------- refresh loop ---------- */
 async function refreshAll(manual=false) {
   if(manual) toast("刷新中…");
-  await Promise.allSettled([loadHealth(), loadEmployees(), loadTasks(), loadApprovals(), loadActivity()]);
+  await Promise.allSettled([loadHealth(), loadEmployees(), loadTasks(), loadApprovals(), loadActivity(), loadDeliveryTargets()]);
   renderOverview();
   if($("msgAgent").value) loadMessages();
   if($("convAgent").value) loadConversations();
