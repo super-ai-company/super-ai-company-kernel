@@ -8,31 +8,22 @@
     "ops": "video-ops",
     "maker": "video-creator",
     "publisher": "video-publisher",
-    "cursor": "cursor",
-    "devin": "devin",
-    "copilot": "github-copilot",
-    "local-model": "local-model-agent",
     "owner": "owner",
     "antigravity": "antigravity",
     "chindahotpot": "chindahotpot",
     "claude": "claude",
     "codex": "codex",
-    "github-copilot": "github-copilot",
     "hermes": "hermes",
     "invest": "invest",
     "krothong": "krothong",
-    "local-model-agent": "local-model-agent",
     "main": "main",
-    "nestcar": "nestcar",
     "openclaw-main": "openclaw-main",
     "owner": "owner",
-    "trae": "trae",
     "video-creator": "video-creator",
     "video-ops": "video-ops",
     "video-publisher": "video-publisher",
     "Hermes": "hermes",
     "Claude": "claude",
-    "Trae": "trae",
     "Antigravity": "antigravity",
     "Codex": "codex",
     "Ecommerce Copy Skill": "ecommerce-copy-skill",
@@ -485,47 +476,6 @@
       ],
       "handoff_mode": "task_or_hook"
     },
-    "nestcar": {
-      "display_name": "car-rental",
-      "role": "business-agent",
-      "can_talk_to": [
-        "antigravity",
-        "chindahotpot",
-        "claude",
-        "codex",
-        "hermes",
-        "invest",
-        "krothong",
-        "main",
-        "openclaw-main",
-        "owner",
-        "trae",
-        "video-creator",
-        "video-ops",
-        "video-publisher"
-      ],
-      "can_assign_to": [
-        "antigravity",
-        "chindahotpot",
-        "claude",
-        "codex",
-        "hermes",
-        "invest",
-        "krothong",
-        "main",
-        "openclaw-main",
-        "owner",
-        "trae",
-        "video-creator",
-        "video-ops",
-        "video-publisher"
-      ],
-      "handoff_mode": "task_or_hook",
-      "default_user_reply_deliver": true,
-      "default_user_reply_channel": "telegram",
-      "default_user_reply_account": "default",
-      "default_user_reply_to": "current"
-    },
     "openclaw-main": {
       "display_name": "OpenClaw Main",
       "role": "operator",
@@ -563,43 +513,6 @@
       ],
       "handoff_mode": "task_or_hook"
     },
-    "trae": {
-      "display_name": "Trae",
-      "role": "developer",
-      "can_talk_to": [
-        "antigravity",
-        "chindahotpot",
-        "claude",
-        "codex",
-        "hermes",
-        "invest",
-        "krothong",
-        "main",
-        "nestcar",
-        "openclaw-main",
-        "owner",
-        "video-creator",
-        "video-ops",
-        "video-publisher"
-      ],
-      "can_assign_to": [
-        "antigravity",
-        "chindahotpot",
-        "claude",
-        "codex",
-        "hermes",
-        "invest",
-        "krothong",
-        "main",
-        "nestcar",
-        "openclaw-main",
-        "owner",
-        "video-creator",
-        "video-ops",
-        "video-publisher"
-      ],
-      "handoff_mode": "task_or_hook"
-    },
     "ecommerce-copy-skill": {
       "display_name": "Ecommerce Copy Skill"
     },
@@ -609,11 +522,8 @@
     "car-rental": {
       "display_name": "car-rental"
     },
-    "claude-code": {
-      "display_name": "claude-code"
-    },
-    "gpt5": {
-      "display_name": "gpt5"
+    "nestcar": {
+      "display_name": "car-rental"
     }
   },
   "channels": {
