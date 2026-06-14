@@ -674,6 +674,14 @@ def route_get(path: str, query: dict[str, list[str]]) -> tuple[int, dict]:
         finally:
             conn.close()
         return HTTPStatus.OK, {"ok": True, "heartbeats": [dict(row) for row in rows]}
+    if path == "/v1/employees/offline-report":
+        argv = ["employee", "offline-report"]
+        if query_value(query, "stale_minutes"):
+            argv.extend(["--stale-minutes", str(query_value(query, "stale_minutes"))])
+        if query_value(query, "notify") in ("1", "true", "yes"):
+            argv.append("--notify")
+        code, payload = run_companyctl(argv)
+        return (HTTPStatus.OK if code == 0 else HTTPStatus.BAD_REQUEST), {"exit_code": code, **payload}
     if path == "/v1/delivery-targets":
         # 群投递目标:供控制台 @mention 自动补全(@agent.group)。读各 OpenClaw agent 的注册表。
         from . import openclaw_adapter
@@ -1573,6 +1581,14 @@ def route_post(path: str, body: dict) -> tuple[int, dict]:
             argv.extend(["--message-id", str(body["message_id"])])
         code, payload = run_companyctl(argv)
         return (HTTPStatus.CREATED if code == 0 else HTTPStatus.BAD_REQUEST), {"exit_code": code, **payload}
+    if path == "/v1/messages/channel-send":
+        argv = ["message", "channel-send", "--agent", str(body.get("agent", "")), "--channel", str(body.get("channel", "line")), "--body", str(body.get("body", "")), "--by", str(body.get("by", "owner"))]
+        if body.get("group_code"):
+            argv.extend(["--group-code", str(body["group_code"])])
+        if body.get("target_id"):
+            argv.extend(["--target-id", str(body["target_id"])])
+        code, payload = run_companyctl(argv)
+        return (HTTPStatus.CREATED if code == 0 and payload.get("ok") else HTTPStatus.BAD_REQUEST), {"exit_code": code, **payload}
     if path.startswith("/v1/tasks/") and path.endswith("/conversations"):
         task_id = path.removeprefix("/v1/tasks/").removesuffix("/conversations").strip("/")
         argv = ["task", "discuss", "--task-id", task_id]

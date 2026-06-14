@@ -8279,11 +8279,122 @@ def cmd_external_import(args: argparse.Namespace) -> int:
     return 0 if result.get("ok") else 2
 
 
+def employee_offline_report_internal(conn: sqlite3.Connection, *, stale_minutes: int = 10) -> dict:
+    """Active employees whose heartbeat is stale (not seen within stale_minutes) = offline."""
+    employees = [dict(r) for r in rows(conn, "SELECT * FROM employees WHERE status = 'active' ORDER BY id") if not is_human_owner_employee(dict(r))]
+    online, offline = [], []
+    for emp in employees:
+        eid = emp["id"]
+        row = conn.execute("SELECT last_seen_at FROM heartbeats WHERE agent_id = ?", (eid,)).fetchone()
+        last = row["last_seen_at"] if row else ""
+        entry = {"id": eid, "name": emp.get("name", eid), "runtime": emp.get("runtime", ""), "last_seen_at": last}
+        (online if employee_has_fresh_heartbeat(conn, eid, stale_minutes=stale_minutes) else offline).append(entry)
+    return {"ok": True, "stale_minutes": stale_minutes, "online": online, "offline": offline,
+            "counts": {"active": len(employees), "online": len(online), "offline": len(offline)}}
+
+
+def cmd_employee_offline_report(args: argparse.Namespace) -> int:
+    conn = connect()
+    report = employee_offline_report_internal(conn, stale_minutes=args.stale_minutes)
+    if args.notify:
+        offline = report["offline"]
+        if offline:
+            lines = "\n".join(f"• {e['name']}（{e['runtime']}）最后在线 {e['last_seen_at'] or '从未'}" for e in offline)
+            msg = f"📴 离线员工 {len(offline)}/{report['counts']['active']}（{args.stale_minutes} 分钟无心跳）：\n{lines}"
+        else:
+            msg = f"✅ 全员在线（{report['counts']['active']}/{report['counts']['active']}）"
+        report["notification"] = notification_send_result(kind="general", subject="Company Kernel 员工在线状态", message=msg)
+    emit(report)
+    return 0
+
+
 def cmd_message_send(args: argparse.Namespace) -> int:
     conn = connect()
     result = send_message_internal(conn, source=args.source, target=args.target, body=args.body, message_id=args.message_id)
     emit({"ok": True, **result})
     return 0
+
+
+def resolve_line_token(agent: str) -> str:
+    """Resolve an OpenClaw agent's LINE channel access token from the environment (secrets.env)."""
+    key = "LINE_" + agent.upper().replace("-", "_") + "_CHANNEL_ACCESS_TOKEN"
+    return os.environ.get(key) or os.environ.get("LINE_DEFAULT_CHANNEL_ACCESS_TOKEN", "")
+
+
+def send_line_push(token: str, to: str, text: str, timeout: int = 20) -> dict:
+    """Push a text message directly to a LINE user/group/room via the Messaging API."""
+    if not token:
+        raise ValueError("LINE channel access token is not configured")
+    if not to:
+        raise ValueError("LINE target id is required")
+    data = json.dumps({"to": to, "messages": [{"type": "text", "text": text}]}, ensure_ascii=False).encode("utf-8")
+    request = urllib.request.Request("https://api.line.me/v2/bot/message/push", data=data, method="POST")
+    request.add_header("Content-Type", "application/json")
+    request.add_header("Authorization", "Bearer " + token)
+    with urllib.request.urlopen(request, timeout=timeout) as response:
+        body = response.read().decode("utf-8", errors="replace")
+    return {"ok": True, "platform": "line", "to": to, "response": body or "ok"}
+
+
+def channel_send_internal(*, agent: str, channel: str, target_id: str, group_code: str, target_name: str, body: str, by: str = "owner") -> dict:
+    """Pure outbound message to an external channel (LINE group / Telegram chat) — NOT a task, not an
+    agent invocation. Delivers the text straight to the customer channel and records it for the console feed."""
+    channel = (channel or "line").strip().lower()
+    text = body.strip()
+    if not text:
+        return {"ok": False, "error": "empty message body"}
+    if not target_id:
+        return {"ok": False, "error": "missing target id"}
+    if channel == "line":
+        token = resolve_line_token(agent)
+        try:
+            sent = send_line_push(token, target_id, text)
+        except (ValueError, urllib.error.URLError, TimeoutError, OSError) as exc:
+            return {"ok": False, "error": str(exc), "channel": channel, "target_id": target_id}
+    elif channel == "telegram":
+        settings = notification_settings()
+        account = settings.get("telegram_accounts", {}).get(agent) or settings.get("telegram_accounts", {}).get("default", {})
+        token = os.environ.get(str(account.get("bot_token_env", "") or ""), "")
+        try:
+            sent = send_telegram_notification(token=token, chat_id=target_id, text=text)
+        except (ValueError, urllib.error.URLError, TimeoutError) as exc:
+            return {"ok": False, "error": str(exc), "channel": channel, "target_id": target_id}
+    else:
+        return {"ok": False, "error": f"unsupported channel: {channel}"}
+    # record the outbound message so it shows in the console message history under the owning agent
+    conn = connect()
+    try:
+        mid = f"msg-{datetime.now().strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:6]}"
+        label = target_name or group_code or target_id
+        conn.execute(
+            "INSERT INTO messages(id, source_agent, target_agent, body, created_at) VALUES (?, ?, ?, ?, ?)",
+            (mid, resolve_employee_alias(by), resolve_employee_alias(agent), f"[→ {channel} 群「{label}」] {text}", now()),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    return {"ok": True, "channel": channel, "agent": agent, "target_id": target_id, "group": group_code, "target_name": target_name, "message_id": mid, "delivery": sent}
+
+
+def cmd_message_channel_send(args: argparse.Namespace) -> int:
+    agent = resolve_employee_alias(args.agent)
+    # resolve group_code -> target_id via the agent's channel_target_registry (reuse openclaw_adapter logic)
+    from company_kernel import openclaw_adapter
+    target_id = args.target_id
+    group_code = args.group_code
+    target_name = ""
+    channel = args.channel
+    if not target_id and group_code:
+        resolved = openclaw_adapter.resolve_deliver_to(agent, {"channel": channel, "group_code": group_code})
+        if not resolved.get("resolved"):
+            emit({"ok": False, "error": resolved.get("error", "group not found"), "agent": agent, "group_code": group_code})
+            return 2
+        target_id = resolved.get("target_id", "")
+        target_name = resolved.get("target_name", "")
+        channel = resolved.get("channel", channel)
+    result = channel_send_internal(agent=agent, channel=channel, target_id=target_id, group_code=group_code, target_name=target_name, body=args.body, by=args.by)
+    emit(result)
+    return 0 if result.get("ok") else 2
 
 
 def parse_openclaw_payload_text(stdout: str) -> str:
@@ -12296,6 +12407,10 @@ def build_parser() -> argparse.ArgumentParser:
     emp_offboard.add_argument("--hard-delete", action="store_true", help="delete only Company Kernel-managed employee files/workspace")
     emp_offboard.add_argument("--dry-run", action="store_true")
     emp_offboard.set_defaults(func=cmd_employee_offboard)
+    emp_offline = emp_sub.add_parser("offline-report", help="list active employees that are offline (stale heartbeat), optionally notify")
+    emp_offline.add_argument("--stale-minutes", type=int, default=10)
+    emp_offline.add_argument("--notify", action="store_true", help="send a Telegram summary of offline employees")
+    emp_offline.set_defaults(func=cmd_employee_offline_report)
 
     skill = sub.add_parser("skill")
     skill_sub = skill.add_subparsers(dest="skill_cmd", required=True)
@@ -12649,6 +12764,14 @@ def build_parser() -> argparse.ArgumentParser:
     message_send.add_argument("--body", required=True)
     message_send.add_argument("--message-id", default="")
     message_send.set_defaults(func=cmd_message_send)
+    message_channel = message_sub.add_parser("channel-send", help="push a pure text message to an external channel (LINE/Telegram customer group)")
+    message_channel.add_argument("--agent", required=True, help="owning agent (its channel token is used), e.g. nestcar")
+    message_channel.add_argument("--channel", default="line")
+    message_channel.add_argument("--group-code", default="", help="group code from the agent's channel_target_registry, e.g. A3")
+    message_channel.add_argument("--target-id", default="", help="explicit channel target id (overrides group-code)")
+    message_channel.add_argument("--body", required=True)
+    message_channel.add_argument("--by", default="owner")
+    message_channel.set_defaults(func=cmd_message_channel_send)
     message_direct = message_sub.add_parser("direct")
     message_direct.add_argument("--from", dest="source", required=True)
     message_direct.add_argument("--to", dest="target", required=True)
