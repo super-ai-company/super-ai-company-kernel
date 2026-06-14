@@ -7684,6 +7684,30 @@ def require_active_employee(conn: sqlite3.Connection, employee_id: str, action: 
     return None
 
 
+def parse_deliver_to(raw: str) -> dict:
+    """Parse --deliver-to into a delivery spec dict for OpenClaw agents.
+    Accepts JSON ({"channel":"line","group_code":"A3"}) or the shorthand
+    'channel:group_code' (e.g. 'line:internal'). A value that looks like a LINE
+    id (starts with C/U/R) is treated as an explicit target_id instead."""
+    raw = (raw or "").strip()
+    if not raw:
+        return {}
+    if raw.startswith("{"):
+        try:
+            parsed = json.loads(raw)
+            return parsed if isinstance(parsed, dict) else {}
+        except json.JSONDecodeError:
+            return {}
+    parts = raw.split(":", 1)
+    channel = parts[0].strip() or "line"
+    rest = parts[1].strip() if len(parts) > 1 else ""
+    if not rest:
+        return {"channel": channel}
+    if rest[:1] in {"C", "U", "R"} and len(rest) >= 20 and " " not in rest:
+        return {"channel": channel, "target_id": rest}
+    return {"channel": channel, "group_code": rest}
+
+
 def cmd_task_submit(args: argparse.Namespace) -> int:
     conn = connect()
     source = resolve_employee_alias(args.source)
@@ -7710,6 +7734,9 @@ def cmd_task_submit(args: argparse.Namespace) -> int:
         (task_id, source, target, args.title, args.description, args.priority, ts, ts),
     )
     metadata = {"trace_id": new_trace_id(), "declared_changes": parse_csv(args.changed_files), "rfc": args.rfc, "approval": gate.get("approval")}
+    deliver_to = parse_deliver_to(getattr(args, "deliver_to", ""))
+    if deliver_to:
+        metadata["deliver_to"] = deliver_to
     conn.execute(
         "INSERT OR REPLACE INTO task_metadata(task_id, metadata_json, updated_at) VALUES (?, ?, ?)",
         (task_id, json.dumps(metadata, ensure_ascii=False), ts),
@@ -12250,6 +12277,7 @@ def build_parser() -> argparse.ArgumentParser:
     task_submit.add_argument("--requires-approval", default="", help="force approval action before direct submit, e.g. external_send")
     task_submit.add_argument("--approval-id", default="", help="approved approval id for high-risk direct submit")
     task_submit.add_argument("--risk", default="P1")
+    task_submit.add_argument("--deliver-to", default="", help="reply delivery target for OpenClaw agents, e.g. 'line:internal' (channel:group_code) or JSON {\"channel\":\"line\",\"group_code\":\"A3\"}")
     task_submit.set_defaults(func=cmd_task_submit)
     task_route = task_sub.add_parser("route")
     task_route.add_argument("--from", dest="source", required=True)

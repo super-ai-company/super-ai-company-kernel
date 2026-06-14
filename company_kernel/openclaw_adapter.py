@@ -119,7 +119,59 @@ def _str_list(value) -> list[str]:
     return [str(item).strip() for item in value if str(item).strip()]
 
 
-def build_next_command(task: sqlite3.Row, capabilities: dict | None = None) -> str:
+def load_channel_targets(agent: str) -> list[dict]:
+    """读 OpenClaw 侧 agent 的群投递注册表(workspace-<agent>/{state,channels}/channel_target_registry.json)。
+    不同 agent 注册表位置不一(nestcar 在 state/、chindahotpot 在 channels/),两处都试。"""
+    for rel in ("state/channel_target_registry.json", "channels/channel_target_registry.json"):
+        path = OPENCLAW_ROOT / f"workspace-{agent}" / rel
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        targets = data.get("targets") if isinstance(data, dict) else data
+        if isinstance(targets, list):
+            return targets
+    return []
+
+
+def resolve_deliver_to(agent: str, spec: dict) -> dict:
+    """把任务元数据里的投递意图解析为可投递目标。
+    spec 形如 {"channel":"line","group_code":"internal"} 或 {"channel":"line","target_id":"C..."}。
+    group_code 经 agent 的 channel_target_registry 解析成真实 target_id,OpenClaw 侧拿现成 id 投递。"""
+    if not isinstance(spec, dict) or not spec:
+        return {}
+    channel = str(spec.get("channel") or "line").strip()
+    group_code = str(spec.get("group_code") or spec.get("group") or "").strip()
+    target_id = str(spec.get("target_id") or "").strip()
+    result: dict = {"channel": channel, "requested": {"group_code": group_code, "target_id": target_id}, "resolved": False}
+    if target_id:
+        result.update({"target_id": target_id, "target_kind": spec.get("target_kind", "group"), "resolved": True, "source": "explicit"})
+        return result
+    if not group_code:
+        result["error"] = "deliver_to needs group_code or target_id"
+        return result
+    wanted = group_code.lower()
+    for t in load_channel_targets(agent):
+        key = str(t.get("key") or "").strip().lower()
+        # 匹配 group_code、完整 key,或 key 的任一冒号分段(chinda 的 key 形如 store:04:line:group)。
+        codes = {str(t.get("group_code") or "").strip().lower(), key}
+        codes.update(seg for seg in key.split(":") if seg)
+        if wanted in codes and t.get("target_id"):
+            result.update({
+                "target_kind": t.get("target_kind", "group"),
+                "group_code": t.get("group_code") or t.get("key"),
+                "target_id": t.get("target_id"),
+                "target_name": t.get("target_name", ""),
+                "active": bool(t.get("active", True)),
+                "resolved": True,
+                "source": "registry",
+            })
+            return result
+    result["error"] = f"group_code '{group_code}' 在 {agent} 的 channel_target_registry 中未找到"
+    return result
+
+
+def build_next_command(task: sqlite3.Row, capabilities: dict | None = None, deliver_to: dict | None = None) -> str:
     """OpenClaw 总线要求每个任务带一条可执行指令(next_command)。
     OpenClaw 员工本身具备技能、知道怎么做,这里把任务目标+说明组织成一条指令交给它,
     让它用自己的技能/工作区执行,而不是要求外部每次手写命令。
@@ -149,6 +201,18 @@ def build_next_command(task: sqlite3.Row, capabilities: dict | None = None) -> s
         )
     else:
         parts.append("请用你既有的技能与本员工工作区执行(可调用你的脚本/工具/命令);")
+    if deliver_to and deliver_to.get("resolved"):
+        where = deliver_to.get("target_name") or deliver_to.get("group_code") or deliver_to.get("target_id")
+        parts.append(
+            f"完成后把面向用户的回复投递到 {deliver_to.get('channel','line')} "
+            f"{deliver_to.get('target_kind','group')}「{where}」(target_id={deliver_to.get('target_id')});"
+            "不要发到其它会话。"
+        )
+    elif deliver_to and deliver_to.get("error"):
+        parts.append(
+            f"注意:本任务指定了投递目标但解析失败({deliver_to['error']});"
+            "请勿臆测投递目标,完成后回 status: blocked 说明投递目标缺失。"
+        )
     parts.append(
         "完成后回填 status 与证据(report_path、exit_code、stdout_stderr、changed_files_or_none);"
         "若缺前置条件则回 status: blocked 并写清 blocker 与下一步。"
@@ -158,7 +222,9 @@ def build_next_command(task: sqlite3.Row, capabilities: dict | None = None) -> s
 
 def build_payload(task: sqlite3.Row) -> dict:
     capabilities = load_capabilities(task["target_agent"])
-    return {
+    deliver_spec = task_metadata(task["id"]).get("deliver_to")
+    deliver_to = resolve_deliver_to(task["target_agent"], deliver_spec) if isinstance(deliver_spec, dict) else {}
+    payload = {
         "task_id": task["id"],
         "source_agent": task["source_agent"],
         "target_agent": task["target_agent"],
@@ -175,7 +241,7 @@ def build_payload(task: sqlite3.Row) -> dict:
             "preferred_task_types": _str_list(capabilities.get("preferred_task_types")),
         },
         # OpenClaw 总线必需:可执行指令。缺它会被判 missing_next_command 而失败。
-        "next_command": build_next_command(task, capabilities),
+        "next_command": build_next_command(task, capabilities, deliver_to),
         "non_goals": ["do not silently treat this as a human chat only", "do not complete without evidence"],
         "allowed_scope": ["target OpenClaw workspace only unless the task explicitly says otherwise"],
         "verification": ["return exit_code/stdout/stderr or a report path for the executed check"],
@@ -185,6 +251,10 @@ def build_payload(task: sqlite3.Row) -> dict:
         "expected_completion_evidence": "OpenClaw employee must return evidence path or blocker to Company Kernel.",
         "next_action": "openclaw_employee_claim_execute_or_block_and_report_to_source",
     }
+    # 群投递目标(group_code 已解析为真实 target_id),供 OpenClaw 侧把回复投递到指定渠道/群。
+    if deliver_to:
+        payload["deliver_to"] = deliver_to
+    return payload
 
 
 def approval_reason(task: sqlite3.Row) -> str:
