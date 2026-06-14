@@ -180,6 +180,7 @@ label{font-size:12px;color:var(--muted);display:block;margin-bottom:4px}
     <h2 data-i18n="emp_title">AI 员工</h2><span class="hint" data-i18n="emp_hint">心跳 10 分钟内 = 在岗</span>
     <div class="spacer"></div>
     <button onclick="toggleNewEmp()" data-i18n="emp_add">＋ 新增员工</button>
+    <button onclick="offlineReport()" data-i18n="emp_offline">📴 离线提醒</button>
     <button class="primary" onclick="attendanceSweep()" data-i18n="emp_sweep">📋 全员考勤探测</button>
   </div>
   <div class="card" id="newEmpForm" style="display:none;margin-bottom:14px">
@@ -329,7 +330,7 @@ const I18N = {
     met_margin:"毛利", met_revenue:"营收", met_cost:"成本", met_type:"类型", met_count:"笔数", met_kind:"验收类型", met_total:"总数",
     met_accuracy:"准确率", met_reviewed:"已抽检", met_fp:"误放", met_fn:"误拦", met_noecon:"暂无已完成任务的经济数据", met_noacc:"暂无验收记录", met_unavailable:"指标接口不可用（需较新网关）",
     ov_pendingApprovals:"⏳ 待审批", ov_latestEvents:"🔔 最新事件", loading:"加载中…", none:"无",
-    emp_title:"AI 员工", emp_hint:"心跳 10 分钟内 = 在岗", emp_add:"＋ 新增员工", emp_sweep:"📋 全员考勤探测",
+    emp_title:"AI 员工", emp_hint:"心跳 10 分钟内 = 在岗", emp_add:"＋ 新增员工", emp_sweep:"📋 全员考勤探测", emp_offline:"📴 离线提醒",
     emp_onboardTitle:"🧑‍💼 新增员工（onboard）", emp_register:"注册员工", emp_registerHint:"注册后如需自动接任务，再在 daemon.json 启用 worker",
     f_name:"名称", f_role:"角色", f_runtime:"运行时", f_workspace:"工作区（绝对路径）", f_skills:"技能（逗号分隔）", f_canTalk:"可对话对象（逗号分隔）",
     task_title:"任务看板", task_hint:"点击卡片查看详情与证据", task_new:"➕ 派发新任务", task_submit:"派发任务",
@@ -355,7 +356,7 @@ const I18N = {
     met_margin:"Margin", met_revenue:"Revenue", met_cost:"Cost", met_type:"Type", met_count:"Count", met_kind:"Kind", met_total:"Total",
     met_accuracy:"Accuracy", met_reviewed:"Reviewed", met_fp:"False+", met_fn:"False-", met_noecon:"No economics data from completed tasks yet", met_noacc:"No verifier records yet", met_unavailable:"Metrics API unavailable (needs newer gateway)",
     ov_pendingApprovals:"⏳ Pending approvals", ov_latestEvents:"🔔 Latest events", loading:"Loading…", none:"None",
-    emp_title:"AI Employees", emp_hint:"heartbeat within 10 min = on duty", emp_add:"＋ Add employee", emp_sweep:"📋 Attendance sweep",
+    emp_title:"AI Employees", emp_hint:"heartbeat within 10 min = on duty", emp_add:"＋ Add employee", emp_sweep:"📋 Attendance sweep", emp_offline:"📴 Offline alert",
     emp_onboardTitle:"🧑‍💼 Onboard employee", emp_register:"Register", emp_registerHint:"After registering, enable a worker in daemon.json for auto task pickup",
     f_name:"Name", f_role:"Role", f_runtime:"Runtime", f_workspace:"Workspace (absolute path)", f_skills:"Skills (comma-separated)", f_canTalk:"Can talk to (comma-separated)",
     task_title:"Task board", task_hint:"click a card for details & evidence", task_new:"➕ Dispatch new task", task_submit:"Dispatch",
@@ -551,12 +552,9 @@ async function loadEmployees() {
   // Messages = a real comms channel. Only employees with a configured channel (openclaw agents relay
   // to LINE/Telegram) can receive a direct message; pure compute runtimes (codex/claude/hermes/antigravity)
   // are for Tasks, not chat — hide them from the recipient list so you only see who you can actually message.
-  const msgOpts = EMPLOYEES.filter(isMessageable).map(e=>`<option value="${esc(e.id)}">${esc(e.id)}</option>`).join("")
-    || `<option value="">${LANG==='zh'?'（暂无可直接发信息的员工）':'(no messageable employees)'}</option>`;
   ["tFrom","mFrom","convReplyAs","ncFrom"].forEach(id=>{ if($(id)) $(id).innerHTML = withOwnerFirst; });
-  ["mTo"].forEach(id=>{ if($(id)) $(id).innerHTML = msgOpts; });
-  ["msgAgent"].forEach(id=>{ if($(id) && !$(id).value) $(id).innerHTML = msgOpts; });
   ["convAgent"].forEach(id=>{ if($(id) && !$(id).value) $(id).innerHTML = opts; });
+  rebuildMessageRecipients();
   buildMentionOptions();
   // grid
   $("empGrid").innerHTML = EMPLOYEES.map(e=>{
@@ -612,6 +610,16 @@ async function addEmployee() {
     $("newEmpForm").style.display="none";
     refreshAll();
   } catch(e){ toast("注册失败："+e.message, "bad"); }
+}
+async function offlineReport() {
+  toast(LANG==='zh'?"检查在线状态并通知…":"Checking online status…");
+  try {
+    const d = await api("/v1/employees/offline-report?notify=1");
+    const off = d.offline||[], on = d.counts?.online||0, total = d.counts?.active||0;
+    if (!off.length) toast((LANG==='zh'?"✅ 全员在线 ":"✅ All online ")+on+"/"+total,"ok");
+    else toast((LANG==='zh'?"📴 离线 ":"📴 Offline ")+off.length+"/"+total+"："+off.map(e=>e.id).join("、")+(LANG==='zh'?"（已发 Telegram）":" (notified)"),"bad");
+    refreshAll();
+  } catch(e){ toast("失败："+e.message,"bad"); }
 }
 async function attendanceSweep() {
   toast("正在发起全员考勤探测…");
@@ -728,6 +736,22 @@ async function loadDeliveryTargets(){
   try { const d = await api("/v1/delivery-targets"); DELIVERY_TARGETS = d.delivery_targets || {}; }
   catch(e){ DELIVERY_TARGETS = {}; }
   buildMentionOptions();
+  rebuildMessageRecipients();
+}
+// Messages recipients = employees with a channel + their external customer groups (LINE/Telegram).
+// Sending to a customer group pushes the text straight to that channel (pure message, not a task).
+function rebuildMessageRecipients(){
+  let html = "";
+  const emps = EMPLOYEES.filter(isMessageable);
+  if (emps.length) html += `<optgroup label="${LANG==='zh'?'员工':'Employees'}">` + emps.map(e=>`<option value="${esc(e.id)}">${esc(e.id)}</option>`).join("") + `</optgroup>`;
+  for (const [ag, groups] of Object.entries(DELIVERY_TARGETS||{})) {
+    if (!groups || !groups.length) continue;
+    html += `<optgroup label="${esc(ag)} · ${LANG==='zh'?'客户群/渠道':'customer groups'}">` +
+      groups.map(g=>`<option value="${esc(ag)}.${esc(g.group_code)}">${esc(ag)}.${esc(g.group_code)} — ${esc((g.target_name||"").slice(0,18))}</option>`).join("") + `</optgroup>`;
+  }
+  if (!html) html = `<option value="">${LANG==='zh'?'（暂无可发信息的对象）':'(none)'}</option>`;
+  ["mTo"].forEach(id=>{ if($(id)) $(id).innerHTML = html; });
+  ["msgAgent"].forEach(id=>{ if($(id) && !$(id).value) $(id).innerHTML = html; });
 }
 function buildMentionOptions(){
   const opts = [];
@@ -836,13 +860,23 @@ async function loadMessages() {
   } catch(e){ $("msgList").innerHTML = `<div class="empty">读取失败：${esc(e.message)}</div>`; }
 }
 async function sendMessage() {
-  const direct = $("mMode").value==="direct";
-  const body = {from:$("mFrom").value, to:$("mTo").value, body:$("mBody").value.trim()};
-  if(!body.body) return toast("请输入内容","bad");
+  const to = $("mTo").value;
+  const text = $("mBody").value.trim();
+  if(!text) return toast("请输入内容","bad");
+  if(!to) return toast(LANG==='zh'?"请选择收件对象":"Pick a recipient","bad");
   try {
-    const d = await api(direct?"/v1/messages/direct":"/v1/messages",{method:"POST",body});
-    toast(direct ? "已直连执行：" + (d.reply||"").slice(0,80) : "消息已送达","ok");
-    $("mBody").value=""; $("msgAgent").value = body.to; loadMessages();
+    if (to.includes(".")) { // external customer group → pure channel push (LINE/Telegram)
+      const [agent, group_code] = to.split(".");
+      const grp = (DELIVERY_TARGETS[agent]||[]).find(g=>g.group_code===group_code);
+      const d = await api("/v1/messages/channel-send",{method:"POST",body:{agent, group_code, channel:(grp&&grp.channel)||"line", body:text, by:$("mFrom").value}});
+      toast((LANG==='zh'?"已发到群「":"Sent to 「")+(d.target_name||group_code)+"」","ok");
+      $("mBody").value=""; $("msgAgent").value = agent; loadMessages();
+    } else { // internal agent — invoke runtime (direct) or just record
+      const direct = $("mMode").value==="direct";
+      const d = await api(direct?"/v1/messages/direct":"/v1/messages",{method:"POST",body:{from:$("mFrom").value, to, body:text}});
+      toast(direct ? (LANG==='zh'?"已发送 · 回复：":"Replied: ") + (d.reply||"").slice(0,80) : (LANG==='zh'?"消息已送达":"Recorded"),"ok");
+      $("mBody").value=""; $("msgAgent").value = to; loadMessages();
+    }
   } catch(e){ toast("发送失败："+e.message,"bad"); }
 }
 
