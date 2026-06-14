@@ -234,7 +234,7 @@ label{font-size:12px;color:var(--muted);display:block;margin-bottom:4px}
     <div class="form-grid">
       <div><label data-i18n="f_sender">发件人</label><select id="mFrom"></select></div>
       <div><label data-i18n="f_recipient">收件人</label><select id="mTo"></select></div>
-      <div><label data-i18n="f_mode">模式</label><select id="mMode"><option value="record" data-i18n="mode_record">仅记录（写入收件箱）</option><option value="direct" data-i18n="mode_direct">直连执行（实际唤起对方运行时）</option></select></div>
+      <div><label data-i18n="f_mode">模式</label><select id="mMode"><option value="direct" data-i18n="mode_direct">直接发送（员工收到并回复）</option><option value="record" data-i18n="mode_record">仅记录（不发出）</option></select></div>
       <div class="full"><label data-i18n="f_content">内容</label><textarea id="mBody" rows="2" data-i18n-ph="ph_msgBody" placeholder="消息内容"></textarea></div>
     </div>
     <button class="primary" onclick="sendMessage()" data-i18n="msg_sendBtn">发送</button>
@@ -335,7 +335,7 @@ const I18N = {
     task_title:"任务看板", task_hint:"点击卡片查看详情与证据", task_new:"➕ 派发新任务", task_submit:"派发任务",
     f_from:"发起人", f_assignee:"执行人", f_priority:"优先级", f_taskTitle:"标题", f_taskDesc:"描述（验收标准、相关文件路径写得越细，AI 员工干得越好）", ph_taskTitle:"任务标题",
     msg_title:"消息中心", msg_send:"✉️ 发送消息", f_sender:"发件人", f_recipient:"收件人", f_mode:"模式",
-    mode_record:"仅记录（写入收件箱）", mode_direct:"直连执行（实际唤起对方运行时）", f_content:"内容", ph_msgBody:"消息内容", msg_sendBtn:"发送", msg_pick:"选择员工查看消息",
+    mode_record:"仅记录（不发出）", mode_direct:"直接发送（员工收到并回复）", f_content:"内容", ph_msgBody:"消息内容", msg_sendBtn:"发送", msg_pick:"选择员工查看消息",
     conv_title:"多轮对话", conv_new:"＋ 发起新会话", conv_newTitle:"🆕 发起多轮会话", f_participants:"参与者（逗号分隔的员工 ID，含发起人）",
     ph_convTitle:"会话标题", f_firstMsg:"首条消息", ph_convBody:"开场白 / 要讨论的问题", conv_create:"创建会话", conv_list:"会话列表", conv_pick:"选择左侧会话", ph_replyAs:"以所选身份回复…", reply:"回复",
     appr_title:"审批中心", st_pending:"待审批", st_approved:"已批准", st_denied:"已拒绝", st_all:"全部",
@@ -361,7 +361,7 @@ const I18N = {
     task_title:"Task board", task_hint:"click a card for details & evidence", task_new:"➕ Dispatch new task", task_submit:"Dispatch",
     f_from:"From", f_assignee:"Assignee", f_priority:"Priority", f_taskTitle:"Title", f_taskDesc:"Description (the more detail on acceptance & file paths, the better the agent does)", ph_taskTitle:"task title",
     msg_title:"Messages", msg_send:"✉️ Send message", f_sender:"From", f_recipient:"To", f_mode:"Mode",
-    mode_record:"Record only (write to inbox)", mode_direct:"Direct execute (really invoke the runtime)", f_content:"Content", ph_msgBody:"message body", msg_sendBtn:"Send", msg_pick:"Pick an employee to view messages",
+    mode_record:"Record only (not sent)", mode_direct:"Send directly (employee gets it & replies)", f_content:"Content", ph_msgBody:"message body", msg_sendBtn:"Send", msg_pick:"Pick an employee to view messages",
     conv_title:"Conversations", conv_new:"＋ Start conversation", conv_newTitle:"🆕 Start a multi-round conversation", f_participants:"Participants (comma-separated employee IDs, incl. starter)",
     ph_convTitle:"conversation title", f_firstMsg:"First message", ph_convBody:"opening line / topic to discuss", conv_create:"Create", conv_list:"Conversations", conv_pick:"Select a conversation on the left", ph_replyAs:"reply as selected identity…", reply:"Reply",
     appr_title:"Approvals", st_pending:"Pending", st_approved:"Approved", st_denied:"Denied", st_all:"All",
@@ -646,10 +646,11 @@ async function showTask(id) {
     const fixBox = stuck ? `<div class="card" style="margin-bottom:12px;background:var(--bg2)">
         <div style="font-size:12px;color:var(--muted);margin-bottom:6px">🔧 ${LANG==='zh'?'修复任务再重开（卡住多因缺绝对仓库路径/验收，补清楚再派）':'Fix the task before reopening (blocks are usually missing repo path / acceptance)'}</div>
         <textarea id="fixDesc" rows="5" style="font-size:12px">${esc(t.description||"")}</textarea>
-        <div style="display:flex;gap:8px;margin-top:8px">
+        <div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap">
           <button class="ok" onclick="taskFixReopen('${esc(id)}')">🔧 ${LANG==='zh'?'修复并重开':'Fix & reopen'}</button>
           <button onclick="taskReopen('${esc(id)}')">${LANG==='zh'?'仅重开（不改）':'Reopen only'}</button>
           <button onclick="taskReassignPrompt('${esc(id)}')">${LANG==='zh'?'改派他人':'Reassign'}</button>
+          <button class="bad" onclick="taskDiscard('${esc(id)}')">🗑 ${LANG==='zh'?'丢弃':'Discard'}</button>
         </div></div>` : "";
     const actions = stuck ? fixBox : `<div style="display:flex;gap:8px;margin-bottom:12px">
       <button onclick="taskReassignPrompt('${esc(id)}')">改派</button></div>`;
@@ -668,6 +669,15 @@ async function showTask(id) {
 async function taskReopen(id) {
   try { await api(`/v1/tasks/${encodeURIComponent(id)}/reopen`, {method:"POST", body:{by:OWNER, reason:"控制台手动重开"}});
     toast("任务已重开","ok"); closeModal(); loadTasks();
+  } catch(e){ toast("失败："+e.message,"bad"); }
+}
+async function taskDiscard(id) {
+  const ok = await askModal({title: LANG==='zh'?'丢弃任务':'Discard task',
+    html: `<div class="emp-sub">${LANG==='zh'?'丢弃后任务移出看板（标记 cancelled），不再执行。适用于信息太缺、不值得修的任务。':'Removes the task from the board (cancelled). For tasks too incomplete to bother fixing.'}</div>`,
+    confirmText: '🗑 '+(LANG==='zh'?'确认丢弃':'Discard'), onConfirm: ()=>true});
+  if (!ok) return;
+  try { await api(`/v1/tasks/${encodeURIComponent(id)}/discard`, {method:"POST", body:{by:OWNER, reason:"控制台丢弃"}});
+    toast(LANG==='zh'?"已丢弃":"Discarded","ok"); closeModal(); loadTasks();
   } catch(e){ toast("失败："+e.message,"bad"); }
 }
 async function taskFixReopen(id) {

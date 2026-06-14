@@ -10731,6 +10731,33 @@ def cmd_task_reopen(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_task_discard(args: argparse.Namespace) -> int:
+    """Owner/supervisor drops a stuck task off the board (status=cancelled) without retrying it.
+    For tasks whose info is too incomplete to act on — discard instead of letting them linger blocked."""
+    conn = connect()
+    actor = resolve_employee_alias(args.by)
+    require_employee(conn, actor)
+    task = conn.execute("SELECT * FROM tasks WHERE id = ?", (args.task_id,)).fetchone()
+    if not task:
+        emit({"ok": False, "error": "task not found", "task_id": args.task_id})
+        return 2
+    if not can_manage_task_recovery(conn, task, actor):
+        emit({"ok": False, "error": "actor cannot discard task", "task_id": args.task_id, "by": actor})
+        return 2
+    conn.execute(
+        "UPDATE tasks SET status = 'cancelled', claimed_by = '', blocker = ?, updated_at = ? WHERE id = ?",
+        (f"discarded by {actor}: {args.reason}", now(), args.task_id),
+    )
+    conn.execute("DELETE FROM locks WHERE resource_key = ?", (f"task:{args.task_id}",))
+    sync_project_plan_for_task(conn, task_id=args.task_id, task_status="cancelled", actor=actor)
+    event = record_event(conn, "task.discarded", actor, task_id=args.task_id, payload={"reason": args.reason})
+    conn.commit()
+    updated = dict(conn.execute("SELECT * FROM tasks WHERE id = ?", (args.task_id,)).fetchone())
+    audit(conn, actor, "task.discard", args.task_id, {"reason": args.reason, "event_id": event["id"]})
+    emit({"ok": True, "task": updated, "event_id": event["id"]})
+    return 0
+
+
 def cmd_task_reassign(args: argparse.Namespace) -> int:
     conn = connect()
     actor = resolve_employee_alias(args.by)
@@ -12527,6 +12554,11 @@ def build_parser() -> argparse.ArgumentParser:
     task_reopen.add_argument("--status", choices=["submitted", "claimed"], default="submitted")
     task_reopen.add_argument("--description", default="", help="corrected/augmented task brief (e.g. add absolute repo path) to fix the block before re-queueing")
     task_reopen.set_defaults(func=cmd_task_reopen)
+    task_discard = task_sub.add_parser("discard")
+    task_discard.add_argument("--task-id", required=True)
+    task_discard.add_argument("--by", required=True)
+    task_discard.add_argument("--reason", default="owner discarded")
+    task_discard.set_defaults(func=cmd_task_discard)
     task_reassign = task_sub.add_parser("reassign")
     task_reassign.add_argument("--task-id", required=True)
     task_reassign.add_argument("--by", required=True)
