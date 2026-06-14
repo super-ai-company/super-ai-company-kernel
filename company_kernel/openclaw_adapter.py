@@ -101,17 +101,55 @@ def paths(agent: str, task_id: str) -> dict[str, Path]:
     }
 
 
-def build_next_command(task: sqlite3.Row) -> str:
+def load_capabilities(agent: str) -> dict:
+    """读员工 employees/<agent>/capabilities.json(技能/工具/擅长任务类型)。
+    用于「持证上岗」:派活时把员工本人已认证的能力注入指令,让它以明确身份执行。
+    文件缺失或损坏时返回 {},不阻断派活(降级为通用指令)。"""
+    path = ROOT / "employees" / agent / "capabilities.json"
+    try:
+        parsed = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _str_list(value) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [str(item).strip() for item in value if str(item).strip()]
+
+
+def build_next_command(task: sqlite3.Row, capabilities: dict | None = None) -> str:
     """OpenClaw 总线要求每个任务带一条可执行指令(next_command)。
     OpenClaw 员工本身具备技能、知道怎么做,这里把任务目标+说明组织成一条指令交给它,
-    让它用自己的技能/工作区执行,而不是要求外部每次手写命令。"""
+    让它用自己的技能/工作区执行,而不是要求外部每次手写命令。
+    若提供 capabilities,则把该员工已认证的技能/工具/擅长任务类型写进指令(持证上岗),
+    让指令从「用你既有的技能」升级为「以你已认证的 X/Y/Z 技能与 A/B 工具执行」。"""
+    capabilities = capabilities or {}
     goal = (task["title"] or "").strip() or "(无标题)"
     desc = (task["description"] or "").strip()
+    skills = _str_list(capabilities.get("skills"))
+    tools = _str_list(capabilities.get("tools"))
+    preferred = _str_list(capabilities.get("preferred_task_types"))
+
     parts = [f"作为本员工,完成 Company Kernel 指派任务:{goal}"]
     if desc:
         parts.append(f"任务说明:{desc}")
+    if skills or tools:
+        cert = []
+        if skills:
+            cert.append(f"已认证技能:{'、'.join(skills)}")
+        if tools:
+            cert.append(f"可用工具:{'、'.join(tools)}")
+        if preferred:
+            cert.append(f"擅长任务类型:{'、'.join(preferred)}")
+        parts.append(
+            "请优先以你的（" + ";".join(cert) + "）来执行本任务;"
+            "若任务超出上述能力范围,回 status: blocked 并说明缺哪项能力。"
+        )
+    else:
+        parts.append("请用你既有的技能与本员工工作区执行(可调用你的脚本/工具/命令);")
     parts.append(
-        "请用你既有的技能与本员工工作区执行(可调用你的脚本/工具/命令);"
         "完成后回填 status 与证据(report_path、exit_code、stdout_stderr、changed_files_or_none);"
         "若缺前置条件则回 status: blocked 并写清 blocker 与下一步。"
     )
@@ -119,6 +157,7 @@ def build_next_command(task: sqlite3.Row) -> str:
 
 
 def build_payload(task: sqlite3.Row) -> dict:
+    capabilities = load_capabilities(task["target_agent"])
     return {
         "task_id": task["id"],
         "source_agent": task["source_agent"],
@@ -129,8 +168,14 @@ def build_payload(task: sqlite3.Row) -> dict:
         "reply_surface": "company-kernel-message",
         "goal": task["title"],
         "description": task["description"],
+        # 员工已认证能力快照,供 OpenClaw 侧路由/校验「持证上岗」。
+        "agent_capabilities": {
+            "skills": _str_list(capabilities.get("skills")),
+            "tools": _str_list(capabilities.get("tools")),
+            "preferred_task_types": _str_list(capabilities.get("preferred_task_types")),
+        },
         # OpenClaw 总线必需:可执行指令。缺它会被判 missing_next_command 而失败。
-        "next_command": build_next_command(task),
+        "next_command": build_next_command(task, capabilities),
         "non_goals": ["do not silently treat this as a human chat only", "do not complete without evidence"],
         "allowed_scope": ["target OpenClaw workspace only unless the task explicitly says otherwise"],
         "verification": ["return exit_code/stdout/stderr or a report path for the executed check"],

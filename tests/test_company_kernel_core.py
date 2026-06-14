@@ -11763,6 +11763,45 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual(result["report"], task["task"]["evidence_path"])
         self.assertTrue((self.root / "employees" / "nestcar" / "heartbeat.json").exists())
 
+    def test_openclaw_adapter_payload_injects_certified_capabilities(self) -> None:
+        # 「持证上岗」:派活时把员工已认证的技能/工具注入 next_command 与 payload。
+        code, submitted = run_cli(
+            "task",
+            "submit",
+            "--from",
+            "openclaw-main",
+            "--to",
+            "nestcar",
+            "--task-id",
+            "task-openclaw-capabilities",
+            "--title",
+            "发车辆日报",
+            "--description",
+            "汇总今天车辆动态发日报",
+        )
+        self.assertEqual(code, 0, submitted)
+
+        captured = io.StringIO()
+        with contextlib.redirect_stdout(captured):
+            code = openclaw_adapter.main(["--agent", "nestcar"])
+        result = json.loads(captured.getvalue())
+        self.assertEqual(0, code, result)
+
+        payload = json.loads(Path(result["payload"]).read_text(encoding="utf-8"))
+        # nestcar (openclaw runtime) 的默认认证技能含 business-ops。
+        self.assertIn("business-ops", payload["agent_capabilities"]["skills"])
+        self.assertIn("openclaw", payload["agent_capabilities"]["tools"])
+        self.assertIn("已认证技能", payload["next_command"])
+        self.assertIn("business-ops", payload["next_command"])
+
+    def test_openclaw_adapter_next_command_degrades_without_capabilities(self) -> None:
+        # 缺 capabilities.json 时降级为通用指令,不阻断派活。
+        row = {"title": "X", "description": "", "id": "t", "source_agent": "a", "target_agent": "b"}
+        text = openclaw_adapter.build_next_command(row, {})
+        self.assertIn("用你既有的技能", text)
+        self.assertNotIn("已认证技能", text)
+        self.assertEqual({}, openclaw_adapter.load_capabilities("no-such-agent-xyz"))
+
     def test_openclaw_adapter_execute_requires_approval_then_submits_bus(self) -> None:
         task_id = "task-openclaw-execute"
         code, submitted = run_cli(
