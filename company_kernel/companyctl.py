@@ -8293,17 +8293,54 @@ def employee_offline_report_internal(conn: sqlite3.Connection, *, stale_minutes:
             "counts": {"active": len(employees), "online": len(online), "offline": len(offline)}}
 
 
+OFFLINE_NOTIFY_DEDUP_PATH = STATE_DIR / "offline-notify-dedup.json"
+OFFLINE_NOTIFY_COOLDOWN_SECONDS = 3600  # re-remind the same offline set at most once per hour
+
+
+def _offline_notify_should_send(offline_ids: list[str], *, force: bool) -> bool:
+    """Notify only when the offline set CHANGED or the cooldown elapsed — so a scheduled (every-tick)
+    caller doesn't spam. Returns False to skip; the caller still gets the full report."""
+    if force:
+        return True
+    current = ",".join(sorted(offline_ids))
+    try:
+        state = json.loads(OFFLINE_NOTIFY_DEDUP_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        state = {}
+    if not offline_ids and not state.get("last_set"):
+        return False  # all online, and was already all-online — nothing to say
+    if state.get("last_set") == current:
+        try:
+            elapsed = (datetime.now(timezone.utc) - parse_time(state.get("last_at", ""))).total_seconds()
+        except (ValueError, TypeError):
+            elapsed = OFFLINE_NOTIFY_COOLDOWN_SECONDS + 1
+        if elapsed < OFFLINE_NOTIFY_COOLDOWN_SECONDS:
+            return False
+    return True
+
+
+def _offline_notify_record(offline_ids: list[str]) -> None:
+    OFFLINE_NOTIFY_DEDUP_PATH.parent.mkdir(parents=True, exist_ok=True)
+    OFFLINE_NOTIFY_DEDUP_PATH.write_text(json.dumps({"last_set": ",".join(sorted(offline_ids)), "last_at": now()}, ensure_ascii=False), encoding="utf-8")
+
+
 def cmd_employee_offline_report(args: argparse.Namespace) -> int:
     conn = connect()
     report = employee_offline_report_internal(conn, stale_minutes=args.stale_minutes)
     if args.notify:
         offline = report["offline"]
-        if offline:
-            lines = "\n".join(f"• {e['name']}（{e['runtime']}）最后在线 {e['last_seen_at'] or '从未'}" for e in offline)
-            msg = f"📴 离线员工 {len(offline)}/{report['counts']['active']}（{args.stale_minutes} 分钟无心跳）：\n{lines}"
+        offline_ids = [e["id"] for e in offline]
+        # --dedup (scheduled callers) suppresses repeat notifications for an unchanged offline set
+        if getattr(args, "dedup", False) and not _offline_notify_should_send(offline_ids, force=False):
+            report["notification"] = {"ok": True, "skipped": True, "reason": "offline set unchanged within cooldown"}
         else:
-            msg = f"✅ 全员在线（{report['counts']['active']}/{report['counts']['active']}）"
-        report["notification"] = notification_send_result(kind="general", subject="Company Kernel 员工在线状态", message=msg)
+            if offline:
+                lines = "\n".join(f"• {e['name']}（{e['runtime']}）最后在线 {e['last_seen_at'] or '从未'}" for e in offline)
+                msg = f"📴 离线员工 {len(offline)}/{report['counts']['active']}（{args.stale_minutes} 分钟无心跳）：\n{lines}"
+            else:
+                msg = f"✅ 全员在线（{report['counts']['active']}/{report['counts']['active']}）"
+            report["notification"] = notification_send_result(kind="general", subject="Company Kernel 员工在线状态", message=msg)
+            _offline_notify_record(offline_ids)
     emit(report)
     return 0
 
@@ -12410,6 +12447,7 @@ def build_parser() -> argparse.ArgumentParser:
     emp_offline = emp_sub.add_parser("offline-report", help="list active employees that are offline (stale heartbeat), optionally notify")
     emp_offline.add_argument("--stale-minutes", type=int, default=10)
     emp_offline.add_argument("--notify", action="store_true", help="send a Telegram summary of offline employees")
+    emp_offline.add_argument("--dedup", action="store_true", help="for scheduled callers: only notify when the offline set changes or hourly")
     emp_offline.set_defaults(func=cmd_employee_offline_report)
 
     skill = sub.add_parser("skill")
