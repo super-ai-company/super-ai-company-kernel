@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+set -euo pipefail
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
+cd "$ROOT"
+# Load local secrets (Telegram bot token) if present; gitignored, never committed.
+[ -f "$ROOT/config/secrets.env" ] && set -a && . "$ROOT/config/secrets.env" && set +a
+exec python3 -m company_kernel.telegram_approval_poll "$@"

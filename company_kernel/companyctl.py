@@ -3293,12 +3293,15 @@ def send_macos_notification(*, text: str, title: str = "Company Kernel", subtitl
     return {"ok": True, "platform": "macos", "message_id": "osascript"}
 
 
-def send_telegram_notification(*, token: str, chat_id: str, text: str, timeout: int = 20) -> dict:
+def send_telegram_notification(*, token: str, chat_id: str, text: str, timeout: int = 20, reply_markup: dict | None = None) -> dict:
     if not token:
         raise ValueError("telegram bot token is not configured")
     if not chat_id:
         raise ValueError("telegram chat id is required")
-    payload = urllib.parse.urlencode({"chat_id": chat_id, "text": text}).encode("utf-8")
+    fields = {"chat_id": chat_id, "text": text}
+    if reply_markup:
+        fields["reply_markup"] = json.dumps(reply_markup, ensure_ascii=False)
+    payload = urllib.parse.urlencode(fields).encode("utf-8")
     request = urllib.request.Request(f"https://api.telegram.org/bot{token}/sendMessage", data=payload, method="POST")
     request.add_header("Content-Type", "application/x-www-form-urlencoded")
     with urllib.request.urlopen(request, timeout=timeout) as response:
@@ -3360,7 +3363,7 @@ class NotificationDispatcher:
         return {**result, "ok": False, "error": f"unsupported notification platform: {platform}"}
 
 
-def notification_send_result(*, message: str, target: str = "", account_id: str = "", subject: str = "", kind: str = "general", dry_run: bool = False) -> dict:
+def notification_send_result(*, message: str, target: str = "", account_id: str = "", subject: str = "", kind: str = "general", dry_run: bool = False, reply_markup: dict | None = None) -> dict:
     settings = notification_settings()
     notifications = settings["employee_notifications"]
     route = settings.get("routes", {}).get(kind, {}) if isinstance(settings.get("routes"), dict) else {}
@@ -3405,7 +3408,7 @@ def notification_send_result(*, message: str, target: str = "", account_id: str 
     if not token:
         return {**result, "ok": False, "error": "telegram bot token environment variable is not set"}
     try:
-        sent = send_telegram_notification(token=token, chat_id=chat_id, text=text)
+        sent = send_telegram_notification(token=token, chat_id=chat_id, text=text, reply_markup=reply_markup)
     except (ValueError, urllib.error.URLError, TimeoutError) as exc:
         return {**result, "ok": False, "error": str(exc)}
     return {**result, **sent}
@@ -9837,6 +9840,10 @@ def create_approval_internal(
         kind="approval",
         subject=f"Company Kernel approval required: {aid}",
         message=f"source={source}\naction={action}\nrisk={risk or '-'}\ntarget={detail['target'] or '-'}\nreason={reason}\nevidence={evidence or '-'}",
+        reply_markup={"inline_keyboard": [[
+            {"text": "✅ 批准 Approve", "callback_data": f"ck_approve:{aid}"},
+            {"text": "❌ 拒绝 Deny", "callback_data": f"ck_deny:{aid}"},
+        ]]},
     )
     return {"approval": approval, "file": path, "notification": notification, "event": approval_event}
 

@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# Install + load the operator Telegram approval-tap poller as a launchd agent.
+# Run this yourself to enable one-tap approve/deny from Telegram. Safe to re-run.
+set -euo pipefail
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
+LABEL="ai.openclaw.company-kernel.telegram-approval-poll"
+SRC="$ROOT/config/launchd/${LABEL}.plist"
+DST="$HOME/Library/LaunchAgents/${LABEL}.plist"
+
+mkdir -p "$HOME/Library/LaunchAgents" "$ROOT/logs"
+sed "s#__COMPANY_KERNEL_ROOT__#$ROOT#g" "$SRC" > "$DST"
+launchctl bootout "gui/$(id -u)" "$DST" >/dev/null 2>&1 || true
+launchctl bootstrap "gui/$(id -u)" "$DST"
+launchctl kickstart -k "gui/$(id -u)/$LABEL"
+echo "installed + loaded: $LABEL (polls every 10s)"
+"$ROOT/bin/company-telegram-approval-poll" || true
