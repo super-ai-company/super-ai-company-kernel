@@ -168,6 +168,10 @@ label{font-size:12px;color:var(--muted);display:block;margin-bottom:4px}
 <section class="view active" id="v-overview">
   <div class="grid cards-3" id="ovCards"></div>
   <div style="height:14px"></div>
+  <div class="card" id="ovStuckCard" style="display:none;margin-bottom:14px;border-color:var(--bad)">
+    <h3 style="color:var(--bad)" data-i18n="ov_stuck">⚠️ 卡住待处理（升级）</h3>
+    <div class="list" id="ovStuck"></div>
+  </div>
   <div class="grid" style="grid-template-columns:1fr 1fr;gap:14px">
     <div class="card"><h3 data-i18n="ov_pendingApprovals">⏳ 待审批</h3><div class="list" id="ovApprovals"><div class="empty" data-i18n="loading">加载中…</div></div></div>
     <div class="card"><h3 data-i18n="ov_latestEvents">🔔 最新事件</h3><div class="list feed" id="ovEvents"><div class="empty" data-i18n="loading">加载中…</div></div></div>
@@ -329,7 +333,7 @@ const I18N = {
     met_title:"生死指标", met_hint:"毛利 + 验收准确率，决定加码 / 改模式 / 收手", met_econ:"💰 单位经济（按任务类型）", met_acc:"🎯 验收器抽检准确率",
     met_margin:"毛利", met_revenue:"营收", met_cost:"成本", met_type:"类型", met_count:"笔数", met_kind:"验收类型", met_total:"总数",
     met_accuracy:"准确率", met_reviewed:"已抽检", met_fp:"误放", met_fn:"误拦", met_noecon:"暂无已完成任务的经济数据", met_noacc:"暂无验收记录", met_unavailable:"指标接口不可用（需较新网关）",
-    ov_pendingApprovals:"⏳ 待审批", ov_latestEvents:"🔔 最新事件", loading:"加载中…", none:"无",
+    ov_pendingApprovals:"⏳ 待审批", ov_stuck:"⚠️ 卡住待处理（升级）", ov_latestEvents:"🔔 最新事件", loading:"加载中…", none:"无",
     emp_title:"AI 员工", emp_hint:"心跳 10 分钟内 = 在岗", emp_add:"＋ 新增员工", emp_sweep:"📋 全员考勤探测", emp_offline:"📴 离线提醒",
     emp_onboardTitle:"🧑‍💼 新增员工（onboard）", emp_register:"注册员工", emp_registerHint:"注册后如需自动接任务，再在 daemon.json 启用 worker",
     f_name:"名称", f_role:"角色", f_runtime:"运行时", f_workspace:"工作区（绝对路径）", f_skills:"技能（逗号分隔）", f_canTalk:"可对话对象（逗号分隔）",
@@ -355,7 +359,7 @@ const I18N = {
     met_title:"Survival metrics", met_hint:"margin + verifier accuracy — decide to scale / pivot / stop", met_econ:"💰 Unit economics (by task type)", met_acc:"🎯 Verifier sampling accuracy",
     met_margin:"Margin", met_revenue:"Revenue", met_cost:"Cost", met_type:"Type", met_count:"Count", met_kind:"Kind", met_total:"Total",
     met_accuracy:"Accuracy", met_reviewed:"Reviewed", met_fp:"False+", met_fn:"False-", met_noecon:"No economics data from completed tasks yet", met_noacc:"No verifier records yet", met_unavailable:"Metrics API unavailable (needs newer gateway)",
-    ov_pendingApprovals:"⏳ Pending approvals", ov_latestEvents:"🔔 Latest events", loading:"Loading…", none:"None",
+    ov_pendingApprovals:"⏳ Pending approvals", ov_stuck:"⚠️ Stuck / escalations", ov_latestEvents:"🔔 Latest events", loading:"Loading…", none:"None",
     emp_title:"AI Employees", emp_hint:"heartbeat within 10 min = on duty", emp_add:"＋ Add employee", emp_sweep:"📋 Attendance sweep", emp_offline:"📴 Offline alert",
     emp_onboardTitle:"🧑‍💼 Onboard employee", emp_register:"Register", emp_registerHint:"After registering, enable a worker in daemon.json for auto task pickup",
     f_name:"Name", f_role:"Role", f_runtime:"Runtime", f_workspace:"Workspace (absolute path)", f_skills:"Skills (comma-separated)", f_canTalk:"Can talk to (comma-separated)",
@@ -868,6 +872,12 @@ async function sendMessage() {
     if (to.includes(".")) { // external customer group → pure channel push (LINE/Telegram)
       const [agent, group_code] = to.split(".");
       const grp = (DELIVERY_TARGETS[agent]||[]).find(g=>g.group_code===group_code);
+      const ok = await askModal({title: LANG==='zh'?"确认发到客户群":"Confirm send to customer group",
+        html: `<div class="emp-sub" style="margin-bottom:8px">${LANG==='zh'?'⚠️ 将直接发送到真实客户群，客户会看到。确认?':'⚠️ This goes straight to a real customer group. Confirm?'}</div>
+          <div style="font-weight:600;margin-bottom:6px">${esc(agent)}.${esc(group_code)} · ${esc((grp&&grp.target_name)||"")}</div>
+          <div style="padding:8px 10px;background:var(--bg2);border:1px solid var(--line);border-radius:8px;font-size:13px;white-space:pre-wrap">${esc(text)}</div>`,
+        confirmText: "📤 "+(LANG==='zh'?"确认发送":"Send"), onConfirm: ()=>true});
+      if (!ok) return;
       const d = await api("/v1/messages/channel-send",{method:"POST",body:{agent, group_code, channel:(grp&&grp.channel)||"line", body:text, by:$("mFrom").value}});
       toast((LANG==='zh'?"已发到群「":"Sent to 「")+(d.target_name||group_code)+"」","ok");
       $("mBody").value=""; $("msgAgent").value = agent; loadMessages();
@@ -1011,6 +1021,24 @@ function renderOverview() {
     ["⛔ 受阻任务", byStatus("blocked","interrupted","failed","stalled"), "需人工或改派处理", byStatus("blocked","interrupted","failed","stalled")>0?"bad":"ok"],
   ].map(([t,n,sub,dot])=>`<div class="card"><h3><span class="dot ${dot}"></span>${t}</h3>
     <div style="font-size:30px;font-weight:700">${n}</div><div class="emp-sub">${sub}</div></div>`).join("");
+  // Escalations / stuck tasks — one-click handling in the console (parity with the Telegram buttons)
+  const stuck = TASKS.filter(t=>["blocked","interrupted","failed","stalled"].includes(t.status))
+    .sort((a,b)=>(b.updated_at||b.created_at||"").localeCompare(a.updated_at||a.created_at||""));
+  const card = $("ovStuckCard");
+  if (!stuck.length) { if(card) card.style.display="none"; }
+  else {
+    if(card) card.style.display="block";
+    $("ovStuck").innerHTML = stuck.slice(0,12).map(t=>`<div class="row">
+      <div class="head"><span class="who">${esc(t.title)}</span>
+        <span class="prio ${esc(t.priority||'P2')}">${esc(t.priority||'P2')}</span>
+        <span class="emp-sub">${esc(t.source_agent)} → ${esc(t.target_agent)} · ${ago(t.updated_at||t.created_at)}</span>
+        <span class="when">${esc(t.status)}</span></div>
+      <div style="display:flex;gap:6px;margin-top:7px;flex-wrap:wrap">
+        <button class="ok" style="font-size:12px;padding:4px 10px" onclick="showTask('${esc(t.id)}')">🔧 ${LANG==='zh'?'修复并重开':'Fix & reopen'}</button>
+        <button style="font-size:12px;padding:4px 10px" onclick="taskReassignPrompt('${esc(t.id)}')">${LANG==='zh'?'改派':'Reassign'}</button>
+        <button class="bad" style="font-size:12px;padding:4px 10px" onclick="taskDiscard('${esc(t.id)}')">🗑 ${LANG==='zh'?'丢弃':'Discard'}</button>
+      </div></div>`).join("");
+  }
 }
 
 /* ---------- refresh loop ---------- */
