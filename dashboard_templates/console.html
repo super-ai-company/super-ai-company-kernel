@@ -641,8 +641,17 @@ async function showTask(id) {
   try {
     const d = await api("/v1/tasks/"+encodeURIComponent(id));
     const t = d.task || d;
-    const actions = `<div style="display:flex;gap:8px;margin-bottom:12px">
-      ${t.status==="blocked"||t.status==="interrupted" ? `<button class="ok" onclick="taskReopen('${esc(id)}')">重新打开</button>`:""}
+    const stuck = t.status==="blocked"||t.status==="interrupted"||t.status==="failed"||t.status==="stalled";
+    window.__taskDesc = t.description || "";
+    const fixBox = stuck ? `<div class="card" style="margin-bottom:12px;background:var(--bg2)">
+        <div style="font-size:12px;color:var(--muted);margin-bottom:6px">🔧 ${LANG==='zh'?'修复任务再重开（卡住多因缺绝对仓库路径/验收，补清楚再派）':'Fix the task before reopening (blocks are usually missing repo path / acceptance)'}</div>
+        <textarea id="fixDesc" rows="5" style="font-size:12px">${esc(t.description||"")}</textarea>
+        <div style="display:flex;gap:8px;margin-top:8px">
+          <button class="ok" onclick="taskFixReopen('${esc(id)}')">🔧 ${LANG==='zh'?'修复并重开':'Fix & reopen'}</button>
+          <button onclick="taskReopen('${esc(id)}')">${LANG==='zh'?'仅重开（不改）':'Reopen only'}</button>
+          <button onclick="taskReassignPrompt('${esc(id)}')">${LANG==='zh'?'改派他人':'Reassign'}</button>
+        </div></div>` : "";
+    const actions = stuck ? fixBox : `<div style="display:flex;gap:8px;margin-bottom:12px">
       <button onclick="taskReassignPrompt('${esc(id)}')">改派</button></div>`;
     openModal(`<h3>任务 ${esc(t.id||id)}</h3>
       <div class="kv">
@@ -659,6 +668,14 @@ async function showTask(id) {
 async function taskReopen(id) {
   try { await api(`/v1/tasks/${encodeURIComponent(id)}/reopen`, {method:"POST", body:{by:OWNER, reason:"控制台手动重开"}});
     toast("任务已重开","ok"); closeModal(); loadTasks();
+  } catch(e){ toast("失败："+e.message,"bad"); }
+}
+async function taskFixReopen(id) {
+  const desc = ($("fixDesc")?.value || "").trim();
+  if (desc.length < 8) return toast(LANG==='zh'?"请把修复内容写清楚（仓库绝对路径/验收/步骤）":"Write a clear corrected brief","bad");
+  if (desc === (window.__taskDesc||"").trim()) return toast(LANG==='zh'?"描述没改动，可用「仅重开」":"No change — use Reopen only","bad");
+  try { await api(`/v1/tasks/${encodeURIComponent(id)}/reopen`, {method:"POST", body:{by:OWNER, reason:"控制台修复并重开", description:desc}});
+    toast(LANG==='zh'?"已修复并重开，将带新说明重新执行":"Fixed & reopened","ok"); closeModal(); loadTasks();
   } catch(e){ toast("失败："+e.message,"bad"); }
 }
 function taskReassignPrompt(id) {

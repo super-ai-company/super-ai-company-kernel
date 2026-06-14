@@ -7665,7 +7665,11 @@ def is_supervisor_employee(conn: sqlite3.Connection, employee_id: str) -> bool:
 
 def can_manage_task_recovery(conn: sqlite3.Connection, task: sqlite3.Row, actor: str) -> bool:
     participants = {task["source_agent"], task["target_agent"], task["claimed_by"]}
-    return actor in participants or is_supervisor_employee(conn, actor)
+    if actor in participants or is_supervisor_employee(conn, actor):
+        return True
+    # The human owner can recover (reopen/retry/reassign) ANY task, not just ones they're in.
+    row = conn.execute("SELECT * FROM employees WHERE id = ?", (actor,)).fetchone()
+    return bool(row) and is_human_owner_employee(dict(row))
 
 
 def require_active_employee(conn: sqlite3.Connection, employee_id: str, action: str) -> dict | None:
@@ -10699,14 +10703,23 @@ def cmd_task_reopen(args: argparse.Namespace) -> int:
     if not task:
         emit({"ok": False, "error": "task not found", "task_id": args.task_id})
         return 2
-    if actor not in {task["source_agent"], task["target_agent"], task["claimed_by"]}:
+    if not can_manage_task_recovery(conn, task, actor):
         emit({"ok": False, "error": "actor cannot reopen task", "task_id": args.task_id, "by": actor})
         return 2
     claimed_by = "" if args.status == "submitted" else task["claimed_by"]
-    conn.execute(
-        "UPDATE tasks SET status = ?, claimed_by = ?, blocker = '', updated_at = ? WHERE id = ?",
-        (args.status, claimed_by, now(), args.task_id),
-    )
+    # Optional corrected brief: fix the root cause (e.g. add the absolute repo path) before re-queueing,
+    # otherwise a context-starved task just re-blocks on the next attempt.
+    new_description = getattr(args, "description", "") or ""
+    if new_description.strip():
+        conn.execute(
+            "UPDATE tasks SET status = ?, claimed_by = ?, blocker = '', description = ?, updated_at = ? WHERE id = ?",
+            (args.status, claimed_by, new_description, now(), args.task_id),
+        )
+    else:
+        conn.execute(
+            "UPDATE tasks SET status = ?, claimed_by = ?, blocker = '', updated_at = ? WHERE id = ?",
+            (args.status, claimed_by, now(), args.task_id),
+        )
     conn.execute("DELETE FROM locks WHERE resource_key = ?", (f"task:{args.task_id}",))
     synced_plan_items = sync_project_plan_for_task(conn, task_id=args.task_id, task_status=args.status, actor=actor)
     event = record_event(conn, "task.reopened", actor, task_id=args.task_id, payload={"reason": args.reason, "status": args.status})
@@ -12512,6 +12525,7 @@ def build_parser() -> argparse.ArgumentParser:
     task_reopen.add_argument("--by", required=True)
     task_reopen.add_argument("--reason", required=True)
     task_reopen.add_argument("--status", choices=["submitted", "claimed"], default="submitted")
+    task_reopen.add_argument("--description", default="", help="corrected/augmented task brief (e.g. add absolute repo path) to fix the block before re-queueing")
     task_reopen.set_defaults(func=cmd_task_reopen)
     task_reassign = task_sub.add_parser("reassign")
     task_reassign.add_argument("--task-id", required=True)
