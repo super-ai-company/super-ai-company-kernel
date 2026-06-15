@@ -96,7 +96,20 @@ def paths(agent: str, task_id: str) -> dict[str, Path]:
     }
 
 
+def _employee_persona(agent: str) -> str:
+    """PER-EMPLOYEE persona: if the target employee's profile.json carries a `persona`
+    string, inject it so every task to that employee carries its role lens
+    (e.g. gemini = 产品经理+UX 评审)。未设 persona 的员工保持默认。"""
+    try:
+        prof = json.loads((ROOT / "employees" / agent / "profile.json").read_text(encoding="utf-8"))
+        return str(prof.get("persona") or "").strip()
+    except Exception:
+        return ""
+
+
 def build_prompt(task: sqlite3.Row) -> str:
+    persona = _employee_persona(task["target_agent"])
+    persona_block = ["## Your role (persona)", "", persona, ""] if persona else []
     return "\n".join(
         [
             "# Claude Company Kernel Task",
@@ -104,6 +117,7 @@ def build_prompt(task: sqlite3.Row) -> str:
             "You are Claude acting as a Super AI Company employee.",
             "Follow Company Kernel rules: no secrets, no destructive operations, no external sends, and always provide evidence or blocker.",
             "",
+            *persona_block,
             "## Task",
             "",
             f"- task_id: `{task['id']}`",
@@ -168,16 +182,35 @@ def resolve_claude_proxy(agent: str, model: str) -> tuple[dict, str, str]:
     return env, (str(profile.get("proxy_model") or "").strip() or model), f"proxy {base}"
 
 
-def run_claude(prompt: Path, output: Path, workspace: Path, model: str, permission_mode: str, agent: str = "claude") -> tuple[int, str]:
+CLAUDE_RUN_TIMEOUT_SECONDS = int(os.environ.get("COMPANY_CLAUDE_TIMEOUT_SECONDS", "1800"))  # 30 min; a hung claude -p must not run forever
+
+
+def run_claude(prompt: Path, output: Path, workspace: Path, model: str, permission_mode: str, agent: str = "claude", timeout: int | None = None) -> tuple[int, str]:
     proxy_env, model, route = resolve_claude_proxy(agent, model)
+    # PER-EMPLOYEE 权限覆盖:profile.json 设了 permission_mode 就用它(例如 gemini QA 需要工具/浏览器 → bypassPermissions,
+    # 否则 -p 模式工具被默认拒,只能输出文本)。未设的员工保持原 permission_mode 不变。
+    try:
+        _prof = json.loads((ROOT / "employees" / agent / "profile.json").read_text(encoding="utf-8"))
+        if str(_prof.get("permission_mode") or "").strip():
+            permission_mode = str(_prof["permission_mode"]).strip()
+    except (OSError, json.JSONDecodeError):
+        pass
     cmd = ["claude", "-p", prompt.read_text(encoding="utf-8"), "--no-session-persistence", "--output-format", "text"]
     if model:
         cmd.extend(["--model", model])
     if permission_mode:
         cmd.extend(["--permission-mode", permission_mode])
-    cp = subprocess.run(cmd, cwd=str(workspace), text=True, capture_output=True, env={**os.environ, **proxy_env})
-    output.write_text((cp.stdout or "") + ("\n\n## stderr\n\n" + cp.stderr if cp.stderr else ""), encoding="utf-8")
-    return cp.returncode, " ".join(["claude", "-p", "<prompt>", "--model", model or "(default)", f"[{route}]"])
+    limit = timeout or CLAUDE_RUN_TIMEOUT_SECONDS
+    try:
+        cp = subprocess.run(cmd, cwd=str(workspace), text=True, capture_output=True,
+                            env={**os.environ, **proxy_env}, timeout=limit)
+        rc, out, err = cp.returncode, cp.stdout or "", cp.stderr or ""
+    except subprocess.TimeoutExpired as exc:
+        rc = 124
+        out = (exc.stdout.decode() if isinstance(exc.stdout, bytes) else (exc.stdout or "")) if exc.stdout else ""
+        err = f"claude -p killed after exceeding {limit}s timeout (was hanging)"
+    output.write_text(out + ("\n\n## stderr\n\n" + err if err else ""), encoding="utf-8")
+    return rc, " ".join(["claude", "-p", "<prompt>", "--model", model or "(default)", f"[{route}]"])
 
 
 def handle_direct(args: argparse.Namespace) -> int:

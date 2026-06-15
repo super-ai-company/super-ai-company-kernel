@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import signal
 import subprocess
 import sys
 import time
@@ -57,14 +58,39 @@ def augmented_path(current: str) -> str:
     return ":".join(parts)
 
 
-def run_cmd(args: list[str]) -> dict:
+# Backstops so a single hung child can never freeze the whole synchronous daemon (a hung
+# `claude -p` once blocked it for 90+ min → nothing got dispatched). Adapters get a generous
+# ceiling (> codex's 60-min per-task cap); quick companyctl maintenance calls get a short one.
+DEFAULT_ADAPTER_TIMEOUT_SECONDS = 4500   # 75 min
+DEFAULT_COMPANYCTL_TIMEOUT_SECONDS = 600  # 10 min
+
+
+def run_cmd(args: list[str], timeout: float | None = None) -> dict:
     env = {**os.environ, "OPENCLAW_COMPANY_KERNEL_ROOT": str(ROOT), "PATH": augmented_path(os.environ.get("PATH", ""))}
-    cp = subprocess.run(args, cwd=str(ROOT), text=True, capture_output=True, env=env)
+    # Own process group so on timeout we can kill orphaned grandchildren too (claude -p → node).
+    proc = subprocess.Popen(args, cwd=str(ROOT), text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env, start_new_session=True)
+    timed_out = False
+    try:
+        stdout, stderr = proc.communicate(timeout=timeout)
+        returncode = proc.returncode
+    except subprocess.TimeoutExpired:
+        timed_out = True
+        try:
+            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            proc.kill()
+        try:
+            stdout, stderr = proc.communicate(timeout=15)
+        except Exception:
+            stdout, stderr = "", ""
+        returncode = 124
+        stderr = (stderr or "") + f"\n[daemon] killed child after exceeding {timeout}s timeout (was hanging the daemon)"
     result = {
         "command": args,
-        "returncode": cp.returncode,
-        "stdout": cp.stdout,
-        "stderr": cp.stderr,
+        "returncode": returncode,
+        "stdout": stdout or "",
+        "stderr": stderr or "",
+        "timed_out": timed_out,
     }
     LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
     with LOG_PATH.open("a", encoding="utf-8") as f:
@@ -73,7 +99,7 @@ def run_cmd(args: list[str]) -> dict:
 
 
 def run_companyctl(*args: str) -> dict:
-    return run_cmd([str(ROOT / "bin" / "companyctl"), *args])
+    return run_cmd([str(ROOT / "bin" / "companyctl"), *args], timeout=DEFAULT_COMPANYCTL_TIMEOUT_SECONDS)
 
 
 def resolve_heartbeat_agents(config: dict) -> list[str]:
@@ -108,7 +134,8 @@ def run_adapter_once(worker: dict) -> dict:
         return {"ok": False, "error": "missing adapter command", "worker": worker}
     executable = ROOT / "bin" / command
     args = [str(executable), "--agent", worker["agent"], *worker.get("args", [])]
-    return run_cmd(args)
+    timeout = float(worker.get("daemon_timeout_seconds", DEFAULT_ADAPTER_TIMEOUT_SECONDS) or DEFAULT_ADAPTER_TIMEOUT_SECONDS)
+    return run_cmd(args, timeout=timeout)
 
 
 def parsed_stdout(result: dict) -> dict:
