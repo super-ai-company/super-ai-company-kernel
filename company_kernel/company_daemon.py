@@ -358,6 +358,17 @@ def write_state(state: dict) -> Path:
     return path
 
 
+# Liveness: the daemon runs adapters synchronously, and one codex task can take up to its
+# timeout (~30 min). Without a mid-cycle heartbeat, last-run.json's timestamp goes stale and
+# the health check falsely reports "内核异常" while the daemon is simply busy. We beat at cycle
+# start and before each adapter so the daemon's freshness reflects "loop alive", not "cycle done".
+_LAST_OK = True
+
+
+def heartbeat(phase: str) -> None:
+    write_state({"ok": _LAST_OK, "at": now(), "phase": phase, "results": []})
+
+
 def summarize_state(state: dict) -> dict:
     steps = state.get("results", [])
     failed_steps = []
@@ -425,6 +436,7 @@ def maybe_reconcile_status(config: dict) -> list[dict]:
 
 def tick(config: dict) -> dict:
     results = []
+    heartbeat("cycle-start")  # mark the loop alive before any slow step runs
     if config.get("sync_openclaw_runtime", False):
         results.append({"step": "openclaw-sync.runtime", "result": run_companyctl("employee", "sync-openclaw-runtime")})
     if config.get("sync_openclaw_heartbeats", False):
@@ -447,6 +459,7 @@ def tick(config: dict) -> dict:
     for worker in config.get("adapter_workers", []):
         if not worker.get("enabled", False):
             continue
+        heartbeat(f"adapter:{worker.get('agent', '')}")  # a long codex run must not look like a dead daemon
         adapter_state = run_adapter(worker)
         results.append({"step": f"adapter.{worker.get('agent', '')}", "result": {"returncode": 0 if adapter_state["ok"] else 1, "stdout": json.dumps(adapter_state, ensure_ascii=False), "stderr": ""}})
     for result in check_unclaimed_tasks(config):
@@ -456,12 +469,15 @@ def tick(config: dict) -> dict:
     # 守护"整轮 ok"只反映循环基础设施是否正常,不被单个 adapter 任务的成败左右:
     # adapter 任务失败/受阻已由 failed_adapter_runs 单独跟踪(可确认),不应把整轮守护标失败、
     # 进而让"内核健康"徽章发红。因此计算整轮 ok 时排除 adapter.* 步骤。
+    global _LAST_OK
+    cycle_ok = all(
+        item["result"].get("returncode", 1) == 0
+        for item in results
+        if not str(item.get("step", "")).startswith("adapter.")
+    )
+    _LAST_OK = cycle_ok  # remembered so mid-cycle liveness beats carry the right health
     state = {
-        "ok": all(
-            item["result"].get("returncode", 1) == 0
-            for item in results
-            if not str(item.get("step", "")).startswith("adapter.")
-        ),
+        "ok": cycle_ok,
         "at": now(),
         "results": results,
     }

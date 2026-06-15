@@ -3700,7 +3700,10 @@ def enabled_worker_agents() -> set:
     return agents
 
 
-def daemon_health(max_age_minutes: int = 10) -> dict:
+def daemon_health(max_age_minutes: int = 45) -> dict:
+    # 45 > the longest single adapter timeout (codex ~30 min). The daemon beats a liveness
+    # heartbeat before each adapter, so a busy daemon running a long task stays "fresh" and
+    # doesn't trip a false 内核异常; only a genuinely hung/dead loop exceeds this.
     path = daemon_last_run_path()
     if not path.exists():
         return {
