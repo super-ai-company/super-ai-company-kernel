@@ -10,6 +10,7 @@ import mimetypes
 import os
 import re
 import shutil
+import secrets
 import sqlite3
 import subprocess
 import sys
@@ -8934,6 +8935,68 @@ def cmd_followup_list(args: argparse.Namespace) -> int:
     return 0
 
 
+USERS_CONFIG_PATH_NAME = "users.json"
+RBAC_ROLES = ("viewer", "operator", "admin", "owner")
+
+
+def users_config_path() -> Path:
+    return ROOT / "config" / USERS_CONFIG_PATH_NAME
+
+
+def load_users_config() -> dict:
+    try:
+        data = json.loads(users_config_path().read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def save_users_config(config: dict) -> None:
+    path = users_config_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(config, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    try:
+        path.chmod(0o600)  # tokens inside — owner-only like secrets.env
+    except OSError:
+        pass
+
+
+def cmd_user_add(args: argparse.Namespace) -> int:
+    if args.role not in RBAC_ROLES:
+        emit({"ok": False, "error": f"role must be one of {RBAC_ROLES}"})
+        return 2
+    config = load_users_config()
+    tokens = config.setdefault("tokens", {})
+    # one active token per user: drop any existing token for this user
+    for tok in [t for t, info in tokens.items() if str((info or {}).get("user")) == args.user]:
+        del tokens[tok]
+    token = args.token or f"ck_{secrets.token_urlsafe(24)}"
+    tokens[token] = {"user": args.user, "role": args.role, "created_at": now()}
+    save_users_config(config)
+    emit({"ok": True, "user": args.user, "role": args.role, "token": token,
+          "note": "give this token to the user as the API Bearer token; it is stored only here (config/users.json, gitignored)"})
+    return 0
+
+
+def cmd_user_list(_args: argparse.Namespace) -> int:
+    config = load_users_config()
+    users = [{"user": (info or {}).get("user"), "role": (info or {}).get("role"), "created_at": (info or {}).get("created_at"),
+              "token_hint": tok[:6] + "…"} for tok, info in (config.get("tokens") or {}).items()]
+    emit({"ok": True, "rbac_enabled": bool(config.get("tokens")), "users": users})
+    return 0
+
+
+def cmd_user_remove(args: argparse.Namespace) -> int:
+    config = load_users_config()
+    tokens = config.get("tokens") or {}
+    removed = [t for t, info in tokens.items() if str((info or {}).get("user")) == args.user]
+    for t in removed:
+        del tokens[t]
+    save_users_config(config)
+    emit({"ok": True, "user": args.user, "removed": len(removed)})
+    return 0
+
+
 def cmd_communication_pause(args: argparse.Namespace) -> int:
     agent = resolve_employee_alias(args.agent)
     result = set_employee_communication_enabled(agent, False, dry_run=False)
@@ -13619,6 +13682,18 @@ def build_parser() -> argparse.ArgumentParser:
     conversation_probe.add_argument("--no-persist", action="store_true", help="do not write results to the meeting-capable allowlist")
     conversation_probe.set_defaults(func=cmd_conversation_probe)
 
+    user = sub.add_parser("user", help="manage human API users + roles (RBAC: viewer/operator/admin/owner)")
+    user_sub = user.add_subparsers(dest="user_cmd", required=True)
+    user_add = user_sub.add_parser("add", help="add/replace a user, prints a bearer token")
+    user_add.add_argument("--user", required=True)
+    user_add.add_argument("--role", required=True, choices=list(RBAC_ROLES))
+    user_add.add_argument("--token", default="", help="set a specific token (default: generate)")
+    user_add.set_defaults(func=cmd_user_add)
+    user_list = user_sub.add_parser("list")
+    user_list.set_defaults(func=cmd_user_list)
+    user_remove = user_sub.add_parser("remove")
+    user_remove.add_argument("--user", required=True)
+    user_remove.set_defaults(func=cmd_user_remove)
     communication = sub.add_parser("communication")
     communication_sub = communication.add_subparsers(dest="communication_cmd", required=True)
     communication_show = communication_sub.add_parser("show")

@@ -201,3 +201,14 @@ sudo systemctl daemon-reload && sudo systemctl enable --now company-kernel-api c
 companyctl employee offboard --id <id>                # soft: archive + cancel its tasks
 companyctl employee offboard --id <id> --hard-delete  # also delete kernel-managed files (cancels tasks to avoid orphan evidence)
 ```
+
+## 10. Human users & roles (RBAC, opt-in)
+
+By default the API is open on loopback (or a single `COMPANY_KERNEL_API_TOKEN`). For multiple human operators, enable role-based access:
+
+```
+companyctl user add --user alice --role operator   # prints her bearer token
+companyctl user list
+companyctl user remove --user alice
+```
+Roles (low→high): **viewer** (read only) · **operator** (dispatch / approve / pause·resume / verify) · **admin** (+ employee & runtime config) · **owner** (+ user management). Tokens live in `config/users.json` (chmod 600, gitignored). Once any user exists, every API call needs a valid bearer token — the console will prompt for one. Remove all users to return to open mode.

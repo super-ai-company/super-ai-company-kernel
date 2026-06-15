@@ -33,15 +33,71 @@ def api_token() -> str:
     return str(os.environ.get("COMPANY_KERNEL_API_TOKEN", "") or "").strip()
 
 
+def bearer_token(headers) -> str:
+    provided = str(headers.get("Authorization", "") or "")
+    if provided.lower().startswith("bearer "):
+        provided = provided[7:].strip()
+    return provided
+
+
 def request_authorized(headers) -> bool:
     token = api_token()
     if not token:
         return True  # auth disabled (loopback self-host); set COMPANY_KERNEL_API_TOKEN to require auth
-    provided = str(headers.get("Authorization", "") or "")
-    if provided.lower().startswith("bearer "):
-        provided = provided[7:].strip()
     # constant-time compare so the token can't be guessed via response timing
+    provided = bearer_token(headers)
     return bool(provided) and hmac.compare_digest(provided, token)
+
+
+# --- Human RBAC (opt-in, backward compatible) -------------------------------------------------
+# Roles, low→high. A request is allowed if the actor's role rank >= the action's required rank.
+ROLE_RANK = {"viewer": 0, "operator": 1, "admin": 2, "owner": 3}
+
+
+def load_users() -> dict:
+    """config/users.json (per-deployment, gitignored): {"tokens": {"<bearer>": {"user":"alice","role":"operator"}}}.
+    Present → multi-user RBAC. Absent → single-token / open mode (backward compatible)."""
+    try:
+        data = json.loads((companyctl.ROOT / "config" / "users.json").read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def resolve_actor(headers) -> tuple[str | None, str]:
+    """Return (user, role). role is '' when the request is NOT authorized.
+    - users.json present → bearer must map to a user+role.
+    - env token set (no users.json) → that token = owner (legacy single-token).
+    - nothing configured → open self-host → owner (anonymous)."""
+    users = load_users()
+    tokens = users.get("tokens") if isinstance(users.get("tokens"), dict) else {}
+    provided = bearer_token(headers)
+    if tokens:
+        if not provided:
+            return None, ""
+        for tok, info in tokens.items():
+            if hmac.compare_digest(provided, str(tok)):
+                role = str((info or {}).get("role") or "viewer")
+                return str((info or {}).get("user") or "user"), (role if role in ROLE_RANK else "viewer")
+        return None, ""
+    env_token = api_token()
+    if env_token:
+        return ("owner", "owner") if (provided and hmac.compare_digest(provided, env_token)) else (None, "")
+    return "anonymous", "owner"
+
+
+def required_role(method: str, path: str) -> str:
+    """Least role allowed to perform this request. Tasks/approvals/messages/conversations + pause/verify
+    = operator; employee/runtime/settings config = admin; user management = owner; reads = viewer."""
+    if method == "GET":
+        return "viewer"
+    if path.startswith("/v1/users"):
+        return "owner"
+    if path.startswith("/v1/employees/") and (path.endswith("/communication") or path.endswith("/verify-runtime")):
+        return "operator"  # pause/resume + activate are operational controls
+    if path.startswith("/v1/employees") or path.startswith("/v1/runtimes") or path.startswith("/v1/settings"):
+        return "admin"     # create/onboard/offboard/profile/capabilities/permissions = config
+    return "operator"      # dispatch / approve / message / conversation / etc.
 
 
 API_VERSION = "v1"
@@ -2161,12 +2217,20 @@ class ApiHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(raw)
 
-    def require_auth(self) -> bool:
-        """Return True if the request may proceed; else send 401 and return False."""
-        if request_authorized(self.headers):
-            return True
-        self.send_json(HTTPStatus.UNAUTHORIZED, {"ok": False, "error": "unauthorized: missing or invalid Bearer token"})
-        return False
+    def require_auth(self, method: str = "") -> bool:
+        """Authenticate + authorize by role. 401 if the bearer is unknown, 403 if the actor's role
+        is below what the action needs. Backward compatible: single-token / open mode → owner."""
+        user, role = resolve_actor(self.headers)
+        if not role:
+            self.send_json(HTTPStatus.UNAUTHORIZED, {"ok": False, "error": "unauthorized: missing or invalid Bearer token"})
+            return False
+        parsed = urlparse(self.path)
+        needed = required_role(method or getattr(self, "command", "GET"), parsed.path)
+        if ROLE_RANK.get(role, 0) < ROLE_RANK.get(needed, 0):
+            self.send_json(HTTPStatus.FORBIDDEN, {"ok": False, "error": f"forbidden: '{needed}' role required, you are '{role}'", "user": user, "role": role})
+            return False
+        self.actor_user, self.actor_role = user, role
+        return True
 
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
@@ -2176,7 +2240,7 @@ class ApiHandler(BaseHTTPRequestHandler):
             else:
                 self.send_html(HTTPStatus.NOT_FOUND, "<h1>console template missing</h1><p>expected at dashboard_templates/console.html</p>")
             return
-        if not self.require_auth():
+        if not self.require_auth("GET"):
             return
         query = parse_qs(parsed.query)
         if parsed.path == "/v1/events/stream":
@@ -2193,7 +2257,7 @@ class ApiHandler(BaseHTTPRequestHandler):
         self.send_json(status, payload)
 
     def do_POST(self) -> None:
-        if not self.require_auth():
+        if not self.require_auth("POST"):
             return
         try:
             body = self.read_json()
@@ -2210,7 +2274,7 @@ class ApiHandler(BaseHTTPRequestHandler):
         self.send_json(status, payload)
 
     def do_PATCH(self) -> None:
-        if not self.require_auth():
+        if not self.require_auth("PATCH"):
             return
         try:
             body = self.read_json()
@@ -2227,7 +2291,7 @@ class ApiHandler(BaseHTTPRequestHandler):
         self.send_json(status, payload)
 
     def do_DELETE(self) -> None:
-        if not self.require_auth():
+        if not self.require_auth("DELETE"):
             return
         try:
             body = self.read_json()
