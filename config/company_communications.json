@@ -17,7 +17,6 @@
     "invest": "invest",
     "krothong": "krothong",
     "main": "main",
-    "openclaw-main": "openclaw-main",
     "owner-shift": "owner-shift",
     "video-creator": "video-creator",
     "video-ops": "video-ops",
@@ -326,7 +325,9 @@
         "video-ops",
         "video-publisher"
       ],
-      "handoff_mode": "task_or_hook"
+      "handoff_mode": "task_or_hook",
+      "communication_paused": true,
+      "communication_paused_at": "2026-06-15T08:15:12+07:00"
     },
     "hermes": {
       "display_name": "Hermes",
@@ -468,43 +469,6 @@
         "krothong",
         "nestcar",
         "openclaw-main",
-        "owner-shift",
-        "trae",
-        "video-creator",
-        "video-ops",
-        "video-publisher"
-      ],
-      "handoff_mode": "task_or_hook"
-    },
-    "openclaw-main": {
-      "display_name": "OpenClaw Main",
-      "role": "operator",
-      "can_talk_to": [
-        "antigravity",
-        "chindahotpot",
-        "claude",
-        "codex",
-        "hermes",
-        "invest",
-        "krothong",
-        "main",
-        "nestcar",
-        "owner-shift",
-        "trae",
-        "video-creator",
-        "video-ops",
-        "video-publisher"
-      ],
-      "can_assign_to": [
-        "antigravity",
-        "chindahotpot",
-        "claude",
-        "codex",
-        "hermes",
-        "invest",
-        "krothong",
-        "main",
-        "nestcar",
         "owner-shift",
         "trae",
         "video-creator",
