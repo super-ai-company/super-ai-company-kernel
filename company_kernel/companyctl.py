@@ -8279,18 +8279,32 @@ def cmd_external_import(args: argparse.Namespace) -> int:
     return 0 if result.get("ok") else 2
 
 
-def employee_offline_report_internal(conn: sqlite3.Connection, *, stale_minutes: int = 10) -> dict:
-    """Active employees whose heartbeat is stale (not seen within stale_minutes) = offline."""
+def employee_offline_report_internal(conn: sqlite3.Connection, *, stale_minutes: int = 10, dormant_minutes: int = 1440) -> dict:
+    """Classify active employees by heartbeat freshness:
+      online   = seen within stale_minutes
+      offline  = dropped recently (stale between stale_minutes and dormant_minutes) → worth alerting
+      dormant  = never online, or stale > dormant_minutes (e.g. a logical operator like openclaw-main
+                 with no running runtime) → NOT a live worker that 'dropped', so excluded from alerts.
+    Only `offline` is alert-worthy; dormant positions shouldn't generate false 'unstable' notifications."""
     employees = [dict(r) for r in rows(conn, "SELECT * FROM employees WHERE status = 'active' ORDER BY id") if not is_human_owner_employee(dict(r))]
-    online, offline = [], []
+    online, offline, dormant = [], [], []
+    cutoff_now = datetime.now(timezone.utc)
     for emp in employees:
         eid = emp["id"]
         row = conn.execute("SELECT last_seen_at FROM heartbeats WHERE agent_id = ?", (eid,)).fetchone()
         last = row["last_seen_at"] if row else ""
         entry = {"id": eid, "name": emp.get("name", eid), "runtime": emp.get("runtime", ""), "last_seen_at": last}
-        (online if employee_has_fresh_heartbeat(conn, eid, stale_minutes=stale_minutes) else offline).append(entry)
-    return {"ok": True, "stale_minutes": stale_minutes, "online": online, "offline": offline,
-            "counts": {"active": len(employees), "online": len(online), "offline": len(offline)}}
+        if employee_has_fresh_heartbeat(conn, eid, stale_minutes=stale_minutes):
+            online.append(entry)
+            continue
+        try:
+            stale_min = (cutoff_now - parse_time(last)).total_seconds() / 60 if last else 10 ** 9
+        except (ValueError, TypeError):
+            stale_min = 10 ** 9
+        (dormant if stale_min > dormant_minutes else offline).append(entry)
+    return {"ok": True, "stale_minutes": stale_minutes, "dormant_minutes": dormant_minutes,
+            "online": online, "offline": offline, "dormant": dormant,
+            "counts": {"active": len(employees), "online": len(online), "offline": len(offline), "dormant": len(dormant)}}
 
 
 OFFLINE_NOTIFY_DEDUP_PATH = STATE_DIR / "offline-notify-dedup.json"
@@ -8326,7 +8340,7 @@ def _offline_notify_record(offline_ids: list[str]) -> None:
 
 def cmd_employee_offline_report(args: argparse.Namespace) -> int:
     conn = connect()
-    report = employee_offline_report_internal(conn, stale_minutes=args.stale_minutes)
+    report = employee_offline_report_internal(conn, stale_minutes=args.stale_minutes, dormant_minutes=getattr(args, "dormant_minutes", 1440))
     if args.notify:
         offline = report["offline"]
         offline_ids = [e["id"] for e in offline]
@@ -12446,6 +12460,7 @@ def build_parser() -> argparse.ArgumentParser:
     emp_offboard.set_defaults(func=cmd_employee_offboard)
     emp_offline = emp_sub.add_parser("offline-report", help="list active employees that are offline (stale heartbeat), optionally notify")
     emp_offline.add_argument("--stale-minutes", type=int, default=10)
+    emp_offline.add_argument("--dormant-minutes", type=int, default=1440, help="beyond this a stale employee is 'dormant' (logical/never-running), not an alertable drop")
     emp_offline.add_argument("--notify", action="store_true", help="send a Telegram summary of offline employees")
     emp_offline.add_argument("--dedup", action="store_true", help="for scheduled callers: only notify when the offline set changes or hourly")
     emp_offline.set_defaults(func=cmd_employee_offline_report)
