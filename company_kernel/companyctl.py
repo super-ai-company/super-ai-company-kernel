@@ -8774,6 +8774,20 @@ def cmd_followup_list(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_communication_pause(args: argparse.Namespace) -> int:
+    agent = resolve_employee_alias(args.agent)
+    result = set_employee_communication_enabled(agent, False, dry_run=False)
+    emit({"ok": True, "paused": True, **result})
+    return 0
+
+
+def cmd_communication_resume(args: argparse.Namespace) -> int:
+    agent = resolve_employee_alias(args.agent)
+    result = set_employee_communication_enabled(agent, True, dry_run=False)
+    emit({"ok": True, "paused": False, **result})
+    return 0
+
+
 def cmd_communication_show(args: argparse.Namespace) -> int:
     config = load_communication_config()
     employees = config.get("employees", {})
@@ -13447,6 +13461,12 @@ def build_parser() -> argparse.ArgumentParser:
     communication_check.add_argument("--to", dest="target", required=True)
     communication_check.add_argument("--action", choices=["talk", "assign"], default="talk")
     communication_check.set_defaults(func=cmd_communication_check)
+    communication_pause = communication_sub.add_parser("pause", help="stop an employee from dispatching tasks / sending messages (reversible)")
+    communication_pause.add_argument("--agent", required=True)
+    communication_pause.set_defaults(func=cmd_communication_pause)
+    communication_resume = communication_sub.add_parser("resume", help="re-enable an employee's dispatching / messaging")
+    communication_resume.add_argument("--agent", required=True)
+    communication_resume.set_defaults(func=cmd_communication_resume)
 
     notification = sub.add_parser("notification")
     notification_sub = notification.add_subparsers(dest="notification_cmd", required=True)
