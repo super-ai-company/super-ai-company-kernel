@@ -13720,6 +13720,31 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertIn("available_commands", acmeops["runtime"])
         self.assertEqual("agent:acmeops:<source>", acmeops["communication"]["session_key"])
 
+    def test_auto_triage_discards_misdispatched_codex_keeps_pathed(self) -> None:
+        with mock.patch.dict("os.environ", {"COMPANY_KERNEL_SUBMIT_GUARDS": "1"}):
+            run_cli("employee", "create", "--id", "codex", "--name", "Codex", "--role", "dev",
+                    "--runtime", "codex", "--workspace", str(self.root / "codex"))
+            run_cli("employee", "create", "--id", "pm", "--name", "PM", "--role", "mgr",
+                    "--runtime", "openclaw", "--workspace", str(self.root / "pm"))
+            conn = companyctl.connect()
+            conn.execute("UPDATE employees SET status='active' WHERE id IN ('codex','pm')")
+            # two codex tasks, both already blocked: one with NO 工作区 (mis-dispatch), one WITH a path
+            repo = self.root / "repo"; repo.mkdir()
+            for tid, desc in [("t-nows", "做点事,没有路径"), ("t-ok", f"工作区: {repo}\n做事")]:
+                conn.execute("INSERT INTO tasks(id,source_agent,target_agent,title,description,priority,status,created_at,updated_at) "
+                             "VALUES (?,?,?,?,?,?,?,?,?)",
+                             (tid, "pm", "codex", "标题"+tid, desc, "P2", "blocked", companyctl.now(), companyctl.now()))
+            conn.commit()
+
+            result = companyctl.auto_triage_misdispatched_tasks(conn)
+            ids = [d["id"] for d in result["discarded"]]
+            self.assertIn("t-nows", ids)            # pathless → auto-discarded
+            self.assertNotIn("t-ok", ids)           # has a repo path → kept (real block, owner decides)
+            self.assertEqual("cancelled", conn.execute("SELECT status FROM tasks WHERE id='t-nows'").fetchone()[0])
+            self.assertEqual("blocked", conn.execute("SELECT status FROM tasks WHERE id='t-ok'").fetchone()[0])
+            # dispatcher got a feedback note
+            self.assertTrue((self.root / "employees" / "pm" / "inbox" / "auto-discard-t-nows.json").exists())
+
     def test_submit_guards_block_pathless_codex_duplicates_and_recently_discarded(self) -> None:
         # guards are off for fixtures (setUp); turn them ON to verify the gate itself
         with mock.patch.dict("os.environ", {"COMPANY_KERNEL_SUBMIT_GUARDS": "1"}):
