@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import hmac
 import io
 import json
 import os
@@ -35,11 +36,12 @@ def api_token() -> str:
 def request_authorized(headers) -> bool:
     token = api_token()
     if not token:
-        return True  # auth disabled
+        return True  # auth disabled (loopback self-host); set COMPANY_KERNEL_API_TOKEN to require auth
     provided = str(headers.get("Authorization", "") or "")
     if provided.lower().startswith("bearer "):
         provided = provided[7:].strip()
-    return bool(provided) and provided == token
+    # constant-time compare so the token can't be guessed via response timing
+    return bool(provided) and hmac.compare_digest(provided, token)
 
 
 API_VERSION = "v1"
