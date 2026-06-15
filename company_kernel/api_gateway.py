@@ -82,6 +82,7 @@ API_ENDPOINTS = [
     {"method": "PATCH", "path": "/v1/employees/{employee_id}", "summary": "Update employee profile fields through companyctl", "body": {"name": "display name optional", "role": "role optional", "runtime": "runtime id optional", "workspace": "path optional", "status": "active/candidate/archived optional", "default_user_reply_channel": "string optional", "default_user_reply_account": "string optional", "default_user_reply_to": "string optional", "default_user_reply_deliver": "bool optional", "dry_run": "bool optional"}},
     {"method": "DELETE", "path": "/v1/employees/{employee_id}", "summary": "Offboard employee with dry-run, soft archive, or guarded hard delete", "body": {"hard_delete": "bool optional", "dry_run": "bool optional"}},
     {"method": "POST", "path": "/v1/employees/{employee_id}/profile", "summary": "Update employee profile fields through companyctl", "body": {"name": "display name optional", "role": "role optional", "runtime": "runtime id optional", "workspace": "path optional", "status": "active/candidate/archived optional", "default_user_reply_channel": "string optional", "default_user_reply_account": "string optional", "default_user_reply_to": "string optional", "default_user_reply_deliver": "bool optional", "dry_run": "bool optional"}},
+    {"method": "POST", "path": "/v1/employees/{employee_id}/verify-runtime", "summary": "Verify the employee's runtime and activate it if it passes (detached; poll /v1/employees for status)", "body": {"from": "source employee optional", "timeout": "seconds optional"}},
     {"method": "POST", "path": "/v1/employees/{employee_id}/offboard", "summary": "Offboard employee with dry-run, soft archive, or guarded hard delete", "body": {"hard_delete": "bool optional", "dry_run": "bool optional"}},
     {"method": "POST", "path": "/v1/employees/{employee_id}/communication", "summary": "Enable or pause employee communication policy", "body": {"enabled": "bool required", "dry_run": "bool optional"}},
     {"method": "POST", "path": "/v1/employees/{employee_id}/capabilities", "summary": "Update employee capabilities", "body": {"set_skills": "comma-separated skills optional", "add_skill": "string/list optional", "set_tools": "comma-separated tools optional", "add_tool": "string/list optional", "set_task_types": "comma-separated task types optional"}},
@@ -1516,6 +1517,20 @@ def route_post(path: str, body: dict) -> tuple[int, dict]:
             ]
         )
         return (HTTPStatus.CREATED if code == 0 else HTTPStatus.BAD_REQUEST), {"exit_code": code, **payload}
+    if path.startswith("/v1/employees/") and path.endswith("/verify-runtime"):
+        # Verifying invokes the runtime (can take up to its timeout), so run it detached and let the
+        # console poll /v1/employees for the status flip to 'active'. Closes the self-serve onboarding
+        # loop: form creates a candidate → click verify → employee activates once its runtime responds.
+        employee_id = re.sub(r"[^A-Za-z0-9_.-]", "", path.removeprefix("/v1/employees/").removesuffix("/verify-runtime").strip("/"))
+        if not employee_id:
+            return HTTPStatus.BAD_REQUEST, {"ok": False, "error": "invalid employee id"}
+        argv = ["employee", "verify-runtime", "--id", employee_id, "--activate"]
+        if body.get("from"):
+            argv.extend(["--from", str(body["from"])])
+        if body.get("timeout") not in {None, ""}:
+            argv.extend(["--timeout", str(int(body["timeout"]))])
+        ok, info = spawn_companyctl_detached(argv, companyctl.ROOT / "logs" / "verify-runtime" / f"{employee_id}.log")
+        return (HTTPStatus.ACCEPTED if ok else HTTPStatus.BAD_REQUEST), info
     if path.startswith("/v1/employees/") and path.endswith("/offboard"):
         employee_id = path.removeprefix("/v1/employees/").removesuffix("/offboard").strip("/")
         return employee_offboard_response(employee_id, body)
