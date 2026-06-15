@@ -51,3 +51,6 @@ employees/*/rules.md
 *.sqlite-journal
 __mount_write_test.*
 run-gemini-qa.sh
+
+# Human RBAC users + tokens — per-deployment, never uploaded
+config/users.json

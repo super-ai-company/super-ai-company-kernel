@@ -4,6 +4,7 @@ regardless of which agent CLIs are installed.
 """
 from __future__ import annotations
 
+import json
 import os
 import tempfile
 import unittest
@@ -108,6 +109,44 @@ class ConversationStressTest(unittest.TestCase):
         # the excluded employee never spoke in the thread
         _, shown = self.gw.route_get("/v1/conversations/conv-gate", {})
         self.assertFalse(any(m["source_agent"] == "nestcar" for m in shown["messages"]))
+
+
+    def test_human_rbac_roles_and_action_gating(self) -> None:
+        gw = self.gw
+        # no users.json + no env token → open self-host (owner)
+        self.assertEqual(("anonymous", "owner"), gw.resolve_actor({}))
+
+        # enable RBAC by writing config/users.json under the (temp) root
+        (self.root / "config").mkdir(parents=True, exist_ok=True)
+        (self.root / "config" / "users.json").write_text(json.dumps({"tokens": {
+            "tok-view": {"user": "vic", "role": "viewer"},
+            "tok-op": {"user": "olive", "role": "operator"},
+            "tok-admin": {"user": "ada", "role": "admin"},
+        }}), encoding="utf-8")
+
+        def actor(tok):
+            return gw.resolve_actor({"Authorization": f"Bearer {tok}"} if tok else {})
+        self.assertEqual(("vic", "viewer"), actor("tok-view"))
+        self.assertEqual(("olive", "operator"), actor("tok-op"))
+        self.assertEqual((None, ""), actor("nope"))      # unknown token → unauthorized
+        self.assertEqual((None, ""), actor(""))           # missing token (RBAC on) → unauthorized
+
+        # required role per action
+        self.assertEqual("viewer", gw.required_role("GET", "/v1/tasks"))
+        self.assertEqual("operator", gw.required_role("POST", "/v1/tasks"))          # dispatch
+        self.assertEqual("operator", gw.required_role("POST", "/v1/approvals/a1/approve"))  # approve
+        self.assertEqual("operator", gw.required_role("POST", "/v1/employees/x/communication"))  # pause
+        self.assertEqual("admin", gw.required_role("POST", "/v1/employees"))         # config
+        self.assertEqual("owner", gw.required_role("POST", "/v1/users"))             # user mgmt
+
+        # rank: viewer < operator < admin < owner
+        rank = gw.ROLE_RANK
+        self.assertLess(rank["viewer"], rank["operator"])
+        self.assertLess(rank["operator"], rank["admin"])
+        self.assertLess(rank["admin"], rank["owner"])
+        # operator may dispatch (operator>=operator) but not config (operator<admin)
+        self.assertGreaterEqual(rank["operator"], rank[gw.required_role("POST", "/v1/tasks")])
+        self.assertLess(rank["operator"], rank[gw.required_role("POST", "/v1/employees")])
 
 
 if __name__ == "__main__":
