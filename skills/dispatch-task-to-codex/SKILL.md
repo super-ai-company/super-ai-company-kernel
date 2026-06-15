@@ -28,15 +28,19 @@ After submit, the daemon's codex adapter auto-runs within ~30s (`company-codex-a
 
 ## ⚠️ #1 cause of blocked tasks: missing absolute repo path (ALWAYS include it)
 
-Codex runs each task in an ephemeral sandbox; if the description does NOT name the **absolute** repo/workspace path, codex lands in `/tmp`, can't find the project, and blocks with e.g. `codex verdict: blocked — /tmp 内没有 <repo> 仓库入口`. This is the single most common failure. The description MUST carry full context — brief it like someone with zero project knowledge:
+Codex runs each task in an ephemeral sandbox; if the description does NOT name the **absolute** repo/workspace path, codex lands in `/tmp`, can't find the project, and blocks with e.g. `codex verdict: blocked — /tmp 内没有 <repo> 仓库入口`. This is the single most common failure. The description MUST carry full context — brief it like someone with zero project knowledge.
+
+**The path is parsed by a literal directive line.** Put it on its OWN line, keyword + colon + absolute path. The backend (`resolve_task_workspace`) recognizes `工作区:` / `工作目录:` / `仓库路径:` / `workspace:` followed by an absolute path. Cleanest, always-parsed form:
 
 ```
-【工作区/仓库绝对路径】：/Users/<you>/path/to/repo    # e.g. /Users/owner/Documents/vdamo/damov4/vdamo-cloud
-【目标/验收标准】：<what done looks like, how to verify>
-【关键步骤】：1. … 2. …
-【相关文件】：<paths>
-【完成后】：回填证据(命令输出/截图/文件路径)
+工作区: /Users/<you>/path/to/repo        # vdamo 后端确认在 /Users/owner/Documents/vdamo/damov4/vdamo-cloud
+目标/验收标准：<what done looks like, how to verify>
+关键步骤：1. … 2. …
+相关文件：<paths>
+完成后：回填证据(命令输出/截图/文件路径)
 ```
+
+⚠️ Do NOT bury the path inside prose or a slashed label — `工作区: /abs/path` on its own line is the reliable form. The directive must resolve to a real directory or the task blocks with "directive does not exist".
 
 A terse one-line description (no path) WILL block. The console dispatch form auto-inserts this template and refuses too-short descriptions. When a task is already blocked for this reason: console → open the blocked task → **🔧 修复并重开** (edit the description to add the path); do NOT just "仅重开" (it re-blocks). Or **🗑 丢弃** if not worth fixing. The supervisor auto-escalates a stuck task at most 3 times (then waits for you), so you won't get flooded.
 
