@@ -104,6 +104,27 @@ main{padding:22px 22px 64px;max-width:1520px;margin:0 auto}
 .chk-grid label.chk input{margin:0;accent-color:var(--accent)}
 .chk-grid label.chk .rt{margin-left:auto;font-size:10px;opacity:.55}
 .chk-grid label.chk.off{opacity:.45;cursor:not-allowed}
+/* meeting room structured view */
+.mt-view{display:flex;flex-direction:column;gap:12px;max-height:62vh;overflow:auto;padding-right:4px}
+.mt-agenda{background:color-mix(in srgb,var(--accent) 9%,transparent);border:1px solid color-mix(in srgb,var(--accent) 35%,var(--line));border-radius:var(--r-sm);padding:13px 15px}
+.mt-agenda .lbl{font-size:11px;font-weight:700;letter-spacing:.04em;color:var(--accent);margin-bottom:5px}
+.mt-agenda .body{white-space:pre-wrap;line-height:1.55}
+.mt-round{display:flex;align-items:center;gap:10px;margin:4px 0 -2px}
+.mt-round::before,.mt-round::after{content:"";flex:1;height:1px;background:var(--line)}
+.mt-round span{font-size:11px;color:var(--muted);font-weight:600}
+.mt-turn{display:flex;gap:11px}
+.mt-turn .av{flex:none;width:30px;height:30px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:700;color:#fff}
+.mt-turn .bub{flex:1;background:var(--card);border:1px solid var(--line);border-radius:var(--r-sm);padding:9px 13px}
+.mt-turn .bh{display:flex;align-items:center;gap:8px;margin-bottom:3px}
+.mt-turn .bh b{font-size:13px}.mt-turn .bh span{font-size:11px;color:var(--muted)}
+.mt-turn .body{white-space:pre-wrap;line-height:1.55;font-size:13.5px}
+.mt-minutes{background:linear-gradient(160deg,color-mix(in srgb,var(--ok,#22c55e) 14%,transparent),transparent);border:1px solid color-mix(in srgb,var(--ok,#22c55e) 45%,var(--line));border-radius:var(--r-sm);padding:15px 17px}
+.mt-minutes .lbl{display:inline-block;font-size:12px;font-weight:800;color:var(--ok,#22c55e);margin-bottom:8px;letter-spacing:.03em}
+.mt-minutes .body{white-space:pre-wrap;line-height:1.62}
+.mt-minutes .body .sec{font-weight:700;color:var(--fg);display:block;margin:9px 0 2px}
+.mt-live{display:flex;align-items:center;gap:8px;color:var(--muted);font-size:13px;padding:6px 2px}
+.mt-live .dot{width:8px;height:8px;border-radius:50%;background:var(--accent);animation:mtpulse 1s infinite}
+@keyframes mtpulse{0%,100%{opacity:.3}50%{opacity:1}}
 label{font-size:12px;color:var(--muted);display:block;margin-bottom:4px}
 
 .feed{font-family:var(--mono);font-size:12px}
@@ -262,47 +283,54 @@ label{font-size:12px;color:var(--muted);display:block;margin-bottom:4px}
   <div class="list" id="msgList"><div class="empty" data-i18n="msg_pick">选择员工查看消息</div></div>
 </section>
 
-<!-- 对话 -->
+<!-- 会议室 -->
 <section class="view" id="v-conversations">
-  <div class="section-head"><h2 data-i18n="conv_title">多轮对话</h2>
-    <select id="convAgent" style="width:200px" onchange="loadConversations()"></select>
+  <div class="section-head"><h2 data-i18n="conv_title">会议室</h2>
+    <span class="emp-sub" data-i18n="conv_sub">让员工开会同步目标 / 评审方案 / 站会，自动出纪要</span>
     <div class="spacer"></div>
     <button onclick="probeMeetingCapable()" data-i18n="conv_probe" title="探测哪些员工真正能参会">🔍 测试可参会员工</button>
-    <button class="primary" onclick="toggleNewConv()" data-i18n="conv_new">＋ 发起新会话</button>
   </div>
-  <div class="card" id="newConvForm" style="display:none;margin-bottom:14px">
-    <h3 data-i18n="conv_newTitle">🆕 发起多轮会话</h3>
-    <div class="form-grid">
-      <div><label data-i18n="f_from">发起人</label><select id="ncFrom" onchange="renderParticipantPicker()"></select></div>
-      <div class="full"><label><span data-i18n="f_participants">参与员工（勾选）</span> <a href="javascript:void(0)" onclick="toggleAllParticipants()" style="font-size:12px;opacity:.75" data-i18n="conv_selAll">全选可参会</a></label>
-        <div id="ncParticipantsBox" class="chk-grid"></div></div>
-      <div class="full"><label data-i18n="f_taskTitle">标题</label><input id="ncTitle" data-i18n-ph="ph_convTitle" placeholder="会话标题"></div>
-      <div class="full"><label data-i18n="f_firstMsg">首条消息</label><textarea id="ncBody" rows="2" data-i18n-ph="ph_convBody" placeholder="开场白 / 要讨论的问题"></textarea></div>
-    </div>
-    <button class="primary" onclick="startConversation()" data-i18n="conv_create">创建会话</button>
-  </div>
-  <div class="grid" style="grid-template-columns:330px 1fr;gap:14px">
-    <div class="card" style="align-self:start"><h3 data-i18n="conv_list">会话列表</h3><div class="list" id="convList"><div class="empty" data-i18n="none">无</div></div></div>
-    <div class="card">
-      <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
-        <h3 id="convTitle" style="margin:0" data-i18n="conv_pick">选择左侧会话</h3>
-        <div class="spacer"></div>
-        <select id="convMode" style="width:150px" title="会议类型">
-          <option value="meeting" selected>📋 同步目标/规范</option>
-          <option value="discuss">💬 方案评审</option>
-          <option value="standup">🧍 站会(进度/阻塞)</option>
+  <div class="grid" style="grid-template-columns:380px 1fr;gap:14px;align-items:start">
+    <!-- 左：发起会议 + 历史 -->
+    <div style="display:flex;flex-direction:column;gap:14px">
+      <div class="card">
+        <h3 data-i18n="mt_new">🚀 发起会议</h3>
+        <label data-i18n="mt_type">会议类型</label>
+        <select id="mtMode" style="width:100%" onchange="mtModeHint()">
+          <option value="meeting">📋 同步目标/规范 → 会议纪要</option>
+          <option value="discuss">💬 方案评审 → 方案/决策</option>
+          <option value="standup">🧍 站会(进度/阻塞) → 站会汇总</option>
         </select>
-        <select id="convChair" style="width:130px" title="主持人 · 出纪要的员工"></select>
-        <select id="convRounds" style="width:82px" title="发言轮数">
-          <option value="1">1 轮</option><option value="2" selected>2 轮</option><option value="3">3 轮</option>
-        </select>
-        <button id="convRunBtn" onclick="runConversation()" disabled data-i18n="conv_run">▶ 开会</button>
+        <div id="mtHint" class="emp-sub" style="margin:6px 0 2px"></div>
+        <label style="margin-top:8px" data-i18n="mt_title">议题</label>
+        <input id="mtTitle" style="width:100%" data-i18n-ph="mt_titlePh" placeholder="例如：blocked 处理新规范宣讲">
+        <label style="margin-top:8px" id="mtBodyLabel">议程 / 要同步的目标</label>
+        <textarea id="mtBody" rows="4" style="width:100%" data-i18n-ph="mt_bodyPh" placeholder="把要让大家对齐的目标 / 规范 / 要讨论的问题写清楚…"></textarea>
+        <label style="margin-top:8px"><span data-i18n="mt_attendees">参会员工</span>
+          <a href="javascript:void(0)" onclick="toggleAllParticipants()" style="font-size:12px;opacity:.75" data-i18n="conv_selAll">全选可参会</a></label>
+        <div id="ncParticipantsBox" class="chk-grid"></div>
+        <div style="display:flex;gap:10px;margin-top:10px">
+          <div style="flex:1"><label data-i18n="mt_chair">主持人(出纪要)</label><select id="convChair" style="width:100%"></select></div>
+          <div style="width:96px"><label data-i18n="mt_rounds">发言轮数</label>
+            <select id="convRounds" style="width:100%"><option value="1">1 轮</option><option value="2" selected>2 轮</option><option value="3">3 轮</option></select></div>
+        </div>
+        <button class="primary" id="mtStartBtn" style="width:100%;margin-top:14px;padding:11px" onclick="startMeeting()" data-i18n="mt_start">🚀 开会</button>
       </div>
-      <div class="conv-thread" id="convThread" style="margin-top:10px"></div>
-      <div style="display:flex;gap:8px;margin-top:10px">
-        <select id="convReplyAs" style="width:160px"></select>
-        <input id="convReplyBody" data-i18n-ph="ph_replyAs" placeholder="以所选身份回复…" onkeydown="if(event.key==='Enter')convReply()">
-        <button class="primary" onclick="convReply()" data-i18n="reply">回复</button>
+      <div class="card"><h3 data-i18n="mt_history">历史会议</h3><div class="list" id="convList"><div class="empty" data-i18n="none">无</div></div></div>
+    </div>
+    <!-- 右：结构化会议视图 -->
+    <div class="card">
+      <div style="display:flex;align-items:center;gap:10px">
+        <h3 id="convTitle" style="margin:0" data-i18n="mt_pick">← 在左侧发起会议，或点历史会议查看</h3>
+        <div class="spacer"></div>
+        <span id="mtStatus"></span>
+        <button id="mtContinueBtn" onclick="continueMeeting()" style="display:none" data-i18n="mt_continue">▶ 继续讨论</button>
+      </div>
+      <div id="meetingView" style="margin-top:14px"><div class="empty" data-i18n="mt_empty">还没有会议内容。左侧填好议程、勾选参会员工，点「🚀 开会」。</div></div>
+      <div id="mtReplyRow" style="display:none;gap:8px;margin-top:12px">
+        <select id="convReplyAs" style="width:150px"></select>
+        <input id="convReplyBody" data-i18n-ph="ph_replyAs" placeholder="作为所选身份补一句…" onkeydown="if(event.key==='Enter')convReply()">
+        <button class="primary" onclick="convReply()" data-i18n="reply">发言</button>
       </div>
     </div>
   </div>
@@ -371,8 +399,10 @@ const I18N = {
     f_from:"发起人", f_assignee:"执行人", f_priority:"优先级", f_taskTitle:"标题", f_taskDesc:"描述（验收标准、相关文件路径写得越细，AI 员工干得越好）", ph_taskTitle:"任务标题",
     msg_title:"消息中心", msg_send:"✉️ 发送消息", f_sender:"发件人", f_recipient:"收件人", f_mode:"模式",
     mode_record:"仅记录（不发出）", mode_direct:"直接发送（员工收到并回复）", f_content:"内容", ph_msgBody:"消息内容", msg_sendBtn:"发送", msg_pick:"选择员工查看消息",
-    conv_title:"多轮对话", conv_new:"＋ 发起新会话", conv_newTitle:"🆕 发起多轮会话", f_participants:"参与员工（勾选）",
-    ph_convTitle:"会话标题", f_firstMsg:"首条消息", ph_convBody:"开场白 / 要讨论的问题", conv_create:"创建会话", conv_list:"会话列表", conv_pick:"选择左侧会话", ph_replyAs:"以所选身份回复…", reply:"回复", conv_run:"▶ 开会", conv_probe:"🔍 测试可参会员工", conv_selAll:"全选可参会",
+    conv_title:"会议室", conv_sub:"让员工开会同步目标 / 评审方案 / 站会，自动出纪要", f_participants:"参与员工（勾选）",
+    mt_new:"🚀 发起会议", mt_type:"会议类型", mt_title:"议题", mt_titlePh:"例如：blocked 处理新规范宣讲", mt_bodyPh:"把要让大家对齐的目标 / 规范 / 要讨论的问题写清楚…",
+    mt_attendees:"参会员工", mt_chair:"主持人(出纪要)", mt_rounds:"发言轮数", mt_start:"🚀 开会", mt_history:"历史会议", mt_pick:"← 在左侧发起会议，或点历史会议查看", mt_continue:"▶ 继续讨论", mt_empty:"还没有会议内容。左侧填好议程、勾选参会员工，点「🚀 开会」。",
+    ph_replyAs:"作为所选身份补一句…", reply:"发言", conv_probe:"🔍 测试可参会员工", conv_selAll:"全选可参会",
     appr_title:"审批中心", st_pending:"待审批", st_approved:"已批准", st_denied:"已拒绝", st_all:"全部",
     act_title:"活动流", act_hint:"公司事件 + Adapter 执行记录", act_adapter:"🛰 Adapter 执行", act_events:"📜 公司事件",
     kanban_submitted:"📥 待领取", kanban_claimed:"🔧 进行中", kanban_done:"✅ 已完成", kanban_blocked:"⛔ 受阻", empty:"空",
@@ -397,8 +427,10 @@ const I18N = {
     f_from:"From", f_assignee:"Assignee", f_priority:"Priority", f_taskTitle:"Title", f_taskDesc:"Description (the more detail on acceptance & file paths, the better the agent does)", ph_taskTitle:"task title",
     msg_title:"Messages", msg_send:"✉️ Send message", f_sender:"From", f_recipient:"To", f_mode:"Mode",
     mode_record:"Record only (not sent)", mode_direct:"Send directly (employee gets it & replies)", f_content:"Content", ph_msgBody:"message body", msg_sendBtn:"Send", msg_pick:"Pick an employee to view messages",
-    conv_title:"Conversations", conv_new:"＋ Start conversation", conv_newTitle:"🆕 Start a multi-round conversation", f_participants:"Attendees (check to include)",
-    ph_convTitle:"conversation title", f_firstMsg:"First message", ph_convBody:"opening line / topic to discuss", conv_create:"Create", conv_list:"Conversations", conv_pick:"Select a conversation on the left", ph_replyAs:"reply as selected identity…", reply:"Reply", conv_run:"▶ Run meeting", conv_probe:"🔍 Test who can attend", conv_selAll:"Select all",
+    conv_title:"Meeting room", conv_sub:"Let employees meet to align goals / review plans / standup — minutes auto-generated", f_participants:"Attendees (check to include)",
+    mt_new:"🚀 Start a meeting", mt_type:"Meeting type", mt_title:"Topic", mt_titlePh:"e.g. roll out the new blocked-handling norm", mt_bodyPh:"Spell out the goal / norm / question to align on…",
+    mt_attendees:"Attendees", mt_chair:"Chair (writes minutes)", mt_rounds:"Rounds", mt_start:"🚀 Start", mt_history:"Past meetings", mt_pick:"← Start a meeting on the left, or open a past one", mt_continue:"▶ Continue", mt_empty:"No meeting content yet. Fill the agenda, check attendees, click 🚀 Start.",
+    ph_replyAs:"add a line as the selected identity…", reply:"Speak", conv_probe:"🔍 Test who can attend", conv_selAll:"Select all",
     appr_title:"Approvals", st_pending:"Pending", st_approved:"Approved", st_denied:"Denied", st_all:"All",
     act_title:"Activity", act_hint:"company events + adapter runs", act_adapter:"🛰 Adapter runs", act_events:"📜 Company events",
     kanban_submitted:"📥 Queued", kanban_claimed:"🔧 In progress", kanban_done:"✅ Done", kanban_blocked:"⛔ Blocked", empty:"empty",
@@ -429,15 +461,17 @@ const API_CANDIDATES = () => {
   c.push("http://127.0.0.1:8765");                                 // legacy launchd port
   return [...new Set(c)];
 };
+let API_FAILS = 0;   // consecutive detect failures — avoid flashing the banner on a 1-2s restart
 async function detectApi() {
   for (const base of API_CANDIDATES()) {
     try {
       const res = await fetch(base + "/v1/health", {signal: AbortSignal.timeout(2500)});
       // 401 still means the gateway is reachable (just needs a token) — treat as connected
-      if (res.ok || res.status === 401) { API = base; $("connBanner").style.display = "none"; return true; }
+      if (res.ok || res.status === 401) { API = base; API_FAILS = 0; $("connBanner").style.display = "none"; return true; }
     } catch (e) {}
   }
-  $("connBanner").style.display = "flex";
+  API_FAILS++;
+  if (API_FAILS >= 2) $("connBanner").style.display = "flex";  // only after a sustained outage
   return false;
 }
 function saveApiBase() {
@@ -464,12 +498,20 @@ const isMessageable = e => e.runtime === "openclaw";
 
 function apiToken() { return localStorage.getItem("ck_api_token") || ""; }
 function setApiToken(t) { if (t) localStorage.setItem("ck_api_token", t); else localStorage.removeItem("ck_api_token"); }
-async function api(path, opts={}) {
+async function api(path, opts={}, _retry=false) {
   const headers = {"Content-Type":"application/json", ...(opts.headers||{})};
   const tok = apiToken();
   if (tok) headers["Authorization"] = "Bearer " + tok;
-  const res = await fetch(API+path, {headers, ...opts,
-    body: opts.body ? JSON.stringify(opts.body) : undefined});
+  let res;
+  try {
+    res = await fetch(API+path, {headers, ...opts,
+      body: opts.body ? JSON.stringify(opts.body) : undefined});
+  } catch (netErr) {
+    // gateway momentarily down (e.g. restart) — re-detect the base and retry once so the
+    // console self-heals instead of surfacing the error to the user
+    if (!_retry && await detectApi()) return api(path, opts, true);
+    throw new Error("网关暂时不可达，正在自动重连…");
+  }
   let data = {};
   try { data = await res.json(); } catch(e) {}
   if (res.status === 401) {
@@ -586,11 +628,11 @@ async function loadEmployees() {
   // Messages = a real comms channel. Only employees with a configured channel (openclaw agents relay
   // to LINE/Telegram) can receive a direct message; pure compute runtimes (codex/claude/hermes/antigravity)
   // are for Tasks, not chat — hide them from the recipient list so you only see who you can actually message.
-  ["tFrom","mFrom","convReplyAs","ncFrom"].forEach(id=>{ if($(id)) $(id).innerHTML = withOwnerFirst; });
+  ["tFrom","mFrom","convReplyAs"].forEach(id=>{ if($(id)) $(id).innerHTML = withOwnerFirst; });
   // chair = the employee who opens the summary/minutes; must be an AI runtime, default hermes
   if($("convChair")){ const chairOpts = EMPLOYEES.filter(e=>e.id!==OWNER).map(e=>`<option value="${esc(e.id)}"${e.id==="hermes"?" selected":""}>${esc(e.id)}</option>`).join(""); $("convChair").innerHTML = chairOpts; }
   renderParticipantPicker();
-  ["convAgent"].forEach(id=>{ if($(id) && !$(id).value) $(id).innerHTML = opts; });
+  mtModeHint();
   rebuildMessageRecipients();
   buildMentionOptions();
   // grid
@@ -697,9 +739,15 @@ async function showTask(id) {
     const t = d.task || d;
     const stuck = t.status==="blocked"||t.status==="interrupted"||t.status==="failed"||t.status==="stalled";
     window.__taskDesc = t.description || "";
+    const wsMatch = (t.description||"").match(/^\s*(?:工作区|workspace)\s*[:：]\s*(\S+)/im);
+    const curWs = wsMatch ? wsMatch[1] : "";
     const fixBox = stuck ? `<div class="card" style="margin-bottom:12px;background:var(--bg2)">
-        <div style="font-size:12px;color:var(--muted);margin-bottom:6px">🔧 ${LANG==='zh'?'修复任务再重开（卡住多因缺绝对仓库路径/验收，补清楚再派）':'Fix the task before reopening (blocks are usually missing repo path / acceptance)'}</div>
-        <textarea id="fixDesc" rows="5" style="font-size:12px">${esc(t.description||"")}</textarea>
+        <div style="font-size:12px;color:var(--muted);margin-bottom:6px">🔧 ${LANG==='zh'?'修复任务再重开。多数卡住是因为 codex 在空工作区里找不到代码仓库 —— 填上仓库绝对路径即可。':'Fix before reopening. Most blocks: codex ran in an empty workspace with no repo — set the repo absolute path.'}</div>
+        <div style="font-size:11px;color:var(--bad,#f0647c);margin-bottom:8px">${t.blocker?('⛔ '+esc(String(t.blocker).slice(0,160))):''}</div>
+        <label style="font-size:11px">📁 ${LANG==='zh'?'代码仓库绝对路径（工作区）':'Repo absolute path (workspace)'}</label>
+        <input id="fixWorkspace" placeholder="/Users/shift/openclaw/.../vdamo-cloud" value="${esc(curWs)}" style="font-family:var(--mono);font-size:12px;margin-bottom:8px">
+        <label style="font-size:11px">📝 ${LANG==='zh'?'任务说明（可补充验收/步骤）':'Brief (clarify acceptance/steps)'}</label>
+        <textarea id="fixDesc" rows="4" style="font-size:12px">${esc(t.description||"")}</textarea>
         <div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap">
           <button class="ok" onclick="taskFixReopen('${esc(id)}')">🔧 ${LANG==='zh'?'修复并重开':'Fix & reopen'}</button>
           <button onclick="taskReopen('${esc(id)}')">${LANG==='zh'?'仅重开（不改）':'Reopen only'}</button>
@@ -735,11 +783,18 @@ async function taskDiscard(id) {
   } catch(e){ toast("失败："+e.message,"bad"); }
 }
 async function taskFixReopen(id) {
-  const desc = ($("fixDesc")?.value || "").trim();
-  if (desc.length < 8) return toast(LANG==='zh'?"请把修复内容写清楚（仓库绝对路径/验收/步骤）":"Write a clear corrected brief","bad");
-  if (desc === (window.__taskDesc||"").trim()) return toast(LANG==='zh'?"描述没改动，可用「仅重开」":"No change — use Reopen only","bad");
+  let desc = ($("fixDesc")?.value || "").trim();
+  const ws = ($("fixWorkspace")?.value || "").trim();
+  if (ws) {
+    if (!ws.startsWith("/")) return toast(LANG==='zh'?"仓库路径要用绝对路径（/ 开头）":"Repo path must be absolute","bad");
+    // ensure a single `工作区: <ws>` directive at the top (the backend resolve_task_workspace honors it)
+    desc = desc.replace(/^\s*(?:工作区|workspace)\s*[:：].*$/gim, "").trim();
+    desc = `工作区: ${ws}\n${desc}`;
+  }
+  if (desc.length < 8) return toast(LANG==='zh'?"填仓库路径，或把修复内容写清楚":"Set the repo path, or write a clear brief","bad");
+  if (desc === (window.__taskDesc||"").trim()) return toast(LANG==='zh'?"没有改动；只想重试请用「仅重开」":"No change — use Reopen only","bad");
   try { await api(`/v1/tasks/${encodeURIComponent(id)}/reopen`, {method:"POST", body:{by:OWNER, reason:"控制台修复并重开", description:desc}});
-    toast(LANG==='zh'?"已修复并重开，将带新说明重新执行":"Fixed & reopened","ok"); closeModal(); loadTasks();
+    toast(LANG==='zh'?"已修复并重开，将带仓库路径重新执行":"Fixed & reopened with repo path","ok"); closeModal(); loadTasks();
   } catch(e){ toast("失败："+e.message,"bad"); }
 }
 function taskReassignPrompt(id) {
@@ -923,25 +978,30 @@ async function sendMessage() {
   } catch(e){ toast("发送失败："+e.message,"bad"); }
 }
 
-/* ---------- conversations ---------- */
+/* ---------- 会议室 (meeting room) ---------- */
 let CURRENT_CONV = "";
+let CONV_POLL = null;
+const MINUTES_RE = /^【(会议纪要|站会汇总|方案\/决策)】/;
+// only AI employees with an invokable runtime can attend (matches the server-side gate)
+const MEETING_RUNTIMES = ["codex","claude","gemini","antigravity","trae","openclaw","hermes"];
+
 async function loadConversations() {
-  const agent = $("convAgent").value; if(!agent) return;
   try {
-    const d = await api("/v1/conversations?agent="+encodeURIComponent(agent));
+    const d = await api("/v1/conversations?agent="+encodeURIComponent(OWNER));
     const convs = d.conversations || d.items || [];
     $("cntConv").textContent = convs.length;
-    $("convList").innerHTML = convs.map(c=>`<div class="row" style="cursor:pointer" onclick="showConv('${esc(c.id)}')">
-      <div class="who">${esc(c.title||c.id)}</div>
-      <div class="emp-sub">${esc((c.participants||"")).slice(0,60)} · ${ago(c.updated_at||c.created_at)}</div></div>`).join("")
-      || `<div class="empty">无会话</div>`;
+    $("convList").innerHTML = convs.map(c=>{
+      const parts = Array.isArray(c.participants)?c.participants.join(","):(c.participants||"");
+      const active = c.id===CURRENT_CONV ? ' style="cursor:pointer;border-color:var(--accent)"' : ' style="cursor:pointer"';
+      return `<div class="row"${active} onclick="openMeeting('${esc(c.id)}')">
+        <div class="who">${esc(c.title||c.id)}</div>
+        <div class="emp-sub">${esc(parts).slice(0,52)} · ${ago(c.updated_at||c.created_at)}</div></div>`;
+    }).join("") || `<div class="empty">还没有会议，左侧发起一场</div>`;
   } catch(e){ $("convList").innerHTML = `<div class="empty">${esc(e.message)}</div>`; }
 }
-// only AI employees with an invokable runtime can attend a meeting (matches the server-side gate)
-const MEETING_RUNTIMES = ["codex","claude","gemini","antigravity","trae","openclaw","hermes"];
+
 function renderParticipantPicker() {
   const box = $("ncParticipantsBox"); if(!box) return;
-  const from = ($("ncFrom")||{}).value || OWNER;
   const list = (EMPLOYEES||[]).filter(e=>e.id!==OWNER && MEETING_RUNTIMES.includes(e.runtime));
   const preferred = new Set(["hermes","codex","gemini"]);
   box.innerHTML = list.map(e=>{
@@ -960,94 +1020,126 @@ function toggleAllParticipants() {
   const allOn = boxes.every(b=>b.checked);
   boxes.forEach(b=>{ b.checked=!allOn; b.closest('.chk').classList.toggle('on',!allOn); });
 }
-function toggleNewConv() {
-  const f = $("newConvForm");
-  f.style.display = f.style.display === "none" ? "block" : "none";
-  if (f.style.display === "block") renderParticipantPicker();
+function mtModeHint() {
+  const m = ($("mtMode")||{}).value || "meeting";
+  const hints = {
+    meeting:"员工复述确认理解、提疑问、认领行动项；主持人收口出「会议纪要」。",
+    discuss:"员工互相质疑补充、收敛到方案；主持人出「方案/决策」。",
+    standup:"员工同步进展 / 阻塞 / 下一步；主持人出「站会汇总」。"};
+  const blab = {meeting:"议程 / 要同步的目标、规范", discuss:"要评审 / 论证的方案或问题", standup:"站会范围 / 要同步什么"};
+  if($("mtHint")) $("mtHint").textContent = hints[m]||"";
+  if($("mtBodyLabel")) $("mtBodyLabel").textContent = blab[m]||"议程";
 }
-async function startConversation() {
-  const from = $("ncFrom").value;
-  const picked = selectedParticipants();
-  const title = $("ncTitle").value.trim();
-  const body = $("ncBody").value.trim();
-  if (!picked.length) return toast("至少勾选一名参与员工", "bad");
-  if (!title || !body) return toast("标题/首条消息都要填", "bad");
-  const participants = [from, ...picked.filter(p=>p!==from)].join(",");
-  try {
-    const d = await api("/v1/conversations", {method:"POST", body:{from, participants, title, body}});
-    toast("会话已创建", "ok");
-    $("ncTitle").value=""; $("ncBody").value="";
-    $("newConvForm").style.display="none";
-    $("convAgent").value = from;
-    await loadConversations();
-    const cid = d.conversation?.id || d.conversation_id;
-    if (cid) showConv(cid);
-  } catch(e){ toast("创建失败："+e.message, "bad"); }
+
+// ---- structured rendering: agenda → round-grouped turns → highlighted minutes ----
+function fmtMinuteSections(text){
+  return esc(text).replace(/^(\d+\)[^\n]*)/gm,'<span class="sec">$1</span>');
 }
-async function showConv(id) {
+function renderMeetingBody(msgs){
+  let out = []; let curRound = 0; let seen = new Set();
+  msgs.forEach((m,i)=>{
+    const who = m.source_agent||m.from||"?"; const body = m.body||"";
+    if(i===0){ // opener = agenda
+      out.push(`<div class="mt-agenda"><div class="lbl">📋 议程 · ${esc(who)} · ${fmtTime(m.created_at)}</div><div class="body">${esc(body)}</div></div>`);
+      return;
+    }
+    const mm = body.match(MINUTES_RE);
+    if(mm){ // synthesized minutes
+      const rest = body.slice(mm[0].length).trim();
+      out.push(`<div class="mt-minutes"><div class="lbl">${esc(mm[0])} · ${esc(who)}</div><div class="body">${fmtMinuteSections(rest)}</div></div>`);
+      return;
+    }
+    // a speaking turn — start a new round divider whenever a speaker repeats
+    if(curRound===0 || seen.has(who)){ curRound++; seen = new Set(); out.push(`<div class="mt-round"><span>第 ${curRound} 轮</span></div>`); }
+    seen.add(who);
+    const c = color(who);
+    out.push(`<div class="mt-turn"><div class="av" style="background:${c}">${esc(who.slice(0,2))}</div>
+      <div class="bub"><div class="bh"><b style="color:${c}">${esc(who)}</b><span>${fmtTime(m.created_at)}</span></div>
+      <div class="body">${esc(body)}</div></div></div>`);
+  });
+  return out.join("");
+}
+async function renderMeeting(id, live){
+  const d = await api("/v1/conversations/"+encodeURIComponent(id));
+  const c = d.conversation || d; const msgs = d.messages || c.messages || [];
+  $("convTitle").textContent = c.title || id;
+  const done = msgs.length>0 && MINUTES_RE.test(msgs[msgs.length-1].body||"");
+  let html = renderMeetingBody(msgs);
+  if(live && !done) html += `<div class="mt-live"><span class="dot"></span>员工正在依次发言，自动刷新中…</div>`;
+  $("meetingView").innerHTML = `<div class="mt-view">${html||'<div class="empty">无内容</div>'}</div>`;
+  const v = $("meetingView").querySelector(".mt-view"); if(v) v.scrollTop = v.scrollHeight;
+  return done;
+}
+async function openMeeting(id){
   CURRENT_CONV = id;
-  const btn = $("convRunBtn"); if(btn && !CONV_POLL) btn.disabled = false;
-  try {
-    const d = await api("/v1/conversations/"+encodeURIComponent(id));
-    const c = d.conversation || d;
-    $("convTitle").textContent = (c.title||id);
-    const msgs = d.messages || c.messages || [];
-    $("convThread").innerHTML = msgs.map(m=>`<div class="bubble">
-      <div class="bh"><b style="color:${color(m.source_agent||m.from)}">${esc(m.source_agent||m.from)}</b><span>${fmtTime(m.created_at)}</span></div>
-      ${esc(m.body)}</div>`).join("") || `<div class="empty">无消息</div>`;
-    $("convThread").scrollTop = $("convThread").scrollHeight;
-  } catch(e){ $("convThread").innerHTML = `<div class="empty">${esc(e.message)}</div>`; }
+  $("mtContinueBtn").style.display=""; $("mtContinueBtn").disabled=false;
+  $("mtReplyRow").style.display="flex"; $("mtStatus").innerHTML="";
+  try { await renderMeeting(id,false); } catch(e){ $("meetingView").innerHTML=`<div class="empty">${esc(e.message)}</div>`; }
+  loadConversations();
 }
-async function probeMeetingCapable() {
-  toast("正在探测全员可参会能力，需要一会儿…","ok");
+
+async function startMeeting(){
+  const mode = $("mtMode").value;
+  const title = $("mtTitle").value.trim();
+  const body = $("mtBody").value.trim();
+  const picked = selectedParticipants();
+  if(!title) return toast("填一下议题","bad");
+  if(!body) return toast("填一下议程 / 要同步或讨论的内容","bad");
+  if(!picked.length) return toast("至少勾选一名参会员工","bad");
+  const participants = [OWNER, ...picked.filter(p=>p!==OWNER)].join(",");
+  const btn = $("mtStartBtn"); const old = btn.textContent; btn.disabled=true; btn.textContent="创建中…";
+  let cid;
   try {
-    const d = await api("/v1/conversations/probe",{method:"POST",body:{participants:"active"}});
-    const cap = d.capable||[], inc = d.incapable||[];
-    toast(`探测完成：✅ ${cap.length} 可参会${inc.length?`，❌ ${inc.length} 不可`:""}`, inc.length?"warn":"ok");
-    if(inc.length) toast("不可参会："+inc.join("，"),"warn");
-  } catch(e){ toast("探测失败："+e.message,"bad"); }
+    const d = await api("/v1/conversations",{method:"POST",body:{from:OWNER, participants, title, body}});
+    cid = d.conversation?.id || d.conversation_id;
+  } catch(e){ btn.disabled=false; btn.textContent=old; return toast("创建失败："+e.message,"bad"); }
+  $("mtTitle").value=""; $("mtBody").value="";
+  btn.disabled=false; btn.textContent=old;
+  await openMeeting(cid);
+  runMeeting(cid, mode, parseInt($("convRounds").value||"2",10), $("convChair").value||"");
 }
-let CONV_POLL = null;
-async function runConversation() {
-  if(!CURRENT_CONV) return toast("先选择会话","bad");
-  const btn = $("convRunBtn"); const old = btn.dataset.label || btn.textContent;
-  btn.dataset.label = old;
-  const rounds = parseInt($("convRounds").value||"2",10);
-  const mode = ($("convMode")||{}).value || "meeting";
-  const synthesizer = ($("convChair")||{}).value || "";
-  const cid = CURRENT_CONV;
-  try {
-    await api(`/v1/conversations/${encodeURIComponent(cid)}/run`,{method:"POST",body:{rounds,mode,synthesizer}});
-  } catch(e){ return toast("无法开始："+e.message,"bad"); }
-  const label = mode==="standup"?"站会":mode==="discuss"?"讨论":"会议";
-  toast(label+"已开始，员工将依次发言…","ok");
-  btn.disabled = true; btn.textContent = label+"进行中…";
+
+async function runMeeting(cid, mode, rounds, synthesizer){
+  try { await api(`/v1/conversations/${encodeURIComponent(cid)}/run`,{method:"POST",body:{mode,rounds,synthesizer}}); }
+  catch(e){ return toast("无法开始："+e.message,"bad"); }
+  const label = mode==="standup"?"站会":mode==="discuss"?"评审":"会议";
+  $("mtStatus").innerHTML = `<span class="badge candidate">${label}进行中…</span>`;
+  if($("mtContinueBtn")) $("mtContinueBtn").disabled=true;
+  toast(label+"已开始，员工依次发言（每位需几十秒，请稍候）…","ok");
   if(CONV_POLL) clearInterval(CONV_POLL);
-  // The run is detached; each turn commits its message as it lands, so we poll the
-  // thread to render progressive results and stop once the synthesized plan appears.
-  const startCount = ($("convThread").querySelectorAll(".bubble")||[]).length;
-  let ticks = 0; const maxTicks = Math.max(40, rounds*40); // ~5s * ticks; generous ceiling
+  let ticks=0; const maxTicks = Math.max(60, rounds*60); // ~5s * ticks
   CONV_POLL = setInterval(async ()=>{
     ticks++;
     if(CURRENT_CONV !== cid){ clearInterval(CONV_POLL); CONV_POLL=null; return; }
-    await showConv(cid);
-    const bubbles = $("convThread").querySelectorAll(".bubble");
-    const last = bubbles.length ? bubbles[bubbles.length-1].textContent : "";
-    const done = /【会议纪要】|【站会汇总】|【方案\/决策】/.test(last);
+    let done=false;
+    try { done = await renderMeeting(cid, true); } catch(e){}
     if(done || ticks>=maxTicks){
       clearInterval(CONV_POLL); CONV_POLL=null;
-      btn.disabled=false; btn.textContent = btn.dataset.label;
-      toast(done ? "已收口，主持人产出纪要 ✅" : "结束（未检测到纪要，请查看记录）", done?"ok":"warn");
+      if($("mtContinueBtn")) $("mtContinueBtn").disabled=false;
+      $("mtStatus").innerHTML = done?`<span class="badge active">✅ 已出纪要</span>`:`<span class="badge">已结束</span>`;
+      try { await renderMeeting(cid,false); } catch(e){}
+      loadConversations();
+      toast(done?"会议完成，已生成纪要 ✅":"会议结束（未检测到纪要，请查看记录）", done?"ok":"warn");
     }
   }, 5000);
 }
+function continueMeeting(){
+  if(!CURRENT_CONV) return toast("先选一场会议","bad");
+  runMeeting(CURRENT_CONV, $("mtMode").value, parseInt($("convRounds").value||"2",10), $("convChair").value||"");
+}
+async function probeMeetingCapable() {
+  try {
+    await api("/v1/conversations/probe",{method:"POST",body:{participants:"active"}});
+    toast("已在后台探测全员可参会能力（不阻塞后台），稍后开会时自动生效","ok");
+  } catch(e){ toast("探测启动失败："+e.message,"bad"); }
+}
 async function convReply() {
-  if(!CURRENT_CONV) return toast("先选择会话","bad");
+  if(!CURRENT_CONV) return toast("先选一场会议","bad");
   const body = {from:$("convReplyAs").value, body:$("convReplyBody").value.trim()};
   if(!body.body) return;
   try { await api(`/v1/conversations/${encodeURIComponent(CURRENT_CONV)}/reply`,{method:"POST",body});
-    $("convReplyBody").value=""; showConv(CURRENT_CONV); toast("已回复","ok");
-  } catch(e){ toast("回复失败："+e.message,"bad"); }
+    $("convReplyBody").value=""; renderMeeting(CURRENT_CONV,false); toast("已发言","ok");
+  } catch(e){ toast("发言失败："+e.message,"bad"); }
 }
 
 /* ---------- approvals ---------- */
@@ -1147,7 +1239,7 @@ async function refreshAll(manual=false) {
   await Promise.allSettled([loadHealth(), loadEmployees(), loadTasks(), loadApprovals(), loadActivity(), loadDeliveryTargets()]);
   renderOverview();
   if($("msgAgent").value) loadMessages();
-  if($("convAgent").value) loadConversations();
+  loadConversations();
 }
 applyLang();
 detectApi().then(ok => { refreshAll(); if(!ok) $("refreshMeta").textContent = "API 未连接 / not connected"; });

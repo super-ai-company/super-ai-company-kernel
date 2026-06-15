@@ -324,6 +324,29 @@ def spawn_conversation_run(conversation_id: str, body: dict) -> tuple[bool, dict
     return True, {"ok": True, "started": True, "conversation_id": cid, "log": str(log_path)}
 
 
+def spawn_companyctl_detached(argv: list[str], log_path: Path) -> tuple[bool, dict]:
+    """Run a companyctl invocation as a detached background process so a slow command never
+    holds the in-process CLI lock and freezes the gateway for every other request."""
+    try:
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        log_fh = open(log_path, "ab")
+    except Exception as exc:
+        return False, {"ok": False, "error": f"cannot open log: {exc}"}
+    try:
+        subprocess.Popen(
+            [str(companyctl.ROOT / "bin" / "companyctl"), *argv],
+            cwd=str(companyctl.ROOT), stdout=log_fh, stderr=subprocess.STDOUT,
+            stdin=subprocess.DEVNULL, start_new_session=True,
+        )
+    except Exception as exc:
+        log_fh.close()
+        return False, {"ok": False, "error": str(exc)}
+    finally:
+        try: log_fh.close()
+        except Exception: pass
+    return True, {"ok": True, "started": True, "log": str(log_path)}
+
+
 def query_value(query: dict[str, list[str]], name: str, default: str = "") -> str:
     values = query.get(name, [])
     return values[0] if values else default
@@ -1853,11 +1876,14 @@ def route_post(path: str, body: dict) -> tuple[int, dict]:
         )
         return (HTTPStatus.OK if code == 0 else HTTPStatus.BAD_REQUEST), {"exit_code": code, **payload}
     if path == "/v1/conversations/probe":
+        # Probing every employee invokes each runtime in turn (minutes). Running it in-process
+        # would hold the CLI lock and freeze the gateway, so spawn it detached; it persists the
+        # allowlist to state/meeting-capable.json which the meeting gate reads.
         argv = ["conversation", "probe", "--participants", str(body.get("participants", "active") or "active")]
         if body.get("timeout") not in {None, ""}:
             argv.extend(["--timeout", str(int(body["timeout"]))])
-        code, payload = run_companyctl(argv)
-        return (HTTPStatus.OK if code == 0 else HTTPStatus.BAD_REQUEST), {"exit_code": code, **payload}
+        ok, info = spawn_companyctl_detached(argv, companyctl.ROOT / "logs" / "conversation-run" / "probe.log")
+        return (HTTPStatus.ACCEPTED if ok else HTTPStatus.BAD_REQUEST), info
     if path.startswith("/v1/conversations/") and path.endswith("/run"):
         conversation_id = path.removeprefix("/v1/conversations/").removesuffix("/run").strip("/")
         # A discussion invokes several runtimes in turn and can take minutes. Running it
