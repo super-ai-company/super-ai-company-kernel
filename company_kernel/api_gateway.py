@@ -6,6 +6,7 @@ import io
 import json
 import os
 import re
+import subprocess
 import threading
 import time
 from http import HTTPStatus
@@ -163,6 +164,8 @@ API_ENDPOINTS = [
     {"method": "POST", "path": "/v1/external-mirror/import", "summary": "Import sanitized external mirror payload without secrets", "body": {"thread": "sanitized thread object", "messages": "sanitized messages list"}},
     {"method": "POST", "path": "/v1/conversations/{conversation_id}/join", "summary": "Join an existing conversation as Human Owner or another employee", "body": {"agent": "employee id optional, defaults owner-shift"}},
     {"method": "POST", "path": "/v1/conversations/{conversation_id}/reply", "summary": "Reply to conversation", "body": {"from": "employee id", "body": "string", "message_id": "string optional", "evidence": "path optional"}},
+    {"method": "POST", "path": "/v1/conversations/{conversation_id}/run", "summary": "Run an autonomous multi-employee meeting/discussion that converges to minutes/a plan", "body": {"mode": "meeting/discuss/standup optional", "rounds": "integer optional, default 2", "timeout": "per-turn seconds optional", "synthesizer": "chair employee id optional, defaults hermes"}},
+    {"method": "POST", "path": "/v1/conversations/probe", "summary": "Test which employees can genuinely join a meeting and persist the allowlist", "body": {"participants": "'active' (default), 'all', or comma-separated ids", "timeout": "per-probe seconds optional"}},
     {"method": "GET", "path": "/v1/approvals", "summary": "List approvals", "query": {"status": "pending/approved/denied/all optional", "agent": "employee id optional", "action": "approval action optional", "limit": "integer optional"}},
     {"method": "POST", "path": "/v1/approvals", "summary": "Request approval", "body": {"from": "employee id", "action": "string", "reason": "string", "target": "employee id optional", "risk": "P0/P1/P2/P3 optional", "approval_id": "string optional", "task_id": "string optional", "evidence": "path optional"}},
     {"method": "GET", "path": "/v1/approvals/{approval_id}", "summary": "Show approval"},
@@ -276,6 +279,49 @@ def run_companyctl(argv: list[str]) -> tuple[int, dict]:
             code = companyctl.main(argv)
         raw = buf.getvalue().strip()
     return code, json.loads(raw) if raw else {}
+
+
+def spawn_conversation_run(conversation_id: str, body: dict) -> tuple[bool, dict]:
+    """Launch `companyctl conversation run` as a detached background process so the
+    console stays responsive while employees discuss. Output goes to a per-run log."""
+    cid = re.sub(r"[^A-Za-z0-9_.-]", "", str(conversation_id))
+    if not cid:
+        return False, {"ok": False, "error": "invalid conversation id"}
+    argv = [str(companyctl.ROOT / "bin" / "companyctl"), "conversation", "run", "--conversation-id", cid]
+    if body.get("mode"):
+        argv.extend(["--mode", str(body["mode"])])
+    if body.get("rounds") not in {None, ""}:
+        argv.extend(["--rounds", str(int(body["rounds"]))])
+    if body.get("timeout") not in {None, ""}:
+        argv.extend(["--timeout", str(int(body["timeout"]))])
+    if body.get("synthesizer"):
+        argv.extend(["--synthesizer", str(body["synthesizer"])])
+    log_dir = companyctl.ROOT / "logs" / "conversation-run"
+    try:
+        log_dir.mkdir(parents=True, exist_ok=True)
+        log_path = log_dir / f"{cid}.log"
+        log_fh = open(log_path, "ab")
+    except Exception as exc:
+        return False, {"ok": False, "error": f"cannot open run log: {exc}"}
+    try:
+        subprocess.Popen(
+            argv,
+            cwd=str(companyctl.ROOT),
+            stdout=log_fh,
+            stderr=subprocess.STDOUT,
+            stdin=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+    except Exception as exc:
+        log_fh.close()
+        return False, {"ok": False, "error": str(exc)}
+    finally:
+        # The child inherits its own dup of the fd; the parent's copy can close.
+        try:
+            log_fh.close()
+        except Exception:
+            pass
+    return True, {"ok": True, "started": True, "conversation_id": cid, "log": str(log_path)}
 
 
 def query_value(query: dict[str, list[str]], name: str, default: str = "") -> str:
@@ -1806,6 +1852,20 @@ def route_post(path: str, body: dict) -> tuple[int, dict]:
             ]
         )
         return (HTTPStatus.OK if code == 0 else HTTPStatus.BAD_REQUEST), {"exit_code": code, **payload}
+    if path == "/v1/conversations/probe":
+        argv = ["conversation", "probe", "--participants", str(body.get("participants", "active") or "active")]
+        if body.get("timeout") not in {None, ""}:
+            argv.extend(["--timeout", str(int(body["timeout"]))])
+        code, payload = run_companyctl(argv)
+        return (HTTPStatus.OK if code == 0 else HTTPStatus.BAD_REQUEST), {"exit_code": code, **payload}
+    if path.startswith("/v1/conversations/") and path.endswith("/run"):
+        conversation_id = path.removeprefix("/v1/conversations/").removesuffix("/run").strip("/")
+        # A discussion invokes several runtimes in turn and can take minutes. Running it
+        # in-process would hold the global CLI lock and freeze the whole console, so we
+        # spawn it detached and let the client poll the thread for progressive results
+        # (each turn commits its message as it lands).
+        ok, info = spawn_conversation_run(conversation_id, body)
+        return (HTTPStatus.ACCEPTED if ok else HTTPStatus.BAD_REQUEST), info
     if path.startswith("/v1/conversations/") and path.endswith("/reply"):
         conversation_id = path.removeprefix("/v1/conversations/").removesuffix("/reply").strip("/")
         argv = [

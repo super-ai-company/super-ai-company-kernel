@@ -75,5 +75,40 @@ class ConversationStressTest(unittest.TestCase):
         self.assertEqual(31, len(bodies))
 
 
+    def test_meeting_gate_admits_only_capable_employees(self):
+        """Only employees that genuinely reply may join a meeting; the rest are excluded
+        with a reason and never pollute the thread."""
+        for a, rt in (("codex", "codex"), ("nestcar", "openclaw"), ("hermes", "hermes")):
+            self._run(["employee", "create", "--id", a, "--name", a, "--role", "developer",
+                       "--runtime", rt, "--workspace", str(self.root / a)])
+        conn0 = self.ctl.connect()
+        conn0.execute("UPDATE employees SET status = 'active' WHERE id IN ('codex','nestcar','hermes')")
+        conn0.commit()
+        self.gw.route_post("/v1/conversations", {
+            "from": "owner-shift", "participants": "owner-shift,codex,nestcar,hermes",
+            "conversation_id": "conv-gate", "title": "规范同步", "body": "议程：新规范",
+        })
+
+        def fake_invoke(conn, agent, prompt, timeout):
+            if agent == "nestcar":  # this one can't actually participate
+                return {"ok": False, "reply": "", "error": "runtime down", "exit_code": 1}
+            return {"ok": True, "reply": f"{agent} 的发言", "runtime": "x", "exit_code": 0}
+
+        with mock.patch.object(self.ctl, "conversation_invoke_runtime", side_effect=fake_invoke):
+            conn = self.ctl.connect()
+            result = self.ctl.conversation_run_internal(
+                conn, conversation_id="conv-gate", mode="meeting", rounds=1, synthesizer="hermes")
+
+        self.assertIn("codex", result["speakers"])
+        self.assertIn("hermes", result["speakers"])
+        self.assertNotIn("nestcar", result["speakers"])
+        self.assertTrue(any(s["agent"] == "nestcar" and "未通过参会探测" in s["reason"]
+                            for s in result["skipped"]), result["skipped"])
+        self.assertTrue(result["final_plan"], "capable chair must still produce minutes")
+        # the excluded employee never spoke in the thread
+        _, shown = self.gw.route_get("/v1/conversations/conv-gate", {})
+        self.assertFalse(any(m["source_agent"] == "nestcar" for m in shown["messages"]))
+
+
 if __name__ == "__main__":
     unittest.main()
