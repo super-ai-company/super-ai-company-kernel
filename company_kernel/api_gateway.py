@@ -580,6 +580,19 @@ def recent_event_rows(*, limit: int = 20, after_created_at: str = "", after_id: 
         conn.close()
 
 
+def sanitize_payload_values(obj):
+    """Recursively sanitize secrets/local-paths in payload STRING VALUES only — keeping the JSON
+    structure intact. (Sanitizing the serialized JSON string then re-parsing it can truncate a value
+    mid-quote and raise 'Unterminated string', breaking the whole /v1/events feed.)"""
+    if isinstance(obj, dict):
+        return {k: sanitize_payload_values(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [sanitize_payload_values(v) for v in obj]
+    if isinstance(obj, str):
+        return companyctl.sanitize_log_text(obj)
+    return obj
+
+
 def route_get(path: str, query: dict[str, list[str]]) -> tuple[int, dict]:
     if path in {"/v1", "/v1/"}:
         return HTTPStatus.OK, service_descriptor()
@@ -661,8 +674,8 @@ def route_get(path: str, query: dict[str, list[str]]) -> tuple[int, dict]:
                 payload = json.loads(raw) if raw else {}
             except (json.JSONDecodeError, TypeError):
                 payload = {"raw": str(raw)}
-            # Sanitize secrets / local paths before exposing over the API.
-            event["payload"] = json.loads(companyctl.sanitize_log_text(json.dumps(payload, ensure_ascii=False)))
+            # Sanitize secrets / local paths before exposing over the API (per-value, never breaks JSON).
+            event["payload"] = sanitize_payload_values(payload)
             events.append(event)
         return HTTPStatus.OK, {"ok": True, "events": events}
     if path == "/v1/heartbeats":
