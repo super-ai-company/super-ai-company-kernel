@@ -133,6 +133,9 @@ Watch the console (`http://127.0.0.1:8765/`) → the task should claim, run, and
 
 The kernel runs three services: **daemon** (dispatches work), **api** (console + REST on :8765), and optionally task-intake. They must auto-start so work resumes after reboot.
 
+### Universal — Docker (recommended for any OS)
+`docker compose up -d` runs daemon + api together with `restart: unless-stopped`, identically on Windows/Linux/macOS. This is the simplest cross-OS install — see `QUICKSTART.md`. (Caveat: codex/claude/gemini CLIs must be reachable from the container — install them in a derived image or run those runtimes on the host.)
+
 ### macOS — launchd (shipped)
 ```bash
 bash bin/company-services-install-launchd     # installs daemon + api (KeepAlive + RunAtLoad)
