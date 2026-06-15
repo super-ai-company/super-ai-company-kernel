@@ -496,6 +496,10 @@ def tick(config: dict) -> dict:
         results.append({"step": "openclaw-sync.import-results", "result": run_companyctl("openclaw", "import-results")})
     if config.get("run_repair", True):
         results.append({"step": "repair.reset-stale-claims", "result": run_companyctl("repair", "reset-stale-claims")})
+    if config.get("run_repair", True) and config.get("run_auto_triage", True):
+        # auto-discard mis-dispatched tasks (e.g. codex with no 工作区:) + feed back to the dispatcher,
+        # so a doomed order never sits queued/cycling
+        results.append({"step": "repair.auto-triage", "result": run_companyctl("task", "auto-triage")})
     if config.get("run_scheduler", True):
         results.append({"step": "scheduler.run", "result": run_companyctl("scheduler", "run")})
     if config.get("run_supervisor_delivery_loop", config.get("run_scheduler", True)):

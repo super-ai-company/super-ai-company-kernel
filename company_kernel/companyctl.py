@@ -7874,6 +7874,57 @@ def validate_task_submission(conn: sqlite3.Connection, *, target: str, title: st
     return None
 
 
+def auto_triage_misdispatched_tasks(conn: sqlite3.Connection) -> dict:
+    """Auto-discard tasks the kernel KNOWS can't execute (a codex task with no `工作区:` repo path
+    would only run in /tmp and block), and feed back to the dispatcher — so a mis-dispatched order
+    never sits 'successfully queued', it's rejected and reported at once. Runs every daemon tick as a
+    backstop for anything that slipped in before the submit guard (or via reassign)."""
+    if not submit_guards_on():  # same toggle as the submit guard; tests opt out
+        return {"discarded": [], "count": 0}
+    from company_kernel import codex_adapter
+    discarded = []
+    for task in rows(conn, "SELECT * FROM tasks WHERE status IN ('submitted','blocked')"):
+        target = task["target_agent"]
+        emp = conn.execute("SELECT runtime FROM employees WHERE id = ?", (target,)).fetchone()
+        if not emp or str(emp["runtime"] or "") != "codex":
+            continue
+        # Only the clearest mis-dispatch: NO workspace directive at all. A present-but-bad path is left
+        # for the owner to Fix (it may be transient), not auto-killed.
+        if codex_adapter.WORKSPACE_DIRECTIVE.search(str(task["description"] or "")):
+            continue
+        reason = "派单错误:codex 任务未写 `工作区: /仓库路径`,无法执行,已自动放弃。请带绝对仓库路径重派。"
+        ts = now()
+        conn.execute(
+            "UPDATE tasks SET status = 'cancelled', claimed_by = '', blocker = ?, updated_at = ? WHERE id = ?",
+            (f"auto-discarded: {reason}", ts, task["id"]),
+        )
+        conn.execute("DELETE FROM locks WHERE resource_key = ?", (f"task:{task['id']}",))
+        acknowledge_task_adapter_runs(conn, task["id"], "companyctl", "auto-discard mis-dispatch")
+        event = record_event(conn, "task.auto_discarded", "companyctl", task_id=task["id"],
+                             payload={"reason": reason, "source": task["source_agent"], "title": task["title"]})
+        # feed back to the dispatcher's inbox so the agent that ordered it learns why
+        try:
+            inbox = employee_paths(task["source_agent"])["inbox"]
+            inbox.mkdir(parents=True, exist_ok=True)
+            (inbox / f"auto-discard-{task['id']}.json").write_text(
+                json.dumps({"type": "task_auto_discarded", "task_id": task["id"], "title": task["title"],
+                            "target": target, "reason": reason, "at": ts}, ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8")
+        except OSError:
+            pass
+        audit(conn, "companyctl", "task.auto_discard", task["id"], {"reason": reason, "source": task["source_agent"], "event_id": event["id"]})
+        discarded.append({"id": task["id"], "source": task["source_agent"], "title": task["title"], "target": target})
+    conn.commit()
+    return {"discarded": discarded, "count": len(discarded)}
+
+
+def cmd_task_auto_triage(args: argparse.Namespace) -> int:
+    conn = connect()
+    result = auto_triage_misdispatched_tasks(conn)
+    emit({"ok": True, **result})
+    return 0
+
+
 def cmd_task_submit(args: argparse.Namespace) -> int:
     conn = connect()
     source = resolve_employee_alias(args.source)
@@ -13210,6 +13261,8 @@ def build_parser() -> argparse.ArgumentParser:
     task_done.add_argument("--summary", required=True)
     task_done.add_argument("--evidence", required=True)
     task_done.set_defaults(func=cmd_task_done)
+    task_auto_triage = task_sub.add_parser("auto-triage", help="auto-discard mis-dispatched tasks (e.g. codex with no 工作区:) and notify the dispatcher")
+    task_auto_triage.set_defaults(func=cmd_task_auto_triage)
     task_report = task_sub.add_parser("report", help="owner-facing results feed: list completed top-level tasks, or read one task's report")
     task_report.add_argument("--task-id", default="", help="omit to list completed top-level tasks; provide to read that task's report content")
     task_report.add_argument("--limit", type=int, default=40)
