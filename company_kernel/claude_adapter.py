@@ -146,25 +146,30 @@ def write_report(path: Path, task: sqlite3.Row, *, executed: bool, status: str, 
     )
 
 
-def resolve_claude_proxy(model: str) -> tuple[dict, str, str]:
-    """Route claude -p through the local antigravity-claude-proxy (multi-account Gemini via the user's
-    Google accounts) when CLAUDE_PROXY_BASE_URL is set AND the proxy is reachable. Probing first means a
-    down proxy falls back to the direct Anthropic API instead of failing every task. Returns (env_overrides,
-    effective_model, route)."""
-    base = os.environ.get("CLAUDE_PROXY_BASE_URL", "").strip()
+def resolve_claude_proxy(agent: str, model: str) -> tuple[dict, str, str]:
+    """PER-EMPLOYEE proxy routing: only an employee whose profile.json carries `proxy_base_url` routes
+    its `claude -p` through that proxy (e.g. the `gemini` employee → antigravity-claude-proxy → 7 Google
+    accounts). The native `claude` employee has no proxy field, so it always uses the local paid Claude.
+    Probing first means a down proxy falls back to direct instead of failing every task."""
+    try:
+        profile = json.loads((ROOT / "employees" / agent / "profile.json").read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        profile = {}
+    base = str(profile.get("proxy_base_url") or "").strip()
     if not base:
         return {}, model, "direct"
+    token = str(profile.get("proxy_token") or "test")
     try:
-        req = urllib.request.Request(base.rstrip("/") + "/v1/models", headers={"x-api-key": os.environ.get("CLAUDE_PROXY_TOKEN", "test")})
+        req = urllib.request.Request(base.rstrip("/") + "/v1/models", headers={"x-api-key": token})
         urllib.request.urlopen(req, timeout=4).close()
     except (urllib.error.URLError, OSError, ValueError):
         return {}, model, "direct (proxy unreachable)"
-    env = {"ANTHROPIC_BASE_URL": base, "ANTHROPIC_AUTH_TOKEN": os.environ.get("CLAUDE_PROXY_TOKEN", "test")}
-    return env, (os.environ.get("CLAUDE_PROXY_MODEL", "").strip() or model), f"proxy {base}"
+    env = {"ANTHROPIC_BASE_URL": base, "ANTHROPIC_AUTH_TOKEN": token}
+    return env, (str(profile.get("proxy_model") or "").strip() or model), f"proxy {base}"
 
 
-def run_claude(prompt: Path, output: Path, workspace: Path, model: str, permission_mode: str) -> tuple[int, str]:
-    proxy_env, model, route = resolve_claude_proxy(model)
+def run_claude(prompt: Path, output: Path, workspace: Path, model: str, permission_mode: str, agent: str = "claude") -> tuple[int, str]:
+    proxy_env, model, route = resolve_claude_proxy(agent, model)
     cmd = ["claude", "-p", prompt.read_text(encoding="utf-8"), "--no-session-persistence", "--output-format", "text"]
     if model:
         cmd.extend(["--model", model])
@@ -188,7 +193,7 @@ def handle_direct(args: argparse.Namespace) -> int:
     output = base / f"direct-output-{stamp}.md"
     prompt.write_text(args.direct_message, encoding="utf-8")
     workspace = Path(args.workspace).expanduser() if args.workspace else DEFAULT_WORKSPACE
-    code, _ = run_claude(prompt, output, workspace, args.model, args.permission_mode)
+    code, _ = run_claude(prompt, output, workspace, args.model, args.permission_mode, args.agent)
     reply = output.read_text(encoding="utf-8", errors="replace").strip() if output.exists() else ""
     receipt = base / f"direct-receipt-{stamp}.json"
     receipt.write_text(json.dumps({"agent": args.agent, "source": args.direct_source,
@@ -205,8 +210,8 @@ def process(args: argparse.Namespace) -> int:
     if not emp:
         emit({"ok": False, "error": "unknown employee", "agent": args.agent})
         return 1
-    if emp["runtime"] != "claude":
-        emit({"ok": False, "error": "employee runtime is not claude", "agent": args.agent, "runtime": emp["runtime"]})
+    if emp["runtime"] not in {"claude", "gemini"}:
+        emit({"ok": False, "error": "employee runtime is not claude/gemini", "agent": args.agent, "runtime": emp["runtime"]})
         return 1
     if getattr(args, "direct_message", ""):
         return handle_direct(args)
@@ -233,7 +238,7 @@ def process(args: argparse.Namespace) -> int:
         run_companyctl(["heartbeat", "--agent", args.agent])
         emit({"ok": done_code == 0, "processed": 1, "executed": False, "task_id": task["id"], "prompt": str(artifact["prompt"]), "report": str(artifact["report"]), "companyctl_stdout": done_out, "companyctl_stderr": done_err})
         return done_code
-    code, cmd = run_claude(artifact["prompt"], artifact["output"], workspace, args.model, args.permission_mode)
+    code, cmd = run_claude(artifact["prompt"], artifact["output"], workspace, args.model, args.permission_mode, args.agent)
     if code == 0:
         detail = execution_detail(cmd, artifact["output"], success=True)
         write_report(artifact["report"], task, executed=True, status="completed", detail=detail, prompt=artifact["prompt"], output=artifact["output"])

@@ -1,0 +1,12 @@
+{
+  "id": "gemini",
+  "name": "Gemini",
+  "role": "developer",
+  "runtime": "gemini",
+  "workspace": "/Users/shift",
+  "created_at": "2026-06-15T10:32:58+07:00",
+  "proxy_base_url": "http://localhost:8080",
+  "proxy_token": "test",
+  "proxy_model": "gemini-3.1-pro-low",
+  "status": "active"
+}
