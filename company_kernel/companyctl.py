@@ -7773,12 +7773,74 @@ def parse_deliver_to(raw: str) -> dict:
     return {"channel": channel, "group_code": rest}
 
 
+TASK_DISCARD_COOLDOWN_MINUTES = 60      # after a task is discarded, refuse re-creating the same one for this long
+
+
+def submit_guards_on() -> bool:
+    """Submit guardrails are ON in production; tests set COMPANY_KERNEL_SUBMIT_GUARDS=0 to opt out
+    of the codex-workspace / duplicate / recently-discarded checks for fixtures."""
+    return os.environ.get("COMPANY_KERNEL_SUBMIT_GUARDS", "1") != "0"
+
+
+def normalize_task_title(title: str) -> str:
+    return re.sub(r"\s+", "", str(title or "")).lower()
+
+
+def codex_target_workspace_ok(conn: sqlite3.Connection, target: str, description: str) -> tuple[bool, str]:
+    """codex executes inside a workspace; without a valid `工作区: /abs/path` it lands in /tmp and
+    blocks. Only enforced for codex-runtime targets — other runtimes don't need a repo path."""
+    row = conn.execute("SELECT runtime FROM employees WHERE id = ?", (target,)).fetchone()
+    if not row or str(row["runtime"] or "") != "codex":
+        return True, ""
+    from company_kernel import codex_adapter  # lazy: codex_adapter imports companyctl
+    match = codex_adapter.WORKSPACE_DIRECTIVE.search(str(description or ""))
+    if not match:
+        return False, "codex 任务必须在描述里写明 `工作区: /绝对路径`(代码仓库),否则会在 /tmp 空跑卡住"
+    candidate = Path(match.group(1)).expanduser()
+    if not candidate.is_absolute():
+        return False, f"工作区必须是绝对路径,收到: {match.group(1)}"
+    candidate = candidate.resolve()
+    if candidate == ROOT or ROOT in candidate.parents:
+        return False, "工作区不能指向内核目录(内核改动须走 RFC)"
+    if not candidate.is_dir():
+        return False, f"工作区目录不存在: {candidate}"
+    return True, ""
+
+
+def validate_task_submission(conn: sqlite3.Connection, *, target: str, title: str, description: str, force: bool = False) -> dict | None:
+    """Submit-time guardrails. Returns None if allowed, else a rejection dict. Prevents:
+    1) non-executable codex tasks (no repo workspace) — they only ever block;
+    2) duplicates of an already-active task;
+    3) re-creating a task that was just discarded (the '丢弃了又出现' loop)."""
+    if force or not submit_guards_on():
+        return None
+    target = resolve_employee_alias(target)
+    ok, reason = codex_target_workspace_ok(conn, target, description)
+    if not ok:
+        return {"ok": False, "error": reason, "reason": "missing_workspace", "guard": "codex_workspace"}
+    norm = normalize_task_title(title)
+    if not norm:
+        return None
+    for row in conn.execute("SELECT id, title FROM tasks WHERE target_agent = ? AND status IN ('submitted','claimed','blocked')", (target,)):
+        if normalize_task_title(row["title"]) == norm:
+            return {"ok": False, "error": f"重复任务:已有进行中的同名任务 {row['id']},不重复创建", "reason": "duplicate_active", "existing": row["id"], "guard": "duplicate"}
+    cutoff = (datetime.now(timezone.utc).astimezone() - timedelta(minutes=TASK_DISCARD_COOLDOWN_MINUTES)).isoformat()
+    for row in conn.execute("SELECT id, title, updated_at FROM tasks WHERE target_agent = ? AND status = 'cancelled' AND updated_at >= ?", (target, cutoff)):
+        if normalize_task_title(row["title"]) == norm:
+            return {"ok": False, "error": f"该任务 {TASK_DISCARD_COOLDOWN_MINUTES} 分钟内被丢弃过({row['id']}),不自动重建。修好/拆细后用 --force 重派", "reason": "recently_discarded", "existing": row["id"], "guard": "discard_cooldown"}
+    return None
+
+
 def cmd_task_submit(args: argparse.Namespace) -> int:
     conn = connect()
     source = resolve_employee_alias(args.source)
     target = resolve_employee_alias(args.target)
     require_employee(conn, source)
     require_employee(conn, target)
+    rejection = validate_task_submission(conn, target=target, title=args.title, description=args.description, force=getattr(args, "force_submit", False))
+    if rejection:
+        emit({**rejection, "target": target, "title": args.title})
+        return 2
     inactive = require_active_employee(conn, target, "task.submit")
     if inactive:
         emit(inactive)
@@ -7930,6 +7992,7 @@ def submit_task_internal(
     task_id: str = "",
     metadata: dict | None = None,
     allow_candidate: bool = False,
+    force: bool = False,
 ) -> dict:
     source = resolve_employee_alias(source)
     target = resolve_employee_alias(target)
@@ -7938,6 +8001,9 @@ def submit_task_internal(
     inactive = require_active_employee(conn, target, "task.submit")
     if inactive and not allow_candidate:
         raise SystemExit(json.dumps(inactive, ensure_ascii=False))
+    rejection = validate_task_submission(conn, target=target, title=title, description=description, force=force)
+    if rejection:
+        raise SystemExit(json.dumps(rejection, ensure_ascii=False))
     policy = require_communication_allowed(source, target, "task.submit")
     tid = task_id or f"task-{datetime.now().strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:6]}"
     ts = now()
@@ -13029,6 +13095,7 @@ def build_parser() -> argparse.ArgumentParser:
     task_submit.add_argument("--approval-id", default="", help="approved approval id for high-risk direct submit")
     task_submit.add_argument("--risk", default="P1")
     task_submit.add_argument("--deliver-to", default="", help="reply delivery target for OpenClaw agents, e.g. 'line:internal' (channel:group_code) or JSON {\"channel\":\"line\",\"group_code\":\"A3\"}")
+    task_submit.add_argument("--force", dest="force_submit", action="store_true", help="bypass submit guards (codex-workspace / duplicate / recently-discarded)")
     task_submit.set_defaults(func=cmd_task_submit)
     task_route = task_sub.add_parser("route")
     task_route.add_argument("--from", dest="source", required=True)

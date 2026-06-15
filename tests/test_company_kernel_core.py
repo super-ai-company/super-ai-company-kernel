@@ -269,7 +269,7 @@ class CompanyKernelCoreTest(unittest.TestCase):
             mock.patch.object(companyctl, "APPROVAL_STATE_DIR", root / "state" / "approvals"),
             mock.patch.object(companyctl, "FOLLOWUP_STATE_DIR", root / "state" / "followups"),
             mock.patch.object(companyctl, "SCHEMA", root / "company_kernel" / "schema.sql"),
-            mock.patch.dict("os.environ", {"HOME": str(root / "home"), "OPENCLAW_COMPANY_KERNEL_ROOT": str(root), "OPENCLAW_ROOT": str(root / "openclaw")}),
+            mock.patch.dict("os.environ", {"HOME": str(root / "home"), "OPENCLAW_COMPANY_KERNEL_ROOT": str(root), "OPENCLAW_ROOT": str(root / "openclaw"), "COMPANY_KERNEL_SUBMIT_GUARDS": "0"}),
         ]
         for patcher in self.patchers:
             patcher.start()
@@ -13719,6 +13719,48 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual("openclaw", acmeops["runtime"]["type"])
         self.assertIn("available_commands", acmeops["runtime"])
         self.assertEqual("agent:acmeops:<source>", acmeops["communication"]["session_key"])
+
+    def test_submit_guards_block_pathless_codex_duplicates_and_recently_discarded(self) -> None:
+        # guards are off for fixtures (setUp); turn them ON to verify the gate itself
+        with mock.patch.dict("os.environ", {"COMPANY_KERNEL_SUBMIT_GUARDS": "1"}):
+            run_cli("employee", "create", "--id", "pm", "--name", "PM", "--role", "manager",
+                    "--runtime", "openclaw", "--workspace", str(self.root / "pm"))
+            run_cli("employee", "create", "--id", "codex", "--name", "Codex", "--role", "developer",
+                    "--runtime", "codex", "--workspace", str(self.root / "codex"))
+            conn = companyctl.connect()
+            conn.execute("UPDATE employees SET status='active' WHERE id IN ('codex','pm')")
+            conn.commit()
+            repo = self.root / "repo"; repo.mkdir()
+
+            # 1) codex task WITHOUT a workspace directive → rejected (would block in /tmp)
+            code, no_ws = run_cli("task", "submit", "--from", "pm", "--to", "codex",
+                                  "--task-id", "t-nows", "--title", "无路径任务", "--description", "做点事")
+            self.assertEqual(2, code, no_ws)
+            self.assertEqual("missing_workspace", no_ws.get("reason"))
+
+            # with a valid 工作区: directive → accepted
+            desc = f"工作区: {repo}\n做点事"
+            code, ok1 = run_cli("task", "submit", "--from", "pm", "--to", "codex",
+                                "--task-id", "t-ok1", "--title", "有路径任务A", "--description", desc)
+            self.assertEqual(0, code, ok1)
+
+            # 2) duplicate of an active task (same target+title) → rejected
+            code, dup = run_cli("task", "submit", "--from", "pm", "--to", "codex",
+                                "--task-id", "t-dup", "--title", "有路径任务A", "--description", desc)
+            self.assertEqual(2, code, dup)
+            self.assertEqual("duplicate_active", dup.get("reason"))
+
+            # 3) discard it, then re-submitting the same title → rejected (cooldown stops 删了又出现)
+            run_cli("task", "discard", "--task-id", "t-ok1", "--by", "pm", "--reason", "test")
+            code, redisc = run_cli("task", "submit", "--from", "pm", "--to", "codex",
+                                   "--task-id", "t-redisc", "--title", "有路径任务A", "--description", desc)
+            self.assertEqual(2, code, redisc)
+            self.assertEqual("recently_discarded", redisc.get("reason"))
+
+            # --force bypasses the guard
+            code, forced = run_cli("task", "submit", "--from", "pm", "--to", "codex",
+                                   "--task-id", "t-forced", "--title", "有路径任务A", "--description", desc, "--force")
+            self.assertEqual(0, code, forced)
 
 
 if __name__ == "__main__":
