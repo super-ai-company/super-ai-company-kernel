@@ -94,6 +94,28 @@ class ResolveTaskWorkspaceTest(unittest.TestCase):
             self.assertEqual(target.resolve(), ws, directive)
             self.assertEqual("", err, directive)
 
+    def test_forgiving_directive_variants(self) -> None:
+        # dispatchers write the path many ways — the parser must catch the bracketed/labeled
+        # forms too, not just a bare `工作区:` line (this mismatch caused real /tmp blocks).
+        target = Path(self.tmp.name) / "repo"
+        target.mkdir()
+        for directive in (
+            f"【工作区/仓库绝对路径】：{target}",
+            f"工作目录: {target}",
+            f"仓库路径：{target}",
+            f"请在工作区: {target} 执行",
+        ):
+            ws, err = codex_adapter.resolve_task_workspace(fake_task(description=f"目标\n{directive}\n步骤"), self.default)
+            self.assertEqual(target.resolve(), ws, directive)
+            self.assertEqual("", err, directive)
+
+    def test_prose_path_without_keyword_ignored(self) -> None:
+        # a path mentioned in prose (no workspace keyword+colon) must NOT be grabbed as the workspace
+        for desc in ("参考 /tmp/x.md 里的说明", "在 v4 容器内跑:项目 /home/h 里"):
+            ws, err = codex_adapter.resolve_task_workspace(fake_task(description=desc), self.default)
+            self.assertEqual(self.default, ws, desc)
+            self.assertEqual("", err, desc)
+
     def test_relative_path_rejected(self) -> None:
         ws, err = codex_adapter.resolve_task_workspace(fake_task(description="工作区: ./relative"), self.default)
         self.assertEqual(self.default, ws)

@@ -292,7 +292,15 @@ def send_source_progress(agent: str, source: str, body: str) -> dict:
     return {"ok": code == 0, "exit_code": code, "message_id": message_id, "payload": payload, "stderr": err[-1000:]}
 
 
-WORKSPACE_DIRECTIVE = re.compile(r"^\s*(?:工作区|workspace)\s*[:：]\s*(\S+)\s*$", re.IGNORECASE | re.MULTILINE)
+# Match a workspace/repo directive on any line: a workspace keyword, a colon, then an absolute
+# path. Forgiving on purpose — dispatchers write it many ways (`工作区: /p`, `【工作区/仓库绝对路径】：/p`,
+# `工作目录: /p`, `仓库路径：/p`, `workspace: /p`). A prose path without a workspace keyword+colon is
+# NOT matched, and resolve_task_workspace still validates the dir exists, so a wrong path blocks
+# with a clear message rather than silently running in /tmp.
+WORKSPACE_DIRECTIVE = re.compile(
+    r"^[^\n]*?(?:工作区|工作目录|仓库路径|仓库绝对路径|workspace|repo[ _]?path)[^\n]*?[:：]\s*[\[【(\"']?\s*([^\s\"'\]】)，,]+)",
+    re.IGNORECASE | re.MULTILINE,
+)
 VERDICT_RE = re.compile(r"^\s*STATUS\s*[:：]\s*(completed|done|blocked)\b\s*[-—–:：]?\s*(.*)$", re.IGNORECASE | re.MULTILINE)
 
 
