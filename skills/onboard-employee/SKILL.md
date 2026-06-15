@@ -228,3 +228,18 @@ bin/company-task-intake-importer                 # one pass over incoming/
 bash bin/company-task-intake-install-launchd     # macOS: poll every 15s (RunAtLoad)
 ```
 `state/task-intake/` is gitignored (runtime data). On Linux/Windows, schedule `python -m company_kernel.task_intake_importer` the same way you schedule the daemon (§6).
+
+## 12. Secrets (keychain-backed, out of plaintext)
+
+Credentials (Telegram/LINE tokens, proxy keys, `COMPANY_KERNEL_API_TOKEN`) should live in a secret store, not the plaintext `config/secrets.env`. The `company-secrets` CLI uses the **OS keychain** on macOS (login keychain via `security`) and a 0600 file backend elsewhere:
+
+```
+bin/company-secrets set --key TELEGRAM_BOT_TOKEN --value 123:abc   # stored in keychain
+bin/company-secrets get --key TELEGRAM_BOT_TOKEN                    # masked; --reveal to print
+bin/company-secrets list
+bin/company-secrets migrate-file                                   # import existing config/secrets.env
+bin/company-secrets doctor                                         # perms / gitignore / backend check
+```
+Entry scripts (`bin/company-*`) now load the keychain first (`eval "$(… secrets export-env)"`) then still source `config/secrets.env` (file overrides during migration), so this is fully backward compatible — nothing breaks if you keep using the file. Once `migrate-file` + `doctor` look clean, delete `config/secrets.env`.
+
+`--scope` (default `default`) is reserved for future multi-tenant isolation; single-tenant deployments can ignore it. The store/index files are gitignored — **never commit secrets**.
