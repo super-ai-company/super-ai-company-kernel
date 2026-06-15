@@ -12553,7 +12553,14 @@ def cmd_doctor(args: argparse.Namespace) -> int:
         daemon = daemon_health()
         launchd = launchd_health()
         openclaw_guard = openclaw_guard_health(conn)
+        # issues = real infrastructure faults → "内核异常" (red badge, ok=False).
+        # warnings = transient operational backlog that does NOT mean the kernel is broken
+        # (e.g. a single long codex task blocks the synchronous daemon, so heartbeats age and
+        # events queue up — that's a BUSY daemon, not a dead one). Surfaced separately so the
+        # health badge only goes red on genuine faults. Same philosophy that already excludes
+        # 待审批/待 RFC from issues.
         issues = []
+        warnings = []
         if not daemon["ok"]:
             issues.append(daemon["reason"] or "daemon_unhealthy")
         if args.strict_launchd and not launchd["installed"]:
@@ -12565,13 +12572,13 @@ def cmd_doctor(args: argparse.Namespace) -> int:
         if missing_heartbeats:
             issues.append("missing_heartbeats")
         if stale_heartbeats:
-            issues.append("stale_heartbeats")
+            warnings.append("stale_heartbeats")  # quiet/busy agent, not a kernel fault; offline-report handles real outages
         # pending_events 宽限期:刚产生、正在被守护进程 scheduler 清理的事件不算异常;
-        # 只有滞留超过 10 分钟仍未处理(通常意味着被审批闸卡住或投递失败)才标记为 issue。
+        # 滞留超过 10 分钟的也只算 warning —— 守护忙于长任务时事件会暂时积压,真正卡死另由其它信号体现。
         event_grace_cutoff = datetime.now(timezone.utc).astimezone() - timedelta(minutes=10)
         aged_pending_events = [e for e in pending["events"] if parse_time(e["created_at"]) <= event_grace_cutoff]
         if aged_pending_events:
-            issues.append("pending_events")
+            warnings.append("pending_events")
         # 待审批 / 待 RFC 是正常的"待办队列",不是内核故障:控制台已有独立的"待审批"提示,
         # 不应让"内核健康"徽章因为有东西等你批就显示异常。仅作为计数展示,不计入 issues。
         if failed_adapter_runs:
@@ -12585,6 +12592,7 @@ def cmd_doctor(args: argparse.Namespace) -> int:
         health = {
             "ok": not issues,
             "issues": issues,
+            "warnings": warnings,
             "heartbeat_stale_minutes": 15,
             "missing_heartbeats": missing_heartbeats,
             "stale_heartbeats": stale_heartbeats,
@@ -12604,6 +12612,7 @@ def cmd_doctor(args: argparse.Namespace) -> int:
                 {
                     "ok": health["ok"],
                     "issues": issues,
+                    "warnings": warnings,
                     "counts": {
                         "employees": counts["employees"],
                         "active_projects": counts["active_projects"],

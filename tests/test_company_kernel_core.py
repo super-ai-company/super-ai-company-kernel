@@ -5714,7 +5714,9 @@ class CompanyKernelCoreTest(unittest.TestCase):
         )
         self.assertEqual(code, 0, started)
 
-        # Fresh pending events get a 10-min grace period; only a STALE one flags the kernel abnormal.
+        # A stale pending event is operational backlog (e.g. the synchronous daemon is busy on a
+        # long task), NOT a kernel fault — it surfaces as a WARNING, not a health-failing issue, so
+        # the "内核" badge stays green. Real faults (adapter/evidence/capability/daemon-dead) still go red.
         stale_at = (datetime.now(timezone.utc).astimezone() - timedelta(minutes=20)).isoformat(timespec="seconds")
         conn = companyctl.connect()
         try:
@@ -5723,11 +5725,12 @@ class CompanyKernelCoreTest(unittest.TestCase):
         finally:
             conn.close()
 
-        code, unhealthy = run_cli("doctor")
-        self.assertEqual(code, 1, unhealthy)
-        self.assertFalse(unhealthy["health"]["ok"])
-        self.assertIn("pending_events", unhealthy["health"]["issues"])
-        self.assertEqual(started["event_id"], unhealthy["health"]["pending"]["events"][0]["id"])
+        code, with_warning = run_cli("doctor")
+        self.assertEqual(code, 0, with_warning)
+        self.assertTrue(with_warning["health"]["ok"])
+        self.assertNotIn("pending_events", with_warning["health"]["issues"])
+        self.assertIn("pending_events", with_warning["health"]["warnings"])
+        self.assertEqual(started["event_id"], with_warning["health"]["pending"]["events"][0]["id"])
 
     def test_scheduler_skip_event_marks_pending_event_processed(self) -> None:
         code, started = run_cli(
