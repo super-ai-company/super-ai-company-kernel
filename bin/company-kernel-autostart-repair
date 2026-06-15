@@ -1,0 +1,104 @@
+#!/usr/bin/env bash
+set -euo pipefail
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
+LAUNCH="$HOME/Library/LaunchAgents"
+UID_VALUE="$(id -u)"
+
+mkdir -p "$LAUNCH" "$ROOT/logs" "$ROOT/state/task-intake/incoming" "$ROOT/state/task-intake/processed" "$ROOT/state/task-intake/failed"
+
+install_template() {
+  local label="$1"
+  local src="$ROOT/config/launchd/${label}.plist"
+  local dst="$LAUNCH/${label}.plist"
+  if [[ ! -f "$src" ]]; then
+    echo "skip missing template: $src" >&2
+    return 0
+  fi
+  sed "s#__COMPANY_KERNEL_ROOT__#$ROOT#g" "$src" > "$dst"
+  plutil -lint "$dst" >/dev/null
+  launchctl bootout "gui/${UID_VALUE}/${label}" >/dev/null 2>&1 || true
+  launchctl bootstrap "gui/${UID_VALUE}" "$dst" >/dev/null 2>&1 || true
+  launchctl kickstart -k "gui/${UID_VALUE}/${label}" >/dev/null 2>&1 || true
+}
+
+install_console() {
+  local label="ai.openclaw.company-kernel.console"
+  local dst="$LAUNCH/${label}.plist"
+  cat > "$dst" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>${label}</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>${ROOT}/bin/company-api-gateway</string>
+    <string>--host</string><string>0.0.0.0</string>
+    <string>--port</string><string>8788</string>
+    <string>--quiet</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>OPENCLAW_COMPANY_KERNEL_ROOT</key><string>${ROOT}</string>
+    <key>PATH</key><string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+  </dict>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>StandardOutPath</key><string>${ROOT}/logs/console.launchd.out.log</string>
+  <key>StandardErrorPath</key><string>${ROOT}/logs/console.launchd.err.log</string>
+</dict>
+</plist>
+PLIST
+  plutil -lint "$dst" >/dev/null
+  launchctl bootout "gui/${UID_VALUE}/${label}" >/dev/null 2>&1 || true
+  launchctl bootstrap "gui/${UID_VALUE}" "$dst" >/dev/null 2>&1 || true
+  launchctl kickstart -k "gui/${UID_VALUE}/${label}" >/dev/null 2>&1 || true
+}
+
+install_api() {
+  local label="ai.openclaw.company-kernel.api"
+  local dst="$LAUNCH/${label}.plist"
+  cat > "$dst" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>${label}</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>${ROOT}/bin/company-api-gateway</string>
+    <string>--port</string><string>8765</string>
+    <string>--quiet</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>OPENCLAW_COMPANY_KERNEL_ROOT</key><string>${ROOT}</string>
+    <key>PATH</key><string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+  </dict>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>StandardOutPath</key><string>${ROOT}/logs/company-api.launchd.out.log</string>
+  <key>StandardErrorPath</key><string>${ROOT}/logs/company-api.launchd.err.log</string>
+</dict>
+</plist>
+PLIST
+  plutil -lint "$dst" >/dev/null
+  launchctl bootout "gui/${UID_VALUE}/${label}" >/dev/null 2>&1 || true
+  launchctl bootstrap "gui/${UID_VALUE}" "$dst" >/dev/null 2>&1 || true
+  launchctl kickstart -k "gui/${UID_VALUE}/${label}" >/dev/null 2>&1 || true
+}
+
+install_template "ai.openclaw.company-kernel.daemon"
+install_template "ai.openclaw.company-kernel.task-intake"
+# Retired: the duplicate console gateway on :8788. The canonical web UI is the api gateway
+# on :8765 (install_api) which serves console.html + the /v1 API. Do NOT reinstall :8788.
+install_api
+
+"$ROOT/bin/company-task-intake-importer" || true
+doctor_exit=0
+"$ROOT/bin/companyctl" doctor --summary || doctor_exit=$?
+launchctl list | grep -E 'ai\.openclaw\.company-kernel\.(daemon|task-intake|api)' || true
+if [[ "$doctor_exit" -ne 0 ]]; then
+  echo "doctor reported non-green state; services were still reloaded. exit=${doctor_exit}" >&2
+fi
+exit 0
