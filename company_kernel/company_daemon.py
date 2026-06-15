@@ -437,6 +437,30 @@ def summarize_state(state: dict) -> dict:
 
 
 RECONCILE_STATE_PATH = STATE_DIR / "reconcile.json"
+RECOVER_STATE_PATH = STATE_DIR / "recover.json"
+
+
+def maybe_recover_employees(config: dict) -> list[dict]:
+    """Auto-heal employees that were auto-downgraded (e.g. a runtime/proxy was down at boot) by
+    re-verifying them and reactivating the ones that now respond. Heavy (invokes runtimes), so
+    interval-gated. This is what makes a transient outage self-recover instead of staying offline."""
+    cfg = config.get("auto_recover") or {}
+    if not cfg.get("enabled", True):
+        return []
+    interval_minutes = float(cfg.get("interval_minutes", 10) or 10)
+    if RECOVER_STATE_PATH.exists():
+        try:
+            last = json.loads(RECOVER_STATE_PATH.read_text(encoding="utf-8")).get("at", "")
+            if last:
+                age_m = (datetime.now(timezone.utc).astimezone() - datetime.fromisoformat(last)).total_seconds() / 60.0
+                if age_m < interval_minutes:
+                    return []
+        except (json.JSONDecodeError, ValueError, OSError):
+            pass
+    result = run_companyctl("employee", "recover", "--max", str(int(cfg.get("max_per_run", 3))))
+    RECOVER_STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    RECOVER_STATE_PATH.write_text(json.dumps({"at": now()}, ensure_ascii=False) + "\n", encoding="utf-8")
+    return [{"step": "presence.recover-unavailable", "result": result}]
 
 
 def maybe_reconcile_status(config: dict) -> list[dict]:
@@ -493,6 +517,7 @@ def tick(config: dict) -> dict:
         results.append({"step": "watchdog.unclaimed-task", "result": result})
     results.extend(maybe_backup(config))
     results.extend(maybe_reconcile_status(config))
+    results.extend(maybe_recover_employees(config))
     # 守护"整轮 ok"只反映循环基础设施是否正常,不被单个 adapter 任务的成败左右:
     # adapter 任务失败/受阻已由 failed_adapter_runs 单独跟踪(可确认),不应把整轮守护标失败、
     # 进而让"内核健康"徽章发红。因此计算整轮 ok 时排除 adapter.* 步骤。

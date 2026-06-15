@@ -102,6 +102,7 @@ KNOWN_RUNTIMES = {
     "hermes": "Hermes local runtime adapter",
     "codex": "Codex CLI / openclaw-codex-controller adapter",
     "claude": "Claude Code / Claude CLI adapter",
+    "gemini": "Gemini via antigravity-claude-proxy (Claude-compatible, runs on the claude adapter)",
     "trae": "Trae IDE/Agent adapter",
     "antigravity": "Google Antigravity adapter",
     "skill": "Packaged Skill runtime adapter",
@@ -7092,6 +7093,48 @@ def runtime_reply_passed(reply: str) -> tuple[bool, str, dict[str, str]]:
     return True, "runtime_reply_done_with_evidence", fields
 
 
+def cmd_employee_recover(args: argparse.Namespace) -> int:
+    """Auto-heal: re-verify employees that were auto-downgraded to candidate due to an
+    unavailability/runtime failure, and reactivate the ones that now pass verification (clearing
+    the unavailable reason + resuming comms). A transient outage — e.g. the gemini proxy not being
+    up at boot — therefore self-recovers instead of leaving the employee offline forever.
+    Skips employees with profile auto_recover=false (e.g. claude, managed manually)."""
+    conn = connect()
+    candidates = []
+    for emp in rows(conn, "SELECT * FROM employees WHERE status = 'candidate' ORDER BY id"):
+        if is_human_owner_employee(emp):
+            continue
+        profile = load_json_or_default(employee_paths(emp["id"])["profile"], {})
+        if not str(profile.get("unavailable_reason") or ""):
+            continue  # intentionally candidate (never downgraded) — leave alone
+        if profile.get("auto_recover", True) is False:
+            continue  # opted out of auto-recovery (owner manages it)
+        if emp["runtime"] not in KNOWN_RUNTIMES:
+            continue  # unknown runtime can't be verified; needs registration first
+        candidates.append(emp["id"])
+    recovered, still_down = [], []
+    for cid in candidates[: max(1, int(args.max))]:
+        vargs = argparse.Namespace(id=cid, source=args.source, timeout=args.timeout, activate=True)
+        cap = io.StringIO()
+        try:
+            with contextlib.redirect_stdout(cap):
+                cmd_employee_verify_runtime(vargs)
+            report = json.loads(cap.getvalue() or "{}")
+        except (SystemExit, json.JSONDecodeError):
+            report = {}
+        if report.get("ok") and report.get("activated"):
+            profile_path = employee_paths(cid)["profile"]
+            profile = load_json_or_default(profile_path, {})
+            profile.pop("unavailable_reason", None)
+            profile_path.write_text(json.dumps(profile, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+            set_employee_communication_enabled(cid, True, dry_run=False)
+            recovered.append(cid)
+        else:
+            still_down.append(cid)
+    emit({"ok": True, "candidates": candidates, "recovered": recovered, "still_unavailable": still_down})
+    return 0
+
+
 def cmd_employee_verify_runtime(args: argparse.Namespace) -> int:
     conn = connect()
     employee_id = resolve_employee_alias(args.id, strict=True)
@@ -12983,6 +13026,11 @@ def build_parser() -> argparse.ArgumentParser:
     emp_verify_runtime.add_argument("--timeout", type=int, default=180)
     emp_verify_runtime.add_argument("--activate", action="store_true")
     emp_verify_runtime.set_defaults(func=cmd_employee_verify_runtime)
+    emp_recover = emp_sub.add_parser("recover", help="re-verify auto-downgraded employees and reactivate the ones that respond")
+    emp_recover.add_argument("--from", dest="source", default="main")
+    emp_recover.add_argument("--timeout", type=int, default=60)
+    emp_recover.add_argument("--max", type=int, default=3, help="max employees to re-verify per run")
+    emp_recover.set_defaults(func=cmd_employee_recover)
     emp_capabilities = emp_sub.add_parser("capabilities")
     emp_capabilities.add_argument("--id", required=True)
     emp_capabilities.add_argument("--set-skills", default="", help="comma-separated replacement list")

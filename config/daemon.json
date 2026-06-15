@@ -27,6 +27,11 @@
     "enabled": true,
     "interval_hours": 6
   },
+  "auto_recover": {
+    "enabled": true,
+    "interval_minutes": 10,
+    "max_per_run": 3
+  },
   "adapter_workers": [
     {
       "agent": "codex",
