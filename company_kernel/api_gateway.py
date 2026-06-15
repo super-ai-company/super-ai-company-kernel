@@ -1045,6 +1045,8 @@ def route_get(path: str, query: dict[str, list[str]]) -> tuple[int, dict]:
                 "exit_code": doctor_code,
                 "issue_count": len(doctor_payload.get("issues", []) or []),
                 "issues": doctor_payload.get("issues", []) or [],
+                "attention": doctor_payload.get("attention", []) or [],
+                "attention_count": int(doctor_payload.get("attention_count") or len(doctor_payload.get("attention", []) or [])),
                 "generated_at": companyctl.now(),
                 "counts": doctor_payload.get("counts", {}),
                 "heartbeat": doctor_payload.get("heartbeat", {}),

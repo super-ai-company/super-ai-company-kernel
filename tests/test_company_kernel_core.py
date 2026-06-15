@@ -2464,20 +2464,16 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual(200, status, cockpit)
         self.assertTrue(cockpit["ok"])
         self.assertIn("doctor", cockpit)
-        self.assertFalse(cockpit["doctor"]["ok"])
-        self.assertEqual(1, cockpit["doctor"]["exit_code"])
-        self.assertEqual(len(cockpit["doctor"]["issues"]), cockpit["doctor"]["issue_count"])
-        self.assertIn("task_evidence_issues", cockpit["doctor"]["issues"])
+        # missing evidence is a TASK-level attention item, not a kernel-infra fault: it must NOT
+        # appear in kernel `issues` (which would false-red the badge), only in `attention`.
+        self.assertNotIn("task_evidence_issues", cockpit["doctor"]["issues"])
+        self.assertIn("task_evidence_issues", cockpit["doctor"]["attention"])
+        self.assertIn("task_evidence_issues", cockpit["health_bar"]["doctor_attention"])
         self.assertIn("generated_at", cockpit["doctor"])
         self.assertEqual("rest_polling", cockpit["health_bar"]["poll_mode"])
         self.assertEqual(10, cockpit["health_bar"]["poll_interval_seconds"])
         self.assertEqual(cockpit["generated_at"], cockpit["health_bar"]["last_successful_sync_at"])
         self.assertEqual(0, cockpit["health_bar"]["data_age_seconds"])
-        self.assertFalse(cockpit["health_bar"]["doctor_ok"])
-        self.assertEqual(1, cockpit["health_bar"]["doctor_exit_code"])
-        self.assertEqual(len(cockpit["health_bar"]["doctor_issues"]), cockpit["health_bar"]["doctor_issue_count"])
-        self.assertIn("task_evidence_issues", cockpit["health_bar"]["doctor_issues"])
-        self.assertIn("doctor unhealthy", cockpit["health_bar"]["owner_next_action"])
         self.assertEqual("warn", cockpit["health_bar"]["status"])
         conn = companyctl.connect()
         try:
@@ -5615,9 +5611,13 @@ class CompanyKernelCoreTest(unittest.TestCase):
         finally:
             conn.close()
 
+        # a failed adapter run is a TASK-level problem (it's surfaced in attention + the Stuck panel),
+        # NOT a kernel-infra fault — the kernel stays healthy so the badge doesn't false-red.
         code, adapter_unhealthy = run_cli("doctor")
-        self.assertEqual(code, 1, adapter_unhealthy)
-        self.assertIn("adapter_failures", adapter_unhealthy["health"]["issues"])
+        self.assertEqual(code, 0, adapter_unhealthy)
+        self.assertTrue(adapter_unhealthy["health"]["ok"])
+        self.assertNotIn("adapter_failures", adapter_unhealthy["health"]["issues"])
+        self.assertIn("adapter_failures", adapter_unhealthy["health"]["attention"])
         self.assertEqual("adapter-run-failed-doctor", adapter_unhealthy["health"]["failed_adapter_runs"][0]["id"])
 
         code, acked = run_cli("runtime", "ack-adapter-run", "--run-id", "adapter-run-failed-doctor", "--by", "ops", "--reason", "known test failure")
@@ -5687,9 +5687,12 @@ class CompanyKernelCoreTest(unittest.TestCase):
             conn.commit()
         finally:
             conn.close()
+        # missing evidence is a task-level data issue (attention), not a kernel-infra fault
         code, evidence_unhealthy = run_cli("doctor", "--summary")
-        self.assertEqual(code, 1, evidence_unhealthy)
-        self.assertIn("task_evidence_issues", evidence_unhealthy["issues"])
+        self.assertEqual(code, 0, evidence_unhealthy)
+        self.assertTrue(evidence_unhealthy["ok"])
+        self.assertNotIn("task_evidence_issues", evidence_unhealthy["issues"])
+        self.assertIn("task_evidence_issues", evidence_unhealthy["attention"])
         self.assertEqual(["task-missing-evidence-doctor"], evidence_unhealthy["evidence"]["tasks"])
         conn = companyctl.connect()
         try:

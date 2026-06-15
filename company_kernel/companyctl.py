@@ -11386,6 +11386,20 @@ def cmd_task_reopen(args: argparse.Namespace) -> int:
     return 0
 
 
+def acknowledge_task_adapter_runs(conn: sqlite3.Connection, task_id: str, by: str, reason: str) -> int:
+    """Mark a task's unacknowledged failed adapter runs as acknowledged. Called when the task is
+    handled (discarded/cancelled) so a resolved task doesn't leave a stale 'failed run' flag behind."""
+    cur = conn.execute(
+        """
+        UPDATE adapter_runs
+        SET acknowledged_at = ?, acknowledged_by = ?, acknowledgement_reason = ?
+        WHERE task_id = ? AND ok = 0 AND acknowledged_at = ''
+        """,
+        (now(), by, reason, task_id),
+    )
+    return cur.rowcount
+
+
 def cmd_task_discard(args: argparse.Namespace) -> int:
     """Owner/supervisor drops a stuck task off the board (status=cancelled) without retrying it.
     For tasks whose info is too incomplete to act on — discard instead of letting them linger blocked."""
@@ -11403,13 +11417,14 @@ def cmd_task_discard(args: argparse.Namespace) -> int:
         "UPDATE tasks SET status = 'cancelled', claimed_by = '', blocker = ?, updated_at = ? WHERE id = ?",
         (f"discarded by {actor}: {args.reason}", now(), args.task_id),
     )
+    acked_runs = acknowledge_task_adapter_runs(conn, args.task_id, actor, f"task discarded: {args.reason}")
     conn.execute("DELETE FROM locks WHERE resource_key = ?", (f"task:{args.task_id}",))
     sync_project_plan_for_task(conn, task_id=args.task_id, task_status="cancelled", actor=actor)
     event = record_event(conn, "task.discarded", actor, task_id=args.task_id, payload={"reason": args.reason})
     conn.commit()
     updated = dict(conn.execute("SELECT * FROM tasks WHERE id = ?", (args.task_id,)).fetchone())
-    audit(conn, actor, "task.discard", args.task_id, {"reason": args.reason, "event_id": event["id"]})
-    emit({"ok": True, "task": updated, "event_id": event["id"]})
+    audit(conn, actor, "task.discard", args.task_id, {"reason": args.reason, "event_id": event["id"], "acked_adapter_runs": acked_runs})
+    emit({"ok": True, "task": updated, "event_id": event["id"], "acknowledged_adapter_runs": acked_runs})
     return 0
 
 
@@ -12695,13 +12710,13 @@ def cmd_doctor(args: argparse.Namespace) -> int:
         daemon = daemon_health()
         launchd = launchd_health()
         openclaw_guard = openclaw_guard_health(conn)
-        # issues = real infrastructure faults → "内核异常" (red badge, ok=False).
-        # warnings = transient operational backlog that does NOT mean the kernel is broken
-        # (e.g. a single long codex task blocks the synchronous daemon, so heartbeats age and
-        # events queue up — that's a BUSY daemon, not a dead one). Surfaced separately so the
-        # health badge only goes red on genuine faults. Same philosophy that already excludes
-        # 待审批/待 RFC from issues.
+        # 三层分级,让"内核异常"只在内核真的坏了时才红:
+        #   issues    = 基础设施故障(守护死、配置坏、锁死)→ 内核异常(红, ok=False)
+        #   attention = 任务级问题(某个任务失败/缺证据)→ 需你处理,但内核没坏;另有 Stuck/回报面板呈现
+        #   warnings  = 短暂积压(守护忙导致心跳/事件暂积)→ 黄"忙"
+        # 单个任务失败不等于内核坏 —— 否则总有某个任务出问题,徽章永远红。
         issues = []
+        attention = []
         warnings = []
         if not daemon["ok"]:
             issues.append(daemon["reason"] or "daemon_unhealthy")
@@ -12721,19 +12736,22 @@ def cmd_doctor(args: argparse.Namespace) -> int:
         aged_pending_events = [e for e in pending["events"] if parse_time(e["created_at"]) <= event_grace_cutoff]
         if aged_pending_events:
             warnings.append("pending_events")
-        # 待审批 / 待 RFC 是正常的"待办队列",不是内核故障:控制台已有独立的"待审批"提示,
-        # 不应让"内核健康"徽章因为有东西等你批就显示异常。仅作为计数展示,不计入 issues。
+        # 任务级问题:某个 worker 跑挂了 / 某个任务缺证据。内核本身没坏,任务已在 Stuck/完成回报面板可见。
+        # 不该让"内核"徽章因为单个任务出问题就发红 —— 归入 attention(待处理),不翻 ok。
         if failed_adapter_runs:
-            issues.append("adapter_failures")
-        if capability_issues:
-            issues.append("employee_capability_issues")
+            attention.append("adapter_failures")
         if evidence_issues:
-            issues.append("task_evidence_issues")
+            attention.append("task_evidence_issues")
+        # 待审批 / 待 RFC 是正常的"待办队列",不是内核故障:控制台已有独立的"待审批"提示,不计入 issues。
+        if capability_issues:
+            issues.append("employee_capability_issues")  # 员工配置坏 = 基础设施问题
         if stale_locks:
-            issues.append("stale_locks")
+            issues.append("stale_locks")  # 锁死会卡住调度 = 基础设施问题
         health = {
             "ok": not issues,
             "issues": issues,
+            "attention": attention,
+            "attention_count": len(failed_adapter_runs) + len(evidence_issues),
             "warnings": warnings,
             "heartbeat_stale_minutes": 15,
             "missing_heartbeats": missing_heartbeats,
@@ -12754,6 +12772,8 @@ def cmd_doctor(args: argparse.Namespace) -> int:
                 {
                     "ok": health["ok"],
                     "issues": issues,
+                    "attention": attention,
+                    "attention_count": len(failed_adapter_runs) + len(evidence_issues),
                     "warnings": warnings,
                     "counts": {
                         "employees": counts["employees"],

@@ -657,8 +657,11 @@ async function loadHealth() {
     const ok = h.ok !== false;
     const warns = h.warnings || [];
     const warnLabel = {stale_heartbeats:"员工静默", pending_events:"事件积压"};
+    const attn = h.attention_count || (h.attention||[]).length || 0;
+    const attnLabel = {adapter_failures:"任务失败", task_evidence_issues:"缺证据"};
     $("healthChips").innerHTML =
       chipHtml(ok?"ok":"bad", "内核", ok?"正常":"异常") +
+      (attn ? `<span class="chip" style="cursor:pointer" onclick="document.querySelector('[data-v=&quot;tasks&quot;]').click()"><span class="dot warn"></span>待处理 <b>${attn}</b> <span style="opacity:.6;font-size:11px">${(h.attention||[]).map(a=>attnLabel[a]||a).join('·')}</span></span>` : "") +
       (warns.length ? chipHtml("warn","忙", warns.map(w=>warnLabel[w]||w).join("·")) : "") +
       chipHtml("ok", "员工", (h.employees ?? h.counts?.employees ?? EMPLOYEES.length)) +
       (h.pending_approvals!=null ? chipHtml(h.pending_approvals>0?"warn":"ok","待审批",h.pending_approvals) : "");
