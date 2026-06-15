@@ -11000,6 +11000,81 @@ def cmd_task_claim(args: argparse.Namespace) -> int:
     return 0
 
 
+def read_evidence_text(evidence_path: str, max_chars: int = 20000) -> tuple[str, str]:
+    """Read a task's evidence/report file so the owner can see results in the console instead
+    of digging through files. Path-safe: only reads files inside the kernel tree."""
+    if not evidence_path:
+        return "", "no evidence path recorded"
+    try:
+        path = Path(evidence_path).expanduser().resolve()
+    except (OSError, RuntimeError):
+        return "", "evidence path unresolvable"
+    if not (path == ROOT or ROOT in path.parents):
+        return "", f"evidence outside kernel: {evidence_path}"
+    if path.is_dir():
+        # if a dir was recorded, surface the newest report-like file inside it
+        candidates = sorted(path.glob("**/*.md"), key=lambda p: p.stat().st_mtime, reverse=True)
+        if not candidates:
+            return "", f"evidence dir has no report file: {path}"
+        path = candidates[0]
+    if not path.is_file():
+        return "", f"evidence file missing: {path}"
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError as exc:
+        return "", f"cannot read evidence: {exc}"
+    return text[:max_chars], ""
+
+
+def completed_report_rows(conn: sqlite3.Connection, *, limit: int = 40, include_blocked: bool = True) -> list[dict]:
+    """Top-level (non-subtask) tasks that have finished — the owner-facing 'what got done' feed.
+    Subtasks spawned between agents are excluded so the owner sees only the work they care about."""
+    statuses = ("completed", "blocked") if include_blocked else ("completed",)
+    placeholders = ",".join("?" for _ in statuses)
+    rows_out = rows(
+        conn,
+        f"""
+        SELECT id, title, status, source_agent, target_agent, summary, evidence_path, blocker, updated_at
+        FROM tasks
+        WHERE status IN ({placeholders})
+          AND id NOT IN (SELECT child_task_id FROM task_relations)
+        ORDER BY updated_at DESC
+        LIMIT ?
+        """,
+        (*statuses, limit),
+    )
+    return rows_out
+
+
+def cmd_task_report(args: argparse.Namespace) -> int:
+    conn = connect()
+    if not args.task_id:
+        items = completed_report_rows(conn, limit=args.limit, include_blocked=not args.completed_only)
+        emit({"ok": True, "reports": items})
+        return 0
+    row = conn.execute("SELECT * FROM tasks WHERE id = ?", (args.task_id,)).fetchone()
+    if not row:
+        emit({"ok": False, "error": "task not found", "task_id": args.task_id})
+        return 1
+    task = dict(row)
+    text, note = read_evidence_text(task.get("evidence_path") or "")
+    emit({
+        "ok": True,
+        "task_id": task["id"],
+        "title": task.get("title"),
+        "status": task.get("status"),
+        "source_agent": task.get("source_agent"),
+        "target_agent": task.get("target_agent"),
+        "summary": task.get("summary"),
+        "blocker": task.get("blocker"),
+        "evidence_path": task.get("evidence_path"),
+        "report_text": text,
+        "note": note,
+        "updated_at": task.get("updated_at"),
+    })
+    return 0
+
+
 def cmd_task_done(args: argparse.Namespace) -> int:
     conn = connect()
     agent = resolve_employee_alias(args.agent)
@@ -12920,6 +12995,11 @@ def build_parser() -> argparse.ArgumentParser:
     task_done.add_argument("--summary", required=True)
     task_done.add_argument("--evidence", required=True)
     task_done.set_defaults(func=cmd_task_done)
+    task_report = task_sub.add_parser("report", help="owner-facing results feed: list completed top-level tasks, or read one task's report")
+    task_report.add_argument("--task-id", default="", help="omit to list completed top-level tasks; provide to read that task's report content")
+    task_report.add_argument("--limit", type=int, default=40)
+    task_report.add_argument("--completed-only", action="store_true", help="exclude blocked tasks from the list")
+    task_report.set_defaults(func=cmd_task_report)
     task_artifact = task_sub.add_parser("artifact")
     task_artifact_sub = task_artifact.add_subparsers(dest="artifact_cmd", required=True)
     task_artifact_register = task_artifact_sub.add_parser("register")

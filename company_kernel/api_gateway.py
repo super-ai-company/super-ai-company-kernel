@@ -810,6 +810,16 @@ def route_get(path: str, query: dict[str, list[str]]) -> tuple[int, dict]:
         task_id = path.removeprefix("/v1/tasks/").removesuffix("/attempts").strip("/")
         code, payload = run_companyctl(["task", "attempts", "--task-id", task_id])
         return (HTTPStatus.OK if code == 0 else HTTPStatus.BAD_REQUEST), {"exit_code": code, **payload}
+    if path.startswith("/v1/tasks/") and path.endswith("/report"):
+        task_id = path.removeprefix("/v1/tasks/").removesuffix("/report").strip("/")
+        code, payload = run_companyctl(["task", "report", "--task-id", task_id])
+        return (HTTPStatus.OK if code == 0 else HTTPStatus.BAD_REQUEST), {"exit_code": code, **payload}
+    if path == "/v1/reports/completed":
+        argv = ["task", "report", "--limit", query_value(query, "limit", "40")]
+        if truthy(query_value(query, "completed_only")):
+            argv.append("--completed-only")
+        code, payload = run_companyctl(argv)
+        return (HTTPStatus.OK if code == 0 else HTTPStatus.BAD_REQUEST), {"exit_code": code, **payload}
     if path.startswith("/v1/tasks/"):
         task_id = path.removeprefix("/v1/tasks/").strip("/")
         code, payload = run_companyctl(["task", "show", "--task-id", task_id])
