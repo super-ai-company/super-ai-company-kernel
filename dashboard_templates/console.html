@@ -695,7 +695,15 @@ async function loadEmployees() {
   $("empGrid").innerHTML = EMPLOYEES.map(e=>{
     const hb = e.last_seen_at || e.heartbeat || "";
     const duty = isOnDuty(hb);
-    return `<div class="card emp">
+    const bl = e.backlog_detail || {};
+    const piled = bl.piled_up||0, working = bl.in_progress||0, stuck = bl.stuck||0;
+    // 摸鱼判定:有活堆着(排队/卡住)但不在岗 → 红色警告;在办中 → 中性"在干"
+    const slacking = piled>0 && !duty;
+    let blChip = "";
+    if(stuck>0) blChip += `<span class="badge candidate" title="卡住的任务">⛔ 卡住 ${stuck}</span> `;
+    if(piled-stuck>0) blChip += `<span class="badge ${slacking?'':'candidate'}" style="${slacking?'background:var(--bad,#f0647c);color:#fff;border-color:var(--bad,#f0647c)':''}" title="排队未开始">📥 待办 ${piled-stuck}</span> `;
+    if(working>0) blChip += `<span class="badge active" title="正在干">⚙ 在办 ${working}</span> `;
+    return `<div class="card emp" style="${slacking?'border-color:var(--bad,#f0647c)':''}">
       <div class="emp-top">
         <div class="avatar" style="background:${color(e.id)}">${initial(e.id)}</div>
         <div style="flex:1">
@@ -704,9 +712,11 @@ async function loadEmployees() {
         </div>
         <span class="badge ${esc(e.status)}">${e.status==="active"?t('in_team'):e.status==="candidate"?t('candidate'):esc(e.status)}</span>
       </div>
+      ${blChip ? `<div style="margin:8px 0 2px;display:flex;gap:5px;flex-wrap:wrap">${blChip}${slacking?'<span class="emp-sub" style="color:var(--bad,#f0647c)">⚠ 有活堆着却不在岗</span>':''}</div>` : ""}
       <div class="emp-meta">
         <span>⚙️ ${esc(e.runtime)}</span>
         <span>💓 ${ago(hb)}</span>
+        ${(bl.inbox_files||0)>=80?`<span title="通知件堆积">📨 ${bl.inbox_files}</span>`:""}
       </div>
       ${e.unavailable_reason ? `<div class="emp-sub" style="color:var(--warn)">⏸ ${esc(e.unavailable_reason)}</div>` : ""}
       <div class="emp-actions">
