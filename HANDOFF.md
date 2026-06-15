@@ -37,6 +37,7 @@ python3 -m unittest discover -s tests      # 全量 398 测试(注意:本机是 
 - ✅ 会议编排(conversation run,只有真能发言的员工入会)、完成回报闭环、积压可见、重启自动恢复(已验证)
 - ✅ **外部 app 文件投递桥**(`state/task-intake/incoming/` 丢 JSON → 自动派单;codex/antigravity APP 对接路径)
 - ✅ 根治 daemon retry 测试 flaky
+- ✅ **控制台董事会风重构**(frontend-design 方法论):象牙白+靛黑+黄铜金,公司运营账本气质,脱离旧霓虹默认风。改样式守则见记忆 console-design-system。
 
 ## 5. 还剩(按优先级)
 - **P0 secrets 进密钥管理**:现在 `config/secrets.env` 明文(chmod 600+gitignore)。可接 OS keychain / vault。
