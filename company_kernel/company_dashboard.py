@@ -1446,11 +1446,19 @@ def build_cockpit_summary(summary: dict) -> dict:
     refresh_contract = {"mode": "rest_polling", "interval_seconds": 10, "sse_reserved": True, "websocket": False}
     doctor_issues = doctor.get("issues", []) if isinstance(doctor.get("issues", []), list) else []
     doctor_issue_count = int(doctor.get("issue_count") or len(doctor_issues))
+    doctor_attention = doctor.get("attention", []) if isinstance(doctor.get("attention", []), list) else []
+    doctor_attention_count = int(doctor.get("attention_count") or len(doctor_attention))
     health_bar_status = "ok"
     health_owner_next_action = "system healthy; continue monitoring employee work, costs, and evidence"
+    # task-level attention (a failed run / missing evidence) means work needs handling, but the
+    # kernel itself is fine — surface as 'warn', not as a kernel-down alarm.
+    if doctor_attention_count:
+        health_bar_status = "warn"
+        health_owner_next_action = "tasks need attention (failed run / missing evidence): inspect the Stuck and Results panels"
+    # real infrastructure faults are the only thing that means the kernel is unhealthy.
     if doctor_issue_count:
         health_bar_status = "warn"
-        health_owner_next_action = "doctor unhealthy: inspect /v1/doctor issues before trusting new long-running work"
+        health_owner_next_action = "kernel infrastructure issue: inspect /v1/doctor issues before trusting new long-running work"
     if not verification_summary.get("ok"):
         health_bar_status = "warn"
         health_owner_next_action = str(verification_summary.get("owner_next_action") or health_owner_next_action)
@@ -1461,6 +1469,8 @@ def build_cockpit_summary(summary: dict) -> dict:
         "doctor_exit_code": int(doctor.get("exit_code") or 0) if doctor else 1,
         "doctor_issue_count": doctor_issue_count,
         "doctor_issues": doctor_issues,
+        "doctor_attention": doctor_attention,
+        "doctor_attention_count": doctor_attention_count,
         "poll_mode": refresh_contract["mode"],
         "poll_interval_seconds": refresh_contract["interval_seconds"],
         "sse_reserved": refresh_contract["sse_reserved"],
