@@ -135,6 +135,9 @@ main{padding:22px 22px 64px;max-width:1520px;margin:0 auto}
 .mt-minutes .lbl{display:inline-block;font-size:12px;font-weight:800;color:var(--ok,#22c55e);margin-bottom:8px;letter-spacing:.03em}
 .mt-minutes .body{white-space:pre-wrap;line-height:1.62}
 .mt-minutes .body .sec{font-weight:700;color:var(--fg);display:block;margin:9px 0 2px}
+.mt-directive{background:color-mix(in srgb,var(--brass) 13%,transparent);border:1px solid var(--brass);border-left:3px solid var(--brass);border-radius:var(--r-sm);padding:10px 13px}
+.mt-directive .dh{font-size:11px;font-weight:800;letter-spacing:.04em;color:var(--accent2);margin-bottom:4px}
+.mt-directive .body{white-space:pre-wrap;line-height:1.55;font-size:13.5px}
 .mt-live{display:flex;align-items:center;gap:8px;color:var(--muted);font-size:13px;padding:6px 2px}
 .mt-live .dot{width:8px;height:8px;border-radius:50%;background:var(--accent);animation:mtpulse 1s infinite}
 @keyframes mtpulse{0%,100%{opacity:.3}50%{opacity:1}}
@@ -359,6 +362,7 @@ label{font-size:12px;color:var(--muted);display:block;margin-bottom:4px}
         <select id="convReplyAs" style="width:150px"></select>
         <input id="convReplyBody" data-i18n-ph="ph_replyAs" placeholder="作为所选身份补一句…" onkeydown="if(event.key==='Enter')convReply()">
         <button class="primary" onclick="convReply()" data-i18n="reply">发言</button>
+        <button class="bad" onclick="vetoAndContinue()" data-i18n="mt_veto" title="以主理人身份下达指令并立即继续讨论">⛔ 否决/改向</button>
       </div>
     </div>
   </div>
@@ -445,7 +449,7 @@ const I18N = {
     conv_title:"会议室", conv_sub:"让员工开会同步目标 / 评审方案 / 站会，自动出纪要", f_participants:"参与员工（勾选）",
     mt_new:"🚀 发起会议", mt_type:"会议类型", mt_title:"议题", mt_titlePh:"例如：blocked 处理新规范宣讲", mt_bodyPh:"把要让大家对齐的目标 / 规范 / 要讨论的问题写清楚…",
     mt_attendees:"参会员工", mt_chair:"主持人(出纪要)", mt_rounds:"发言轮数", mt_start:"🚀 开会", mt_history:"历史会议", mt_pick:"← 在左侧发起会议，或点历史会议查看", mt_continue:"▶ 继续讨论", mt_empty:"还没有会议内容。左侧填好议程、勾选参会员工，点「🚀 开会」。",
-    ph_replyAs:"作为所选身份补一句…", reply:"发言", conv_probe:"🔍 测试可参会员工", conv_selAll:"全选可参会", rep_title:"完成回报", rep_sub:"员工干完/卡住的顶层任务,摘要+报告集中看,不用翻文件", rep_refresh:"↻ 刷新", rep_list:"最近完成", rep_pick:"← 点左侧任务看完整报告", rep_empty:"选一个任务,这里显示它的摘要、证据路径和完整报告内容。",
+    ph_replyAs:"作为所选身份补一句…", reply:"发言", mt_veto:"⛔ 否决/改向", conv_probe:"🔍 测试可参会员工", conv_selAll:"全选可参会", rep_title:"完成回报", rep_sub:"员工干完/卡住的顶层任务,摘要+报告集中看,不用翻文件", rep_refresh:"↻ 刷新", rep_list:"最近完成", rep_pick:"← 点左侧任务看完整报告", rep_empty:"选一个任务,这里显示它的摘要、证据路径和完整报告内容。",
     appr_title:"审批中心", st_pending:"待审批", st_approved:"已批准", st_denied:"已拒绝", st_all:"全部",
     act_title:"活动流", act_hint:"公司事件 + Adapter 执行记录", act_adapter:"🛰 Adapter 执行", act_events:"📜 公司事件",
     kanban_submitted:"📥 待领取", kanban_claimed:"🔧 进行中", kanban_done:"✅ 已完成", kanban_blocked:"⛔ 受阻", empty:"空",
@@ -473,7 +477,7 @@ const I18N = {
     conv_title:"Meeting room", conv_sub:"Let employees meet to align goals / review plans / standup — minutes auto-generated", f_participants:"Attendees (check to include)",
     mt_new:"🚀 Start a meeting", mt_type:"Meeting type", mt_title:"Topic", mt_titlePh:"e.g. roll out the new blocked-handling norm", mt_bodyPh:"Spell out the goal / norm / question to align on…",
     mt_attendees:"Attendees", mt_chair:"Chair (writes minutes)", mt_rounds:"Rounds", mt_start:"🚀 Start", mt_history:"Past meetings", mt_pick:"← Start a meeting on the left, or open a past one", mt_continue:"▶ Continue", mt_empty:"No meeting content yet. Fill the agenda, check attendees, click 🚀 Start.",
-    ph_replyAs:"add a line as the selected identity…", reply:"Speak", conv_probe:"🔍 Test who can attend", conv_selAll:"Select all", rep_title:"Results", rep_sub:"Completed/blocked top-level tasks — summary + full report in one place", rep_refresh:"↻ Refresh", rep_list:"Recent", rep_pick:"← Pick a task to see its full report", rep_empty:"Pick a task to see its summary, evidence path and full report.",
+    ph_replyAs:"add a line as the selected identity…", reply:"Speak", mt_veto:"⛔ Veto / redirect", conv_probe:"🔍 Test who can attend", conv_selAll:"Select all", rep_title:"Results", rep_sub:"Completed/blocked top-level tasks — summary + full report in one place", rep_refresh:"↻ Refresh", rep_list:"Recent", rep_pick:"← Pick a task to see its full report", rep_empty:"Pick a task to see its summary, evidence path and full report.",
     appr_title:"Approvals", st_pending:"Pending", st_approved:"Approved", st_denied:"Denied", st_all:"All",
     act_title:"Activity", act_hint:"company events + adapter runs", act_adapter:"🛰 Adapter runs", act_events:"📜 Company events",
     kanban_submitted:"📥 Queued", kanban_claimed:"🔧 In progress", kanban_done:"✅ Done", kanban_blocked:"⛔ Blocked", empty:"empty",
@@ -1257,6 +1261,11 @@ function renderMeetingBody(msgs){
       out.push(`<div class="mt-minutes"><div class="lbl">${esc(mm[0])} · ${esc(who)}</div><div class="body">${fmtMinuteSections(rest)}</div></div>`);
       return;
     }
+    // owner interjection / veto — a binding directive, not a speaking turn (doesn't open a round)
+    if(who===OWNER || /^(【主理人指令】|\[OWNER DIRECTIVE\])/.test(body)){
+      out.push(`<div class="mt-directive"><div class="dh">⛔ ${esc(who)} · ${fmtTime(m.created_at)}</div><div class="body">${esc(body)}</div></div>`);
+      return;
+    }
     // a speaking turn — start a new round divider whenever a speaker repeats
     if(curRound===0 || seen.has(who)){ curRound++; seen = new Set(); out.push(`<div class="mt-round"><span>第 ${curRound} 轮</span></div>`); }
     seen.add(who);
@@ -1348,6 +1357,22 @@ async function convReply() {
   try { await api(`/v1/conversations/${encodeURIComponent(CURRENT_CONV)}/reply`,{method:"POST",body});
     $("convReplyBody").value=""; renderMeeting(CURRENT_CONV,false); toast("已发言","ok");
   } catch(e){ toast("发言失败："+e.message,"bad"); }
+}
+// human-in-the-loop: post an owner directive (interjection / veto / redirect) and immediately
+// continue the meeting so the AI reacts to it in the next round.
+async function vetoAndContinue(){
+  if(!CURRENT_CONV) return toast("先选一场会议","bad");
+  const L = LANG==='zh';
+  const text = $("convReplyBody").value.trim();
+  if(!text) return toast(L?"先写下否决理由 / 新方向":"Write the veto reason / new direction first","bad");
+  const from = $("convReplyAs").value || OWNER;
+  const prefix = L?"【主理人指令】":"[OWNER DIRECTIVE] ";
+  try { await api(`/v1/conversations/${encodeURIComponent(CURRENT_CONV)}/reply`,{method:"POST",body:{from, body:prefix+text}}); }
+  catch(e){ return toast((L?"下达失败：":"Failed: ")+e.message,"bad"); }
+  $("convReplyBody").value="";
+  await renderMeeting(CURRENT_CONV,false);
+  toast(L?"已下达指令，继续讨论中…":"Directive posted, continuing…","ok");
+  continueMeeting();
 }
 
 /* ---------- approvals ---------- */
