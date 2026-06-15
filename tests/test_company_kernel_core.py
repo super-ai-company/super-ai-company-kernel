@@ -13173,7 +13173,7 @@ class CompanyKernelCoreTest(unittest.TestCase):
         finally:
             conn.close()
 
-        state = company_daemon.tick({"version": 1, "run_repair": False, "run_scheduler": False, "run_offline_reminder": False, "heartbeat_agents": [], "run_retries": True})
+        state = company_daemon.tick({"version": 1, "run_repair": False, "run_scheduler": False, "run_offline_reminder": False, "heartbeat_agents": [], "run_retries": True, "auto_recover": {"enabled": False}})
         self.assertTrue(state["ok"], state)
         self.assertEqual(["retry.adapter-run"], [item["step"] for item in state["results"]])
 
