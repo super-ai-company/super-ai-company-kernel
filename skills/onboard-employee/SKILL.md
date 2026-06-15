@@ -212,3 +212,19 @@ companyctl user list
 companyctl user remove --user alice
 ```
 Roles (low→high): **viewer** (read only) · **operator** (dispatch / approve / pause·resume / verify) · **admin** (+ employee & runtime config) · **owner** (+ user management). Tokens live in `config/users.json` (chmod 600, gitignored). Once any user exists, every API call needs a valid bearer token — the console will prompt for one. Remove all users to return to open mode.
+
+## 11. External apps → employees (file-drop intake bridge)
+
+To let an outside app (the Codex desktop app, Antigravity, a CI job — anything that can write a file) hand work to an employee without calling the API, use the **task-intake bridge**: the app drops a JSON file into `state/task-intake/incoming/`, an importer submits it into the kernel ledger (submit guards still apply), then archives it to `processed/` (with a `.receipt.json`) or `failed/`.
+
+Payload (`state/task-intake/incoming/whatever.json`):
+```json
+{ "from": "codex-app", "to": "codex", "title": "build login page",
+  "description": "工作区: /abs/repo\n实现登录页并跑测试。", "priority": "P2" }
+```
+`from`/`to`/`title` required; `description` (or `body`/`message`) optional; `task_id` optional. Run once or on a timer:
+```
+bin/company-task-intake-importer                 # one pass over incoming/
+bash bin/company-task-intake-install-launchd     # macOS: poll every 15s (RunAtLoad)
+```
+`state/task-intake/` is gitignored (runtime data). On Linux/Windows, schedule `python -m company_kernel.task_intake_importer` the same way you schedule the daemon (§6).
