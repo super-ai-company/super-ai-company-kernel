@@ -38,16 +38,16 @@ python3 -m unittest discover -s tests      # 全量 398 测试(注意:本机是 
 - ✅ **外部 app 文件投递桥**(`state/task-intake/incoming/` 丢 JSON → 自动派单;codex/antigravity APP 对接路径)
 - ✅ 根治 daemon retry 测试 flaky
 - ✅ **控制台董事会风重构**(frontend-design 方法论):象牙白+靛黑+黄铜金,公司运营账本气质,脱离旧霓虹默认风。改样式守则见记忆 console-design-system。
+- ✅ **网页改员工配置/权限 UI**(P1):员工卡片「✎ 编辑」→ 弹窗读 GET 预填,按改动分别提交 profile/capabilities/permissions 三端点。
+- ✅ **会议人在环中**(P1):会议室「⛔ 否决/改向」一键下达【主理人指令】并继续;主理人发言渲染成黄铜绑定指令块。
 
 ## 5. 还剩(按优先级)
-- **P0 secrets 进密钥管理**:现在 `config/secrets.env` 明文(chmod 600+gitignore)。可接 OS keychain / vault。
-- **P0 多租户隔离 vs 明确"单租户私有部署"定位**:战略选择,**建议老板拍板**。走"按部署卖的私有单租户"最省事,license 底座(`license.py`)已在。
-- **P1 会议人在环中**:开会中途能插话/否决。
-- **P1 网页改员工配置/权限 UI**:现在"加"能加,"改"还得敲 CLI(API 已有 `PATCH /v1/employees/{id}/profile|capabilities|permissions`,缺前端编辑弹窗)。
+- **P0 secrets 进密钥管理**:现在 `config/secrets.env` 明文(chmod 600+gitignore)。可接 OS keychain / vault。纯工程,可直接做。
+- **P0 多租户隔离 vs 明确"单租户私有部署"定位**:战略选择,**要老板拍板**。走"按部署卖的私有单租户"最省事,license 底座(`license.py`)已在。
 - **增值**:`license.py` → 真账单就能卖。
 
 ## 6. 当前 git 状态注意
-- 已推送到 origin/main(最新 `1677b85`)。
+- 已推送到 origin/main(最新见 git log)。
 - 工作区有**运行时产物**未提交、**不要 commit**:`reports/openclaw-external-agent-bridge/ocbridge-oc-codex-1.json`(M)、`reports/diagnose-failures.txt`(??)。
 
 ## 7. 商用完整度自评
