@@ -42,6 +42,13 @@ Codex runs each task in an ephemeral sandbox; if the description does NOT name t
 
 ⚠️ Do NOT bury the path inside prose or a slashed label — `工作区: /abs/path` on its own line is the reliable form. The directive must resolve to a real directory or the task blocks with "directive does not exist".
 
+**Heavy tasks (big ETL / multi-step infra) that need more than the default 30-min cap:** add a `超时:` directive (minutes or seconds, capped at 60 min). Otherwise codex is killed at 30 min with `exit_code=124` and the task blocks.
+
+```
+工作区: /Users/<you>/path/to/repo
+超时: 3600                 # 或 `超时: 60min` / `timeout: 60min` —— 上限 60 分钟
+```
+
 A terse one-line description (no path) WILL block. The console dispatch form auto-inserts this template and refuses too-short descriptions. When a task is already blocked for this reason: console → open the blocked task → **🔧 修复并重开** (edit the description to add the path); do NOT just "仅重开" (it re-blocks). Or **🗑 丢弃** if not worth fixing. The supervisor auto-escalates a stuck task at most 3 times (then waits for you), so you won't get flooded.
 
 ## Two gating checks `task submit` enforces (this is what fails)

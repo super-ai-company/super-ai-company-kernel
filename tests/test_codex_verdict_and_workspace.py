@@ -109,6 +109,16 @@ class ResolveTaskWorkspaceTest(unittest.TestCase):
             self.assertEqual(target.resolve(), ws, directive)
             self.assertEqual("", err, directive)
 
+    def test_task_timeout_directive(self) -> None:
+        self.assertEqual(1800, codex_adapter.resolve_task_timeout(fake_task(description="无指令"), 1800))
+        self.assertEqual(3600, codex_adapter.resolve_task_timeout(fake_task(description="超时: 3600\n其它"), 1800))
+        self.assertEqual(3600, codex_adapter.resolve_task_timeout(fake_task(description="超时：60分钟"), 1800))
+        self.assertEqual(2400, codex_adapter.resolve_task_timeout(fake_task(description="timeout: 40min"), 1800))
+        # capped at 60 min so one task can't hang the synchronous daemon
+        self.assertEqual(3600, codex_adapter.resolve_task_timeout(fake_task(description="超时: 99999"), 1800))
+        # garbage / zero falls back to default
+        self.assertEqual(1800, codex_adapter.resolve_task_timeout(fake_task(description="超时: 0"), 1800))
+
     def test_prose_path_without_keyword_ignored(self) -> None:
         # a path mentioned in prose (no workspace keyword+colon) must NOT be grabbed as the workspace
         for desc in ("参考 /tmp/x.md 里的说明", "在 v4 容器内跑:项目 /home/h 里"):

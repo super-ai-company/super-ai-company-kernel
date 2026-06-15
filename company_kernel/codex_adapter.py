@@ -329,6 +329,34 @@ def resolve_task_workspace(task: sqlite3.Row, default: Path) -> tuple[Path, str]
     return candidate, ""
 
 
+# Per-task timeout override: heavy tasks (big ETL, multi-step infra) need more than the default
+# 30-min cap. Honor a `超时: <n>` / `timeout: <n>` line — `<n>min`/`<n>分钟` → minutes, else seconds.
+# Capped so one task can't hang the synchronous daemon indefinitely.
+TIMEOUT_DIRECTIVE = re.compile(
+    r"^[^\n]*?(?:超时时间|超时|timeout)[^\n]*?[:：]\s*(\d+)\s*(min|mins|minute|minutes|分钟|分|m|s|sec|secs|second|seconds|秒)?",
+    re.IGNORECASE | re.MULTILINE,
+)
+MAX_TASK_TIMEOUT_SECONDS = 3600  # 60 min hard cap
+
+
+def resolve_task_timeout(task: sqlite3.Row, default_seconds: int) -> int:
+    """Return the effective codex timeout for this task, honoring a `超时:`/`timeout:` directive
+    (capped at MAX_TASK_TIMEOUT_SECONDS). Falls back to default_seconds when absent/unparseable."""
+    match = TIMEOUT_DIRECTIVE.search(str(task["description"] or ""))
+    if not match:
+        return default_seconds
+    try:
+        value = int(match.group(1))
+    except (TypeError, ValueError):
+        return default_seconds
+    unit = (match.group(2) or "").lower()
+    minute_units = {"min", "mins", "minute", "minutes", "分钟", "分", "m"}
+    seconds = value * 60 if unit in minute_units else value
+    if seconds <= 0:
+        return default_seconds
+    return min(seconds, MAX_TASK_TIMEOUT_SECONDS)
+
+
 def parse_verdict(output: Path) -> tuple[str, str]:
     """Read codex's final message and extract its explicit self-verdict.
 
@@ -774,6 +802,7 @@ def process(args: argparse.Namespace) -> int:
         return 0
     default_workspace = Path(args.workspace or emp["workspace"] or DEFAULT_WORKSPACE).expanduser()
     workspace, workspace_error = resolve_task_workspace(task, default_workspace)
+    task_timeout = resolve_task_timeout(task, args.timeout_seconds)
     artifact = paths(args.agent, task["id"])
     artifact["task_card"].write_text(build_task_card(task, workspace, args.sandbox), encoding="utf-8")
     claim_code, claim_out, claim_err = run_companyctl(["task", "claim", "--agent", args.agent, "--task-id", task["id"]])
@@ -883,7 +912,7 @@ def process(args: argparse.Namespace) -> int:
     )
     run_companyctl(["task", "progress", "--task-id", task["id"], "--agent", args.agent, "--attempt-id", attempt_id, "--state", "acknowledged", "--message", "Codex adapter acknowledged managed execution", "--progress", "5"])
     started_monotonic = time.monotonic()
-    code, cmd = run_codex(artifact["task_card"], workspace, artifact["last_message"], artifact["events"], args.sandbox, args.model, args.isolation, args.sandbox_profile, timeout_seconds=args.timeout_seconds)
+    code, cmd = run_codex(artifact["task_card"], workspace, artifact["last_message"], artifact["events"], args.sandbox, args.model, args.isolation, args.sandbox_profile, timeout_seconds=task_timeout)
     runtime_seconds = max(0, int(round(time.monotonic() - started_monotonic)))
     if code == 0:
         verdict, verdict_reason = parse_verdict(artifact["last_message"])
