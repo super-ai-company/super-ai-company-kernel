@@ -114,6 +114,9 @@ main{padding:22px 22px 64px;max-width:1520px;margin:0 auto}
 .chk-grid label.chk input{margin:0;accent-color:var(--accent)}
 .chk-grid label.chk .rt{margin-left:auto;font-size:10px;opacity:.55}
 .chk-grid label.chk.off{opacity:.45;cursor:not-allowed}
+/* employee edit modal: ledger section dividers */
+.ee-sec{font-family:var(--serif);font-size:13px;font-weight:700;letter-spacing:.04em;color:var(--text);margin:0 0 9px;padding-bottom:6px;border-bottom:1px solid var(--brass)}
+.ee-modal{display:flex;flex-direction:column;gap:17px}
 /* meeting room structured view */
 .mt-view{display:flex;flex-direction:column;gap:12px;max-height:62vh;overflow:auto;padding-right:4px}
 .mt-agenda{background:color-mix(in srgb,var(--accent) 9%,transparent);border:1px solid color-mix(in srgb,var(--accent) 35%,var(--line));border-radius:var(--r-sm);padding:13px 15px}
@@ -756,6 +759,7 @@ async function loadEmployees() {
         ${e.status!=="active" ? `<button class="ok" onclick="verifyActivate('${esc(e.id)}')" title="验证运行时并激活">🔌 ${LANG==='zh'?'验证并激活':'Verify & activate'}</button>` : ""}
         <button onclick="quickMsg('${esc(e.id)}')">发消息</button>
         <button onclick="quickTask('${esc(e.id)}')">派任务</button>
+        <button onclick="editEmployee('${esc(e.id)}')">✎ ${LANG==='zh'?'编辑':'Edit'}</button>
         <button onclick="showEmployee('${esc(e.id)}')">详情</button>
       </div>
     </div>`;
@@ -766,6 +770,86 @@ async function showEmployee(id) {
   try { const d = await api("/v1/employees/"+encodeURIComponent(id));
     openModal(`<h3>员工 ${esc(id)}</h3><pre>${esc(JSON.stringify(d,null,2))}</pre>`);
   } catch(e){ openModal(`<h3>员工 ${esc(id)}</h3><pre>读取失败：${esc(e.message)}</pre>`); }
+}
+/* ---------- edit employee (profile / capabilities / permissions) ---------- */
+const EE_RUNTIMES = ["codex","claude","gemini","openclaw","hermes","antigravity","trae","local"];
+const csvJoin = a => Array.isArray(a) ? a.join(", ") : "";
+async function editEmployee(id){
+  const L = LANG==='zh';
+  openModal(`<h3>${L?'编辑员工':'Edit employee'} · ${esc(id)}</h3><pre>${t('loading')}</pre>`);
+  let d;
+  try { d = await api("/v1/employees/"+encodeURIComponent(id)); }
+  catch(e){ return openModal(`<h3>${esc(id)}</h3><pre>${esc(e.message)}</pre>`); }
+  const p = d.profile || d.employee || {}, c = d.capabilities || {}, pm = d.permissions || {};
+  const orig = {
+    name:p.name||"", role:p.role||"", runtime:p.runtime||"", workspace:p.workspace||"", status:p.status||"",
+    skills:csvJoin(c.skills), tools:csvJoin(c.tools), task_types:csvJoin(c.preferred_task_types),
+    can_submit_tasks: pm.can_submit_tasks!==false, can_claim_tasks: pm.can_claim_tasks!==false,
+    can_modify_kernel: pm.can_modify_kernel===true, requires_approval_for:csvJoin(pm.requires_approval_for),
+  };
+  window.__editEmp = {id, orig};
+  const rt = EE_RUNTIMES.map(r=>`<option${r===orig.runtime?" selected":""}>${r}</option>`).join("");
+  const st = ["active","candidate","archived"].map(s=>`<option${s===orig.status?" selected":""}>${s}</option>`).join("");
+  const chk = (k,on)=>`<label class="chk${on?' on':''}"><input type="checkbox" id="ee_${k}"${on?' checked':''} onchange="this.parentNode.classList.toggle('on',this.checked)">`;
+  openModal(`<h3>${L?'编辑员工':'Edit employee'} · ${esc(p.name||id)} <span style="color:var(--dim);font-weight:400;font-size:13px">${esc(id)}</span></h3>
+    <div class="ee-modal">
+      <div>
+        <div class="ee-sec">${L?'资料':'Profile'}</div>
+        <div class="form-grid">
+          <div><label>${L?'名称':'Name'}</label><input id="ee_name" value="${esc(orig.name)}"></div>
+          <div><label>${L?'角色':'Role'}</label><input id="ee_role" value="${esc(orig.role)}"></div>
+          <div><label>${L?'运行时':'Runtime'}</label><select id="ee_runtime">${rt}</select></div>
+          <div><label>${L?'状态':'Status'}</label><select id="ee_status">${st}</select></div>
+          <div class="full"><label>${L?'工作区（绝对路径）':'Workspace (absolute path)'}</label><input id="ee_workspace" value="${esc(orig.workspace)}"></div>
+        </div>
+      </div>
+      <div>
+        <div class="ee-sec">${L?'能力':'Capabilities'}</div>
+        <div class="form-grid">
+          <div class="full"><label>${L?'技能（逗号分隔）':'Skills (comma-separated)'}</label><input id="ee_skills" value="${esc(orig.skills)}"></div>
+          <div class="full"><label>${L?'工具（逗号分隔）':'Tools (comma-separated)'}</label><input id="ee_tools" value="${esc(orig.tools)}"></div>
+          <div class="full"><label>${L?'偏好任务类型（逗号分隔）':'Preferred task types (comma-separated)'}</label><input id="ee_task_types" value="${esc(orig.task_types)}"></div>
+        </div>
+      </div>
+      <div>
+        <div class="ee-sec">${L?'权限':'Permissions'}</div>
+        <div class="chk-grid">
+          ${chk('can_submit_tasks',orig.can_submit_tasks)} ${L?'可派发任务':'Can dispatch'}</label>
+          ${chk('can_claim_tasks',orig.can_claim_tasks)} ${L?'可领取任务':'Can claim'}</label>
+          ${chk('can_modify_kernel',orig.can_modify_kernel)} ${L?'可改内核':'Can modify kernel'}</label>
+        </div>
+        <div style="margin-top:9px"><label>${L?'需审批的动作（逗号分隔）':'Requires approval for (comma-separated)'}</label><input id="ee_requires_approval_for" value="${esc(orig.requires_approval_for)}"></div>
+      </div>
+      <div style="display:flex;gap:8px;justify-content:flex-end">
+        <button onclick="closeModal()">${t('dlg_cancel')}</button>
+        <button class="primary" onclick="saveEmployeeEdit()">${L?'保存更改':'Save changes'}</button>
+      </div>
+    </div>`);
+}
+async function saveEmployeeEdit(){
+  const E = window.__editEmp; if(!E) return;
+  const L = LANG==='zh', id = E.id, o = E.orig;
+  const val = k => { const el=$("ee_"+k); return el ? el.value.trim() : ""; };
+  const prof = {};
+  for (const k of ["name","role","runtime","workspace","status"]) { const v=val(k); if (v!==o[k]) prof[k]=v; }
+  const cap = {};
+  if (val("skills")!==o.skills) cap.set_skills=val("skills");
+  if (val("tools")!==o.tools) cap.set_tools=val("tools");
+  if (val("task_types")!==o.task_types) cap.set_task_types=val("task_types");
+  const perm = {};
+  for (const k of ["can_submit_tasks","can_claim_tasks","can_modify_kernel"]) {
+    const v = $("ee_"+k).checked; if (v!==o[k]) perm[k]= v?"true":"false";
+  }
+  if (val("requires_approval_for")!==o.requires_approval_for) perm.requires_approval_for=val("requires_approval_for");
+  let n=0;
+  try {
+    if (Object.keys(prof).length){ await api(`/v1/employees/${encodeURIComponent(id)}/profile`,{method:"POST",body:prof}); n++; }
+    if (Object.keys(cap).length){ await api(`/v1/employees/${encodeURIComponent(id)}/capabilities`,{method:"POST",body:cap}); n++; }
+    if (Object.keys(perm).length){ await api(`/v1/employees/${encodeURIComponent(id)}/permissions`,{method:"POST",body:perm}); n++; }
+  } catch(e){ return toast((L?'保存失败：':'Save failed: ')+e.message,"bad"); }
+  closeModal();
+  toast(n ? (L?`已保存（${n} 项更新）`:`Saved (${n} section${n>1?'s':''})`) : (L?'没有改动':'No changes'), n?"ok":"");
+  if (n) refreshAll();
 }
 function quickMsg(to){ document.querySelector('[data-v="messages"]').click(); $("mTo").value=to; $("mBody").focus(); }
 function quickTask(to){ document.querySelector('[data-v="tasks"]').click(); $("tTo").value=to; syncDeliverPill(); $("tTitle").focus(); }
