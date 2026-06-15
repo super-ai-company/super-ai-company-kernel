@@ -230,7 +230,7 @@ label{font-size:12px;color:var(--muted);display:block;margin-bottom:4px}
       <div><label>ID</label><input id="neId" placeholder="qa-bot"></div>
       <div><label data-i18n="f_name">名称</label><input id="neName" placeholder="QA Bot"></div>
       <div><label data-i18n="f_role">角色</label><input id="neRole" placeholder="developer"></div>
-      <div><label data-i18n="f_runtime">运行时</label><select id="neRuntime"><option>codex</option><option>hermes</option><option>openclaw</option><option>claude</option><option>trae</option><option>antigravity</option><option>local</option></select></div>
+      <div><label data-i18n="f_runtime">运行时</label><select id="neRuntime"><option>codex</option><option>claude</option><option>gemini</option><option>openclaw</option><option>hermes</option><option>antigravity</option><option>trae</option><option>local</option></select></div>
       <div class="full"><label data-i18n="f_workspace">工作区（绝对路径）</label><input id="neWorkspace" placeholder="/path/to/project"></div>
       <div><label data-i18n="f_skills">技能（逗号分隔）</label><input id="neSkills" placeholder="python,review"></div>
       <div><label data-i18n="f_canTalk">可对话对象（逗号分隔）</label><input id="neCanTalk" placeholder="codex,hermes"></div>
@@ -723,6 +723,7 @@ async function loadEmployees() {
       </div>
       ${e.unavailable_reason ? `<div class="emp-sub" style="color:var(--warn)">⏸ ${esc(e.unavailable_reason)}</div>` : ""}
       <div class="emp-actions">
+        ${e.status!=="active" ? `<button class="ok" onclick="verifyActivate('${esc(e.id)}')" title="验证运行时并激活">🔌 ${LANG==='zh'?'验证并激活':'Verify & activate'}</button>` : ""}
         <button onclick="quickMsg('${esc(e.id)}')">发消息</button>
         <button onclick="quickTask('${esc(e.id)}')">派任务</button>
         <button onclick="showEmployee('${esc(e.id)}')">详情</button>
@@ -753,11 +754,27 @@ async function addEmployee() {
   if (!body.id || !body.name || !body.workspace) return toast("ID/名称/工作区必填", "bad");
   try {
     await api("/v1/employees/onboard", {method:"POST", body});
-    toast("员工已注册：" + body.id, "ok");
+    toast("员工已注册为候选："+body.id+"，点卡片上「验证并激活」上岗","ok");
     $("neId").value=""; $("neName").value=""; $("neWorkspace").value="";
     $("newEmpForm").style.display="none";
-    refreshAll();
+    await refreshAll();
   } catch(e){ toast("注册失败："+e.message, "bad"); }
+}
+// self-serve activation: verify the runtime (detached, can take a while) then poll for active
+async function verifyActivate(id) {
+  try { await api(`/v1/employees/${encodeURIComponent(id)}/verify-runtime`,{method:"POST",body:{}}); }
+  catch(e){ return toast("无法启动验证："+e.message,"bad"); }
+  toast(`正在验证 ${id} 的运行时…(需几十秒,要求真实执行证据)`,"ok");
+  let ticks=0;
+  const poll = setInterval(async ()=>{
+    ticks++;
+    try {
+      const d = await api("/v1/employees");
+      const e = (d.employees||[]).find(x=>x.id===id);
+      if (e && e.status==="active"){ clearInterval(poll); toast(`✅ ${id} 已激活上岗`,"ok"); loadEmployees(); return; }
+      if (ticks>=20){ clearInterval(poll); toast(`${id} 仍未激活——运行时未通过验证(检查 CLI/代理/登录)。日志:logs/verify-runtime/${id}.log`,"warn"); loadEmployees(); }
+    } catch(err){}
+  }, 6000);
 }
 async function offlineReport() {
   toast(LANG==='zh'?"检查在线状态并通知…":"Checking online status…");
