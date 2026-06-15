@@ -6134,6 +6134,30 @@ def is_human_owner_employee(employee: dict) -> bool:
     return employee.get("id") == "owner-shift" or employee.get("role") == "human-owner" or employee.get("runtime") == "human"
 
 
+def employee_backlog(conn: sqlite3.Connection, employee_id: str) -> dict:
+    """Per-employee backlog so a slacking/stuck worker can't look 'normal' in the admin view.
+    queued = assigned but not yet started; in_progress = claimed/being worked; stuck = blocked;
+    inbox_files = notification backlog; unprocessed_events = their own events not yet consumed."""
+    queued = conn.execute("SELECT COUNT(*) FROM tasks WHERE target_agent=? AND status='submitted'", (employee_id,)).fetchone()[0]
+    in_progress = conn.execute("SELECT COUNT(*) FROM tasks WHERE target_agent=? AND status='claimed'", (employee_id,)).fetchone()[0]
+    stuck = conn.execute("SELECT COUNT(*) FROM tasks WHERE target_agent=? AND status='blocked'", (employee_id,)).fetchone()[0]
+    events = conn.execute("SELECT COUNT(*) FROM company_events WHERE source_agent=? AND processed_at=''", (employee_id,)).fetchone()[0]
+    try:
+        inbox_dir = employee_paths(employee_id)["inbox"]
+        inbox_files = sum(1 for _ in inbox_dir.glob("*.json")) if inbox_dir.exists() else 0
+    except OSError:
+        inbox_files = 0
+    return {
+        "queued": queued,
+        "in_progress": in_progress,
+        "stuck": stuck,
+        "unprocessed_events": events,
+        "inbox_files": inbox_files,
+        # "piled up" = work that is NOT actively progressing (queued + stuck). in_progress is fine.
+        "piled_up": queued + stuck,
+    }
+
+
 def cmd_employee_list(_args: argparse.Namespace) -> int:
     conn = connect()
     employees = [employee for employee in rows(conn, "SELECT * FROM employees ORDER BY id") if not is_human_owner_employee(employee)]
@@ -6145,7 +6169,29 @@ def cmd_employee_list(_args: argparse.Namespace) -> int:
             reason = str(profile.get("unavailable_reason") or "")
             if reason:
                 emp["unavailable_reason"] = reason
+        emp["backlog"] = employee_backlog(conn, emp["id"])
     emit({"ok": True, "employees": employees})
+    return 0
+
+
+def cmd_inbox_prune(args: argparse.Namespace) -> int:
+    conn = connect()
+    if str(args.agent).lower() in ("all", "*", ""):
+        agents = [row["id"] for row in rows(conn, "SELECT id FROM employees")]
+    else:
+        agents = [resolve_employee_alias(args.agent)]
+    by_agent = {}
+    total = 0
+    for agent in agents:
+        inbox = employee_paths(agent)["inbox"]
+        if not inbox.exists():
+            continue
+        before = sum(1 for _ in inbox.glob("*.json"))
+        removed = prune_inbox_dir(inbox, keep=args.keep)
+        if before:
+            by_agent[agent] = {"before": before, "removed": removed, "kept": before - removed}
+        total += removed
+    emit({"ok": True, "keep": args.keep, "removed_total": total, "by_agent": by_agent})
     return 0
 
 
@@ -7984,12 +8030,31 @@ def complete_task_internal(
     return {"task_id": task_id, "status": "completed", "evidence": evidence, "attempt_id": completed_attempt_id, "event_id": event["id"], "synced_plan_items": synced_plan_items}
 
 
+def prune_inbox_dir(inbox: Path, keep: int = 100) -> int:
+    """Keep only the newest `keep` notification files per inbox so they don't balloon into noise
+    that buries the signal. These files are write-only delivery records — the real work queue is
+    the DB, so pruning them loses nothing operational."""
+    try:
+        files = sorted((p for p in inbox.glob("*.json") if p.is_file()), key=lambda p: p.stat().st_mtime, reverse=True)
+    except OSError:
+        return 0
+    removed = 0
+    for stale in files[keep:]:
+        try:
+            stale.unlink()
+            removed += 1
+        except OSError:
+            pass
+    return removed
+
+
 def write_task_inbox_file(task: dict) -> str:
     target = task["target_agent"]
     inbox = employee_paths(target)["inbox"]
     inbox.mkdir(parents=True, exist_ok=True)
     path = inbox / f"{task['id']}.json"
     path.write_text(json.dumps(task, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    prune_inbox_dir(inbox)  # cap on write so inboxes never silently balloon
     return str(path)
 
 
@@ -8899,6 +8964,7 @@ def notify_conversation_participants(conversation_id: str, message: dict, partic
         inbox.mkdir(parents=True, exist_ok=True)
         path = inbox / f"{conversation_id}.{message['id']}.conversation.json"
         path.write_text(json.dumps({"type": "conversation_message", "conversation_id": conversation_id, "message": message}, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        prune_inbox_dir(inbox)  # conversation notifications are the biggest source of inbox cruft
         files[participant] = str(path)
     return files
 
@@ -13242,6 +13308,12 @@ def build_parser() -> argparse.ArgumentParser:
     external_import.add_argument("--file", default="")
     external_import.set_defaults(func=cmd_external_import)
 
+    inbox = sub.add_parser("inbox", help="maintenance for employee inbox notification files (write-only; not the work queue)")
+    inbox_sub = inbox.add_subparsers(dest="inbox_cmd", required=True)
+    inbox_prune = inbox_sub.add_parser("prune", help="trim old notification files so inboxes don't balloon into noise")
+    inbox_prune.add_argument("--agent", default="all", help="'all' (default) or an employee id")
+    inbox_prune.add_argument("--keep", type=int, default=80, help="newest N files to keep per inbox")
+    inbox_prune.set_defaults(func=cmd_inbox_prune)
     message = sub.add_parser("message")
     message_sub = message.add_subparsers(dest="message_cmd", required=True)
     message_send = message_sub.add_parser("send")

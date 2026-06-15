@@ -2568,6 +2568,29 @@ def render_task_table(items: list[dict]) -> str:
     return f"<table><thead><tr>{head}</tr></thead><tbody>{''.join(body)}</tbody></table>"
 
 
+def employee_backlog_detail(employee: dict) -> dict:
+    """Structured per-employee backlog so the admin view can flag a slacking/stuck worker instead
+    of showing them as 'normal'. queued = assigned not started; in_progress = being worked;
+    stuck = blocked; inbox_files = notification backlog; piled_up = queued+stuck (not progressing)."""
+    queued = int(employee.get("submitted_tasks", 0) or 0)
+    in_progress = int(employee.get("claimed_tasks", 0) or 0)
+    stuck = int(employee.get("blocked_tasks", 0) or 0)
+    inbox_files = 0
+    try:
+        inbox = companyctl.employee_paths(str(employee.get("id", "")))["inbox"]
+        if inbox.exists():
+            inbox_files = sum(1 for _ in inbox.glob("*.json"))
+    except (OSError, KeyError):
+        inbox_files = 0
+    return {
+        "queued": queued,
+        "in_progress": in_progress,
+        "stuck": stuck,
+        "inbox_files": inbox_files,
+        "piled_up": queued + stuck,
+    }
+
+
 def employee_view_models(summary: dict) -> list[dict]:
     employees = []
     communication_config = companyctl.load_communication_config()
@@ -2874,6 +2897,7 @@ def employee_view_models(summary: dict) -> list[dict]:
                     "communication_paused": bool(communication_profile.get("communication_paused")),
                     "communication_status": "paused" if communication_profile.get("communication_paused") else "enabled",
                     "backlog": f"{employee.get('submitted_tasks', 0)} submitted, {employee.get('claimed_tasks', 0)} claimed",
+                    "backlog_detail": employee_backlog_detail(employee),
                     "current_task_id": current_task_id,
                     "current_task_title": current_task_title,
                     "runtime_summary": runtime_summary,
