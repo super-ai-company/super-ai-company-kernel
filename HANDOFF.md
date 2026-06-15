@@ -41,9 +41,10 @@ python3 -m unittest discover -s tests      # 全量 398 测试(注意:本机是 
 - ✅ **网页改员工配置/权限 UI**(P1):员工卡片「✎ 编辑」→ 弹窗读 GET 预填,按改动分别提交 profile/capabilities/permissions 三端点。
 - ✅ **会议人在环中**(P1):会议室「⛔ 否决/改向」一键下达【主理人指令】并继续;主理人发言渲染成黄铜绑定指令块。
 
+- ✅ **secrets 进密钥管理**(P0):`company-secrets` CLI,macOS keychain 后端 + 文件回退;bin 脚本先 eval keychain 再 source 文件(向后兼容)。`set/get/list/migrate-file/doctor`;scope 维度预留多租户。详见 onboard skill §12。
+
 ## 5. 还剩(按优先级)
-- **P0 secrets 进密钥管理**:现在 `config/secrets.env` 明文(chmod 600+gitignore)。可接 OS keychain / vault。纯工程,可直接做。
-- **P0 多租户隔离 vs 明确"单租户私有部署"定位**:战略选择,**要老板拍板**。走"按部署卖的私有单租户"最省事,license 底座(`license.py`)已在。
+- **P0 多租户隔离**:定位已定为**先单租户、架构留多租户余地**(2026-06-16 老板拍板)。现按单租户卖,secrets 已带 scope 维度;数据层 tenant_id 改造留待真要转 SaaS 时做。
 - **增值**:`license.py` → 真账单就能卖。
 
 ## 6. 当前 git 状态注意
