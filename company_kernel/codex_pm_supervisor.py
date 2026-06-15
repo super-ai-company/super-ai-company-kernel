@@ -253,14 +253,19 @@ def queue_supervisor_notification(result: dict[str, Any]) -> dict[str, Any]:
         conn.close()
 
 
-ESCALATION_DEDUP_PATH = ROOT / "state" / "supervisor-escalation-dedup.json"
 ESCALATION_COOLDOWN_SECONDS = 6 * 3600  # re-remind the same stuck task at most once per 6h (else flood)
 MAX_ESCALATIONS_PER_ISSUE = 3  # circuit breaker: after N reminders of the same stuck task, stop auto-notifying
 
 
+def _escalation_dedup_path() -> Path:
+    # Resolve from ROOT at call time (not import time) so tests that patch ROOT get an
+    # isolated state file instead of leaking into the live state/ dedup store.
+    return ROOT / "state" / "supervisor-escalation-dedup.json"
+
+
 def _load_escalation_dedup() -> dict:
     try:
-        return json.loads(ESCALATION_DEDUP_PATH.read_text(encoding="utf-8"))
+        return json.loads(_escalation_dedup_path().read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return {}
 
@@ -300,8 +305,9 @@ def _record_escalation(task_id: str, fingerprint: str) -> None:
     prev = state.get(task_id, {})
     count = int(prev.get("count", 0)) + 1 if prev.get("fingerprint") == fingerprint else 1
     state[task_id] = {"fingerprint": fingerprint, "notified_at": now(), "count": count}
-    ESCALATION_DEDUP_PATH.parent.mkdir(parents=True, exist_ok=True)
-    ESCALATION_DEDUP_PATH.write_text(json.dumps(state, ensure_ascii=False), encoding="utf-8")
+    path = _escalation_dedup_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(state, ensure_ascii=False), encoding="utf-8")
 
 
 def notify_if_escalation(result: dict[str, Any]) -> dict[str, Any]:

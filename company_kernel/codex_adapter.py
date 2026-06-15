@@ -585,6 +585,37 @@ def direct_execution_reply(state: str, output: Path, *, workspace_report: Path, 
     )
 
 
+def handle_converse(args: argparse.Namespace, emp) -> int:
+    """Answer-only mode for meetings/discussions: run codex read-only to produce a reply to
+    the prompt, with no task card, no progress reports, no execution loop. This is what lets
+    codex genuinely participate in a conversation instead of running its execution flow."""
+    run_companyctl(["heartbeat", "--agent", args.agent])
+    if not shutil.which("codex"):
+        emit({"ok": False, "error": "codex command not found", "agent": args.agent, "converse": True, "reply": ""})
+        return 1
+    workspace = Path(args.workspace or emp["workspace"] or DEFAULT_WORKSPACE).expanduser().resolve()
+    art = direct_paths(args.agent)
+    art["task_card"].write_text(args.converse_message, encoding="utf-8")
+    timeout = args.timeout or 180
+    run_code, _cmd = run_codex(
+        art["task_card"], workspace, art["last_message"], art["events"],
+        "read-only", args.model, args.isolation, args.sandbox_profile, timeout_seconds=timeout,
+    )
+    reply = (compact_output(art["last_message"], max_chars=1600) or "").strip()
+    ok = run_code == 0 and bool(reply)
+    emit({
+        "ok": ok,
+        "agent": args.agent,
+        "converse": True,
+        "source": args.direct_source,
+        "session_key": args.direct_session_key,
+        "reply": reply,
+        "payloads": [{"text": reply}] if reply else [],
+        "exit_code": run_code,
+    })
+    return 0 if ok else 1
+
+
 def process(args: argparse.Namespace) -> int:
     emp = employee(args.agent)
     if not emp:
@@ -593,6 +624,8 @@ def process(args: argparse.Namespace) -> int:
     if emp["runtime"] != "codex":
         emit({"ok": False, "error": "employee runtime is not codex", "agent": args.agent, "runtime": emp["runtime"]})
         return 1
+    if args.converse_message:
+        return handle_converse(args, emp)
     if args.direct_message:
         code, hb_out, hb_err = run_companyctl(["heartbeat", "--agent", args.agent])
         workspace = Path(args.workspace or emp["workspace"] or DEFAULT_WORKSPACE).expanduser().resolve()
@@ -964,6 +997,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--direct-message", default="", help="reply to a direct reachability message without claiming tasks")
     parser.add_argument("--direct-source", default="", help="source employee for direct reachability messages")
     parser.add_argument("--direct-session-key", default="", help="session key used by the company direct message resolver")
+    parser.add_argument("--converse-message", default="", help="answer-only mode: run codex read-only to produce a discussion/meeting reply, no task execution")
     parser.add_argument("--timeout", type=int, default=120, help="timeout seconds for direct replies")
     return parser
 

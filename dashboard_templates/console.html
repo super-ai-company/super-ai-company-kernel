@@ -260,6 +260,7 @@ label{font-size:12px;color:var(--muted);display:block;margin-bottom:4px}
   <div class="section-head"><h2 data-i18n="conv_title">多轮对话</h2>
     <select id="convAgent" style="width:200px" onchange="loadConversations()"></select>
     <div class="spacer"></div>
+    <button onclick="probeMeetingCapable()" data-i18n="conv_probe" title="探测哪些员工真正能参会">🔍 测试可参会员工</button>
     <button class="primary" onclick="toggleNewConv()" data-i18n="conv_new">＋ 发起新会话</button>
   </div>
   <div class="card" id="newConvForm" style="display:none;margin-bottom:14px">
@@ -275,8 +276,21 @@ label{font-size:12px;color:var(--muted);display:block;margin-bottom:4px}
   <div class="grid" style="grid-template-columns:330px 1fr;gap:14px">
     <div class="card" style="align-self:start"><h3 data-i18n="conv_list">会话列表</h3><div class="list" id="convList"><div class="empty" data-i18n="none">无</div></div></div>
     <div class="card">
-      <h3 id="convTitle" data-i18n="conv_pick">选择左侧会话</h3>
-      <div class="conv-thread" id="convThread"></div>
+      <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+        <h3 id="convTitle" style="margin:0" data-i18n="conv_pick">选择左侧会话</h3>
+        <div class="spacer"></div>
+        <select id="convMode" style="width:150px" title="会议类型">
+          <option value="meeting" selected>📋 同步目标/规范</option>
+          <option value="discuss">💬 方案评审</option>
+          <option value="standup">🧍 站会(进度/阻塞)</option>
+        </select>
+        <select id="convChair" style="width:130px" title="主持人 · 出纪要的员工"></select>
+        <select id="convRounds" style="width:82px" title="发言轮数">
+          <option value="1">1 轮</option><option value="2" selected>2 轮</option><option value="3">3 轮</option>
+        </select>
+        <button id="convRunBtn" onclick="runConversation()" disabled data-i18n="conv_run">▶ 开会</button>
+      </div>
+      <div class="conv-thread" id="convThread" style="margin-top:10px"></div>
       <div style="display:flex;gap:8px;margin-top:10px">
         <select id="convReplyAs" style="width:160px"></select>
         <input id="convReplyBody" data-i18n-ph="ph_replyAs" placeholder="以所选身份回复…" onkeydown="if(event.key==='Enter')convReply()">
@@ -350,7 +364,7 @@ const I18N = {
     msg_title:"消息中心", msg_send:"✉️ 发送消息", f_sender:"发件人", f_recipient:"收件人", f_mode:"模式",
     mode_record:"仅记录（不发出）", mode_direct:"直接发送（员工收到并回复）", f_content:"内容", ph_msgBody:"消息内容", msg_sendBtn:"发送", msg_pick:"选择员工查看消息",
     conv_title:"多轮对话", conv_new:"＋ 发起新会话", conv_newTitle:"🆕 发起多轮会话", f_participants:"参与者（逗号分隔的员工 ID，含发起人）",
-    ph_convTitle:"会话标题", f_firstMsg:"首条消息", ph_convBody:"开场白 / 要讨论的问题", conv_create:"创建会话", conv_list:"会话列表", conv_pick:"选择左侧会话", ph_replyAs:"以所选身份回复…", reply:"回复",
+    ph_convTitle:"会话标题", f_firstMsg:"首条消息", ph_convBody:"开场白 / 要讨论的问题", conv_create:"创建会话", conv_list:"会话列表", conv_pick:"选择左侧会话", ph_replyAs:"以所选身份回复…", reply:"回复", conv_run:"▶ 开会", conv_probe:"🔍 测试可参会员工",
     appr_title:"审批中心", st_pending:"待审批", st_approved:"已批准", st_denied:"已拒绝", st_all:"全部",
     act_title:"活动流", act_hint:"公司事件 + Adapter 执行记录", act_adapter:"🛰 Adapter 执行", act_events:"📜 公司事件",
     kanban_submitted:"📥 待领取", kanban_claimed:"🔧 进行中", kanban_done:"✅ 已完成", kanban_blocked:"⛔ 受阻", empty:"空",
@@ -376,7 +390,7 @@ const I18N = {
     msg_title:"Messages", msg_send:"✉️ Send message", f_sender:"From", f_recipient:"To", f_mode:"Mode",
     mode_record:"Record only (not sent)", mode_direct:"Send directly (employee gets it & replies)", f_content:"Content", ph_msgBody:"message body", msg_sendBtn:"Send", msg_pick:"Pick an employee to view messages",
     conv_title:"Conversations", conv_new:"＋ Start conversation", conv_newTitle:"🆕 Start a multi-round conversation", f_participants:"Participants (comma-separated employee IDs, incl. starter)",
-    ph_convTitle:"conversation title", f_firstMsg:"First message", ph_convBody:"opening line / topic to discuss", conv_create:"Create", conv_list:"Conversations", conv_pick:"Select a conversation on the left", ph_replyAs:"reply as selected identity…", reply:"Reply",
+    ph_convTitle:"conversation title", f_firstMsg:"First message", ph_convBody:"opening line / topic to discuss", conv_create:"Create", conv_list:"Conversations", conv_pick:"Select a conversation on the left", ph_replyAs:"reply as selected identity…", reply:"Reply", conv_run:"▶ Run meeting", conv_probe:"🔍 Test who can attend",
     appr_title:"Approvals", st_pending:"Pending", st_approved:"Approved", st_denied:"Denied", st_all:"All",
     act_title:"Activity", act_hint:"company events + adapter runs", act_adapter:"🛰 Adapter runs", act_events:"📜 Company events",
     kanban_submitted:"📥 Queued", kanban_claimed:"🔧 In progress", kanban_done:"✅ Done", kanban_blocked:"⛔ Blocked", empty:"empty",
@@ -565,6 +579,8 @@ async function loadEmployees() {
   // to LINE/Telegram) can receive a direct message; pure compute runtimes (codex/claude/hermes/antigravity)
   // are for Tasks, not chat — hide them from the recipient list so you only see who you can actually message.
   ["tFrom","mFrom","convReplyAs","ncFrom"].forEach(id=>{ if($(id)) $(id).innerHTML = withOwnerFirst; });
+  // chair = the employee who opens the summary/minutes; must be an AI runtime, default hermes
+  if($("convChair")){ const chairOpts = EMPLOYEES.filter(e=>e.id!==OWNER).map(e=>`<option value="${esc(e.id)}"${e.id==="hermes"?" selected":""}>${esc(e.id)}</option>`).join(""); $("convChair").innerHTML = chairOpts; }
   ["convAgent"].forEach(id=>{ if($(id) && !$(id).value) $(id).innerHTML = opts; });
   rebuildMessageRecipients();
   buildMentionOptions();
@@ -938,6 +954,7 @@ async function startConversation() {
 }
 async function showConv(id) {
   CURRENT_CONV = id;
+  const btn = $("convRunBtn"); if(btn && !CONV_POLL) btn.disabled = false;
   try {
     const d = await api("/v1/conversations/"+encodeURIComponent(id));
     const c = d.conversation || d;
@@ -948,6 +965,49 @@ async function showConv(id) {
       ${esc(m.body)}</div>`).join("") || `<div class="empty">无消息</div>`;
     $("convThread").scrollTop = $("convThread").scrollHeight;
   } catch(e){ $("convThread").innerHTML = `<div class="empty">${esc(e.message)}</div>`; }
+}
+async function probeMeetingCapable() {
+  toast("正在探测全员可参会能力，需要一会儿…","ok");
+  try {
+    const d = await api("/v1/conversations/probe",{method:"POST",body:{participants:"active"}});
+    const cap = d.capable||[], inc = d.incapable||[];
+    toast(`探测完成：✅ ${cap.length} 可参会${inc.length?`，❌ ${inc.length} 不可`:""}`, inc.length?"warn":"ok");
+    if(inc.length) toast("不可参会："+inc.join("，"),"warn");
+  } catch(e){ toast("探测失败："+e.message,"bad"); }
+}
+let CONV_POLL = null;
+async function runConversation() {
+  if(!CURRENT_CONV) return toast("先选择会话","bad");
+  const btn = $("convRunBtn"); const old = btn.dataset.label || btn.textContent;
+  btn.dataset.label = old;
+  const rounds = parseInt($("convRounds").value||"2",10);
+  const mode = ($("convMode")||{}).value || "meeting";
+  const synthesizer = ($("convChair")||{}).value || "";
+  const cid = CURRENT_CONV;
+  try {
+    await api(`/v1/conversations/${encodeURIComponent(cid)}/run`,{method:"POST",body:{rounds,mode,synthesizer}});
+  } catch(e){ return toast("无法开始："+e.message,"bad"); }
+  const label = mode==="standup"?"站会":mode==="discuss"?"讨论":"会议";
+  toast(label+"已开始，员工将依次发言…","ok");
+  btn.disabled = true; btn.textContent = label+"进行中…";
+  if(CONV_POLL) clearInterval(CONV_POLL);
+  // The run is detached; each turn commits its message as it lands, so we poll the
+  // thread to render progressive results and stop once the synthesized plan appears.
+  const startCount = ($("convThread").querySelectorAll(".bubble")||[]).length;
+  let ticks = 0; const maxTicks = Math.max(40, rounds*40); // ~5s * ticks; generous ceiling
+  CONV_POLL = setInterval(async ()=>{
+    ticks++;
+    if(CURRENT_CONV !== cid){ clearInterval(CONV_POLL); CONV_POLL=null; return; }
+    await showConv(cid);
+    const bubbles = $("convThread").querySelectorAll(".bubble");
+    const last = bubbles.length ? bubbles[bubbles.length-1].textContent : "";
+    const done = /【会议纪要】|【站会汇总】|【方案\/决策】/.test(last);
+    if(done || ticks>=maxTicks){
+      clearInterval(CONV_POLL); CONV_POLL=null;
+      btn.disabled=false; btn.textContent = btn.dataset.label;
+      toast(done ? "已收口，主持人产出纪要 ✅" : "结束（未检测到纪要，请查看记录）", done?"ok":"warn");
+    }
+  }, 5000);
 }
 async function convReply() {
   if(!CURRENT_CONV) return toast("先选择会话","bad");

@@ -9100,6 +9100,346 @@ def cmd_conversation_show(args: argparse.Namespace) -> int:
     return 0
 
 
+# Runtimes that can be invoked headlessly to produce a discussion turn. gemini rides on
+# the claude adapter bin (it is an Anthropic-compatible proxy runtime), codex/antigravity/trae
+# each have their own adapter, openclaw/hermes go through the openclaw agent CLI.
+CONVERSATION_RUNTIME_BINS = {
+    "codex": "company-codex-adapter",
+    "claude": "company-claude-adapter",
+    "gemini": "company-claude-adapter",
+    "antigravity": "company-antigravity-adapter",
+    "trae": "company-trae-adapter",
+}
+CONVERSATION_RUNTIME_SUPPORTED = set(CONVERSATION_RUNTIME_BINS) | {"openclaw", "hermes"}
+
+
+def conversation_invoke_runtime(conn: sqlite3.Connection, agent: str, prompt: str, timeout: int) -> dict:
+    """Invoke an employee's runtime headlessly with a discussion prompt and return its reply.
+    Reuses the same adapter --direct-message path that direct messaging uses, so a participant
+    speaks with its real model (codex=gpt-5.5, claude=Opus 4.8 native, gemini=proxy, etc.)."""
+    row = conn.execute("SELECT * FROM employees WHERE id = ?", (agent,)).fetchone()
+    if not row:
+        return {"ok": False, "reply": "", "error": f"unknown employee: {agent}"}
+    emp = dict(row)
+    runtime = str(emp.get("runtime") or "")
+    session_key = f"conversation:{agent}"
+    if runtime in {"openclaw", "hermes"}:
+        agent_runtime_id = attendance_agent_runtime_id(agent, runtime)
+        cmd = ["openclaw", "agent", "--agent", agent_runtime_id, "--session-key", session_key,
+               "--message", prompt, "--timeout", str(timeout), "--json"]
+    elif runtime in CONVERSATION_RUNTIME_BINS:
+        # codex's --direct-message path is execution-oriented (it does work + reports status);
+        # for a discussion we want answer-only, so use its dedicated --converse-message mode.
+        msg_flag = "--converse-message" if runtime == "codex" else "--direct-message"
+        cmd = [str(ROOT / "bin" / CONVERSATION_RUNTIME_BINS[runtime]),
+               "--agent", agent, msg_flag, prompt,
+               "--direct-source", "owner", "--direct-session-key", session_key,
+               "--timeout", str(timeout)]
+    else:
+        return {"ok": False, "reply": "", "error": f"unsupported runtime: {runtime}", "runtime": runtime}
+    try:
+        cp = subprocess.run(cmd, cwd=str(ROOT), text=True, capture_output=True, timeout=timeout + 20)
+    except Exception as exc:
+        return {"ok": False, "reply": "", "error": str(exc), "runtime": runtime}
+    reply = (parse_openclaw_payload_text(cp.stdout) or "").strip()
+    return {
+        "ok": cp.returncode == 0 and bool(reply),
+        "reply": reply,
+        "runtime": runtime,
+        "exit_code": cp.returncode,
+        "stderr": cp.stderr[-800:],
+    }
+
+
+def conversation_thread_text(conn: sqlite3.Connection, conversation_id: str, limit: int = 40) -> str:
+    msgs = rows(conn, "SELECT * FROM conversation_messages WHERE conversation_id = ? ORDER BY created_at ASC", (conversation_id,))
+    return "\n".join(f"{m['source_agent']}: {m['body']}" for m in msgs[-limit:])
+
+
+# Meeting modes. "meeting" = sync goals/norms (each employee confirms understanding, raises
+# blockers, claims action items; chair writes minutes). "standup" = progress/blockers sync.
+# "discuss" = open debate that converges to a plan (design review / proposal vetting).
+CONVERSATION_MODES = {"meeting", "discuss", "standup"}
+CONVERSATION_SYNTH_PREFIX = {"meeting": "【会议纪要】", "standup": "【站会汇总】", "discuss": "【方案/决策】"}
+
+
+def conversation_speaker_prompt(mode: str, spk: str, title: str, thread: str) -> str:
+    ctx = f"议题：{title}\n\n到目前为止的记录：\n{thread or '（暂无发言，你较早发言）'}\n\n"
+    if mode == "meeting":
+        return (
+            f"你是公司内部员工「{spk}」，正在参加一场公司内部会议（同步目标 / 规范 / 流程）。\n"
+            f"{ctx}"
+            f"请以 {spk} 的身份简短发言（3-6 句）：\n"
+            f"1) 用你自己的话复述你对本次目标/规范的关键理解，证明你确实听懂了；\n"
+            f"2) 提出与你职责相关的疑问、风险或执行障碍；\n"
+            f"3) 认领与你相关的行动项（我负责什么、大致何时完成）。\n"
+            f"不要空泛附和、不要客套。只输出你的发言正文，不加前缀或署名。"
+        )
+    if mode == "standup":
+        return (
+            f"你是公司内部员工「{spk}」，正在参加团队站会。\n"
+            f"{ctx}"
+            f"请以 {spk} 的身份简短同步（3-5 句）：1) 最近进展；2) 当前阻塞 / 风险；"
+            f"3) 下一步计划；4) 需要谁协助。只输出你的发言正文，不加前缀或署名。"
+        )
+    return (
+        f"你是公司内部员工「{spk}」，正在参与一场多员工内部讨论。\n"
+        f"{ctx}"
+        f"请以 {spk} 的身份简短发言（3-6 句）：提出你的观点、对他人观点的质疑或补充，"
+        f"推动讨论向「可执行的方案/决策」收敛。不要重复别人已说过的话，不要客套。"
+        f"只输出你的发言正文，不加前缀或署名。"
+    )
+
+
+def conversation_synth_prompt(mode: str, synth: str, title: str, thread: str) -> str:
+    if mode == "meeting":
+        role, body = "会议主持人", (
+            "请输出结构化【会议纪要】，包含：\n"
+            "1) 已对齐的目标 / 规范（明确结论）；\n"
+            "2) 行动项清单（谁 · 做什么 · 大致何时）——尽量具体到可以直接派成任务；\n"
+            "3) 待澄清 / 未决问题；\n"
+            "4) 对齐确认（哪些员工已明确理解并认领；是否有人未表态或有异议）。"
+        )
+    elif mode == "standup":
+        role, body = "站会主持人", (
+            "请输出【站会汇总】，包含：\n"
+            "1) 整体进度概览；2) 阻塞清单（谁卡在哪、需要什么）；"
+            "3) 今日需协调 / 决策的事项；4) 风险提示。"
+        )
+    else:
+        role, body = "讨论主持人", (
+            "请综合各方发言，输出一份清晰的最终方案 / 决策，包含：\n"
+            "1) 结论 / 决策；2) 关键理由；3) 可执行的下一步（谁做什么）；4) 仍存在的风险或待确认项。"
+        )
+    return (
+        f"你是「{synth}」，本次{role}，负责收口。\n"
+        f"议题：{title}\n\n完整记录：\n{thread}\n\n{body}\n"
+        f"简洁、可执行、结构化。只输出正文，不加多余解释。"
+    )
+
+
+def meeting_capable_path() -> Path:
+    # Resolved at call time (not import) so tests patching ROOT stay isolated.
+    return ROOT / "state" / "meeting-capable.json"
+
+
+def load_meeting_capable() -> dict:
+    try:
+        data = json.loads(meeting_capable_path().read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def save_meeting_capable(data: dict) -> None:
+    path = meeting_capable_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def probe_meeting_capability(conn: sqlite3.Connection, agent: str, timeout: int = 90) -> dict:
+    """Invoke an employee with a tiny self-check prompt and record whether it genuinely
+    replies. This is the authoritative 'can this employee join a meeting' signal — an
+    on-demand openclaw agent may have no fresh heartbeat yet still answer when invoked."""
+    prompt = "公司内部参会能力自检：请用一句话确认你能参加公司内部会议并发言（例如：我可以参会）。只输出这一句话。"
+    res = conversation_invoke_runtime(conn, agent, prompt, timeout)
+    return {
+        "capable": bool(res.get("ok") and res.get("reply")),
+        "runtime": res.get("runtime", ""),
+        "checked_at": now(),
+        "reply": (res.get("reply") or "")[:200],
+        "error": res.get("error", ""),
+        "exit_code": res.get("exit_code"),
+    }
+
+
+def conversation_candidate_agents(conn: sqlite3.Connection, *, active_only: bool = True) -> list[str]:
+    out: list[str] = []
+    for emp in rows(conn, "SELECT * FROM employees ORDER BY id"):
+        if is_human_owner_employee(emp):
+            continue
+        if active_only and emp.get("status") != "active":
+            continue
+        if str(emp.get("runtime") or "") not in CONVERSATION_RUNTIME_SUPPORTED:
+            continue
+        out.append(emp["id"])
+    return out
+
+
+def conversation_probe_internal(conn: sqlite3.Connection, agents: list[str], *, timeout: int = 90, persist: bool = True) -> dict:
+    state = load_meeting_capable() if persist else {}
+    results: dict[str, dict] = {}
+    for agent in agents:
+        aid = resolve_employee_alias(agent)
+        rec = probe_meeting_capability(conn, aid, timeout)
+        results[aid] = rec
+        state[aid] = rec
+    if persist:
+        save_meeting_capable(state)
+    return results
+
+
+def cmd_conversation_probe(args: argparse.Namespace) -> int:
+    conn = connect()
+    raw = (args.participants or "active").strip().lower()
+    if raw in {"all", "active", ""}:
+        agents = conversation_candidate_agents(conn, active_only=raw != "all")
+    else:
+        agents = parse_participants(args.participants)
+    if not agents:
+        emit({"ok": False, "error": "no candidate employees to probe"})
+        return 1
+    results = conversation_probe_internal(conn, agents, timeout=args.timeout, persist=not args.no_persist)
+    capable = sorted(a for a, r in results.items() if r.get("capable"))
+    incapable = sorted(a for a, r in results.items() if not r.get("capable"))
+    emit({"ok": True, "probed": len(results), "capable": capable, "incapable": incapable, "results": results})
+    return 0
+
+
+def conversation_run_internal(
+    conn: sqlite3.Connection,
+    *,
+    conversation_id: str,
+    rounds: int = 2,
+    timeout: int = 180,
+    synthesizer: str = "",
+    mode: str = "meeting",
+    gate_capable: bool = True,
+) -> dict:
+    mode = mode if mode in CONVERSATION_MODES else "meeting"
+    conv_row = conn.execute("SELECT * FROM conversations WHERE id = ?", (conversation_id,)).fetchone()
+    if not conv_row:
+        raise SystemExit(f"conversation not found: {conversation_id}")
+    conv = dict(conv_row)
+    title = conv.get("title") or conversation_id
+    participants = json.loads(conv["participants_json"])
+    rounds = max(1, int(rounds))
+
+    speakers: list[str] = []
+    skipped: list[dict] = []
+    for pid in participants:
+        emp_row = conn.execute("SELECT * FROM employees WHERE id = ?", (pid,)).fetchone()
+        if not emp_row:
+            skipped.append({"agent": pid, "reason": "unknown"})
+            continue
+        emp = dict(emp_row)
+        if is_human_owner_employee(emp):
+            continue
+        runtime = str(emp.get("runtime") or "")
+        if runtime not in CONVERSATION_RUNTIME_SUPPORTED:
+            skipped.append({"agent": pid, "reason": f"runtime {runtime or '?'} not invokable"})
+            continue
+        if emp.get("status") != "active":
+            skipped.append({"agent": pid, "reason": f"status {emp.get('status')}"})
+            continue
+        speakers.append(pid)
+
+    # Only admit employees that have genuinely demonstrated they can participate (a passing
+    # `conversation probe`). Unknowns are probed lazily on first use so a never-tested employee
+    # still works and self-populates the allowlist. Failures are excluded with a clear reason.
+    if gate_capable and speakers:
+        capable = load_meeting_capable()
+        admitted: list[str] = []
+        dirty = False
+        for spk in speakers:
+            rec = capable.get(spk)
+            if rec is None:
+                rec = probe_meeting_capability(conn, spk, timeout=min(timeout, 90))
+                capable[spk] = rec
+                dirty = True
+            if rec.get("capable"):
+                admitted.append(spk)
+            else:
+                reason = "未通过参会探测" + (f"：{rec.get('error')}" if rec.get("error") else "")
+                skipped.append({"agent": spk, "reason": reason})
+        if dirty:
+            save_meeting_capable(capable)
+        speakers = admitted
+    if not speakers:
+        raise SystemExit(f"no employee passed the participation check for {conversation_id} (run: companyctl conversation probe)")
+
+    synth = resolve_employee_alias(synthesizer) if synthesizer else ""
+    if synth and synth not in participants:
+        conversation_join_internal(conn, agent=synth, conversation_id=conversation_id)
+        participants.append(synth)
+    if not synth:
+        synth = "hermes" if "hermes" in speakers else speakers[-1]
+    # The chair must itself be able to reply, or the minutes never get written. If the chosen
+    # chair can't participate, fall back to a capable admitted speaker (prefer hermes).
+    if gate_capable and synth not in speakers:
+        cap = load_meeting_capable().get(synth)
+        if cap is None:
+            cap = probe_meeting_capability(conn, synth, timeout=min(timeout, 90))
+            store = load_meeting_capable(); store[synth] = cap; save_meeting_capable(store)
+        if not cap.get("capable"):
+            fallback = "hermes" if "hermes" in speakers else speakers[-1]
+            skipped.append({"agent": synth, "reason": f"主持人未通过参会探测，改由 {fallback} 出纪要"})
+            synth = fallback
+
+    transcript: list[dict] = []
+    for rnd in range(1, rounds + 1):
+        for spk in speakers:
+            thread = conversation_thread_text(conn, conversation_id)
+            prompt = conversation_speaker_prompt(mode, spk, title, thread)
+            res = conversation_invoke_runtime(conn, spk, prompt, timeout)
+            if res.get("ok") and res.get("reply"):
+                conversation_reply_internal(conn, source=spk, conversation_id=conversation_id, body=res["reply"])
+                transcript.append({"round": rnd, "speaker": spk, "ok": True, "reply": res["reply"]})
+            else:
+                transcript.append({"round": rnd, "speaker": spk, "ok": False,
+                                   "error": res.get("error") or f"exit_code={res.get('exit_code')}",
+                                   "stderr": res.get("stderr", "")})
+
+    thread = conversation_thread_text(conn, conversation_id, limit=80)
+    synth_prompt = conversation_synth_prompt(mode, synth, title, thread)
+    prefix = CONVERSATION_SYNTH_PREFIX.get(mode, "【方案/决策】")
+    synth_res = conversation_invoke_runtime(conn, synth, synth_prompt, timeout)
+    final_plan = ""
+    if synth_res.get("ok") and synth_res.get("reply"):
+        final_plan = synth_res["reply"]
+        conversation_reply_internal(conn, source=synth, conversation_id=conversation_id,
+                                    body=f"{prefix}\n{final_plan}")
+    else:
+        transcript.append({"round": rounds + 1, "speaker": synth, "ok": False,
+                           "error": synth_res.get("error") or f"synthesis exit_code={synth_res.get('exit_code')}",
+                           "stderr": synth_res.get("stderr", "")})
+
+    audit(conn, synth, "conversation.run", conversation_id,
+          {"mode": mode, "rounds": rounds, "speakers": speakers, "synthesizer": synth, "turns": len(transcript)})
+    return {
+        "conversation_id": conversation_id,
+        "title": title,
+        "mode": mode,
+        "rounds": rounds,
+        "speakers": speakers,
+        "synthesizer": synth,
+        "skipped": skipped,
+        "transcript": transcript,
+        "final_plan": final_plan,
+        "minutes_prefix": prefix,
+    }
+
+
+def cmd_conversation_run(args: argparse.Namespace) -> int:
+    conn = connect()
+    try:
+        result = conversation_run_internal(
+            conn,
+            conversation_id=args.conversation_id,
+            rounds=args.rounds,
+            timeout=args.timeout,
+            synthesizer=args.synthesizer,
+            mode=args.mode,
+            gate_capable=getattr(args, "gate_capable", True),
+        )
+    except SystemExit as exc:
+        emit({"ok": False, "error": str(exc), "conversation_id": args.conversation_id})
+        return 1
+    ok = bool(result.get("final_plan")) or any(turn.get("ok") for turn in result.get("transcript", []))
+    emit({"ok": ok, **result})
+    return 0 if ok else 1
+
+
 def task_conversation_ids(metadata: dict) -> list[str]:
     values = metadata.get("conversation_ids", [])
     if isinstance(values, str):
@@ -12898,6 +13238,19 @@ def build_parser() -> argparse.ArgumentParser:
     conversation_show = conversation_sub.add_parser("show")
     conversation_show.add_argument("--conversation-id", required=True)
     conversation_show.set_defaults(func=cmd_conversation_show)
+    conversation_run = conversation_sub.add_parser("run", help="run an autonomous multi-employee meeting/discussion that converges to minutes/a plan")
+    conversation_run.add_argument("--conversation-id", required=True)
+    conversation_run.add_argument("--mode", choices=sorted(CONVERSATION_MODES), default="meeting", help="meeting=sync goals/norms→minutes, discuss=debate→plan, standup=progress/blockers")
+    conversation_run.add_argument("--rounds", type=int, default=2, help="speaking rounds before the chair synthesizes")
+    conversation_run.add_argument("--timeout", type=int, default=180, help="per-turn runtime timeout seconds")
+    conversation_run.add_argument("--synthesizer", default="", help="chair employee who opens summary/minutes (default: hermes if present)")
+    conversation_run.add_argument("--no-gate", dest="gate_capable", action="store_false", help="skip the participation allowlist gate (admit any active runtime-capable participant)")
+    conversation_run.set_defaults(func=cmd_conversation_run, gate_capable=True)
+    conversation_probe = conversation_sub.add_parser("probe", help="test which employees can genuinely join a meeting and persist the allowlist")
+    conversation_probe.add_argument("--participants", default="active", help="'active' (default), 'all', or comma-separated employee ids")
+    conversation_probe.add_argument("--timeout", type=int, default=90, help="per-probe runtime timeout seconds")
+    conversation_probe.add_argument("--no-persist", action="store_true", help="do not write results to the meeting-capable allowlist")
+    conversation_probe.set_defaults(func=cmd_conversation_probe)
 
     communication = sub.add_parser("communication")
     communication_sub = communication.add_subparsers(dest="communication_cmd", required=True)
