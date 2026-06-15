@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
+# Single canonical web UI = the api gateway on :8765 (serves console.html + the /v1 API).
+# The old standalone dashboard (:8780, gemini_dashboard.html) and the duplicate console
+# gateway (:8788) were retired to avoid two divergent UIs — do NOT reinstall them here.
 LABELS=(
   "ai.openclaw.company-kernel.daemon"
   "ai.openclaw.company-kernel.api"
-  "ai.openclaw.company-kernel.dashboard"
 )
 mkdir -p "$HOME/Library/LaunchAgents" "$ROOT/logs"
 for LABEL in "${LABELS[@]}"; do
@@ -17,4 +19,4 @@ for LABEL in "${LABELS[@]}"; do
 done
 "$ROOT/bin/companyctl" doctor --summary
 curl -fsS http://127.0.0.1:8765/v1/health >/dev/null
-curl -fsS http://127.0.0.1:8780/dashboard.html >/dev/null
+curl -fsS http://127.0.0.1:8765/ >/dev/null   # canonical console
