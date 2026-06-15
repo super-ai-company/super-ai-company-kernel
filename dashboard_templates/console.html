@@ -854,9 +854,12 @@ async function showTask(id) {
       </div>${actions}<pre>${esc(JSON.stringify(d,null,2))}</pre>`);
   } catch(e){ openModal(`<h3>任务 ${esc(id)}</h3><pre>读取失败：${esc(e.message)}</pre>`); }
 }
+// after any stuck-panel action the task changes status — refreshAll() so BOTH the Tasks kanban
+// AND the Overview Stuck panel (rendered by renderOverview, not loadTasks) update; otherwise the
+// task appears to "still be here".
 async function taskReopen(id) {
   try { await api(`/v1/tasks/${encodeURIComponent(id)}/reopen`, {method:"POST", body:{by:OWNER, reason:"控制台手动重开"}});
-    toast("任务已重开","ok"); closeModal(); loadTasks();
+    toast("任务已重开,重新入队","ok"); closeModal(); refreshAll();
   } catch(e){ toast("失败："+e.message,"bad"); }
 }
 async function taskDiscard(id) {
@@ -865,14 +868,15 @@ async function taskDiscard(id) {
     confirmText: '🗑 '+(LANG==='zh'?'确认丢弃':'Discard'), onConfirm: ()=>true});
   if (!ok) return;
   try { await api(`/v1/tasks/${encodeURIComponent(id)}/discard`, {method:"POST", body:{by:OWNER, reason:"控制台丢弃"}});
-    toast(LANG==='zh'?"已丢弃":"Discarded","ok"); closeModal(); loadTasks();
+    toast(LANG==='zh'?"已丢弃,移出看板":"Discarded","ok"); closeModal(); refreshAll();
   } catch(e){ toast("失败："+e.message,"bad"); }
 }
 async function taskFixReopen(id) {
   let desc = ($("fixDesc")?.value || "").trim();
   const ws = ($("fixWorkspace")?.value || "").trim();
   if (ws) {
-    if (!ws.startsWith("/")) return toast(LANG==='zh'?"仓库路径要用绝对路径（/ 开头）":"Repo path must be absolute","bad");
+    // accept POSIX (/abs) AND Windows (C:\abs or C:/abs) absolute paths — cross-OS product
+    if (!/^(\/|[A-Za-z]:[\\/])/.test(ws)) return toast(LANG==='zh'?"仓库路径要用绝对路径（/ 或 C:\\ 开头）":"Repo path must be absolute","bad");
     // ensure a single `工作区: <ws>` directive at the top (the backend resolve_task_workspace honors it)
     desc = desc.replace(/^\s*(?:工作区|workspace)\s*[:：].*$/gim, "").trim();
     desc = `工作区: ${ws}\n${desc}`;
@@ -880,21 +884,25 @@ async function taskFixReopen(id) {
   if (desc.length < 8) return toast(LANG==='zh'?"填仓库路径，或把修复内容写清楚":"Set the repo path, or write a clear brief","bad");
   if (desc === (window.__taskDesc||"").trim()) return toast(LANG==='zh'?"没有改动；只想重试请用「仅重开」":"No change — use Reopen only","bad");
   try { await api(`/v1/tasks/${encodeURIComponent(id)}/reopen`, {method:"POST", body:{by:OWNER, reason:"控制台修复并重开", description:desc}});
-    toast(LANG==='zh'?"已修复并重开，将带仓库路径重新执行":"Fixed & reopened with repo path","ok"); closeModal(); loadTasks();
+    toast(LANG==='zh'?"已修复并重开，带仓库路径重新入队":"Fixed & reopened with repo path","ok"); closeModal(); refreshAll();
   } catch(e){ toast("失败："+e.message,"bad"); }
 }
 function taskReassignPrompt(id) {
-  const rows = EMPLOYEES.map(e=>{
+  // only ACTIVE employees can actually take work — reassigning to a candidate is a dead-end.
+  // on-duty first so you pick someone live.
+  const targets = (EMPLOYEES||[]).filter(e=>e.status==="active")
+    .sort((a,b)=>(isOnDuty(b.last_seen_at||b.heartbeat)?1:0)-(isOnDuty(a.last_seen_at||a.heartbeat)?1:0));
+  const rows = targets.map(e=>{
     const duty = isOnDuty(e.last_seen_at||e.heartbeat);
     return `<div class="reassign-opt" data-id="${esc(e.id)}" onclick="doReassign('${esc(id)}','${esc(e.id)}')">
       <div class="avatar" style="width:30px;height:30px;border-radius:8px;font-size:12px;background:${color(e.id)}">${initial(e.id)}</div>
       <div style="flex:1"><div style="font-weight:600">${esc(e.name||e.id)}</div>
         <div class="emp-sub">${esc(e.role||"")} · ${esc(e.runtime||"")}</div></div>
-      <span class="dot ${duty?'ok':(e.status==='active'?'':'')}" title="${duty?t('on_duty'):t('off_duty')}"></span>
-      <span class="badge ${esc(e.status)}">${e.status==='active'?t('in_team'):t('candidate')}</span></div>`;
-  }).join("");
+      <span class="dot ${duty?'ok':''}" title="${duty?t('on_duty'):t('off_duty')}"></span>
+      <span class="badge active">${duty?t('on_duty'):t('in_team')}</span></div>`;
+  }).join("") || `<div class="empty">${LANG==='zh'?'没有在编(active)员工可改派 —— 先到员工页激活一个':'No active employees to reassign to'}</div>`;
   openModal(`<h3>${t('dlg_reassign')}</h3>
-    <div class="emp-sub" style="margin-bottom:10px">${t('dlg_reassignHint')}</div>
+    <div class="emp-sub" style="margin-bottom:10px">${LANG==='zh'?'改派后任务清空阻塞、重新入队给新员工。只列在编员工。':t('dlg_reassignHint')}</div>
     <input id="reassignSearch" placeholder="${t('dlg_search')}" oninput="filterReassign(this.value)" style="margin-bottom:10px">
     <div id="reassignList" class="reassign-list">${rows}</div>`);
   setTimeout(()=>{ const s=$("reassignSearch"); if(s) s.focus(); }, 50);
@@ -907,7 +915,7 @@ function filterReassign(q){
 }
 async function doReassign(id, to){
   try { await api(`/v1/tasks/${encodeURIComponent(id)}/reassign`, {method:"POST", body:{by:OWNER, to, reason:"控制台改派"}});
-    toast("已改派给 "+to,"ok"); closeModal(); loadTasks();
+    toast("已改派给 "+to+",重新入队","ok"); closeModal(); refreshAll();
   } catch(e){ toast("失败："+e.message,"bad"); }
 }
 async function loadDeliveryTargets(){
