@@ -38,3 +38,16 @@ scripts/patch_external_mirror.py
 .pytest_cache/
 .coverage
 htmlcov/
+
+# Per-deployment runtime state — created/managed locally, never uploaded.
+# Employees are added per-install via the onboarding skill, not shipped in the repo.
+config/company_communications.json
+employees/*/profile.json
+employees/*/capabilities.json
+employees/*/permissions.json
+employees/*/rules.md
+# junk / mount artifacts
+*.fuse_hidden*
+*.sqlite-journal
+__mount_write_test.*
+run-gemini-qa.sh
