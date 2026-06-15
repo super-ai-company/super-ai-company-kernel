@@ -6,6 +6,8 @@ import os
 import shutil
 import sqlite3
 import subprocess
+import urllib.error
+import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -144,15 +146,33 @@ def write_report(path: Path, task: sqlite3.Row, *, executed: bool, status: str, 
     )
 
 
+def resolve_claude_proxy(model: str) -> tuple[dict, str, str]:
+    """Route claude -p through the local antigravity-claude-proxy (multi-account Gemini via the user's
+    Google accounts) when CLAUDE_PROXY_BASE_URL is set AND the proxy is reachable. Probing first means a
+    down proxy falls back to the direct Anthropic API instead of failing every task. Returns (env_overrides,
+    effective_model, route)."""
+    base = os.environ.get("CLAUDE_PROXY_BASE_URL", "").strip()
+    if not base:
+        return {}, model, "direct"
+    try:
+        req = urllib.request.Request(base.rstrip("/") + "/v1/models", headers={"x-api-key": os.environ.get("CLAUDE_PROXY_TOKEN", "test")})
+        urllib.request.urlopen(req, timeout=4).close()
+    except (urllib.error.URLError, OSError, ValueError):
+        return {}, model, "direct (proxy unreachable)"
+    env = {"ANTHROPIC_BASE_URL": base, "ANTHROPIC_AUTH_TOKEN": os.environ.get("CLAUDE_PROXY_TOKEN", "test")}
+    return env, (os.environ.get("CLAUDE_PROXY_MODEL", "").strip() or model), f"proxy {base}"
+
+
 def run_claude(prompt: Path, output: Path, workspace: Path, model: str, permission_mode: str) -> tuple[int, str]:
+    proxy_env, model, route = resolve_claude_proxy(model)
     cmd = ["claude", "-p", prompt.read_text(encoding="utf-8"), "--no-session-persistence", "--output-format", "text"]
     if model:
         cmd.extend(["--model", model])
     if permission_mode:
         cmd.extend(["--permission-mode", permission_mode])
-    cp = subprocess.run(cmd, cwd=str(workspace), text=True, capture_output=True)
+    cp = subprocess.run(cmd, cwd=str(workspace), text=True, capture_output=True, env={**os.environ, **proxy_env})
     output.write_text((cp.stdout or "") + ("\n\n## stderr\n\n" + cp.stderr if cp.stderr else ""), encoding="utf-8")
-    return cp.returncode, " ".join(["claude", "-p", "<prompt>", "--no-session-persistence", "--output-format", "text"])
+    return cp.returncode, " ".join(["claude", "-p", "<prompt>", "--model", model or "(default)", f"[{route}]"])
 
 
 def handle_direct(args: argparse.Namespace) -> int:
