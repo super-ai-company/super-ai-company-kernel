@@ -6,61 +6,71 @@
 <title>Super AI Company · 控制台</title>
 <style>
 :root{
-  --bg:#070a10;--bg2:#0c1019;--card:#11151f;--card2:#171c29;--line:#222a3a;--line2:#2c3548;
-  --text:#eef1f7;--muted:#9aa3b8;--dim:#626b81;
-  --accent:#6d8bff;--accent2:#93aaff;--accentDim:#2a3358;--ok:#36d399;--warn:#fbbf52;--bad:#f56c84;--purple:#a78bfa;
-  --grad:linear-gradient(135deg,#6d8bff,#a78bfa);
-  --shadow:0 1px 0 rgba(255,255,255,.03) inset,0 8px 24px -12px rgba(0,0,0,.6);
-  --shadow-lg:0 18px 50px -18px rgba(0,0,0,.7);
-  --r:14px;--r-sm:9px;
-  --mono:ui-monospace,SFMono-Regular,Menlo,monospace;
+  /* Boardroom — ivory paper, high-contrast ink, brass accent. A company ledger, not a gamer dashboard. */
+  --bg:#E8E2D2;--bg2:#F1ECDF;--card:#FCFBF6;--card2:#F3EEE1;--line:#DAD1BA;--line2:#C7BC9F;
+  --text:#171A20;--fg:#171A20;--muted:#6B6453;--dim:#9C927A;
+  --accent:#9A7726;--accent2:#7B5E1B;--accentDim:#EEE4CC;--ok:#2E7D52;--warn:#A9761C;--bad:#A6303D;--purple:#6A4E7C;
+  --brass:#B08A3E;
+  --grad:linear-gradient(135deg,#C49A45,#8A6B28);
+  --shadow:0 1px 2px rgba(40,30,10,.05),0 12px 28px -18px rgba(40,30,10,.22);
+  --shadow-lg:0 30px 66px -30px rgba(40,30,10,.34);
+  --r:8px;--r-sm:5px;
+  --mono:ui-monospace,SFMono-Regular,Menlo,"Cascadia Mono",monospace;
+  --serif:"Iowan Old Style","Palatino Linotype",Palatino,Georgia,"Songti SC","Noto Serif SC",ui-serif,serif;
 }
 *{box-sizing:border-box;margin:0;padding:0}
 html,body{height:100%}
-body{background:radial-gradient(1200px 600px at 80% -10%,rgba(109,139,255,.06),transparent 60%),var(--bg);color:var(--text);font:14px/1.55 -apple-system,BlinkMacSystemFont,"PingFang SC","Segoe UI",sans-serif;-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility}
-a{color:var(--accent2);text-decoration:none}
-button{font:inherit;font-weight:500;cursor:pointer;border:1px solid var(--line2);background:var(--card2);color:var(--text);border-radius:var(--r-sm);padding:7px 13px;transition:.16s cubic-bezier(.4,0,.2,1)}
-button:hover{border-color:var(--accent);color:#fff;transform:translateY(-1px)}
-button:active{transform:translateY(0)}
-button.primary{background:var(--grad);border:none;color:#fff;box-shadow:0 6px 16px -6px rgba(109,139,255,.6)}
-button.primary:hover{filter:brightness(1.08);box-shadow:0 10px 22px -8px rgba(109,139,255,.7)}
-button.ok{border-color:var(--ok);color:var(--ok)}
-button.bad{border-color:var(--bad);color:var(--bad)}
-button:disabled{opacity:.4;cursor:not-allowed}
-input,select,textarea{font:inherit;background:var(--bg2);border:1px solid var(--line);color:var(--text);border-radius:8px;padding:7px 10px;width:100%}
-input:focus,select:focus,textarea:focus{outline:none;border-color:var(--accent);box-shadow:0 0 0 3px rgba(109,139,255,.15)}
-::-webkit-scrollbar{width:9px;height:9px}::-webkit-scrollbar-thumb{background:var(--line2);border-radius:5px;border:2px solid transparent;background-clip:padding-box}::-webkit-scrollbar-thumb:hover{background:#3a445b}
+body{background:linear-gradient(180deg,#EEE8D9,var(--bg) 240px),var(--bg);color:var(--text);font:14px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC",sans-serif;-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility}
+a{color:var(--accent2);text-decoration:none}a:hover{color:var(--accent);text-decoration:underline;text-underline-offset:2px}
+button{font:inherit;font-weight:600;cursor:pointer;border:1px solid var(--line2);background:var(--card);color:var(--text);border-radius:var(--r-sm);padding:7px 14px;transition:.14s ease}
+button:hover{border-color:var(--accent);color:var(--accent2);background:var(--accentDim)}
+button:active{transform:translateY(1px)}
+button.primary{background:var(--grad);border:1px solid #7C5E1B;color:#fff;text-shadow:0 1px 0 rgba(0,0,0,.18);box-shadow:0 1px 0 rgba(255,255,255,.25) inset,0 7px 16px -8px rgba(122,94,27,.55)}
+button.primary:hover{filter:brightness(1.05);color:#fff;background:var(--grad)}
+button.ok{border-color:var(--ok);color:var(--ok);background:color-mix(in srgb,var(--ok) 9%,transparent)}
+button.ok:hover{color:#fff;background:var(--ok)}
+button.bad{border-color:var(--bad);color:var(--bad);background:color-mix(in srgb,var(--bad) 8%,transparent)}
+button.bad:hover{color:#fff;background:var(--bad)}
+button:disabled{opacity:.45;cursor:not-allowed}
+input,select,textarea{font:inherit;background:var(--card);border:1px solid var(--line2);color:var(--text);border-radius:var(--r-sm);padding:8px 11px;width:100%}
+input::placeholder,textarea::placeholder{color:var(--dim)}
+input:focus,select:focus,textarea:focus{outline:none;border-color:var(--accent);box-shadow:0 0 0 3px color-mix(in srgb,var(--accent) 20%,transparent)}
+::-webkit-scrollbar{width:10px;height:10px}::-webkit-scrollbar-thumb{background:var(--line2);border-radius:6px;border:2px solid transparent;background-clip:padding-box}::-webkit-scrollbar-thumb:hover{background:var(--brass)}
 
-.topbar{position:sticky;top:0;z-index:50;display:flex;align-items:center;gap:16px;padding:13px 22px;background:rgba(7,10,16,.78);backdrop-filter:blur(16px) saturate(1.4);border-bottom:1px solid var(--line)}
-.logo{display:flex;align-items:center;gap:11px;font-weight:700;font-size:16px;letter-spacing:-.01em;white-space:nowrap}
-.logo .orb{width:28px;height:28px;border-radius:9px;background:var(--grad);display:grid;place-items:center;font-size:14px;box-shadow:0 4px 12px -3px rgba(109,139,255,.6)}
+.topbar{position:sticky;top:0;z-index:50;display:flex;align-items:center;gap:18px;padding:13px 24px 11px;background:linear-gradient(180deg,#FCF9F1,#F3EEDF);border-bottom:2px solid var(--brass);box-shadow:0 1px 0 rgba(255,255,255,.6) inset,0 6px 18px -14px rgba(40,30,10,.45)}
+.logo{display:flex;align-items:center;gap:12px;white-space:nowrap}
+.logo .orb{width:30px;height:30px;border-radius:50%;background:radial-gradient(circle at 32% 28%,#E9CD80,#B08A3E 56%,#7C5E22);display:grid;place-items:center;font-size:14px;box-shadow:0 0 0 1px #8A6B28,0 2px 6px -2px rgba(80,60,20,.6),inset 0 1px 2px rgba(255,255,255,.55)}
+.logo .wm{font-family:var(--serif);font-weight:700;font-size:19px;letter-spacing:.02em;color:var(--text);line-height:1.1}
+.logo .tag{font-size:10px;letter-spacing:.2em;text-transform:uppercase;color:var(--accent2);font-weight:700}
+.masthead-date{font-family:var(--mono);font-size:11px;color:var(--muted);letter-spacing:.02em}
 .healthchips{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
-.chip{display:inline-flex;align-items:center;gap:7px;padding:4px 11px;border-radius:99px;border:1px solid var(--line);background:var(--card);font-size:12px;color:var(--muted)}
-.chip b{color:var(--text);font-weight:600}
+.chip{display:inline-flex;align-items:center;gap:7px;padding:4px 11px;border-radius:var(--r-sm);border:1px solid var(--line2);background:var(--card);font-size:12px;color:var(--muted);box-shadow:0 1px 0 rgba(255,255,255,.5) inset}
+.chip b{color:var(--text);font-weight:700;font-family:var(--mono)}
 .dot{width:8px;height:8px;border-radius:50%;background:var(--dim);flex:none}
-.dot.ok{background:var(--ok);box-shadow:0 0 0 3px rgba(54,211,153,.18)}
-.dot.warn{background:var(--warn);box-shadow:0 0 0 3px rgba(251,191,82,.18)}
-.dot.bad{background:var(--bad);box-shadow:0 0 0 3px rgba(245,108,132,.2)}
+.dot.ok{background:var(--ok);box-shadow:0 0 0 3px color-mix(in srgb,var(--ok) 22%,transparent)}
+.dot.warn{background:var(--warn);box-shadow:0 0 0 3px color-mix(in srgb,var(--warn) 22%,transparent)}
+.dot.bad{background:var(--bad);box-shadow:0 0 0 3px color-mix(in srgb,var(--bad) 24%,transparent)}
 .spacer{flex:1}
-.refresh-meta{font-size:12px;color:var(--dim);white-space:nowrap}
+.refresh-meta{font-size:11.5px;color:var(--dim);white-space:nowrap;font-family:var(--mono)}
 
-.tabs{display:flex;gap:4px;padding:8px 20px 0;border-bottom:1px solid var(--line);background:transparent;position:sticky;top:55px;z-index:40;backdrop-filter:blur(12px)}
-.tab{padding:8px 15px;color:var(--muted);border-radius:8px 8px 0 0;border-bottom:2px solid transparent;cursor:pointer;font-size:13.5px;font-weight:500;user-select:none;transition:.15s;margin-bottom:-1px}
-.tab:hover{color:var(--text);background:var(--card)}
-.tab.active{color:#fff;border-bottom-color:var(--accent);background:linear-gradient(180deg,rgba(109,139,255,.1),transparent)}
-.tab .cnt{margin-left:7px;font-size:11px;background:var(--card2);border-radius:99px;padding:1px 8px;color:var(--muted);font-weight:600}
-.tab .cnt.alert{background:var(--bad);color:#fff}
+.tabs{display:flex;gap:2px;padding:0 22px;border-bottom:1px solid var(--line2);background:var(--bg);position:sticky;top:55px;z-index:40}
+.tab{padding:11px 16px;color:var(--muted);border-bottom:2px solid transparent;cursor:pointer;font-size:13px;font-weight:600;user-select:none;transition:.15s;margin-bottom:-1px;letter-spacing:.01em}
+.tab:hover{color:var(--text)}
+.tab.active{color:var(--text);border-bottom-color:var(--brass)}
+.tab .cnt{margin-left:7px;font-size:11px;background:var(--card2);border:1px solid var(--line);border-radius:99px;padding:1px 8px;color:var(--muted);font-weight:700;font-family:var(--mono)}
+.tab .cnt.alert{background:var(--bad);border-color:var(--bad);color:#fff}
 
 main{padding:22px 22px 64px;max-width:1520px;margin:0 auto}
 .view{display:none}.view.active{display:block;animation:fadeup .25s ease}
 @keyframes fadeup{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
 .grid{display:grid;gap:14px}
 .cards-3{grid-template-columns:repeat(auto-fill,minmax(290px,1fr))}
-.card{background:linear-gradient(180deg,var(--card),var(--bg2));border:1px solid var(--line);border-radius:var(--r);padding:16px;box-shadow:var(--shadow)}
-.card h3{font-size:12.5px;color:var(--muted);font-weight:600;margin-bottom:12px;display:flex;align-items:center;gap:8px;letter-spacing:.01em}
-.section-head{display:flex;align-items:center;gap:10px;margin:6px 0 16px;flex-wrap:wrap}
-.section-head h2{font-size:17px;font-weight:650;letter-spacing:-.01em}
+.card{background:var(--card);border:1px solid var(--line);border-radius:var(--r);padding:17px 18px;box-shadow:var(--shadow)}
+.card h3{font-size:11px;color:var(--muted);font-weight:700;margin-bottom:13px;display:flex;align-items:center;gap:8px;letter-spacing:.09em;text-transform:uppercase}
+.section-head{display:flex;align-items:center;gap:11px;margin:4px 0 18px;flex-wrap:wrap;padding-bottom:11px;border-bottom:1px solid var(--line)}
+.section-head h2{font-family:var(--serif);font-size:21px;font-weight:700;letter-spacing:0;line-height:1.15}
 .section-head .hint{font-size:12px;color:var(--dim)}
+.modal h3{font-family:var(--serif)}
 
 .emp{display:flex;flex-direction:column;gap:8px}
 .emp-top{display:flex;align-items:center;gap:10px}
@@ -68,8 +78,8 @@ main{padding:22px 22px 64px;max-width:1520px;margin:0 auto}
 .emp-name{font-weight:600;letter-spacing:-.01em}
 .emp-sub{font-size:12px;color:var(--muted)}
 .badge{font-size:11px;padding:2.5px 9px;border-radius:99px;border:1px solid var(--line);color:var(--muted);font-weight:600}
-.badge.active{border-color:rgba(54,211,153,.4);color:var(--ok);background:rgba(54,211,153,.08)}
-.badge.candidate{border-color:rgba(251,191,82,.4);color:var(--warn);background:rgba(251,191,82,.08)}
+.badge.active{border-color:color-mix(in srgb,var(--ok) 45%,var(--line));color:var(--ok);background:color-mix(in srgb,var(--ok) 11%,transparent)}
+.badge.candidate{border-color:color-mix(in srgb,var(--warn) 45%,var(--line));color:var(--warn);background:color-mix(in srgb,var(--warn) 11%,transparent)}
 .emp-meta{display:flex;gap:10px;flex-wrap:wrap;font-size:12px;color:var(--muted)}
 .emp-actions{display:flex;gap:8px;margin-top:4px}
 .emp-actions button{font-size:12px;padding:5px 11px}
@@ -160,19 +170,32 @@ label{font-size:12px;color:var(--muted);display:block;margin-bottom:4px}
 .mention-grp{font-size:11px;color:var(--dim);padding:7px 12px 3px;text-transform:uppercase;letter-spacing:.04em;position:sticky;top:0;background:var(--card2)}
 .mention-item{display:flex;align-items:center;gap:9px;padding:7px 12px;cursor:pointer}
 .mention-item.active,.mention-item:hover{background:var(--accent);color:#fff}
-.mention-item.active .mi-sub,.mention-item:hover .mi-sub{color:#e8eeff}
+.mention-item.active .mi-sub,.mention-item:hover .mi-sub{color:rgba(255,255,255,.82)}
 .mi-tag{width:22px;height:22px;border-radius:6px;display:grid;place-items:center;font-size:11px;font-weight:700;color:#fff;flex:none}
 .mi-main{font-weight:600;font-size:13px}.mi-sub{font-size:11px;color:var(--muted)}
 .mi-grp-icon{font-size:13px;width:22px;text-align:center;flex:none}
-.deliver-pill{display:inline-flex;align-items:center;gap:6px;margin-top:6px;font-size:12px;color:var(--ok);background:rgba(62,207,142,.1);border:1px solid var(--ok);border-radius:99px;padding:2px 10px}
+.deliver-pill{display:inline-flex;align-items:center;gap:6px;margin-top:6px;font-size:12px;color:var(--ok);background:color-mix(in srgb,var(--ok) 12%,transparent);border:1px solid var(--ok);border-radius:99px;padding:2px 10px}
 .deliver-pill .x{cursor:pointer;color:var(--muted)}
-@media(max-width:900px){.kanban{grid-template-columns:repeat(2,1fr)}}
+/* signature: daily operations report band (letterhead ledger rule) */
+.report-band{margin:2px 0 18px;border-top:2px solid var(--brass);border-bottom:1px solid var(--line2)}
+.report-band .rb-row{display:flex;align-items:baseline;justify-content:space-between;gap:12px;padding:9px 3px}
+.report-band .rb-title{font-family:var(--serif);font-size:15px;font-weight:700;letter-spacing:.16em;text-transform:uppercase;color:var(--text)}
+.report-band .rb-date{font-family:var(--mono);font-size:12px;color:var(--muted);letter-spacing:.04em;white-space:nowrap}
+@media(max-width:900px){.kanban{grid-template-columns:repeat(2,1fr)}.report-band .rb-title{font-size:13px;letter-spacing:.1em}}
+@media print{.topbar,.tabs,.refresh-meta,#langBtn,.emp-actions,.toast-wrap{display:none!important}body{background:#fff}.card{box-shadow:none;border-color:#ccc}}
 </style>
 </head>
 <body>
 
 <div class="topbar">
-  <div class="logo"><div class="orb">🏢</div>Super AI Company <span style="color:var(--dim);font-weight:400;font-size:12px" data-i18n="console">控制台</span></div>
+  <div class="logo">
+    <div class="orb">🏛</div>
+    <div style="display:flex;flex-direction:column;gap:2px">
+      <span class="wm">Super AI Company</span>
+      <span class="tag"><span data-i18n="console">控制台</span> · OPERATIONS LEDGER</span>
+    </div>
+    <span class="masthead-date" style="margin-left:4px"></span>
+  </div>
   <div class="healthchips" id="healthChips"></div>
   <div class="spacer"></div>
   <span class="refresh-meta" id="refreshMeta" data-i18n="connecting">连接中…</span>
@@ -180,7 +203,7 @@ label{font-size:12px;color:var(--muted);display:block;margin-bottom:4px}
   <button onclick="refreshAll(true)"><span data-i18n="refresh">⟳ 刷新</span></button>
 </div>
 
-<div id="connBanner" style="display:none;padding:10px 20px;background:#2a1620;border-bottom:1px solid var(--bad);font-size:13px;align-items:center;gap:10px">
+<div id="connBanner" style="display:none;padding:10px 20px;background:color-mix(in srgb,var(--bad) 10%,var(--card));border-bottom:1px solid var(--bad);font-size:13px;align-items:center;gap:10px">
   <span style="color:var(--bad)" data-i18n="cannotConnect">⚠ 无法连接 Company Kernel API。</span>
   <span style="color:var(--muted)" data-i18n="runGatewayHint">请先在终端运行 <code style="font-family:var(--mono)">bin/company-api-gateway</code>，或填写 API 地址：</span>
   <input id="apiBaseInput" placeholder="http://127.0.0.1:8765" style="width:240px">
@@ -203,6 +226,7 @@ label{font-size:12px;color:var(--muted);display:block;margin-bottom:4px}
 
 <!-- 总览 -->
 <section class="view active" id="v-overview">
+  <div class="report-band"><div class="rb-row"><span class="rb-title" data-i18n="rep_band">每日运营报告</span><span class="rb-date masthead-date"></span></div></div>
   <div class="grid cards-3" id="ovCards"></div>
   <div style="height:14px"></div>
   <div class="card" id="ovStuckCard" style="display:none;margin-bottom:14px;border-color:var(--bad)">
@@ -426,7 +450,7 @@ const I18N = {
     dlg_ok:"确定", dlg_cancel:"取消", dlg_reassign:"改派任务", dlg_reassignHint:"选择新的执行员工",
     dlg_token:"输入 API Token", dlg_tokenHint:"此内核已启用鉴权（COMPANY_KERNEL_API_TOKEN）",
     dlg_approveReason:"批准理由（可空）", dlg_denyReason:"拒绝理由（可空）", dlg_search:"搜索员工 / 群…",
-    mention_to:"执行人 / 群", mention_hint:"输入 @ 选员工或群（如 nestcar.A3 = 派给 nestcar 并发到 A3 群）", mention_deliverTo:"将投递到群", task_tpl:"📋 用模板",
+    mention_to:"执行人 / 群", mention_hint:"输入 @ 选员工或群（如 nestcar.A3 = 派给 nestcar 并发到 A3 群）", mention_deliverTo:"将投递到群", task_tpl:"📋 用模板", rep_band:"每日运营报告",
   },
   en: {
     console:"Console", connecting:"Connecting…", refresh:"⟳ Refresh", connect:"Connect",
@@ -454,7 +478,7 @@ const I18N = {
     dlg_ok:"OK", dlg_cancel:"Cancel", dlg_reassign:"Reassign task", dlg_reassignHint:"Pick the new assignee",
     dlg_token:"Enter API Token", dlg_tokenHint:"This kernel requires auth (COMPANY_KERNEL_API_TOKEN)",
     dlg_approveReason:"Approval reason (optional)", dlg_denyReason:"Denial reason (optional)", dlg_search:"Search employee / group…",
-    mention_to:"Assignee / group", mention_hint:"Type @ to pick an employee or group (e.g. nestcar.A3 = assign nestcar and deliver to group A3)", mention_deliverTo:"Will deliver to group", task_tpl:"📋 Template",
+    mention_to:"Assignee / group", mention_hint:"Type @ to pick an employee or group (e.g. nestcar.A3 = assign nestcar and deliver to group A3)", mention_deliverTo:"Will deliver to group", task_tpl:"📋 Template", rep_band:"Daily Operations Report",
   },
 };
 let LANG = localStorage.getItem("ck_lang") || ((navigator.language||"").toLowerCase().startsWith("zh") ? "zh" : "en");
@@ -464,6 +488,12 @@ function applyLang(){
   document.querySelectorAll("[data-i18n]").forEach(el => { const k = el.getAttribute("data-i18n"); if (I18N[LANG][k]!=null) el.textContent = I18N[LANG][k]; });
   document.querySelectorAll("[data-i18n-ph]").forEach(el => { const k = el.getAttribute("data-i18n-ph"); if (I18N[LANG][k]!=null) el.placeholder = I18N[LANG][k]; });
   const lb = document.getElementById("langBtn"); if (lb) lb.textContent = LANG === "zh" ? "EN" : "中";
+  setMasthead();
+}
+function setMasthead(){
+  const d = new Date();
+  const s = d.toLocaleDateString(LANG==="zh"?"zh-CN":"en-US",{year:"numeric",month:"short",day:"numeric"});
+  document.querySelectorAll(".masthead-date").forEach(e=>{ e.textContent = s; });
 }
 function toggleLang(){ LANG = LANG === "zh" ? "en" : "zh"; localStorage.setItem("ck_lang", LANG); applyLang(); if (typeof refreshAll==="function") refreshAll(); }
 
