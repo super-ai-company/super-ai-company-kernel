@@ -90,7 +90,7 @@ class ConversationStressTest(unittest.TestCase):
             "conversation_id": "conv-gate", "title": "规范同步", "body": "议程：新规范",
         })
 
-        def fake_invoke(conn, agent, prompt, timeout):
+        def fake_invoke(conn, agent, prompt, timeout, memory_key=""):
             if agent == "nestcar":  # this one can't actually participate
                 return {"ok": False, "reply": "", "error": "runtime down", "exit_code": 1}
             return {"ok": True, "reply": f"{agent} 的发言", "runtime": "x", "exit_code": 0}

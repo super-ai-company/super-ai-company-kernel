@@ -3,11 +3,13 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import shutil
 import sqlite3
 import subprocess
 import urllib.error
 import urllib.request
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -226,7 +228,52 @@ def pool_models_with_quota(base: str, token: str) -> set[str] | None:
     return available
 
 
-def run_claude(prompt: Path, output: Path, workspace: Path, model: str, permission_mode: str, agent: str = "claude", timeout: int | None = None) -> tuple[int, str]:
+# ---------------------------------------------------------------- persistent memory (opt-in)
+# A task/conversation can carry a stable "memory key" so Claude reuses ONE session across calls and
+# actually remembers prior turns (no re-scanning the repo each time). Empirically: `--session-id`
+# CREATES a session; a second `--session-id` for the same id errors "already in use"; `--resume`
+# continues it. So we create once (tracked by a marker file) and resume thereafter. No key → the
+# old stateless `--no-session-persistence` path, so nothing changes for normal tasks.
+MEMORY_NS = uuid.uuid5(uuid.NAMESPACE_URL, "company-kernel/claude-memory")
+_MEMORY_DIRECTIVE = re.compile(r"^\s*(?:记忆会话|memory[-_ ]?session)\s*[:：]\s*(.+?)\s*$", re.IGNORECASE | re.MULTILINE)
+
+
+def parse_memory_key(text: str) -> str:
+    """Extract a `记忆会话: <key>` / `memory-session: <key>` directive from a task description."""
+    m = _MEMORY_DIRECTIVE.search(text or "")
+    return m.group(1).strip() if m else ""
+
+
+def memory_session_id(agent: str, memory_key: str) -> str:
+    return str(uuid.uuid5(MEMORY_NS, f"{agent}:{memory_key}"))
+
+
+def _memory_marker(agent: str, sid: str) -> Path:
+    return ROOT / "employees" / agent / "sessions" / f"{sid}.json"
+
+
+def memory_session_started(agent: str, sid: str) -> bool:
+    return _memory_marker(agent, sid).exists()
+
+
+def mark_memory_session(agent: str, sid: str, memory_key: str) -> None:
+    p = _memory_marker(agent, sid)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps({"session_id": sid, "memory_key": memory_key, "created_at": now()}, ensure_ascii=False), encoding="utf-8")
+
+
+def claude_session_flags(agent: str, memory_key: str, attempt: int) -> tuple[list[str], str]:
+    """Session CLI flags for one attempt. Returns (flags, session_id). attempt>0 means we're
+    failing over models within one call — the session was already created on attempt 0, so resume."""
+    if not memory_key:
+        return ["--no-session-persistence"], ""
+    sid = memory_session_id(agent, memory_key)
+    if memory_session_started(agent, sid) or attempt > 0:
+        return ["--resume", sid], sid
+    return ["--session-id", sid], sid
+
+
+def run_claude(prompt: Path, output: Path, workspace: Path, model: str, permission_mode: str, agent: str = "claude", timeout: int | None = None, memory_key: str = "") -> tuple[int, str]:
     proxy_env, model, route = resolve_claude_proxy(agent, model)
     # PER-EMPLOYEE 权限覆盖:profile.json 设了 permission_mode 就用它(例如 gemini QA 需要工具/浏览器 → bypassPermissions,
     # 否则 -p 模式工具被默认拒,只能输出文本)。未设的员工保持原 permission_mode 不变。
@@ -265,7 +312,8 @@ def run_claude(prompt: Path, output: Path, workspace: Path, model: str, permissi
     rc, out, err, used = 1, "", "", model
     failover = []
     for attempt, m in enumerate(models_to_try):
-        cmd = [claude_bin, "-p", prompt_text, "--no-session-persistence", "--output-format", "text"]
+        sess_flags, _sid = claude_session_flags(agent, memory_key, attempt)
+        cmd = [claude_bin, "-p", prompt_text, *sess_flags, "--output-format", "text"]
         if m:
             cmd.extend(["--model", m])
         if permission_mode:
@@ -282,9 +330,16 @@ def run_claude(prompt: Path, output: Path, workspace: Path, model: str, permissi
         if not (proxy_env and _quota_exhausted(out + err)):
             break  # success, or a non-quota failure → stop trying other models
         failover.append(m)  # this model is exhausted → try the next one
+    # In memory mode the session now exists (claude ran at least once) — mark it so the next
+    # call resumes instead of re-creating (which errors "already in use").
+    if memory_key:
+        sid = memory_session_id(agent, memory_key)
+        if not memory_session_started(agent, sid):
+            mark_memory_session(agent, sid, memory_key)
     note = f" (failover past exhausted: {', '.join(failover)})" if failover else ""
+    mem = " [memory]" if memory_key else ""
     output.write_text(out + ("\n\n## stderr\n\n" + err if err else ""), encoding="utf-8")
-    return rc, " ".join(["claude", "-p", "<prompt>", "--model", used or "(default)", f"[{route}]{note}"])
+    return rc, " ".join(["claude", "-p", "<prompt>", "--model", used or "(default)", f"[{route}]{note}{mem}"])
 
 
 def handle_direct(args: argparse.Namespace) -> int:
@@ -300,7 +355,8 @@ def handle_direct(args: argparse.Namespace) -> int:
     output = base / f"direct-output-{stamp}.md"
     prompt.write_text(args.direct_message, encoding="utf-8")
     workspace = Path(args.workspace).expanduser() if args.workspace else DEFAULT_WORKSPACE
-    code, _ = run_claude(prompt, output, workspace, args.model, args.permission_mode, args.agent)
+    memory_key = getattr(args, "memory_session", "") or ""
+    code, _ = run_claude(prompt, output, workspace, args.model, args.permission_mode, args.agent, memory_key=memory_key)
     reply = output.read_text(encoding="utf-8", errors="replace").strip() if output.exists() else ""
     receipt = base / f"direct-receipt-{stamp}.json"
     receipt.write_text(json.dumps({"agent": args.agent, "source": args.direct_source,
@@ -345,7 +401,8 @@ def process(args: argparse.Namespace) -> int:
         run_companyctl(["heartbeat", "--agent", args.agent])
         emit({"ok": done_code == 0, "processed": 1, "executed": False, "task_id": task["id"], "prompt": str(artifact["prompt"]), "report": str(artifact["report"]), "companyctl_stdout": done_out, "companyctl_stderr": done_err})
         return done_code
-    code, cmd = run_claude(artifact["prompt"], artifact["output"], workspace, args.model, args.permission_mode, args.agent)
+    memory_key = parse_memory_key(task["description"] or "")
+    code, cmd = run_claude(artifact["prompt"], artifact["output"], workspace, args.model, args.permission_mode, args.agent, memory_key=memory_key)
     if code == 0:
         detail = execution_detail(cmd, artifact["output"], success=True)
         write_report(artifact["report"], task, executed=True, status="completed", detail=detail, prompt=artifact["prompt"], output=artifact["output"])
@@ -380,6 +437,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--direct-message", default="", help="direct reachability probe: run claude -p with this and return the reply (used by verify-direct)")
     parser.add_argument("--direct-source", default="", help="source employee for the direct probe")
     parser.add_argument("--direct-session-key", default="", help="session key from the direct resolver")
+    parser.add_argument("--memory-session", default="", help="stable memory key: reuse ONE claude session across calls so it remembers prior turns (used by conversations)")
     parser.add_argument("--timeout", type=int, default=120, help="direct probe timeout seconds")
     return parser
 
