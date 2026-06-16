@@ -7995,6 +7995,16 @@ def load_policy_config() -> dict:
     return obj
 
 
+# A "token" in UI/design work means a *design token* (色彩/配色/spacing token), NOT a secret/auth
+# token — so it must not trip the secret_change gate (that's a recurring false positive that buries
+# real frontend tasks in the approval queue). Real secret language (api/auth token, 密钥, password,
+# 密码) still gates. This only narrows the ambiguous bare word "token".
+_DESIGN_TOKEN_RE = re.compile(
+    r"(?:配色|设计|主题|样式|颜色|色彩|间距|字体|design|color|theme|style|spacing|typography|ui)\s*[-_]?\s*tokens?",
+    re.IGNORECASE,
+)
+
+
 def detect_route_approval_action(title: str, description: str, explicit_action: str = "") -> str:
     if explicit_action:
         return explicit_action
@@ -8005,7 +8015,10 @@ def detect_route_approval_action(title: str, description: str, explicit_action: 
             normalized = keyword.lower().strip()
             if not normalized:
                 continue
-            if normalized.isascii() and re.search(rf"(?<![a-z0-9]){re.escape(normalized)}(?![a-z0-9])", text):
+            search_text = text
+            if action == "secret_change" and normalized == "token":
+                search_text = _DESIGN_TOKEN_RE.sub(" ", text)  # design tokens aren't secrets
+            if normalized.isascii() and re.search(rf"(?<![a-z0-9]){re.escape(normalized)}(?![a-z0-9])", search_text):
                 return action
             if not normalized.isascii() and normalized in text:
                 return action
