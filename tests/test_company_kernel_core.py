@@ -12544,7 +12544,10 @@ class CompanyKernelCoreTest(unittest.TestCase):
             conn.close()
         prompt = antigravity_adapter.build_managed_task_prompt(task)
         self.assertIn("verification_run must be a concrete command", prompt)
-        self.assertIn("python3 -m py_compile company_kernel/company_dashboard.py", prompt)
+        # review-only: must NOT hardcode a kernel-specific compile (it made agy create junk files in
+        # non-kernel workspaces), and must forbid writing files just to satisfy verification.
+        self.assertNotIn("company_kernel/company_dashboard.py", prompt)
+        self.assertIn("NEVER create, modify, or compile files just to satisfy verification", prompt)
         self.assertIn("status: blocked", prompt)
 
     def test_antigravity_complex_direct_blocks_stale_context_without_evidence(self) -> None:
