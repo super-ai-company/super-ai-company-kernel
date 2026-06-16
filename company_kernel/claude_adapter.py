@@ -14,6 +14,7 @@ from pathlib import Path
 from . import companyctl
 from .adapter_result import execution_detail
 from .db_paths import ensure_db_parent, resolve_db_path
+from .employee_comms import communication_protocol
 
 
 ROOT = Path(os.environ.get("OPENCLAW_COMPANY_KERNEL_ROOT", Path(__file__).resolve().parents[1])).resolve()
@@ -118,6 +119,8 @@ def build_prompt(task: sqlite3.Row) -> str:
             "Follow Company Kernel rules: no secrets, no destructive operations, no external sends, and always provide evidence or blocker.",
             "",
             *persona_block,
+            communication_protocol(task["target_agent"], "gemini" if task["target_agent"] == "gemini" else "claude"),
+            "",
             "## Task",
             "",
             f"- task_id: `{task['id']}`",

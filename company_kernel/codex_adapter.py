@@ -14,6 +14,7 @@ from pathlib import Path
 from . import companyctl
 from .adapter_result import compact_output, execution_detail
 from .db_paths import ensure_db_parent, resolve_db_path
+from .employee_comms import communication_protocol
 from .sandboxing import wrap_command
 from .verifiers import parse_verifier, verify_result
 
@@ -411,6 +412,8 @@ def build_task_card(task: sqlite3.Row, workspace: Path, sandbox: str) -> str:
             "",
             "- Return changed files, verification commands and results, blocker/risk, and next action.",
             "- If no code change is safe, explain why and return a blocker.",
+            "",
+            communication_protocol(task["target_agent"], "codex"),
             "",
             "## Required final verdict (MANDATORY)",
             "",

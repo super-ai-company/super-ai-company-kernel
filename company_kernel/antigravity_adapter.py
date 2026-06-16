@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from .db_paths import ensure_db_parent, resolve_db_path as resolve_kernel_db_path
+from .employee_comms import communication_protocol
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -161,6 +162,8 @@ def build_guarded_task_prompt(message: str) -> str:
             "You are the Antigravity Company Kernel frontend employee.",
             "Use only the current repository and current user request. Ignore stale Hermes/Codex/permission tasks from previous context.",
             "If the request is not a frontend/dashboard task, report blocked_context_mismatch.",
+            "",
+            communication_protocol("antigravity", "antigravity"),
             "",
             "User request:",
             message.strip(),

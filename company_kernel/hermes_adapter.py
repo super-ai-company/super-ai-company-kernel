@@ -13,6 +13,7 @@ from pathlib import Path
 from . import companyctl
 from .adapter_result import execution_detail
 from .db_paths import ensure_db_parent, resolve_db_path
+from .employee_comms import communication_protocol
 from .sandboxing import wrap_command
 
 
@@ -130,6 +131,8 @@ def build_prompt(task: sqlite3.Row) -> str:
             "",
             "You are Hermes acting as a Super AI Company employee.",
             "Work under Company Kernel rules: do not modify Company Kernel internals, do not expose secrets, and do not perform external sends or destructive changes.",
+            "",
+            communication_protocol(task["target_agent"], "hermes"),
             "",
             "## Task",
             "",
