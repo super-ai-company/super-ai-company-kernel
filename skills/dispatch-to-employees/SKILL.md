@@ -47,15 +47,17 @@ companyctl task submit --from owner-shift --to codex --title "fix login" \
 ### antigravity (agy) — review only, headless, give it time
 - Runs headless via `agy --print` (managed-attempt). It **gives suggestions; it does NOT edit code** —
   you (or codex) implement the worthwhile ones. Don't expect a branch back.
-- **Big reviews need a long timeout.** Managed reviews now floor at **30 min** and honor a
-  `超时:` directive up to **1 h**. The old 120 s default is what timed out multi-screen reviews
+- **Big reviews need a long timeout.** Managed reviews floor at **30 min** and honor a `超时:`
+  directive up to **1 h**. The old 120 s default is what timed out multi-screen reviews
   (e.g. "审核 S01-S15"). For wide scopes, add `超时: 3600`.
-- Its workspace must include the frontend repo being reviewed.
+- **Reviews run in agy's configured workspace automatically** — set it once
+  (`companyctl employee update --id antigravity --workspace /abs/frontend-repo`) and you never paste
+  absolute paths per task. A per-task `工作区: /abs/repo` directive overrides it for a one-off review.
 ```
 companyctl task submit --from codex --to antigravity --title "前端审核 主收银端 S01-S15" \
   --description "超时: 3600
-审查 <repo>/<前端目录> 的 S01-S15 各屏。从①视觉层级②可访问性(对比度/键盘/焦点)③商用专业度
-给每屏 3-5 条带 file:line / class 的可执行建议。只审,不改码。"
+审查 android-pos 的 S01-S15 各屏(agy 在其 workspace 里跑,无需贴绝对路径)。
+从①视觉层级②可访问性(对比度/键盘/焦点)③商用专业度给每屏 3-5 条带 file:line 的可执行建议。只审,不改码。"
 ```
 
 ### claude — analyst; absolute repo path
