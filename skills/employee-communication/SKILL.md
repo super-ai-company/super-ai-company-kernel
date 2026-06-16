@@ -34,6 +34,16 @@ But "open" only removes the *gate* — the **medium** differs by runtime. Use th
   **real chat channel** and relay to **LINE/Telegram**. Use `message direct` (they reply) or
   `channel-send` / `--deliver-to <group>` to reach customers.
 
+## Interactive apps talk natively via MCP
+
+The three apps the owner types in — **Codex / Claude / Antigravity** — are employees (`codex` /
+`claude` / `antigravity`) that reach the kernel through the **`company-kernel` MCP server**:
+`list_my_tasks` / `claim_task` / `report_done` / `dispatch_task` / `check_completions`. Each tool
+call renders in the conversation, so the owner sees receive → execute → feedback in the chat record.
+This is how those apps check in, pick up tasks, and report — see
+[company-kernel-mcp](../company-kernel-mcp/SKILL.md). The headless runtimes still go through the
+daemon + adapters.
+
 ## Reach the owner (notifications)
 
 `notification.routes` currently routes **approval** and **error** events to the owner over Telegram

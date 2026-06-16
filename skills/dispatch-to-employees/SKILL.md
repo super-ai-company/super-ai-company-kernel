@@ -9,16 +9,33 @@ An employee executes work through its **runtime**. Dispatch the same way for eve
 *content* (directives, scope) is what differs. Get the directives wrong and the task times out,
 runs in the wrong place, or silently does nothing.
 
-## Two ways to dispatch
+## Three ways to dispatch
 
-1. **CLI / API** (you, or an orchestrating employee like codex):
+1. **Native MCP tool** (the interactive apps — Codex / Claude / Antigravity): they have the
+   `company-kernel` MCP server registered, so they dispatch with the `dispatch_task` tool
+   (`from_agent`, `to_agent`, `title`, `description`) — and track results with `check_completions`.
+   The tool call renders in the conversation, so receive→execute→feedback stays visible. **Preferred
+   for the apps.** See [company-kernel-mcp](../company-kernel-mcp/SKILL.md).
+2. **CLI / API** (you, or an orchestrating employee like codex):
    ```
    companyctl task submit --from <who> --to <employee> --title "…" --description "…"
    ```
-2. **File-drop bridge** (external apps — the Codex desktop app, Antigravity, CI): drop JSON into
+3. **File-drop bridge** (CI / other external apps): drop JSON into
    `state/task-intake/incoming/` → auto-submitted. See [onboard-employee](../onboard-employee/SKILL.md) §11.
 
 The daemon then dispatches submitted tasks to each employee's worker automatically (no manual run).
+
+## High-risk dispatch → owner approval → auto-execute
+
+If the title/description hits a sensitive keyword (支付 / 外发 / 部署 / 密钥 / 赔偿 … see
+`config/policy.json` `route_approval.actions`), the submit is **gated**: no task is created yet —
+only an **approval request** (returned `rc=2`, surfaced in the console 审批 tab + Telegram). This is
+the safety闸, not a failure.
+
+**The owner approving the request now materializes the task automatically** — it becomes a real
+`submitted` task for the target and the daemon/app executes it. The approval semantic is "hold, then
+**must run once approved**" — approving never deletes the work. You do **not** re-submit after
+approval (that old two-step flow is gone); re-approving is idempotent — no duplicate task.
 
 ## Pick the right employee
 
@@ -85,6 +102,7 @@ companyctl task submit --from codex --to antigravity --title "前端审核 主�
 | codex **blocked**, ran in /tmp | missing `工作区:` | add `工作区: /abs/repo` |
 | **duplicate / just-discarded** rejected | submit guard 60-min cooldown | `--force` to override |
 | employee **未知运行时** + auto-paused | runtime not in `KNOWN_RUNTIMES` | register the runtime (onboard §0) |
+| **approved an approval but no task appeared** | pre-fix kernel only flipped the approval status, never created the held task | fixed: approving now auto-materializes & runs the task. On an old build, upgrade — do **not** re-submit (that re-creates duplicates) |
 | config edit **no effect** | daemon reads config at start | restart daemon (onboard §6) |
 
 ## Boundaries
