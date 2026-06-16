@@ -8240,6 +8240,10 @@ def complete_task_internal(
             (completed_attempt_id, task_id),
         )
     conn.execute("DELETE FROM locks WHERE resource_key = ?", (f"task:{task_id}",))
+    # The task succeeded — so any earlier FAILED adapter attempts for it are no longer a standing
+    # problem. Acknowledge them, or a task that completed after a retry leaves phantom
+    # "任务失败/缺证据" noise in the attention badge forever.
+    acknowledge_task_adapter_runs(conn, task_id, agent, "task completed")
     synced_plan_items = sync_project_plan_for_task(conn, task_id=task_id, task_status="completed", actor=agent)
     conn.commit()
     event = record_event(conn, "task.done", agent, task_id=task_id, payload={"summary": summary, "evidence": evidence, "attempt_id": completed_attempt_id})

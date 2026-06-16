@@ -4957,6 +4957,32 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertIn("<td>yes</td>", html)
         self.assertIn("<td>1</td><td>done task</td>", html)
 
+    def test_completing_task_acknowledges_its_failed_adapter_runs(self) -> None:
+        # a task that failed some attempts then SUCCEEDED must not leave phantom "任务失败" noise
+        code, sub = run_cli("task", "submit", "--from", "ops", "--to", "maker", "--task-id", "task-ack-on-done", "--title", "retry then done")
+        self.assertEqual(code, 0, sub)
+        trace = sub["task"]["metadata"]["trace_id"]
+        conn = companyctl.connect()
+        try:
+            conn.execute(
+                """INSERT INTO adapter_runs(id, trace_id, agent_id, task_id, command, ok, processed, attempt, next_retry_at, result_json, created_at)
+                   VALUES ('ar-ack-on-done', ?, 'maker', 'task-ack-on-done', 'company-claude-adapter', 0, 1, 1, '', '{}', ?)""",
+                (trace, companyctl.now()),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        evidence = self.root / "ack-evidence.md"
+        evidence.write_text("done\n", encoding="utf-8")
+        code, done = run_cli("task", "done", "--agent", "maker", "--task-id", "task-ack-on-done", "--summary", "done", "--evidence", str(evidence))
+        self.assertEqual(code, 0, done)
+        conn = companyctl.connect()
+        try:
+            row = conn.execute("SELECT acknowledged_at FROM adapter_runs WHERE id = 'ar-ack-on-done'").fetchone()
+        finally:
+            conn.close()
+        self.assertTrue(row and row["acknowledged_at"], "completing a task must acknowledge its earlier failed adapter runs")
+
     def test_approval_request_can_bind_to_task_metadata(self) -> None:
         code, submitted = run_cli("task", "submit", "--from", "ops", "--to", "maker", "--task-id", "task-approval-metadata", "--title", "approval task")
         self.assertEqual(code, 0, submitted)
