@@ -502,6 +502,10 @@ def tick(config: dict) -> dict:
         results.append({"step": "repair.auto-triage", "result": run_companyctl("task", "auto-triage")})
     if config.get("run_scheduler", True):
         results.append({"step": "scheduler.run", "result": run_companyctl("scheduler", "run")})
+    if config.get("run_approval_auto_sweep", True):
+        # auto mode safety net: if the owner delegated full approval, clear+materialize any pending
+        # route approval so nothing ever sits blocking. No-op in manual mode.
+        results.append({"step": "approval.auto-sweep", "result": run_companyctl("approval", "auto-sweep")})
     if config.get("run_supervisor_delivery_loop", config.get("run_scheduler", True)):
         results.append({"step": "supervisor.delivery-loop", "result": run_companyctl("supervisor", "delivery-loop")})
     if config.get("run_offline_reminder", True):

@@ -11140,6 +11140,32 @@ class CompanyKernelCoreTest(unittest.TestCase):
         code, listed = run_cli("approval", "list", "--status", "approved")
         self.assertTrue(any(a.get("detail", {}).get("decided_by") == "auto" for a in listed.get("approvals", listed.get("items", []))))
 
+    def test_auto_sweep_clears_pending_route_approvals_in_auto_mode(self) -> None:
+        # create a pending route approval under manual mode
+        run_cli("approval", "mode", "--set", "manual", "--by", "ops")
+        code, blocked = run_cli(
+            "task", "submit", "--from", "ops", "--to", "publisher",
+            "--task-id", "task-sweep-me", "--title", "发布客户通知", "--description", "需要外发给客户",
+            "--requires-approval", "external_send",
+        )
+        self.assertEqual(2, code, blocked)
+        # owner flips to auto; the sweep must approve + materialize that stray pending
+        run_cli("approval", "mode", "--set", "auto", "--by", "ops")
+        code, swept = run_cli("approval", "auto-sweep")
+        self.assertEqual(0, code, swept)
+        self.assertGreaterEqual(swept["swept"], 1)
+        # the held task now exists and is executable
+        new_id = swept["tasks"][0]["task"]
+        code, shown = run_cli("task", "show", "--task-id", new_id)
+        self.assertEqual(0, code, shown)
+        self.assertEqual("submitted", shown["task"]["status"])
+
+    def test_auto_sweep_is_noop_in_manual_mode(self) -> None:
+        run_cli("approval", "mode", "--set", "manual", "--by", "ops")
+        code, swept = run_cli("approval", "auto-sweep")
+        self.assertEqual(0, code)
+        self.assertEqual(0, swept["swept"])
+
     def test_approval_mode_manual_still_gates(self) -> None:
         code, _ = run_cli("approval", "mode", "--set", "manual", "--by", "ops")
         self.assertEqual(0, code)
@@ -13237,7 +13263,7 @@ class CompanyKernelCoreTest(unittest.TestCase):
         finally:
             conn.close()
 
-        state = company_daemon.tick({"version": 1, "run_repair": False, "run_scheduler": False, "run_offline_reminder": False, "heartbeat_agents": [], "run_retries": True, "auto_recover": {"enabled": False}})
+        state = company_daemon.tick({"version": 1, "run_repair": False, "run_scheduler": False, "run_offline_reminder": False, "run_approval_auto_sweep": False, "heartbeat_agents": [], "run_retries": True, "auto_recover": {"enabled": False}})
         self.assertTrue(state["ok"], state)
         self.assertEqual(["retry.adapter-run"], [item["step"] for item in state["results"]])
 

@@ -11006,6 +11006,35 @@ def cmd_approval_mode(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_approval_auto_sweep(args: argparse.Namespace) -> int:
+    """Belt-and-suspenders for auto mode: approve + materialize EVERY pending *route* approval, so
+    nothing a stray path created can sit blocking. Only touches route-dispatch approvals (not
+    owner-control/budget ones). No-op unless mode=auto. The daemon runs this every tick."""
+    conn = connect()
+    if route_approval_mode() != "auto":
+        emit({"ok": True, "mode": route_approval_mode(), "swept": 0, "note": "not auto mode — no-op"})
+        return 0
+    swept = []
+    for r in conn.execute("SELECT * FROM approvals WHERE status = 'pending'").fetchall():
+        ap = normalize_approval(r)
+        meta = ap["detail"].get("metadata", {}) if isinstance(ap["detail"].get("metadata"), dict) else {}
+        if not (meta.get("route") and meta.get("title") and meta.get("target")):
+            continue  # leave owner-control / budget approvals alone
+        ts = now()
+        detail = ap["detail"]
+        detail.update({"decided_by": "auto-sweep", "decision": "approved", "decision_reason": "mode=auto", "decided_at": ts})
+        conn.execute("UPDATE approvals SET status = 'approved', reason = ?, updated_at = ? WHERE id = ?",
+                     (json.dumps(detail, ensure_ascii=False), ts, ap["id"]))
+        conn.commit()
+        fresh = normalize_approval(conn.execute("SELECT * FROM approvals WHERE id = ?", (ap["id"],)).fetchone())
+        task = materialize_route_task(conn, fresh, "auto-sweep")
+        swept.append({"approval": ap["id"], "task": (task or {}).get("id")})
+    if swept:
+        audit(conn, "owner-shift", "approval.auto_swept", str(len(swept)), {"count": len(swept)})
+    emit({"ok": True, "mode": "auto", "swept": len(swept), "tasks": swept})
+    return 0
+
+
 def cmd_approval_approve(args: argparse.Namespace) -> int:
     return decide_approval(args, "approved")
 
@@ -14029,6 +14058,8 @@ def build_parser() -> argparse.ArgumentParser:
     approval_mode.add_argument("--set", default="", choices=["", "manual", "auto"], help="set the mode; omit to just show current")
     approval_mode.add_argument("--by", default="owner-shift", help="who is changing the mode (audit)")
     approval_mode.set_defaults(func=cmd_approval_mode)
+    approval_auto_sweep = approval_sub.add_parser("auto-sweep", help="auto mode safety net: approve+materialize all pending route approvals (no-op unless mode=auto)")
+    approval_auto_sweep.set_defaults(func=cmd_approval_auto_sweep)
     approval_approve = approval_sub.add_parser("approve")
     approval_approve.add_argument("--approval-id", required=True)
     approval_approve.add_argument("--by", required=True)
