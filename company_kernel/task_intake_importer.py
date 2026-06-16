@@ -74,6 +74,17 @@ def normalize_metadata(payload: dict[str, Any], source_file: Path) -> dict[str, 
     return metadata
 
 
+INTAKE_FALLBACK_SENDER = "owner"
+
+
+def _known_employee(conn, agent_id: str):
+    """True if registered, False if definitively not, None if we can't tell (don't remap on None)."""
+    try:
+        return conn.execute("SELECT 1 FROM employees WHERE id = ?", (agent_id,)).fetchone() is not None
+    except Exception:
+        return None
+
+
 def submit_payload(payload: dict[str, Any], source_file: Path) -> dict[str, Any]:
     source = required_text(payload, "from", "source", "source_agent")
     target = required_text(payload, "to", "target", "target_agent")
@@ -83,6 +94,11 @@ def submit_payload(payload: dict[str, Any], source_file: Path) -> dict[str, Any]
     task_id = optional_text(payload, "task_id", "id", default="")
     metadata = normalize_metadata(payload, source_file)
     conn = companyctl.connect()
+    # External apps (e.g. "codex-app") aren't registered employees — don't hard-fail; record the
+    # original and submit as the owner so the task still lands.
+    if _known_employee(conn, source) is False:  # only remap when definitively unregistered
+        metadata["intake_original_from"] = source
+        source = INTAKE_FALLBACK_SENDER
     return companyctl.submit_task_internal(
         conn,
         source=source,
@@ -99,7 +115,7 @@ def process_file(path: Path, *, processed: Path, failed: Path) -> dict[str, Any]
     try:
         payload = read_payload(path)
         result = submit_payload(payload, path)
-    except Exception as exc:
+    except (Exception, SystemExit) as exc:  # submit guards raise SystemExit — don't crash the run
         failed.mkdir(parents=True, exist_ok=True)
         archived = safe_archive_name(path, failed)
         shutil.move(str(path), str(archived))
