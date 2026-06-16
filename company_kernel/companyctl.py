@@ -8025,15 +8025,30 @@ def detect_route_approval_action(title: str, description: str, explicit_action: 
     return ""
 
 
-ROUTE_APPROVAL_MODES = {"manual", "auto"}
+ROUTE_APPROVAL_MODES = {"manual", "auto_low_risk", "auto"}
+# Genuinely dangerous route actions — money, secrets, production deploys, kernel self-changes.
+# The middle tier (auto_low_risk) keeps THESE manual and auto-approves everything else.
+HIGH_RISK_ROUTE_ACTIONS = {"payment", "compensation", "salary", "penalty", "secret_change", "production_deploy", "kernel_change"}
 
 
 def route_approval_mode() -> str:
     """Owner-set approval posture. 'manual' (default) = gate high-risk routes for human approval;
-    'auto' = owner has delegated full auto-approval (every route proceeds, recorded for audit).
-    Read live from config/policy.json so a mode change takes effect without a restart."""
+    'auto_low_risk' = auto-approve everything EXCEPT the dangerous set (密钥/支付/部署仍人工);
+    'auto' = full auto-approval (every route proceeds, recorded for audit). Read live from
+    config/policy.json so a mode change takes effect without a restart."""
     mode = str(load_policy_config().get("route_approval", {}).get("mode", "manual")).lower().strip()
     return mode if mode in ROUTE_APPROVAL_MODES else "manual"
+
+
+def route_action_auto_approved(action: str) -> bool:
+    """Whether the current mode auto-approves this route action.
+    manual → never; auto → always; auto_low_risk → all but HIGH_RISK_ROUTE_ACTIONS."""
+    mode = route_approval_mode()
+    if mode == "auto":
+        return True
+    if mode == "auto_low_risk":
+        return action not in HIGH_RISK_ROUTE_ACTIONS
+    return False
 
 
 def route_approval_gate(conn: sqlite3.Connection, args: argparse.Namespace, source: str, target: str, matches: list[dict], approval_action: str) -> dict:
@@ -8044,8 +8059,8 @@ def route_approval_gate(conn: sqlite3.Connection, args: argparse.Namespace, sour
     gate = approved_gate(conn, approval_id, approval_action, source, target)
     if gate["allowed"]:
         return gate
-    auto = route_approval_mode() == "auto"
-    reason = (f"auto-approved (mode=auto, owner-delegated): `{args.title}` → `{target}`" if auto
+    auto = route_action_auto_approved(approval_action)
+    reason = (f"auto-approved (mode={route_approval_mode()}, owner-delegated): `{args.title}` → `{target}`" if auto
               else f"task route requires approval before assigning high-risk task `{args.title}` to `{target}`")
     result = create_approval_internal(
         conn,
@@ -11001,8 +11016,9 @@ def cmd_approval_mode(args: argparse.Namespace) -> int:
             audit(conn, actor, "approval.mode_set", mode, {"mode": mode})
         except SystemExit:
             pass
-    emit({"ok": True, "mode": route_approval_mode(),
-          "note": "auto = 全部自动放行(已授权);manual = 高风险需人工审批"})
+    emit({"ok": True, "mode": route_approval_mode(), "modes": sorted(ROUTE_APPROVAL_MODES),
+          "high_risk_actions": sorted(HIGH_RISK_ROUTE_ACTIONS),
+          "note": "auto=全部放行;auto_low_risk=中间档(密钥/支付/部署仍人工);manual=全人工"})
     return 0
 
 
@@ -11011,8 +11027,8 @@ def cmd_approval_auto_sweep(args: argparse.Namespace) -> int:
     nothing a stray path created can sit blocking. Only touches route-dispatch approvals (not
     owner-control/budget ones). No-op unless mode=auto. The daemon runs this every tick."""
     conn = connect()
-    if route_approval_mode() != "auto":
-        emit({"ok": True, "mode": route_approval_mode(), "swept": 0, "note": "not auto mode — no-op"})
+    if route_approval_mode() == "manual":
+        emit({"ok": True, "mode": "manual", "swept": 0, "note": "manual mode — no-op"})
         return 0
     swept = []
     for r in conn.execute("SELECT * FROM approvals WHERE status = 'pending'").fetchall():
@@ -11020,6 +11036,8 @@ def cmd_approval_auto_sweep(args: argparse.Namespace) -> int:
         meta = ap["detail"].get("metadata", {}) if isinstance(ap["detail"].get("metadata"), dict) else {}
         if not (meta.get("route") and meta.get("title") and meta.get("target")):
             continue  # leave owner-control / budget approvals alone
+        if not route_action_auto_approved(ap["action"]):
+            continue  # middle tier: don't sweep high-risk (密钥/支付/部署) — owner still decides those
         ts = now()
         detail = ap["detail"]
         detail.update({"decided_by": "auto-sweep", "decision": "approved", "decision_reason": "mode=auto", "decided_at": ts})
@@ -14055,7 +14073,7 @@ def build_parser() -> argparse.ArgumentParser:
     approval_show.add_argument("--approval-id", required=True)
     approval_show.set_defaults(func=cmd_approval_show)
     approval_mode = approval_sub.add_parser("mode", help="get/set approval posture: manual (gate) or auto (full auto-approve, owner-delegated)")
-    approval_mode.add_argument("--set", default="", choices=["", "manual", "auto"], help="set the mode; omit to just show current")
+    approval_mode.add_argument("--set", default="", choices=["", "manual", "auto_low_risk", "auto"], help="set the mode; omit to just show current")
     approval_mode.add_argument("--by", default="owner", help="who is changing the mode (audit)")
     approval_mode.set_defaults(func=cmd_approval_mode)
     approval_auto_sweep = approval_sub.add_parser("auto-sweep", help="auto mode safety net: approve+materialize all pending route approvals (no-op unless mode=auto)")

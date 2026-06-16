@@ -729,6 +729,9 @@ def route_get(path: str, query: dict[str, list[str]]) -> tuple[int, dict]:
     if path in {"/health", "/v1/health"}:
         code, payload = run_companyctl(["doctor", "--summary"])
         return HTTPStatus.OK, {"exit_code": code, **payload}
+    if path == "/v1/approval/mode":
+        code, payload = run_companyctl(["approval", "mode"])
+        return (HTTPStatus.OK if code == 0 else HTTPStatus.BAD_REQUEST), payload
     if path in {"/v1/doctor", "/doctor"}:
         argv = ["doctor", "--summary"]
         if query_value(query, "strict_launchd") in {"1", "true", "yes"}:
@@ -1400,6 +1403,12 @@ def route_post(path: str, body: dict) -> tuple[int, dict]:
     if path == "/v1/settings/notification":
         payload = companyctl.update_notification_settings(body)
         return (HTTPStatus.OK if payload.get("ok") else HTTPStatus.BAD_REQUEST), payload
+    if path == "/v1/approval/mode":
+        mode = str(body.get("mode", "") or "")
+        if mode not in companyctl.ROUTE_APPROVAL_MODES:
+            return HTTPStatus.BAD_REQUEST, {"ok": False, "error": f"mode must be one of {sorted(companyctl.ROUTE_APPROVAL_MODES)}", "got": mode}
+        code, payload = run_companyctl(["approval", "mode", "--set", mode, "--by", str(body.get("by", "owner") or "owner")])
+        return (HTTPStatus.OK if code == 0 else HTTPStatus.BAD_REQUEST), payload
     if path == "/v1/notifications/send":
         result = companyctl.notification_send_result(
             message=str(body.get("message", "")),

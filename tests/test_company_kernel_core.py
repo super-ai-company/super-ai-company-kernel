@@ -11160,6 +11160,36 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual(0, code, shown)
         self.assertEqual("submitted", shown["task"]["status"])
 
+    def test_approval_mode_auto_low_risk_gates_only_dangerous(self) -> None:
+        code, set_out = run_cli("approval", "mode", "--set", "auto_low_risk", "--by", "ops")
+        self.assertEqual(0, code, set_out)
+        self.assertEqual("auto_low_risk", set_out["mode"])
+        # low-risk (external_send) auto-approves -> real task
+        code, low = run_cli(
+            "task", "submit", "--from", "ops", "--to", "publisher", "--task-id", "task-alr-low",
+            "--title", "发布客户通知", "--description", "外发给客户", "--requires-approval", "external_send",
+        )
+        self.assertEqual(0, code, low)
+        self.assertEqual("submitted", low["task"]["status"])
+        # high-risk (secret_change) STILL gates for human approval
+        code, hi = run_cli(
+            "task", "submit", "--from", "ops", "--to", "publisher", "--task-id", "task-alr-hi",
+            "--title", "改密钥", "--description", "rotate the secret", "--requires-approval", "secret_change",
+        )
+        self.assertEqual(2, code, hi)
+        self.assertEqual("approval required", hi["error"])
+
+    def test_auto_sweep_middle_tier_skips_high_risk(self) -> None:
+        # a pending payment approval created in manual mode
+        run_cli("approval", "mode", "--set", "manual", "--by", "ops")
+        run_cli("task", "submit", "--from", "ops", "--to", "publisher", "--task-id", "task-mt-pay",
+                "--title", "支付对账", "--description", "处理支付", "--requires-approval", "payment")
+        # middle tier sweep must NOT clear it (payment is high-risk)
+        run_cli("approval", "mode", "--set", "auto_low_risk", "--by", "ops")
+        code, swept = run_cli("approval", "auto-sweep")
+        self.assertEqual(0, code, swept)
+        self.assertEqual(0, swept["swept"])
+
     def test_auto_sweep_is_noop_in_manual_mode(self) -> None:
         run_cli("approval", "mode", "--set", "manual", "--by", "ops")
         code, swept = run_cli("approval", "auto-sweep")

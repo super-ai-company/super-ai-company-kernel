@@ -377,6 +377,18 @@ label{font-size:12px;color:var(--muted);display:block;margin-bottom:4px}
       <option value="denied" data-i18n="st_denied">已拒绝</option><option value="all" data-i18n="st_all">全部</option>
     </select>
   </div>
+  <div id="apprModeBox" style="margin:2px 0 16px;padding:12px 14px;border:1px solid var(--line2);border-radius:8px">
+    <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+      <strong data-i18n="appr_mode_title">审批策略</strong>
+      <span id="apprModeNow" class="cnt">-</span>
+      <select id="apprModeSel" style="width:auto;min-width:300px" onchange="setApprovalMode(this.value)">
+        <option value="manual">全人工审批 · manual</option>
+        <option value="auto_low_risk">中间档:低风险自动 · 密钥/支付/部署仍人工 · auto_low_risk</option>
+        <option value="auto">全部自动放行 · auto</option>
+      </select>
+    </div>
+    <div class="muted" id="apprModeHint" style="font-size:12px;margin-top:7px;line-height:1.5"></div>
+  </div>
   <div class="list" id="apprList"><div class="empty" data-i18n="loading">加载中…</div></div>
 </section>
 
@@ -1390,8 +1402,32 @@ async function vetoAndContinue(){
   continueMeeting();
 }
 
+/* ---------- approval mode (审批策略) ---------- */
+const APPR_MODE_HINT = {
+  manual: "全人工:所有高风险任务都要你点批准(最稳)。",
+  auto_low_risk: "中间档:低风险任务自动放行;密钥 / 支付 / 部署 / 赔付等仍需你人工批准。",
+  auto: "全部自动放行:不再有任何审批拦截(你已授权)。",
+};
+async function loadApprovalMode(){
+  try{
+    const d = await api("/v1/approval/mode");
+    const m = (d && d.mode) || "manual";
+    const sel = $("apprModeSel"); if (sel) sel.value = m;
+    const now = $("apprModeNow"); if (now){ now.textContent = m; now.className = "cnt" + (m==="auto" ? " alert" : ""); }
+    const hint = $("apprModeHint"); if (hint) hint.textContent = APPR_MODE_HINT[m] || "";
+  }catch(e){}
+}
+async function setApprovalMode(mode){
+  try{
+    await api("/v1/approval/mode", {method:"POST", body:{mode, by:OWNER}});
+    toast("审批策略已切到 "+mode, "ok");
+    await loadApprovalMode(); loadApprovals();
+  }catch(e){ toast("切换失败:"+(e.message||e), "err"); loadApprovalMode(); }
+}
+
 /* ---------- approvals ---------- */
 async function loadApprovals() {
+  loadApprovalMode();
   const st = $("apprStatus").value;
   try {
     const d = await api("/v1/approvals?status="+st);
