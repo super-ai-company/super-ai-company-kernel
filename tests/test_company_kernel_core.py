@@ -11090,6 +11090,39 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual(code, 0, submitted)
         self.assertEqual(approval_id, submitted["task"]["metadata"]["approval"]["id"])
 
+    def test_approving_route_gate_materializes_the_held_task(self) -> None:
+        # A high-risk submit is gated: only an approval is created, no task yet.
+        code, blocked = run_cli(
+            "task", "submit", "--from", "ops", "--to", "publisher",
+            "--task-id", "task-route-materialize",
+            "--title", "发布客户通知", "--description", "需要外发给客户",
+            "--priority", "P1", "--requires-approval", "external_send",
+        )
+        self.assertEqual(code, 2, blocked)
+        approval_id = blocked["approval"]["id"]
+        code, _missing = run_cli("task", "show", "--task-id", "task-route-materialize")
+        self.assertEqual(code, 1, "gated task must not exist before approval")
+
+        # Approving must create the held task automatically — no manual re-submit.
+        code, approved = run_cli("approval", "approve", "--approval-id", approval_id, "--by", "ops", "--reason", "ok")
+        self.assertEqual(code, 0, approved)
+        self.assertIn("materialized_task", approved)
+        new_id = approved["materialized_task"]["id"]
+        self.assertEqual("video-publisher", approved["materialized_task"]["target_agent"])
+        self.assertEqual("P1", approved["materialized_task"]["priority"])
+
+        # The new task is real, submitted, and visible to the target.
+        code, shown = run_cli("task", "show", "--task-id", new_id)
+        self.assertEqual(code, 0, shown)
+        self.assertEqual("submitted", shown["task"]["status"])
+        code, listed = run_cli("task", "list", "--agent", "publisher")
+        self.assertIn(new_id, [t["id"] for t in listed["tasks"]])
+
+        # Re-approving is idempotent — it must not create a second task.
+        code, again = run_cli("approval", "approve", "--approval-id", approval_id, "--by", "ops", "--reason", "again")
+        self.assertEqual(code, 0, again)
+        self.assertNotIn("materialized_task", again)
+
     def test_direct_task_submit_reuses_deterministic_approved_route_gate(self) -> None:
         task_id = "task-direct-submit-auto-approval"
         code, blocked = run_cli(

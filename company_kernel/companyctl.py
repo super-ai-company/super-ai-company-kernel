@@ -8035,6 +8035,11 @@ def route_approval_gate(conn: sqlite3.Connection, args: argparse.Namespace, sour
             "title": args.title,
             "description": args.description,
             "target": target,
+            "source": source,
+            "priority": getattr(args, "priority", "P2") or "P2",
+            "changed_files": getattr(args, "changed_files", "") or "",
+            "rfc": getattr(args, "rfc", "") or "",
+            "deliver_to": getattr(args, "deliver_to", "") or "",
             "matches": matches[:5],
         },
     )
@@ -10796,6 +10801,81 @@ def cmd_approval_show(args: argparse.Namespace) -> int:
     return 0
 
 
+def materialize_route_task(conn: sqlite3.Connection, approval: dict, actor: str) -> dict | None:
+    """When a route-gated approval is approved, create the task it was holding back.
+
+    The gate (`route_approval_gate`) blocks high-risk submits and parks the full task
+    (title/description/target/...) in the approval's metadata instead of creating it. On
+    approval we must actually materialize that task, otherwise it silently vanishes —
+    the owner approved, but nothing ever became executable. Idempotent: re-approving an
+    already-materialized approval is a no-op.
+    """
+    detail = approval.get("detail", {}) if isinstance(approval.get("detail"), dict) else {}
+    meta = detail.get("metadata", {}) if isinstance(detail.get("metadata"), dict) else {}
+    if not meta.get("route") or not meta.get("title") or not meta.get("target"):
+        return None  # not a route task approval (e.g. budget / external_send) — nothing to create
+    if detail.get("materialized_task_id"):
+        return None  # already materialized (idempotent re-approval)
+    source = resolve_employee_alias(meta.get("source") or approval.get("source_agent") or "")
+    target = resolve_employee_alias(meta["target"])
+    try:
+        require_employee(conn, source)
+        require_employee(conn, target)
+    except SystemExit:
+        return None
+    task_id = f"task-{datetime.now().strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:6]}"
+    ts = now()
+    priority = meta.get("priority") or "P2"
+    conn.execute(
+        """
+        INSERT INTO tasks(id, source_agent, target_agent, title, description, priority, status, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, 'submitted', ?, ?)
+        """,
+        (task_id, source, target, meta["title"], meta.get("description", ""), priority, ts, ts),
+    )
+    metadata = {
+        "trace_id": new_trace_id(),
+        "declared_changes": parse_csv(meta.get("changed_files", "")),
+        "rfc": meta.get("rfc", ""),
+        "approval": approval.get("id"),
+        "materialized_from_approval": approval.get("id"),
+    }
+    deliver_to = parse_deliver_to(meta.get("deliver_to", ""))
+    if deliver_to:
+        metadata["deliver_to"] = deliver_to
+    conn.execute(
+        "INSERT OR REPLACE INTO task_metadata(task_id, metadata_json, updated_at) VALUES (?, ?, ?)",
+        (task_id, json.dumps(metadata, ensure_ascii=False), ts),
+    )
+    # stamp the approval so we never double-create
+    detail["materialized_task_id"] = task_id
+    conn.execute(
+        "UPDATE approvals SET reason = ?, updated_at = ? WHERE id = ?",
+        (json.dumps(detail, ensure_ascii=False), ts, approval["id"]),
+    )
+    conn.commit()
+    workspace = ensure_task_workspace(conn, task_id, metadata["trace_id"])
+    inbox = employee_paths(target)["inbox"]
+    inbox.mkdir(parents=True, exist_ok=True)
+    task = {
+        "id": task_id,
+        "source_agent": source,
+        "target_agent": target,
+        "title": meta["title"],
+        "description": meta.get("description", ""),
+        "priority": priority,
+        "status": "submitted",
+        "metadata": metadata,
+        "workspace": workspace,
+        "created_at": ts,
+    }
+    (inbox / f"{task_id}.json").write_text(json.dumps(task, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    audit(conn, actor, "task.materialized_from_approval", task_id, {"approval_id": approval.get("id"), "target": target})
+    record_event(conn, "task.materialized_from_approval", actor, task_id=task_id,
+                 payload={"approval_id": approval.get("id"), "target": target, "title": meta["title"]})
+    return task
+
+
 def decide_approval(args: argparse.Namespace, status: str) -> int:
     conn = connect()
     actor = resolve_employee_alias(args.by)
@@ -10846,7 +10926,11 @@ def decide_approval(args: argparse.Namespace, status: str) -> int:
             "external_send_executed": bool(detail.get("external_send_executed", False)),
         },
     )
-    emit({"ok": True, "approval": approval, "file": path, "event": event})
+    materialized = materialize_route_task(conn, approval, actor) if status == "approved" else None
+    out = {"ok": True, "approval": approval, "file": path, "event": event}
+    if materialized:
+        out["materialized_task"] = materialized
+    emit(out)
     return 0
 
 
