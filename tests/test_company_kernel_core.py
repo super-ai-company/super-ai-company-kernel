@@ -11123,6 +11123,34 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual(code, 0, again)
         self.assertNotIn("materialized_task", again)
 
+    def test_approval_mode_auto_lets_high_risk_task_through_without_pending(self) -> None:
+        # owner delegates full auto-approval
+        code, set_out = run_cli("approval", "mode", "--set", "auto", "--by", "ops")
+        self.assertEqual(code, 0, set_out)
+        self.assertEqual("auto", set_out["mode"])
+        # a high-risk submit now proceeds immediately — no pending approval, real task created
+        code, submitted = run_cli(
+            "task", "submit", "--from", "ops", "--to", "publisher",
+            "--task-id", "task-auto-mode", "--title", "发布客户通知", "--description", "需要外发给客户",
+            "--requires-approval", "external_send",
+        )
+        self.assertEqual(code, 0, submitted)
+        self.assertEqual("submitted", submitted["task"]["status"])
+        # and the auto-approval is recorded for the audit trail
+        code, listed = run_cli("approval", "list", "--status", "approved")
+        self.assertTrue(any(a.get("detail", {}).get("decided_by") == "auto" for a in listed.get("approvals", listed.get("items", []))))
+
+    def test_approval_mode_manual_still_gates(self) -> None:
+        code, _ = run_cli("approval", "mode", "--set", "manual", "--by", "ops")
+        self.assertEqual(0, code)
+        code, blocked = run_cli(
+            "task", "submit", "--from", "ops", "--to", "publisher",
+            "--task-id", "task-manual-mode", "--title", "发布客户通知", "--description", "需要外发给客户",
+            "--requires-approval", "external_send",
+        )
+        self.assertEqual(2, blocked if isinstance(blocked, int) else code, blocked)
+        self.assertEqual("approval required", blocked["error"])
+
     def test_direct_task_submit_reuses_deterministic_approved_route_gate(self) -> None:
         task_id = "task-direct-submit-auto-approval"
         code, blocked = run_cli(

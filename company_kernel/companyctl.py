@@ -8025,6 +8025,17 @@ def detect_route_approval_action(title: str, description: str, explicit_action: 
     return ""
 
 
+ROUTE_APPROVAL_MODES = {"manual", "auto"}
+
+
+def route_approval_mode() -> str:
+    """Owner-set approval posture. 'manual' (default) = gate high-risk routes for human approval;
+    'auto' = owner has delegated full auto-approval (every route proceeds, recorded for audit).
+    Read live from config/policy.json so a mode change takes effect without a restart."""
+    mode = str(load_policy_config().get("route_approval", {}).get("mode", "manual")).lower().strip()
+    return mode if mode in ROUTE_APPROVAL_MODES else "manual"
+
+
 def route_approval_gate(conn: sqlite3.Connection, args: argparse.Namespace, source: str, target: str, matches: list[dict], approval_action: str) -> dict:
     if not approval_action:
         return {"allowed": True}
@@ -8033,11 +8044,14 @@ def route_approval_gate(conn: sqlite3.Connection, args: argparse.Namespace, sour
     gate = approved_gate(conn, approval_id, approval_action, source, target)
     if gate["allowed"]:
         return gate
+    auto = route_approval_mode() == "auto"
+    reason = (f"auto-approved (mode=auto, owner-delegated): `{args.title}` → `{target}`" if auto
+              else f"task route requires approval before assigning high-risk task `{args.title}` to `{target}`")
     result = create_approval_internal(
         conn,
         source=source,
         action=approval_action,
-        reason=f"task route requires approval before assigning high-risk task `{args.title}` to `{target}`",
+        reason=reason,
         target=target,
         risk=args.risk or load_policy_config().get("route_approval", {}).get("default_risk", "P1"),
         evidence="",
@@ -8056,6 +8070,17 @@ def route_approval_gate(conn: sqlite3.Connection, args: argparse.Namespace, sour
             "matches": matches[:5],
         },
     )
+    if auto:
+        # AUTO mode: owner delegated full approval. Mark the just-created approval approved and let
+        # the task through immediately — no pending item to click, nothing to vanish.
+        ts = now()
+        detail = normalize_approval(conn.execute("SELECT * FROM approvals WHERE id = ?", (approval_id,)).fetchone())["detail"]
+        detail.update({"decided_by": "auto", "decision": "approved", "decision_reason": "mode=auto", "decided_at": ts})
+        conn.execute("UPDATE approvals SET status = 'approved', reason = ?, updated_at = ? WHERE id = ?",
+                     (json.dumps(detail, ensure_ascii=False), ts, approval_id))
+        conn.commit()
+        audit(conn, source, "approval.auto_approved", approval_id, {"mode": "auto", "action": approval_action, "target": target})
+        return {"allowed": True, "approval": approval_id, "auto_approved": True}
     return {"allowed": False, "approval_request": result["approval"], "file": result["file"]}
 
 
@@ -10949,6 +10974,35 @@ def decide_approval(args: argparse.Namespace, status: str) -> int:
     if materialized:
         out["materialized_task"] = materialized
     emit(out)
+    return 0
+
+
+def cmd_approval_mode(args: argparse.Namespace) -> int:
+    """Get or set the owner's approval posture (backend for the console settings UI).
+    --set manual = gate high-risk routes for human approval (default, safest).
+    --set auto   = full auto-approval (owner-delegated); every route proceeds + is recorded."""
+    conn = connect()
+    if getattr(args, "set", ""):
+        mode = str(args.set).lower().strip()
+        if mode not in ROUTE_APPROVAL_MODES:
+            emit({"ok": False, "error": f"mode must be one of {sorted(ROUTE_APPROVAL_MODES)}", "got": args.set})
+            return 2
+        cfg = {}
+        if POLICY_PATH.exists():
+            try:
+                cfg = json.loads(POLICY_PATH.read_text(encoding="utf-8"))
+            except json.JSONDecodeError:
+                cfg = {}
+        cfg.setdefault("route_approval", {})["mode"] = mode
+        POLICY_PATH.parent.mkdir(parents=True, exist_ok=True)
+        POLICY_PATH.write_text(json.dumps(cfg, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        actor = resolve_employee_alias(getattr(args, "by", "") or "owner")
+        try:
+            audit(conn, actor, "approval.mode_set", mode, {"mode": mode})
+        except SystemExit:
+            pass
+    emit({"ok": True, "mode": route_approval_mode(),
+          "note": "auto = 全部自动放行(已授权);manual = 高风险需人工审批"})
     return 0
 
 
@@ -13971,6 +14025,10 @@ def build_parser() -> argparse.ArgumentParser:
     approval_show = approval_sub.add_parser("show")
     approval_show.add_argument("--approval-id", required=True)
     approval_show.set_defaults(func=cmd_approval_show)
+    approval_mode = approval_sub.add_parser("mode", help="get/set approval posture: manual (gate) or auto (full auto-approve, owner-delegated)")
+    approval_mode.add_argument("--set", default="", choices=["", "manual", "auto"], help="set the mode; omit to just show current")
+    approval_mode.add_argument("--by", default="owner", help="who is changing the mode (audit)")
+    approval_mode.set_defaults(func=cmd_approval_mode)
     approval_approve = approval_sub.add_parser("approve")
     approval_approve.add_argument("--approval-id", required=True)
     approval_approve.add_argument("--by", required=True)
