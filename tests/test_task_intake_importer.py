@@ -56,6 +56,31 @@ class TaskIntakeImporterTest(unittest.TestCase):
             self.assertTrue(receipt["ok"])
             self.assertEqual(receipt["result"]["task"]["id"], "task-intake-001")
 
+    def test_unknown_sender_maps_to_owner_and_keeps_original(self) -> None:
+        # external apps (e.g. "codex-app") aren't registered employees — submit must still land
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            incoming = root / "incoming"; incoming.mkdir()
+            (incoming / "ext.json").write_text(json.dumps({
+                "from": "codex-app", "to": "antigravity", "title": "前端审核", "description": "审 S04",
+            }), encoding="utf-8")
+
+            class FakeConn:
+                def execute(self, *a):
+                    class C:
+                        def fetchone(self_inner):
+                            return None  # definitively unregistered
+                    return C()
+            with mock.patch.object(task_intake_importer.companyctl, "connect", return_value=FakeConn()), \
+                 mock.patch.object(task_intake_importer.companyctl, "submit_task_internal",
+                                   return_value={"task": {"id": "t1"}}) as submit:
+                result = task_intake_importer.import_once(incoming=incoming,
+                                                          processed=root / "processed", failed=root / "failed")
+            self.assertEqual(result["imported"], 1)
+            kwargs = submit.call_args.kwargs
+            self.assertEqual(kwargs["source"], "owner-shift")            # remapped
+            self.assertEqual(kwargs["metadata"]["intake_original_from"], "codex-app")  # original kept
+
     def test_invalid_json_moves_to_failed_without_submit(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
