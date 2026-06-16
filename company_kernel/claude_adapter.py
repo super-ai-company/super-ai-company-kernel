@@ -200,6 +200,32 @@ def _quota_exhausted(text: str) -> bool:
     return "RESOURCE_EXHAUSTED" in (text or "")
 
 
+# rc that means "the whole pool is out of quota for every model" — the employee genuinely can't work
+# right now, so the caller fast-fails the task back to the dispatcher instead of making them wait.
+POOL_QUOTA_EXHAUSTED_RC = 88
+
+
+def pool_models_with_quota(base: str, token: str) -> set[str] | None:
+    """Ask the pool (/api/accounts) which models still have ≥1 enabled, non-rate-limited account.
+    The pool already tracks per-account/per-model rate limits + reset times and cools down bad
+    accounts; we just read it to pick a model with quota. Returns None if the API can't be read
+    (then we fall back to reactive failover instead of wrongly declaring exhaustion)."""
+    try:
+        req = urllib.request.Request(base.rstrip("/") + "/api/accounts", headers={"x-api-key": token})
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+    except (urllib.error.URLError, OSError, ValueError, json.JSONDecodeError):
+        return None
+    available: set[str] = set()
+    for acct in (data.get("accounts") or []):
+        if not acct.get("enabled") or acct.get("isInvalid"):
+            continue
+        for model, rl in (acct.get("modelRateLimits") or {}).items():
+            if isinstance(rl, dict) and not rl.get("isRateLimited"):
+                available.add(str(model))
+    return available
+
+
 def run_claude(prompt: Path, output: Path, workspace: Path, model: str, permission_mode: str, agent: str = "claude", timeout: int | None = None) -> tuple[int, str]:
     proxy_env, model, route = resolve_claude_proxy(agent, model)
     # PER-EMPLOYEE 权限覆盖:profile.json 设了 permission_mode 就用它(例如 gemini QA 需要工具/浏览器 → bypassPermissions,
@@ -215,8 +241,24 @@ def run_claude(prompt: Path, output: Path, workspace: Path, model: str, permissi
         pass
     prompt_text = prompt.read_text(encoding="utf-8")
     limit = timeout or CLAUDE_RUN_TIMEOUT_SECONDS
-    # only fail over when going through the proxy (the native paid Claude has no model menu)
-    models_to_try = [model] + [m for m in fallbacks if m != model] if proxy_env else [model]
+    # Through the proxy: proactively pick a model that has quota (per the pool's /api/accounts), in
+    # preference order. If the pool says EVERY model is rate-limited on every account, fast-fail so
+    # the caller can tell the dispatcher instead of making them wait. API unreachable → reactive failover.
+    if proxy_env:
+        ordered = [model] + [m for m in fallbacks if m != model]
+        available = pool_models_with_quota(proxy_env.get("ANTHROPIC_BASE_URL", ""), proxy_env.get("ANTHROPIC_AUTH_TOKEN", "test"))
+        if available is not None:
+            usable = [m for m in ordered if m in available]
+            if not usable:
+                msg = ("ALL_QUOTA_EXHAUSTED: 代理池所有模型在所有启用账号上都被限速,"
+                       f"员工「{agent}」此刻无法工作。")
+                output.write_text(msg + "\n", encoding="utf-8")
+                return POOL_QUOTA_EXHAUSTED_RC, f"claude -p [{route}] {msg}"
+            models_to_try = usable
+        else:
+            models_to_try = ordered  # pool account API unreachable → try all, rely on reactive failover
+    else:
+        models_to_try = [model]
     rc, out, err, used = 1, "", "", model
     failover = []
     for attempt, m in enumerate(models_to_try):
@@ -306,6 +348,16 @@ def process(args: argparse.Namespace) -> int:
         write_report(artifact["report"], task, executed=True, status="completed", detail=detail, prompt=artifact["prompt"], output=artifact["output"])
         evidence_report = copy_report_to_task_evidence(task["id"], artifact["report"])
         done_code, done_out, done_err = run_companyctl(["task", "done", "--agent", args.agent, "--task-id", task["id"], "--summary", detail, "--evidence", str(evidence_report)])
+    elif code == POOL_QUOTA_EXHAUSTED_RC:
+        # the whole pool is out of quota → the employee genuinely can't work now. Don't make the
+        # dispatcher wait: block with a clear reason AND message them so they can handle it.
+        detail = ("员工暂时无法接活:代理池所有模型额度都耗尽(账号均被限速)。"
+                  "此任务未执行,请改派、稍后重试,或在 :8080 池子补/换号。")
+        write_report(artifact["report"], task, executed=True, status="blocked", detail=detail, prompt=artifact["prompt"], output=artifact["output"])
+        done_code, done_out, done_err = run_companyctl(["task", "block", "--agent", args.agent, "--task-id", task["id"], "--blocker", detail])
+        if task["source_agent"]:
+            run_companyctl(["message", "send", "--from", args.agent, "--to", task["source_agent"],
+                            "--body", f"⚠ 我({args.agent})暂时接不了活:{detail} 任务 {task['id']}「{task['title']}」未执行,请你处理。"])
     else:
         detail = execution_detail(cmd, artifact["output"], exit_code=code, success=False)
         write_report(artifact["report"], task, executed=True, status="blocked", detail=detail, prompt=artifact["prompt"], output=artifact["output"])
