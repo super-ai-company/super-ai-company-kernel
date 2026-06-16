@@ -9535,8 +9535,9 @@ def conversation_invoke_runtime(conn: sqlite3.Connection, agent: str, prompt: st
                "--agent", agent, msg_flag, prompt,
                "--direct-source", "owner", "--direct-session-key", session_key,
                "--timeout", str(timeout)]
-        # claude/gemini run on the claude adapter, which supports persistent memory sessions.
-        if memory_key and runtime in {"claude", "gemini"}:
+        # claude/gemini (claude adapter) and codex (codex adapter) both support persistent memory
+        # sessions now — each participant natively remembers prior turns of THIS conversation.
+        if memory_key and runtime in {"claude", "gemini", "codex"}:
             cmd.extend(["--memory-session", f"conv:{memory_key}:{agent}"])
     else:
         return {"ok": False, "reply": "", "error": f"unsupported runtime: {runtime}", "runtime": runtime}
