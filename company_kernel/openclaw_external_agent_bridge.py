@@ -10,6 +10,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
 
+from .employee_comms import communication_protocol
+
 
 ROOT = Path(os.environ.get("OPENCLAW_COMPANY_KERNEL_ROOT", Path(__file__).resolve().parents[1])).resolve()
 DEFAULT_OPENCLAW_ROOT = Path(os.environ.get("OPENCLAW_ROOT", "/Users/owner/openclaw")).resolve()
@@ -189,7 +191,8 @@ def build_adapter_prompt(task: dict, task_path: Path, kernel_agent: str, kernel_
     ]
     if skill_id:
         required.append(f"Use Codex/agent skill if available: {skill_id}")
-    return "\n".join(required + ["", "Task:", task_description(task, task_path, kernel_agent)])
+    return "\n".join(required + ["", communication_protocol(kernel_agent, "openclaw"), "",
+                                 "Task:", task_description(task, task_path, kernel_agent)])
 
 
 def run_external_adapter(task: dict, task_path: Path, kernel_agent: str, kernel_task_id_value: str, config: BridgeConfig, runner: CommandRunner) -> dict:
