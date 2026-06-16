@@ -18,6 +18,7 @@ employees/*/inbox/
 employees/*/outbox/
 employees/*/reports/
 employees/*/sessions/
+employees/*/codex-sessions/
 employees/ecommerce-copy-skill/
 
 .ops/

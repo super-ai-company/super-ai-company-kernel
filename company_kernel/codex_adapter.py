@@ -486,12 +486,11 @@ def copy_report_to_task_evidence(task_id: str, report: Path) -> Path:
     return target
 
 
-def build_codex_command(workspace: Path, output: Path, sandbox: str, model: str) -> list[str]:
+def build_codex_command(workspace: Path, output: Path, sandbox: str, model: str, persist: bool = False) -> list[str]:
     cmd = [
         shutil.which("codex") or "codex",  # absolute binary — immune to shell function/PATH wrappers
         "exec",
         "--ignore-rules",
-        "--ephemeral",
         # workspace trust is decided by the kernel (resolve_task_workspace); codex's own
         # git-repo check would otherwise refuse legitimate non-git task workspaces.
         "--skip-git-repo-check",
@@ -503,19 +502,87 @@ def build_codex_command(workspace: Path, output: Path, sandbox: str, model: str)
         str(output),
         "-",
     ]
+    if not persist:
+        cmd.insert(3, "--ephemeral")  # default: don't persist session files. memory mode keeps them.
     if model:
         cmd[2:2] = ["--model", model]
     return cmd
 
 
+def build_codex_resume_command(output: Path, model: str, session_id: str) -> list[str]:
+    # resume inherits the original session's workspace/sandbox; prompt comes via stdin ("-").
+    cmd = [shutil.which("codex") or "codex", "exec", "resume", "--skip-git-repo-check", "-o", str(output), session_id, "-"]
+    if model:
+        cmd[3:3] = ["--model", model]
+    return cmd
+
+
+# ---------------------------------------------------------------- codex persistent memory (opt-in)
+# codex has no way to NAME a session on creation, but it writes a rollout file named with the
+# session UUID. So in memory mode we run WITHOUT --ephemeral, snapshot the rollout dir around the
+# run, and capture the one new UUID — then `codex exec resume <uuid>` next time. If the diff is
+# ambiguous (0 or >1 new files) we simply don't store, staying stateless rather than resuming the
+# wrong session. No memory_key → unchanged ephemeral behavior.
+def _codex_sessions_dir() -> Path:
+    return Path(os.environ.get("CODEX_HOME", str(Path.home() / ".codex"))) / "sessions"
+
+
+def _rollout_snapshot() -> set[str]:
+    d = _codex_sessions_dir()
+    return {str(p) for p in d.rglob("rollout-*.jsonl")} if d.exists() else set()
+
+
+_ROLLOUT_UUID_RE = re.compile(r"rollout-.*-([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$")
+
+
+def _uuid_from_rollout(path: str) -> str:
+    m = _ROLLOUT_UUID_RE.search(path)
+    return m.group(1) if m else ""
+
+
+def _codex_memory_marker(agent: str, memory_key: str) -> Path:
+    safe = re.sub(r"[^A-Za-z0-9_.-]", "_", memory_key)[:120]
+    return ROOT / "employees" / agent / "codex-sessions" / f"{safe}.json"
+
+
+def codex_memory_session(agent: str, memory_key: str) -> str:
+    if not memory_key:
+        return ""
+    p = _codex_memory_marker(agent, memory_key)
+    try:
+        return str(json.loads(p.read_text(encoding="utf-8")).get("session_id", "") or "")
+    except (OSError, json.JSONDecodeError):
+        return ""
+
+
+def store_codex_memory_session(agent: str, memory_key: str, session_id: str) -> None:
+    p = _codex_memory_marker(agent, memory_key)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps({"session_id": session_id, "memory_key": memory_key, "created_at": now()}, ensure_ascii=False), encoding="utf-8")
+
+
 TIMEOUT_EXIT_CODE = 124
 
 
-def run_codex(task_card: Path, workspace: Path, output: Path, events: Path, sandbox: str, model: str, isolation: str, sandbox_profile: str, timeout_seconds: int = 1800) -> tuple[int, str]:
-    cmd = wrap_command(build_codex_command(workspace, output, sandbox, model), runtime="codex", workspace=workspace, isolation=isolation, profile_name=sandbox_profile)
+def run_codex(task_card: Path, workspace: Path, output: Path, events: Path, sandbox: str, model: str, isolation: str, sandbox_profile: str, timeout_seconds: int = 1800, memory_key: str = "", agent: str = "codex") -> tuple[int, str]:
+    # Opt-in persistent memory: resume an existing codex session for this memory_key, else start a
+    # persisted one and capture its UUID for next time. No memory_key → unchanged ephemeral run.
+    resume_id = codex_memory_session(agent, memory_key) if memory_key else ""
+    capture = bool(memory_key) and not resume_id
+    before = _rollout_snapshot() if capture else set()
+    if resume_id:
+        base = build_codex_resume_command(output, model, resume_id)
+    else:
+        base = build_codex_command(workspace, output, sandbox, model, persist=bool(memory_key))
+    cmd = wrap_command(base, runtime="codex", workspace=workspace, isolation=isolation, profile_name=sandbox_profile)
     try:
         with task_card.open("r", encoding="utf-8") as stdin, events.open("w", encoding="utf-8") as event_out:
             cp = subprocess.run(cmd, stdin=stdin, stdout=event_out, stderr=subprocess.STDOUT, text=True, timeout=timeout_seconds or None)
+        if capture and cp.returncode == 0:
+            new = [_uuid_from_rollout(p) for p in (_rollout_snapshot() - before)]
+            new = [u for u in new if u]
+            if len(new) == 1:  # exactly one new session → ours; ambiguous → stay stateless
+                store_codex_memory_session(agent, memory_key, new[0])
         return cp.returncode, " ".join(cmd)
     except subprocess.TimeoutExpired:
         note = f"codex exec killed after exceeding timeout of {timeout_seconds} seconds at {now()}"
@@ -639,6 +706,7 @@ def handle_converse(args: argparse.Namespace, emp) -> int:
     run_code, _cmd = run_codex(
         art["task_card"], workspace, art["last_message"], art["events"],
         "read-only", args.model, args.isolation, args.sandbox_profile, timeout_seconds=timeout,
+        memory_key=getattr(args, "memory_session", "") or "", agent=args.agent,
     )
     reply = (compact_output(art["last_message"], max_chars=1600) or "").strip()
     ok = run_code == 0 and bool(reply)
@@ -1038,6 +1106,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--direct-source", default="", help="source employee for direct reachability messages")
     parser.add_argument("--direct-session-key", default="", help="session key used by the company direct message resolver")
     parser.add_argument("--converse-message", default="", help="answer-only mode: run codex read-only to produce a discussion/meeting reply, no task execution")
+    parser.add_argument("--memory-session", default="", help="stable memory key: resume ONE codex session across turns so it remembers (used by conversations)")
     parser.add_argument("--timeout", type=int, default=120, help="timeout seconds for direct replies")
     return parser
 

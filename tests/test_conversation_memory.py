@@ -51,9 +51,10 @@ class ConversationMemoryTest(unittest.TestCase):
         cmd = self._capture_cmd("gemini")
         self.assertIn("--memory-session", cmd)
 
-    def test_codex_conversation_has_no_memory_flag(self) -> None:
+    def test_codex_conversation_gets_memory_session(self) -> None:
         cmd = self._capture_cmd("codex")
-        self.assertNotIn("--memory-session", cmd)
+        self.assertIn("--memory-session", cmd)
+        self.assertIn("conv:meeting-7:codex", cmd)
 
     def test_no_memory_key_means_no_flag(self) -> None:
         captured = {}
