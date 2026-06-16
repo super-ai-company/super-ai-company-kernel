@@ -8,7 +8,7 @@
 :root{
   /* Boardroom — ivory paper, high-contrast ink, brass accent. A company ledger, not a gamer dashboard. */
   --bg:#E8E2D2;--bg2:#F1ECDF;--card:#FCFBF6;--card2:#F3EEE1;--line:#DAD1BA;--line2:#C7BC9F;
-  --text:#171A20;--fg:#171A20;--muted:#6B6453;--dim:#9C927A;
+  --text:#171A20;--fg:#171A20;--muted:#6B6453;--dim:#7C7462;  /* --dim darkened to meet WCAG AA 4.5:1 on cards (agy review) */
   --accent:#9A7726;--accent2:#7B5E1B;--accentDim:#EEE4CC;--ok:#2E7D52;--warn:#A9761C;--bad:#A6303D;--purple:#6A4E7C;
   --brass:#B08A3E;
   --grad:linear-gradient(135deg,#C49A45,#8A6B28);
@@ -32,6 +32,7 @@ button.ok:hover{color:#fff;background:var(--ok)}
 button.bad{border-color:var(--bad);color:var(--bad);background:color-mix(in srgb,var(--bad) 8%,transparent)}
 button.bad:hover{color:#fff;background:var(--bad)}
 button:disabled{opacity:.45;cursor:not-allowed}
+button:focus-visible,a:focus-visible,.tab:focus-visible,[tabindex]:focus-visible{outline:none;box-shadow:0 0 0 3px color-mix(in srgb,var(--accent) 32%,transparent);border-radius:var(--r-sm)}
 input,select,textarea{font:inherit;background:var(--card);border:1px solid var(--line2);color:var(--text);border-radius:var(--r-sm);padding:8px 11px;width:100%}
 input::placeholder,textarea::placeholder{color:var(--dim)}
 input:focus,select:focus,textarea:focus{outline:none;border-color:var(--accent);box-shadow:0 0 0 3px color-mix(in srgb,var(--accent) 20%,transparent)}
@@ -607,13 +608,27 @@ async function askText(title, {placeholder="", value="", multiline=false, confir
 }
 
 /* ---------- tabs ---------- */
-$("tabs").addEventListener("click", e => {
-  const t = e.target.closest(".tab"); if(!t) return;
-  document.querySelectorAll(".tab").forEach(x=>x.classList.remove("active"));
+function activateTab(t){
+  if(!t) return;
+  document.querySelectorAll(".tab").forEach(x=>{x.classList.remove("active");x.setAttribute("aria-selected","false");});
   document.querySelectorAll(".view").forEach(x=>x.classList.remove("active"));
-  t.classList.add("active"); $("v-"+t.dataset.v).classList.add("active");
+  t.classList.add("active"); t.setAttribute("aria-selected","true"); $("v-"+t.dataset.v).classList.add("active");
   if(t.dataset.v==="metrics") loadMetrics();
   if(t.dataset.v==="reports") loadReports();
+}
+// a11y (agy review): tabs are keyboard-reachable — role/tabindex + Enter/Space activate, arrows move focus
+$("tabs").setAttribute("role","tablist");
+document.querySelectorAll("#tabs .tab").forEach(t=>{ t.tabIndex=0; t.setAttribute("role","tab"); t.setAttribute("aria-selected", t.classList.contains("active")?"true":"false"); });
+$("tabs").addEventListener("click", e => activateTab(e.target.closest(".tab")));
+$("tabs").addEventListener("keydown", e => {
+  const t = e.target.closest(".tab"); if(!t) return;
+  if(e.key==="Enter"||e.key===" "){ e.preventDefault(); activateTab(t); return; }
+  if(e.key==="ArrowRight"||e.key==="ArrowLeft"){
+    e.preventDefault();
+    const tabs=[...document.querySelectorAll("#tabs .tab")];
+    const i=(tabs.indexOf(t)+(e.key==="ArrowRight"?1:-1)+tabs.length)%tabs.length;
+    tabs[i].focus(); activateTab(tabs[i]);
+  }
 });
 
 /* ---------- 完成回报 (results feed) ---------- */
