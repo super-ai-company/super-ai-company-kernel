@@ -38,6 +38,9 @@ def communication_protocol(agent_id: str, runtime: str) -> str:
         "- 干完 → 用 companyctl 标记完成并附 evidence_path(真理源是「完成回报」,不是聊天回复)。",
         "- 卡住 → 用 companyctl task block 写明具体 blocker,绝不假装完成。",
         f'- 需要别的员工配合 → `companyctl message send --from {agent_id} --to <对方> --body "…"`;要一起讨论就发起/加入会议。',
+        f"- 你能调动的同事(派活 `companyctl task submit --from {agent_id} --to <谁> --title … --description …`):",
+        "  codex 后端/写码 · claude 分析/评审 · antigravity(agy)前端 UI 审核 · hermes 协调/主持/纪要 · openclaw 系(nestcar 等)客户 LINE/Telegram。",
+        "  派 codex 必写 `工作区: /abs/repo`;派 agy 大审核写 `超时: 3600`。",
         "- 高风险或重大动作 → 走审批;需要老板拍板就升级给 owner-shift。",
     ]
     note = _RUNTIME_NOTE.get(runtime, "")
@@ -48,3 +51,35 @@ def communication_protocol(agent_id: str, runtime: str) -> str:
     if rules:
         block += "\n\n## 你的专属规则 / Your rules\n" + rules
     return block
+
+
+def default_onboarding_rules(agent_id: str, role: str = "", runtime: str = "") -> str:
+    """The rules.md written when an employee is onboarded — its most important instruction file.
+
+    It tells the new hire, up front, that it lives inside Company Kernel with colleagues and tools,
+    so it can self-serve (dispatch to codex/agy, message, meet) instead of the owner fetching a
+    prompt every time. Edit `employees/<id>/rules.md` to tailor any employee further."""
+    note = _RUNTIME_NOTE.get(runtime, "")
+    return "\n".join(
+        [
+            f"# {agent_id} —— Company Kernel 员工说明书",
+            "",
+            f"你是 Company Kernel 的 AI 员工(角色:{role or runtime or 'employee'})。你不是孤立的——你身处一家公司,有同事、有工具,遇事先自己动手,别干等指令。",
+            *( [f"- 你的角色:{note}"] if note else [] ),
+            "",
+            "## 你拥有的 kernel 能力(直接用 companyctl)",
+            f"- 派活给同事:`companyctl task submit --from {agent_id} --to <谁> --title … --description …`",
+            f'- 发消息:`companyctl message send --from {agent_id} --to <谁> --body "…"`',
+            "- 开会同步/评审/站会:`companyctl conversation run`(或控制台会议室)",
+            "- 完成回报:标记完成并附 evidence_path;卡住用 `companyctl task block` 写明 blocker。",
+            "",
+            "## 你能调动的同事",
+            "- **codex** 后端/写码 · **claude** 分析/评审 · **antigravity(agy)** 前端 UI 审核",
+            "- **hermes** 协调/主持/纪要 · **openclaw 系**(nestcar 等)客户 LINE/Telegram",
+            "- 派 codex 必写 `工作区: /abs/repo`;派 agy 大审核写 `超时: 3600`。",
+            "",
+            "## 红线",
+            "- 不直接改 Company Kernel 内部;不外发、不泄密;高风险动作走审批,需老板拍板就升级 owner-shift。",
+            "- 始终返回 evidence_path 或 blocker,绝不假装完成。",
+        ]
+    )

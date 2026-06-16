@@ -16,14 +16,16 @@ class FakeRunner:
     def __call__(self, command: list[str]) -> tuple[int, str, str]:
         self.commands.append(command)
         text = " ".join(command)
-        if " task show " in text:
-            return 1, json.dumps({"ok": False, "error": "task not found"}), ""
-        if " task submit " in text:
-            return 0, json.dumps({"ok": True, "task": {"id": command[-1]}}), ""
+        # identify the adapter by its binary FIRST — the prompt it carries may itself contain
+        # substrings like "task submit" (the injected comms protocol teaches that command).
         if "company-codex-adapter" in text or "company-antigravity-adapter" in text:
             if self.adapter_ok:
                 return 0, json.dumps({"ok": True, "reply": "adapter completed", "progress_report": "/tmp/adapter-evidence.json"}), ""
             return 1, json.dumps({"ok": False, "blocker": "adapter blocked", "progress_report": "/tmp/adapter-blocked.json"}), "blocked"
+        if " task show " in text:
+            return 1, json.dumps({"ok": False, "error": "task not found"}), ""
+        if " task submit " in text:
+            return 0, json.dumps({"ok": True, "task": {"id": command[-1]}}), ""
         if " task done " in text:
             return 0, json.dumps({"ok": True, "status": "completed"}), ""
         if " task block " in text:

@@ -4997,14 +4997,12 @@ def write_employee_files(employee_id: str, profile: dict, *, dry_run: bool) -> d
         paths[key].mkdir(parents=True, exist_ok=True)
     paths["profile"].write_text(json.dumps(profile, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     write_employee_capabilities(employee_id, profile, dry_run=False)
-    paths["rules"].write_text(
-        "# Employee Rules\n\n"
-        "- Use companyctl for task state changes.\n"
-        "- Do not edit Company Kernel internals directly.\n"
-        "- High-risk business actions require approval.\n"
-        "- Always return evidence_path or blocker.\n",
-        encoding="utf-8",
-    )
+    if not paths["rules"].exists():
+        from .employee_comms import default_onboarding_rules
+        paths["rules"].write_text(
+            default_onboarding_rules(employee_id, profile.get("role", ""), profile.get("runtime", "")) + "\n",
+            encoding="utf-8",
+        )
     if not paths["permissions"].exists():
         paths["permissions"].write_text(
             json.dumps(
