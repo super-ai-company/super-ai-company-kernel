@@ -297,11 +297,44 @@ def resolve_managed_timeout(task: sqlite3.Row, base_default: int) -> int:
     return min(seconds, MAX_TASK_TIMEOUT_SECONDS)
 
 
-def run_agy_print(message: str, timeout: int) -> tuple[int, str, str]:
+WORKSPACE_DIRECTIVE = re.compile(
+    r"^[^\n]*?(?:工作区|工作目录|仓库路径|仓库绝对路径|workspace|repo[ _]?path)[^\n]*?[:：]\s*[\[【(\"']?\s*([^\s\"'\]】)，,]+)",
+    re.IGNORECASE | re.MULTILINE,
+)
+
+
+def resolve_managed_workspace(task: sqlite3.Row, emp: sqlite3.Row) -> Path:
+    """Where agy should run a review. A per-task `工作区:` directive wins, else the employee's
+    configured workspace, else the kernel root. Must be an existing ABSOLUTE dir — the system uses
+    it automatically so the dispatcher never has to paste absolute paths (the recurring path bug)."""
+    candidates = []
+    m = WORKSPACE_DIRECTIVE.search(str(task["description"] or ""))
+    if m:
+        candidates.append(m.group(1).strip())
+    if emp is not None:
+        try:
+            candidates.append(str(emp["workspace"] or "").strip())
+        except (KeyError, IndexError, TypeError):
+            pass
+    for raw in candidates:
+        if not raw:
+            continue
+        p = Path(raw).expanduser()
+        if p.is_absolute() and p.is_dir():
+            return p.resolve()
+    return ROOT
+
+
+def run_agy_print(message: str, timeout: int, workspace: Path | None = None) -> tuple[int, str, str]:
     command = shutil.which(AGY_COMMAND)
     if not command:
         return 127, "", "agy command not found"
-    cp = subprocess.run([command, "--print", message, "--print-timeout", f"{timeout}s"], cwd=str(ROOT), text=True, capture_output=True, timeout=timeout + 10)
+    cwd = (workspace or ROOT)
+    cmd = [command]
+    if Path(cwd).resolve() != ROOT:
+        cmd += ["--add-dir", str(cwd)]   # ensure the review repo is in agy's workspace
+    cmd += ["--print", message, "--print-timeout", f"{timeout}s"]
+    cp = subprocess.run(cmd, cwd=str(cwd), text=True, capture_output=True, timeout=timeout + 10)
     return cp.returncode, cp.stdout.strip(), cp.stderr.strip()
 
 
@@ -543,6 +576,7 @@ def process_managed_attempt(args: argparse.Namespace, emp: sqlite3.Row) -> int:
     artifact = paths(args.agent, task["id"])
     prompt = build_managed_task_prompt(task)
     eff_timeout = resolve_managed_timeout(task, args.timeout)
+    eff_workspace = resolve_managed_workspace(task, emp)
     artifact["brief"].write_text(build_brief(task) + "\n## Managed Prompt\n\n" + prompt + "\n", encoding="utf-8")
     run_code, run_payload, run_err = run_companyctl_json(
         [
@@ -621,7 +655,7 @@ def process_managed_attempt(args: argparse.Namespace, emp: sqlite3.Row) -> int:
             "--tool-type",
             "cli",
             "--input-summary",
-            f"agy --print timeout={eff_timeout}s",
+            f"agy --print timeout={eff_timeout}s cwd={eff_workspace}",
             "--risk-level",
             "medium",
         ]
@@ -629,7 +663,7 @@ def process_managed_attempt(args: argparse.Namespace, emp: sqlite3.Row) -> int:
     run_companyctl_json(["task", "progress", "--task-id", task["id"], "--agent", args.agent, "--attempt-id", attempt_id, "--state", "acknowledged", "--message", "Antigravity managed attempt acknowledged", "--progress", "5"])
     before_files = git_changed_files()
     started_monotonic = time.monotonic()
-    agy_code, agy_reply, agy_err = run_agy_print(prompt, eff_timeout)
+    agy_code, agy_reply, agy_err = run_agy_print(prompt, eff_timeout, eff_workspace)
     runtime_seconds = max(0, int(round(time.monotonic() - started_monotonic)))
     after_files = git_changed_files()
     validation = validate_agy_reply(message=prompt, reply=agy_reply, before_files=before_files, after_files=after_files)
