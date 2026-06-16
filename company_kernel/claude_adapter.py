@@ -188,32 +188,58 @@ def resolve_claude_proxy(agent: str, model: str) -> tuple[dict, str, str]:
 CLAUDE_RUN_TIMEOUT_SECONDS = int(os.environ.get("COMPANY_CLAUDE_TIMEOUT_SECONDS", "1800"))  # 30 min; a hung claude -p must not run forever
 
 
+# When routed through the pool, each model has its own quota and they get exhausted under load one
+# at a time, then recover. So on RESOURCE_EXHAUSTED, fail over to the next model with quota instead
+# of blocking the task. Order = the configured proxy_model first, then these. Override per-employee
+# with profile `proxy_model_fallbacks`.
+DEFAULT_PROXY_MODEL_FALLBACKS = ["gemini-3-flash-agent", "gemini-pro-agent", "claude-sonnet-4-6",
+                                 "gemini-3.1-pro-high", "gemini-3.1-pro-low"]
+
+
+def _quota_exhausted(text: str) -> bool:
+    return "RESOURCE_EXHAUSTED" in (text or "")
+
+
 def run_claude(prompt: Path, output: Path, workspace: Path, model: str, permission_mode: str, agent: str = "claude", timeout: int | None = None) -> tuple[int, str]:
     proxy_env, model, route = resolve_claude_proxy(agent, model)
     # PER-EMPLOYEE 权限覆盖:profile.json 设了 permission_mode 就用它(例如 gemini QA 需要工具/浏览器 → bypassPermissions,
     # 否则 -p 模式工具被默认拒,只能输出文本)。未设的员工保持原 permission_mode 不变。
+    fallbacks = list(DEFAULT_PROXY_MODEL_FALLBACKS)
     try:
         _prof = json.loads((ROOT / "employees" / agent / "profile.json").read_text(encoding="utf-8"))
         if str(_prof.get("permission_mode") or "").strip():
             permission_mode = str(_prof["permission_mode"]).strip()
+        if isinstance(_prof.get("proxy_model_fallbacks"), list) and _prof["proxy_model_fallbacks"]:
+            fallbacks = [str(m) for m in _prof["proxy_model_fallbacks"]]
     except (OSError, json.JSONDecodeError):
         pass
-    cmd = ["claude", "-p", prompt.read_text(encoding="utf-8"), "--no-session-persistence", "--output-format", "text"]
-    if model:
-        cmd.extend(["--model", model])
-    if permission_mode:
-        cmd.extend(["--permission-mode", permission_mode])
+    prompt_text = prompt.read_text(encoding="utf-8")
     limit = timeout or CLAUDE_RUN_TIMEOUT_SECONDS
-    try:
-        cp = subprocess.run(cmd, cwd=str(workspace), text=True, capture_output=True,
-                            env={**os.environ, **proxy_env}, timeout=limit)
-        rc, out, err = cp.returncode, cp.stdout or "", cp.stderr or ""
-    except subprocess.TimeoutExpired as exc:
-        rc = 124
-        out = (exc.stdout.decode() if isinstance(exc.stdout, bytes) else (exc.stdout or "")) if exc.stdout else ""
-        err = f"claude -p killed after exceeding {limit}s timeout (was hanging)"
+    # only fail over when going through the proxy (the native paid Claude has no model menu)
+    models_to_try = [model] + [m for m in fallbacks if m != model] if proxy_env else [model]
+    rc, out, err, used = 1, "", "", model
+    failover = []
+    for attempt, m in enumerate(models_to_try):
+        cmd = ["claude", "-p", prompt_text, "--no-session-persistence", "--output-format", "text"]
+        if m:
+            cmd.extend(["--model", m])
+        if permission_mode:
+            cmd.extend(["--permission-mode", permission_mode])
+        try:
+            cp = subprocess.run(cmd, cwd=str(workspace), text=True, capture_output=True,
+                                env={**os.environ, **proxy_env}, timeout=limit)
+            rc, out, err = cp.returncode, cp.stdout or "", cp.stderr or ""
+        except subprocess.TimeoutExpired as exc:
+            rc = 124
+            out = (exc.stdout.decode() if isinstance(exc.stdout, bytes) else (exc.stdout or "")) if exc.stdout else ""
+            err = f"claude -p killed after exceeding {limit}s timeout (was hanging)"
+        used = m
+        if not (proxy_env and _quota_exhausted(out + err)):
+            break  # success, or a non-quota failure → stop trying other models
+        failover.append(m)  # this model is exhausted → try the next one
+    note = f" (failover past exhausted: {', '.join(failover)})" if failover else ""
     output.write_text(out + ("\n\n## stderr\n\n" + err if err else ""), encoding="utf-8")
-    return rc, " ".join(["claude", "-p", "<prompt>", "--model", model or "(default)", f"[{route}]"])
+    return rc, " ".join(["claude", "-p", "<prompt>", "--model", used or "(default)", f"[{route}]{note}"])
 
 
 def handle_direct(args: argparse.Namespace) -> int:
