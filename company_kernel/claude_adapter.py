@@ -259,10 +259,13 @@ def run_claude(prompt: Path, output: Path, workspace: Path, model: str, permissi
             models_to_try = ordered  # pool account API unreachable → try all, rely on reactive failover
     else:
         models_to_try = [model]
+    # Resolve the real binary (absolute path) so we never hit a shell function/alias like the
+    # interactive `claude () { command claude --bare ... }` wrapper (which ignores the OAuth login).
+    claude_bin = shutil.which("claude") or "claude"
     rc, out, err, used = 1, "", "", model
     failover = []
     for attempt, m in enumerate(models_to_try):
-        cmd = ["claude", "-p", prompt_text, "--no-session-persistence", "--output-format", "text"]
+        cmd = [claude_bin, "-p", prompt_text, "--no-session-persistence", "--output-format", "text"]
         if m:
             cmd.extend(["--model", m])
         if permission_mode:

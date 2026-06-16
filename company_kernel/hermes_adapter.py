@@ -205,7 +205,9 @@ def copy_report_to_task_evidence(task_id: str, report: Path) -> Path:
 
 
 def build_hermes_command(prompt: Path, model: str, provider: str) -> list[str]:
-    cmd = ["hermes", "-z", prompt.read_text(encoding="utf-8")]
+    # absolute binary so we never hit a shell function/alias wrapper (subprocess won't read shell
+    # functions, but resolving the path is explicit and immune to PATH-script wrappers too)
+    cmd = [shutil.which("hermes") or "hermes", "-z", prompt.read_text(encoding="utf-8")]
     if model:
         cmd[1:1] = ["--model", model]
     if provider:
