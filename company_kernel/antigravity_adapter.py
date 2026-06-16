@@ -267,6 +267,36 @@ def validate_agy_reply(*, message: str, reply: str, before_files: list[str], aft
     }
 
 
+# Per-task timeout for managed reviews: honor a `超时:`/`timeout:` directive, with a generous floor
+# so multi-screen reviews don't get cut off (the old 120s default only suited the attendance probe).
+TIMEOUT_DIRECTIVE = re.compile(
+    r"(?:超时|超時|timeout)\s*[:：]\s*(\d+)\s*(min|mins|minute|minutes|分钟|分|m|s|sec|secs|second|seconds|秒)?",
+    re.IGNORECASE,
+)
+MANAGED_ATTEMPT_MIN_TIMEOUT_SECONDS = 1800   # 30 min floor for real reviews
+MAX_TASK_TIMEOUT_SECONDS = 3600              # 1 h cap
+
+
+def resolve_managed_timeout(task: sqlite3.Row, base_default: int) -> int:
+    """Effective `agy --print` timeout for a managed review: at least the floor, overridable by a
+    `超时:`/`timeout:` directive in the task description (capped). Larger than the CLI default so
+    multi-screen reviews finish instead of timing out at 120s."""
+    default = max(int(base_default or 0), MANAGED_ATTEMPT_MIN_TIMEOUT_SECONDS)
+    match = TIMEOUT_DIRECTIVE.search(str(task["description"] or ""))
+    if not match:
+        return default
+    try:
+        value = int(match.group(1))
+    except (TypeError, ValueError):
+        return default
+    unit = (match.group(2) or "").lower()
+    minute_units = {"min", "mins", "minute", "minutes", "分钟", "分", "m"}
+    seconds = value * 60 if unit in minute_units else value
+    if seconds <= 0:
+        return default
+    return min(seconds, MAX_TASK_TIMEOUT_SECONDS)
+
+
 def run_agy_print(message: str, timeout: int) -> tuple[int, str, str]:
     command = shutil.which(AGY_COMMAND)
     if not command:
@@ -512,6 +542,7 @@ def process_managed_attempt(args: argparse.Namespace, emp: sqlite3.Row) -> int:
         return 1
     artifact = paths(args.agent, task["id"])
     prompt = build_managed_task_prompt(task)
+    eff_timeout = resolve_managed_timeout(task, args.timeout)
     artifact["brief"].write_text(build_brief(task) + "\n## Managed Prompt\n\n" + prompt + "\n", encoding="utf-8")
     run_code, run_payload, run_err = run_companyctl_json(
         [
@@ -590,7 +621,7 @@ def process_managed_attempt(args: argparse.Namespace, emp: sqlite3.Row) -> int:
             "--tool-type",
             "cli",
             "--input-summary",
-            f"agy --print timeout={args.timeout}s",
+            f"agy --print timeout={eff_timeout}s",
             "--risk-level",
             "medium",
         ]
@@ -598,7 +629,7 @@ def process_managed_attempt(args: argparse.Namespace, emp: sqlite3.Row) -> int:
     run_companyctl_json(["task", "progress", "--task-id", task["id"], "--agent", args.agent, "--attempt-id", attempt_id, "--state", "acknowledged", "--message", "Antigravity managed attempt acknowledged", "--progress", "5"])
     before_files = git_changed_files()
     started_monotonic = time.monotonic()
-    agy_code, agy_reply, agy_err = run_agy_print(prompt, args.timeout)
+    agy_code, agy_reply, agy_err = run_agy_print(prompt, eff_timeout)
     runtime_seconds = max(0, int(round(time.monotonic() - started_monotonic)))
     after_files = git_changed_files()
     validation = validate_agy_reply(message=prompt, reply=agy_reply, before_files=before_files, after_files=after_files)
