@@ -38,8 +38,7 @@ def communication_protocol(agent_id: str, runtime: str) -> str:
     lines = [
         "## 通讯协议 / How to communicate (必读)",
         f"你是员工「{agent_id}」。**所有 companyctl 命令都用绝对路径 `{CTL}`**(你的工作目录里没有它,别用裸 `companyctl`,也别往本地 state 目录丢文件)。",
-        f"- 干完 → `{CTL} task done --agent {agent_id} --task-id <id> ...` 并附 evidence_path(真理源是「完成回报」,不是聊天回复)。",
-        f"- 卡住 → `{CTL} task block --agent {agent_id} --task-id <id> --blocker \"<具体原因>\"`,绝不假装完成。",
+        "- **完成/卡住由内核自动记录** —— 你**不要**自己调 `task done`/`task block`(那是适配器的活)。你只管把活做完、把结果(评审/代码改动/证据)输出出来,内核会替你回报。绝不假装完成。",
         f'- 需要别的员工配合 → `{CTL} message send --from {agent_id} --to <对方> --body "…"`;要一起讨论就发起/加入会议。',
         f"- 派活给同事 → `{CTL} task submit --from {agent_id} --to <谁> --title … --description …`(`--from` 必须是注册员工,就用你自己的 id「{agent_id}」,别用 app 名)。",
         "  同事:codex 后端/写码 · claude 分析/评审 · antigravity(agy)前端 UI 审核 · hermes 协调 · openclaw 系 客户 LINE/Telegram。派 codex 必写 `工作区: /abs/repo`;派 agy 大审核写 `超时: 3600`。",
@@ -78,7 +77,7 @@ def default_onboarding_rules(agent_id: str, role: str = "", runtime: str = "") -
             f"- 派活给同事:`{CTL} task submit --from {agent_id} --to <谁> --title … --description …`",
             f'- 发消息:`{CTL} message send --from {agent_id} --to <谁> --body "…"`',
             f"- 开会:`{CTL} conversation run …`(或控制台会议室)",
-            f"- 完成回报:`{CTL} task done --agent {agent_id} --task-id <id> …` 附 evidence;卡住用 `{CTL} task block …` 写明 blocker。",
+            "- **完成/卡住别自己调 `task done`/`task block`** —— 内核适配器会替你回报;你只管做完、输出结果(评审/代码/证据)。",
             f"- `--from` 必须是注册员工——就用你自己的 id「{agent_id}」,**别用 app 名(如 codex-app)**,否则被拒。",
             "",
             "## 你能调动的同事",
