@@ -13,7 +13,7 @@ class EmployeeCommsTest(unittest.TestCase):
         self.assertIn("通讯协议", p)
         self.assertIn("companyctl message send --from nonexistent-agent-xyz", p)
         self.assertIn("owner", p)        # how to escalate
-        self.assertIn("evidence_path", p)      # how to report done
+        self.assertIn("task done", p)          # tells the agent NOT to self-call it (adapter does)
 
     def test_runtime_note_is_role_specific(self):
         self.assertIn("只审查", ec.communication_protocol("a", "antigravity"))
