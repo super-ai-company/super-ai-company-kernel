@@ -8186,6 +8186,11 @@ def complete_task_internal(
     conn.commit()
     event = record_event(conn, "task.done", agent, task_id=task_id, payload={"summary": summary, "evidence": evidence, "attempt_id": completed_attempt_id})
     audit(conn, agent, "task.done", task_id, {"summary": summary, "evidence": evidence, "attempt_id": completed_attempt_id, "event_id": event["id"]})
+    # event-driven feedback: notify the dispatcher's inbox so their always-on app can watch it
+    try:
+        write_dispatcher_completion_notice(conn, dict(task), status="completed", summary=summary, evidence=evidence)
+    except Exception:
+        pass
     return {"task_id": task_id, "status": "completed", "evidence": evidence, "attempt_id": completed_attempt_id, "event_id": event["id"], "synced_plan_items": synced_plan_items}
 
 
@@ -8214,6 +8219,32 @@ def write_task_inbox_file(task: dict) -> str:
     path = inbox / f"{task['id']}.json"
     path.write_text(json.dumps(task, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     prune_inbox_dir(inbox)  # cap on write so inboxes never silently balloon
+    return str(path)
+
+
+def write_dispatcher_completion_notice(conn: sqlite3.Connection, task: dict, *, status: str,
+                                       summary: str = "", evidence: str = "", blocker: str = "") -> str:
+    """Drop a `result-<task>.json` into the DISPATCHER's (source_agent's) inbox when their dispatched
+    task finishes — so an always-on app can WATCH its inbox dir (event-driven, e.g. fswatch) and react
+    the instant a task completes, instead of polling. No-op when the source isn't a distinct
+    registered employee (subtasks/system don't notify a human/app)."""
+    source = str(task.get("source_agent") or "").strip()
+    target = str(task.get("target_agent") or "").strip()
+    if not source or source == target or source in {"system"}:
+        return ""
+    if not conn.execute("SELECT 1 FROM employees WHERE id = ?", (source,)).fetchone():
+        return ""
+    inbox = employee_paths(source)["inbox"]
+    inbox.mkdir(parents=True, exist_ok=True)
+    notice = {
+        "type": f"task.{status}", "task_id": task.get("id"), "title": task.get("title"),
+        "done_by": target, "status": status, "summary": summary, "evidence_path": evidence,
+        "blocker": blocker, "at": now(),
+        "note": f"你派给 {target} 的任务「{task.get('title')}」已{'完成' if status == 'completed' else '受阻'}",
+    }
+    path = inbox / f"result-{task.get('id')}.json"
+    path.write_text(json.dumps(notice, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    prune_inbox_dir(inbox)
     return str(path)
 
 
@@ -11546,6 +11577,10 @@ def cmd_task_block(args: argparse.Namespace) -> int:
     conn.commit()
     event = record_event(conn, "task.blocked", agent, task_id=args.task_id, trace_id=trace_id_for_task(conn, args.task_id), payload={"blocker": args.blocker})
     audit(conn, agent, "task.block", args.task_id, {"blocker": args.blocker, "event_id": event["id"]})
+    try:
+        write_dispatcher_completion_notice(conn, dict(task), status="blocked", blocker=args.blocker)
+    except Exception:
+        pass
     emit({"ok": True, "task_id": args.task_id, "status": "blocked", "blocker": args.blocker, "event_id": event["id"], "synced_plan_items": synced_plan_items})
     return 0
 
