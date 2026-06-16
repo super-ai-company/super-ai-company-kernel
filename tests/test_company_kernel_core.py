@@ -11216,6 +11216,20 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual(0, code, swept)
         self.assertEqual(0, swept["swept"])
 
+    def test_auto_approval_suppresses_requested_notification(self) -> None:
+        # auto-approved route must NOT fire an "approval required" event/Telegram (stale-ping bug)
+        conn = companyctl.connect()
+        try:
+            silent = companyctl.create_approval_internal(conn, source="ops", action="payment", reason="auto", approval_id="appr-silent", notify=False)
+            loud = companyctl.create_approval_internal(conn, source="ops", action="payment", reason="manual", approval_id="appr-loud", notify=True)
+            n = conn.execute("SELECT COUNT(*) c FROM company_events WHERE event_type = 'approval.requested'").fetchone()["c"]
+        finally:
+            conn.close()
+        self.assertIsNone(silent["notification"])
+        self.assertIsNone(silent["event"])
+        self.assertIsNotNone(loud["event"])
+        self.assertEqual(1, n, "only the notify=True approval should record an approval.requested event")
+
     def test_auto_sweep_is_noop_in_manual_mode(self) -> None:
         run_cli("approval", "mode", "--set", "manual", "--by", "ops")
         code, swept = run_cli("approval", "auto-sweep")
