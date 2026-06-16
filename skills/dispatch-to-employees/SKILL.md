@@ -25,6 +25,22 @@ runs in the wrong place, or silently does nothing.
 
 The daemon then dispatches submitted tasks to each employee's worker automatically (no manual run).
 
+## Persistent memory (跨任务记忆,省 token)
+
+Headless claude is stateless by default (`--no-session-persistence`) — every task is a cold start,
+so a "sync the whole tree" task makes it re-read everything = wasted tokens. To give claude **memory
+across tasks**, add a directive to the description:
+
+```
+记忆会话: damov4-sync      # or: memory-session: <key>
+```
+
+Tasks sharing the same key reuse ONE claude session (created once, resumed after) — claude remembers
+prior turns and won't re-scan. Best paired with a shared progress doc (codex maintains a
+`*-sync-*.md`, claude reads the digest, not the repo). No directive → unchanged stateless behavior.
+Kernel **conversations** (below) are memory-enabled automatically — each claude/gemini participant
+keeps a per-conversation session. (codex memory across turns is via thread re-feed for now.)
+
 ## High-risk dispatch → owner approval → auto-execute
 
 If the title/description hits a sensitive keyword (支付 / 外发 / 部署 / 密钥 / 赔偿 … see
