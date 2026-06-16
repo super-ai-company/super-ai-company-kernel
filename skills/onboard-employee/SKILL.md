@@ -175,11 +175,14 @@ sudo systemctl daemon-reload && sudo systemctl enable --now company-kernel-api c
 
 **claude** — install: `npm i -g @anthropic-ai/claude-code`; `claude` login. Worker: `company-claude-adapter --execute --permission-mode bypassPermissions`. claude is managed manually as an analyst; set profile `auto_recover: false` if you don't want auto-reactivation.
 
-**gemini** — a Claude-compatible proxy runtime. Set the employee profile's `proxy_base_url` (default `http://localhost:8080`), `proxy_token`, `proxy_model`. It runs on the claude adapter (`company-claude-adapter --agent gemini ...`). Make sure the proxy is up before activating, or it auto-pauses; the daemon's `presence.recover-unavailable` step re-activates it once the proxy returns.
+**gemini (and any pool-backed reviewer)** — a Claude-compatible **proxy/account-pool** runtime. Set the employee profile's `proxy_base_url` (default `http://localhost:8080`), `proxy_token`, `proxy_model`; runtime is `claude` and the worker is `company-claude-adapter --execute --permission-mode bypassPermissions`. The adapter is **quota-aware**: it reads the pool's `/api/accounts` to pick a `proxy_model` that still has a non-rate-limited account, **auto-fails-over** to the next model on `RESOURCE_EXHAUSTED` (order: `proxy_model` then `proxy_model_fallbacks` or a built-in list), and if **every** model is exhausted on every account it fast-fails and **messages the dispatcher** instead of making them wait. The pool itself rotates accounts + cools down rate-limited ones. Bring the proxy up before activating, or the employee auto-pauses; `presence.recover-unavailable` re-activates it once the proxy returns.
 
 **openclaw / hermes** — register the OpenClaw agent, then `companyctl employee import-openclaw` / `sync-openclaw-runtime`. Worker: `company-openclaw-adapter --execute`. These relay to LINE/Telegram; see [company-employee-openclaw](../company-employee-openclaw/SKILL.md).
 
-**antigravity (agy)** — headless path is `company-antigravity-adapter --managed-attempt --by hermes` (NOT `--execute`, which opens the GUI). Install the `agy` CLI first.
+**antigravity (agy)** — two ways to run it:
+  1. **agy CLI (headless):** worker `company-antigravity-adapter --managed-attempt --by hermes` (NOT `--execute`, which opens the GUI). Single account → can hit quota.
+  2. **Via the pool (recommended, like gemini):** set the profile's `proxy_base_url`/`proxy_model`, `runtime: claude`, worker `company-claude-adapter ...` — then it shares the account pool + gets quota-aware scheduling + auto-failover (no single-account quota wall).
+  Either way: **set the employee `--workspace` to the frontend repo** so reviews run there automatically (the dispatcher never pastes absolute paths). agy is **review-only** (suggestions, doesn't edit code). **Big multi-screen reviews need `超时: 3600`** in the task (default floor is 30 min).
 
 **local** — a script runtime; point `--workspace` at the script dir and provide a `local` adapter command.
 
@@ -194,6 +197,10 @@ sudo systemctl daemon-reload && sudo systemctl enable --now company-kernel-api c
 - **Config edits don't take effect** → the daemon reads config only at start; restart it (§6).
 - **Reboot lost a manual pause** → startup sync regenerates `company_communications.json`; manual pauses don't persist across reboot by design.
 - **A long task froze the daemon** → fixed: adapters now have a timeout backstop; a hung `claude -p`/`codex exec` is killed, not left to freeze dispatching.
+- **Shell function/alias wrappers break runtime CLIs** → e.g. Claude Code installs an interactive `claude () { command claude --bare … }` shell function; `--bare` ignores the OAuth login → "Not logged in". The **kernel is immune** (it runs runtimes via `subprocess` with the **absolute binary** `shutil.which("codex"/"claude"/"agy"/"hermes")`, which never sees shell functions). But an **agent running inside your interactive shell** (the Codex/Claude desktop apps) WILL hit the wrapper — there, call the **absolute binary** (`/abs/.local/bin/claude`) or `command claude`, not the bare name.
+- **Pool model quota exhausted** → handled automatically: the claude/pool adapter checks `/api/accounts`, picks a model with quota, fails over on `RESOURCE_EXHAUSTED`, and only if **all** models on **all** accounts are rate-limited does it block — and then it messages the dispatcher "couldn't take this, you handle it" rather than leaving them waiting. Add more accounts to the `:8080` pool to widen quota.
+- **agy reviewing the wrong repo / pasting paths** → set the agy employee `--workspace` to the frontend repo once; reviews run there automatically. A per-task `工作区:` directive overrides it.
+- **Agent can't find `companyctl`** → agents run in their own project repo where `companyctl` isn't on PATH. Always use the absolute path `<kernel>/bin/companyctl` (the injected employee rules + app check-in prompts already do).
 
 ## 9. Remove an employee
 
