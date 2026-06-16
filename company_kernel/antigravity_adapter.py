@@ -193,9 +193,9 @@ def build_managed_task_prompt(task: sqlite3.Row) -> str:
             base,
             "",
             "Managed attempt evidence contract:",
-            "- verification_run must be a concrete command actually run plus result; never use '-' for status done.",
-            "- For read-only dashboard/code inspection, run at least: python3 -m py_compile company_kernel/company_dashboard.py",
-            "- If you cannot run a verification command, return status: blocked and explain the blocker.",
+            "- verification_run must be a concrete command you actually ran in THIS repo plus its result; never '-' for status done.",
+            "- For a read-only review, verification_run is the inspection you actually ran — e.g. grep/search for the symbols, or viewing the exact files and line ranges named in the task. A lint/build command is fine ONLY if it already exists in this repo.",
+            "- NEVER create, modify, or compile files just to satisfy verification. This is review-only: changed_files must be '-'. If you cannot verify without writing files, return status: blocked.",
             "- Do not claim done unless current_action and verification_run are both concrete.",
         ]
     )
