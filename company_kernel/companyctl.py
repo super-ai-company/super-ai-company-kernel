@@ -8071,6 +8071,7 @@ def route_approval_gate(conn: sqlite3.Connection, args: argparse.Namespace, sour
         risk=args.risk or load_policy_config().get("route_approval", {}).get("default_risk", "P1"),
         evidence="",
         approval_id=approval_id,
+        notify=not auto,  # auto-approved → don't fire a stale "approval required" Telegram
         metadata={
             "route": True,
             "task_id": task_id,
@@ -10710,6 +10711,7 @@ def create_approval_internal(
     evidence: str = "",
     approval_id: str = "",
     metadata: dict | None = None,
+    notify: bool = True,
 ) -> dict:
     source = resolve_employee_alias(source)
     require_employee(conn, source)
@@ -10735,6 +10737,12 @@ def create_approval_internal(
     row = conn.execute("SELECT * FROM approvals WHERE id = ?", (aid,)).fetchone()
     approval = normalize_approval(row)
     path = write_approval_state(approval)
+    audit(conn, source, "approval.request", aid, approval)
+    # auto mode: the approval is created only for the audit trail and gets approved immediately,
+    # so there is nothing for the owner to do — don't record an "approval.requested" event and
+    # don't ping Telegram with a "approval required" message (that's the stale-notification bug).
+    if not notify:
+        return {"approval": approval, "file": path, "notification": None, "event": None}
     approval_event = record_event(
         conn,
         "approval.requested",
@@ -10753,7 +10761,6 @@ def create_approval_internal(
     conn.execute("UPDATE company_events SET processed_at = ? WHERE id = ?", (approval_event_processed_at, approval_event["id"]))
     conn.commit()
     approval_event["processed_at"] = approval_event_processed_at
-    audit(conn, source, "approval.request", aid, approval)
     notification = notification_send_result(
         kind="approval",
         subject=f"Company Kernel approval required: {aid}",
