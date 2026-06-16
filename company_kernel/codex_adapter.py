@@ -488,7 +488,7 @@ def copy_report_to_task_evidence(task_id: str, report: Path) -> Path:
 
 def build_codex_command(workspace: Path, output: Path, sandbox: str, model: str) -> list[str]:
     cmd = [
-        "codex",
+        shutil.which("codex") or "codex",  # absolute binary — immune to shell function/PATH wrappers
         "exec",
         "--ignore-rules",
         "--ephemeral",
