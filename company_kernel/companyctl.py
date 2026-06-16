@@ -9454,10 +9454,12 @@ CONVERSATION_RUNTIME_BINS = {
 CONVERSATION_RUNTIME_SUPPORTED = set(CONVERSATION_RUNTIME_BINS) | {"openclaw", "hermes"}
 
 
-def conversation_invoke_runtime(conn: sqlite3.Connection, agent: str, prompt: str, timeout: int) -> dict:
+def conversation_invoke_runtime(conn: sqlite3.Connection, agent: str, prompt: str, timeout: int, memory_key: str = "") -> dict:
     """Invoke an employee's runtime headlessly with a discussion prompt and return its reply.
     Reuses the same adapter --direct-message path that direct messaging uses, so a participant
-    speaks with its real model (codex=gpt-5.5, claude=Opus 4.8 native, gemini=proxy, etc.)."""
+    speaks with its real model (codex=gpt-5.5, claude=Opus 4.8 native, gemini=proxy, etc.).
+    When memory_key is set, claude/gemini reuse ONE session across the whole conversation so each
+    participant natively remembers prior turns (less thread re-feed, no per-turn re-scan)."""
     row = conn.execute("SELECT * FROM employees WHERE id = ?", (agent,)).fetchone()
     if not row:
         return {"ok": False, "reply": "", "error": f"unknown employee: {agent}"}
@@ -9476,6 +9478,9 @@ def conversation_invoke_runtime(conn: sqlite3.Connection, agent: str, prompt: st
                "--agent", agent, msg_flag, prompt,
                "--direct-source", "owner", "--direct-session-key", session_key,
                "--timeout", str(timeout)]
+        # claude/gemini run on the claude adapter, which supports persistent memory sessions.
+        if memory_key and runtime in {"claude", "gemini"}:
+            cmd.extend(["--memory-session", f"conv:{memory_key}:{agent}"])
     else:
         return {"ok": False, "reply": "", "error": f"unsupported runtime: {runtime}", "runtime": runtime}
     try:
@@ -9722,7 +9727,7 @@ def conversation_run_internal(
         for spk in speakers:
             thread = conversation_thread_text(conn, conversation_id)
             prompt = conversation_speaker_prompt(mode, spk, title, thread)
-            res = conversation_invoke_runtime(conn, spk, prompt, timeout)
+            res = conversation_invoke_runtime(conn, spk, prompt, timeout, memory_key=conversation_id)
             if res.get("ok") and res.get("reply"):
                 conversation_reply_internal(conn, source=spk, conversation_id=conversation_id, body=res["reply"])
                 transcript.append({"round": rnd, "speaker": spk, "ok": True, "reply": res["reply"]})
@@ -9734,7 +9739,7 @@ def conversation_run_internal(
     thread = conversation_thread_text(conn, conversation_id, limit=80)
     synth_prompt = conversation_synth_prompt(mode, synth, title, thread)
     prefix = CONVERSATION_SYNTH_PREFIX.get(mode, "【方案/决策】")
-    synth_res = conversation_invoke_runtime(conn, synth, synth_prompt, timeout)
+    synth_res = conversation_invoke_runtime(conn, synth, synth_prompt, timeout, memory_key=conversation_id)
     final_plan = ""
     if synth_res.get("ok") and synth_res.get("reply"):
         final_plan = synth_res["reply"]
