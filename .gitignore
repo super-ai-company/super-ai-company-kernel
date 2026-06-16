@@ -17,6 +17,7 @@ employees/*/heartbeat.json
 employees/*/inbox/
 employees/*/outbox/
 employees/*/reports/
+employees/*/sessions/
 employees/ecommerce-copy-skill/
 
 .ops/
