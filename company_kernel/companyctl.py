@@ -11926,6 +11926,34 @@ def cmd_task_attempt_finish(args: argparse.Namespace) -> int:
     return 0
 
 
+BLOCK_NOTIFY_COOLDOWN_SECONDS = 6 * 3600  # re-alert the owner about the same task+kind at most once / 6h
+
+
+def _should_notify_block(task_id: str, category: str) -> bool:
+    """Dedup the blocked-task Telegram: skip if this task already alerted with the same blocker
+    category within the cooldown (so a block→retry→block loop doesn't flood). A changed category
+    re-alerts. Best-effort; any error → notify (fail open)."""
+    path = ROOT / "state" / "block-notify-dedup.json"
+    try:
+        store = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        store = {}
+    entry = store.get(task_id)
+    if entry and entry.get("category") == category:
+        try:
+            if (datetime.now(timezone.utc) - parse_time(entry.get("at", ""))).total_seconds() < BLOCK_NOTIFY_COOLDOWN_SECONDS:
+                return False
+        except Exception:  # noqa: BLE001
+            pass
+    store[task_id] = {"category": category, "at": now()}
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(store, ensure_ascii=False), encoding="utf-8")
+    except OSError:
+        pass
+    return True
+
+
 def cmd_task_block(args: argparse.Namespace) -> int:
     conn = connect()
     agent = resolve_employee_alias(args.agent)
@@ -11950,10 +11978,12 @@ def cmd_task_block(args: argparse.Namespace) -> int:
         project_memory.capture_task_outcome(conn, dict(task), kind="blocked", blocker=args.blocker)
     except Exception:
         pass
-    # push the triage to the owner's Telegram: WHY it stuck + the suggested action + one-tap retry/discard
+    # push the triage to the owner's Telegram: WHY it stuck + the suggested action + one-tap retry/discard.
+    # Deduped so a task that blocks → retries → blocks again doesn't spam the same alert repeatedly.
     try:
         tri = classify_blocker(args.blocker)
-        notification_send_result(
+        if _should_notify_block(args.task_id, tri["category"]):
+            notification_send_result(
             kind="error",
             subject=f"⛔ 任务受阻:{str(task['title'])[:42]}",
             message=(f"[{tri['label']}] {tri['reason']}\n👉 {tri['action']}\n"
