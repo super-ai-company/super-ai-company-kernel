@@ -339,14 +339,25 @@ TIMEOUT_DIRECTIVE = re.compile(
     re.IGNORECASE | re.MULTILINE,
 )
 MAX_TASK_TIMEOUT_SECONDS = 3600  # 60 min hard cap
+# Codex does heavy backend/build work; these signal a task that needs the full ceiling, not 30 min.
+_BIG_CODEX_MARKERS = ("etl", "构建", "build", "部署", "deploy", "全流程", "e2e", "端到端", "重测", "整改",
+                      "迁移", "全量", "对账", "打包", "apk", "全系统", "webclients", "回填", "压测")
+
+
+def _auto_timeout_for_size(task: sqlite3.Row, default_seconds: int) -> int:
+    desc = str(task["description"] or "")
+    if len(desc) >= 800 or any(k in desc.lower() for k in _BIG_CODEX_MARKERS):
+        return MAX_TASK_TIMEOUT_SECONDS  # big task → give it the full hour instead of dying at 30 min
+    return default_seconds
 
 
 def resolve_task_timeout(task: sqlite3.Row, default_seconds: int) -> int:
     """Return the effective codex timeout for this task, honoring a `超时:`/`timeout:` directive
-    (capped at MAX_TASK_TIMEOUT_SECONDS). Falls back to default_seconds when absent/unparseable."""
+    (capped at MAX_TASK_TIMEOUT_SECONDS). No directive → auto-bump large tasks toward the cap,
+    else default_seconds."""
     match = TIMEOUT_DIRECTIVE.search(str(task["description"] or ""))
     if not match:
-        return default_seconds
+        return _auto_timeout_for_size(task, default_seconds)
     try:
         value = int(match.group(1))
     except (TypeError, ValueError):
