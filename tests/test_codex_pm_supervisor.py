@@ -125,6 +125,19 @@ class CodexPmSupervisorTest(unittest.TestCase):
         self.assertEqual(result["status"], "stalled")
         self.assertIn("没有进度证据", result["human_message"])
 
+    def test_fresh_task_without_progress_is_in_grace_not_stalled(self) -> None:
+        # task claimed at 00:00; check at 00:05 with a 10-min grace → still working, NO escalation
+        result = codex_pm_supervisor.supervise_once(agent="codex", now_ts="2026-06-06T00:05:00+07:00", stale_minutes=10)
+        self.assertTrue(result["ok"], result)
+        self.assertEqual("in_progress", result["status"])  # not "stalled" → notify_if_escalation stays silent
+        self.assertNotIn("卡住", result["human_message"])
+
+    def test_old_task_without_progress_still_stalls_after_grace(self) -> None:
+        # same task, but checked at 00:40 (>10 min) → genuinely stuck, escalate as before
+        result = codex_pm_supervisor.supervise_once(agent="codex", now_ts="2026-06-06T00:40:00+07:00", stale_minutes=10)
+        self.assertEqual("stalled", result["status"])
+        self.assertIn("没有进度证据", result["human_message"])
+
     def test_completed_progress_accepts_codex_task(self) -> None:
         progress = self._write_progress("completed")
         result = codex_pm_supervisor.supervise_once(agent="codex", now_ts="2026-06-06T00:00:10+07:00")
