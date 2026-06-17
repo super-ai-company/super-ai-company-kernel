@@ -399,12 +399,33 @@ def supervise_once(
             return finalize_result(agent, result, report_root)
         task_title = short_text(task["title"])
         if not progress_path:
+            # Grace period: a freshly-claimed/actively-running task hasn't written its progress file
+            # YET — that's normal, not "stuck". Only escalate once it's been quiet past stale_minutes.
+            # (This kills the premature "卡住 没有进度证据" pings on tasks that go on to complete.)
+            try:
+                task_age_min = (parse_time(ts) - parse_time(str(task["updated_at"] or task["created_at"]))).total_seconds() / 60
+            except Exception:  # noqa: BLE001 — unparseable timestamp → fall through to the old escalate path
+                task_age_min = stale_minutes + 1
+            if task_age_min < stale_minutes:
+                result = {
+                    "ok": True,
+                    "status": "in_progress",
+                    "agent": agent,
+                    "task_id": task["id"],
+                    "human_message": f"Codex 正在进行：{task_title}（已开始 {int(task_age_min)} 分钟，宽限期内不打扰）",
+                    "evidence_path": str(effective_workspace / "reports"),
+                    "timestamp": ts,
+                    "db_path": str(db_path),
+                    "workspace": str(effective_workspace),
+                    "progress_history": [],
+                }
+                return finalize_result(agent, result, report_root)
             result = {
                 "ok": True,
                 "status": "stalled",
                 "agent": agent,
                 "task_id": task["id"],
-                "human_message": f"Codex 卡住：{task_title} 没有进度证据（卡住，请你处理）",
+                "human_message": f"Codex 卡住：{task_title} 超过 {stale_minutes} 分钟没有进度证据（卡住，请你处理）",
                 "evidence_path": str(effective_workspace / "reports"),
                 "timestamp": ts,
                 "db_path": str(db_path),

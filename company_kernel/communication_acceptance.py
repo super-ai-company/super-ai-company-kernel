@@ -9,6 +9,7 @@ import shutil
 import sqlite3
 import subprocess
 import uuid
+from datetime import timedelta
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -292,7 +293,11 @@ def run_pm_completed_scenario(conn: sqlite3.Connection, *, run_id: str, timestam
 
 def run_mismatch_stale_scenario(conn: sqlite3.Connection, *, run_id: str, timestamp: str, report_root: Path, workspace: Path | None = None, db_path: Path | None = None) -> dict[str, Any]:
     task_id = f"acceptance-{run_id}-codex-mismatch"
-    ensure_acceptance_task(conn, task_id=task_id, status="claimed", title="故意验证 task_id mismatch 不得完成", created_at=timestamp)
+    # This scenario asserts a *stale* task (claimed long ago, only a wrong-task progress file) gets
+    # escalated. Age it past the supervisor's fresh-task grace window so the grace path doesn't
+    # (correctly) treat it as still-working.
+    aged = (codex_pm_supervisor.parse_time(timestamp) - timedelta(minutes=30)).isoformat()
+    ensure_acceptance_task(conn, task_id=task_id, status="claimed", title="故意验证 task_id mismatch 不得完成", created_at=aged)
     workspace = (workspace or codex_workspace(conn)).expanduser().resolve()
     write_progress(workspace, task_id=f"{task_id}-wrong", state="completed", action="错误 task_id 的旧完成报告", created_at=timestamp)
     result = codex_pm_supervisor.supervise_once(
