@@ -9313,6 +9313,7 @@ def conversation_start_internal(
     body: str,
     evidence: str = "",
     conversation_id: str = "",
+    project_id: str = "",
 ) -> dict:
     source = resolve_employee_alias(source)
     participants = [resolve_employee_alias(participant) for participant in participants]
@@ -9328,10 +9329,10 @@ def conversation_start_internal(
     ts = now()
     conn.execute(
         """
-        INSERT INTO conversations(id, title, created_by, participants_json, status, created_at, updated_at)
-        VALUES (?, ?, ?, ?, 'open', ?, ?)
+        INSERT INTO conversations(id, title, created_by, participants_json, status, project_id, created_at, updated_at)
+        VALUES (?, ?, ?, ?, 'open', ?, ?, ?)
         """,
-        (cid, title, source, json.dumps(participants, ensure_ascii=False), ts, ts),
+        (cid, title, source, json.dumps(participants, ensure_ascii=False), project_id, ts, ts),
     )
     conn.execute(
         """
@@ -9380,7 +9381,7 @@ def cmd_conversation_start(args: argparse.Namespace) -> int:
     if resolve_employee_alias(args.source) == "owner":
         ensure_human_owner(conn)
     participants = parse_participants(args.participants)
-    result = conversation_start_internal(conn, source=args.source, participants=participants, title=args.title, body=args.body, evidence=args.evidence, conversation_id=args.conversation_id)
+    result = conversation_start_internal(conn, source=args.source, participants=participants, title=args.title, body=args.body, evidence=args.evidence, conversation_id=args.conversation_id, project_id=getattr(args, "project", "") or "")
     emit({"ok": True, **result})
     return 0
 
@@ -9725,6 +9726,12 @@ def conversation_run_internal(
     title = conv.get("title") or conversation_id
     participants = json.loads(conv["participants_json"])
     rounds = max(1, int(rounds))
+    # memory → meeting: if this conversation is tied to a project, every participant reads its shared
+    # memory first, so they build on settled decisions instead of re-litigating them.
+    project_id = str(conv.get("project_id") or "")
+    project_digest = project_memory.digest_for_project(conn, project_id) if project_id else ""
+    memory_preamble = (f"\n\n【本项目共享记忆 · 发言前先读】\n{project_digest}\n"
+                       "请基于上面已沉淀的决策/约定/风险发言,不要重复或推翻已确认的结论(除非你有新证据)。\n") if project_digest else ""
 
     speakers: list[str] = []
     skipped: list[dict] = []
@@ -9791,7 +9798,7 @@ def conversation_run_internal(
     for rnd in range(1, rounds + 1):
         for spk in speakers:
             thread = conversation_thread_text(conn, conversation_id)
-            prompt = conversation_speaker_prompt(mode, spk, title, thread)
+            prompt = conversation_speaker_prompt(mode, spk, title, thread) + memory_preamble
             res = conversation_invoke_runtime(conn, spk, prompt, timeout, memory_key=conversation_id)
             if res.get("ok") and res.get("reply"):
                 conversation_reply_internal(conn, source=spk, conversation_id=conversation_id, body=res["reply"])
@@ -9802,14 +9809,24 @@ def conversation_run_internal(
                                    "stderr": res.get("stderr", "")})
 
     thread = conversation_thread_text(conn, conversation_id, limit=80)
-    synth_prompt = conversation_synth_prompt(mode, synth, title, thread)
+    synth_prompt = conversation_synth_prompt(mode, synth, title, thread) + memory_preamble
     prefix = CONVERSATION_SYNTH_PREFIX.get(mode, "【方案/决策】")
     synth_res = conversation_invoke_runtime(conn, synth, synth_prompt, timeout, memory_key=conversation_id)
     final_plan = ""
+    captured_memory = None
     if synth_res.get("ok") and synth_res.get("reply"):
         final_plan = synth_res["reply"]
         conversation_reply_internal(conn, source=synth, conversation_id=conversation_id,
                                     body=f"{prefix}\n{final_plan}")
+        # meeting → memory: store the synthesized conclusion into the project memory bank so the
+        # meeting's output is remembered, not lost. No-op if the conversation isn't tied to a project.
+        try:
+            entry = project_memory.capture_meeting_conclusion(
+                conn, project_id=project_id, title=title, conclusion=final_plan,
+                conversation_id=conversation_id, synthesizer=synth, mode=mode)
+            captured_memory = entry["id"] if entry else None
+        except Exception:
+            captured_memory = None
     else:
         transcript.append({"round": rounds + 1, "speaker": synth, "ok": False,
                            "error": synth_res.get("error") or f"synthesis exit_code={synth_res.get('exit_code')}",
@@ -9828,11 +9845,18 @@ def conversation_run_internal(
         "transcript": transcript,
         "final_plan": final_plan,
         "minutes_prefix": prefix,
+        "project_id": project_id,
+        "captured_memory": captured_memory,
     }
 
 
 def cmd_conversation_run(args: argparse.Namespace) -> int:
     conn = connect()
+    override = getattr(args, "project", "") or ""
+    if override:  # let `conversation run --project X` set/override the bank this meeting feeds
+        conn.execute("UPDATE conversations SET project_id = ?, updated_at = ? WHERE id = ?",
+                     (override, now(), args.conversation_id))
+        conn.commit()
     try:
         result = conversation_run_internal(
             conn,
@@ -13974,6 +13998,7 @@ def build_parser() -> argparse.ArgumentParser:
     conversation_start.add_argument("--body", required=True)
     conversation_start.add_argument("--evidence", default="")
     conversation_start.add_argument("--conversation-id", default="")
+    conversation_start.add_argument("--project", default="", help="tie this meeting to a project memory bank: read its digest + store the conclusion back")
     conversation_start.set_defaults(func=cmd_conversation_start)
     conversation_reply = conversation_sub.add_parser("reply")
     conversation_reply.add_argument("--from", dest="source", required=True)
@@ -13999,6 +14024,7 @@ def build_parser() -> argparse.ArgumentParser:
     conversation_run.add_argument("--timeout", type=int, default=180, help="per-turn runtime timeout seconds")
     conversation_run.add_argument("--synthesizer", default="", help="chair employee who opens summary/minutes (default: hermes if present)")
     conversation_run.add_argument("--no-gate", dest="gate_capable", action="store_false", help="skip the participation allowlist gate (admit any active runtime-capable participant)")
+    conversation_run.add_argument("--project", default="", help="tie/override this meeting's project memory bank (read digest + store conclusion)")
     conversation_run.set_defaults(func=cmd_conversation_run, gate_capable=True)
     conversation_probe = conversation_sub.add_parser("probe", help="test which employees can genuinely join a meeting and persist the allowlist")
     conversation_probe.add_argument("--participants", default="active", help="'active' (default), 'all', or comma-separated employee ids")

@@ -81,6 +81,26 @@ class ProjectMemoryTest(unittest.TestCase):
         self.assertIn("支付走 PromptPay", block)
         self.assertEqual("", pm.digest_block_for_task(self.conn, {"id": "t2", "workspace": "/tmp/elsewhere"}))
 
+    def test_capture_meeting_conclusion_stores_decision(self) -> None:
+        entry = pm.capture_meeting_conclusion(
+            self.conn, project_id="damov4", title="支付方案评审",
+            conclusion="结论:走 PromptPay EMV,storeId 注入测试站。", conversation_id="conv-1",
+            synthesizer="hermes", mode="discuss")
+        self.assertIsNotNone(entry)
+        self.assertEqual("decision", entry["entry_type"])
+        self.assertEqual("conv-1", entry["source_conversation_id"])
+        self.assertEqual(3, entry["importance"])
+        self.assertIn("方案/决策", entry["title"])
+        # no project or empty conclusion → no-op
+        self.assertIsNone(pm.capture_meeting_conclusion(self.conn, project_id="", title="x", conclusion="y"))
+        self.assertIsNone(pm.capture_meeting_conclusion(self.conn, project_id="damov4", title="x", conclusion="   "))
+
+    def test_digest_for_project(self) -> None:
+        pm.remember(self.conn, project_id="damov4", title="约定A", entry_type="convention")
+        pm.curate(self.conn, project_id="damov4")
+        self.assertIn("约定A", pm.digest_for_project(self.conn, "damov4"))
+        self.assertEqual("", pm.digest_for_project(self.conn, "nope"))
+
     def test_curate_unknown_project_errors(self) -> None:
         with self.assertRaises(ValueError):
             pm.curate(self.conn, project_id="nope")
