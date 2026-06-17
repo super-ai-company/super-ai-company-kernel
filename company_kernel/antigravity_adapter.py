@@ -15,7 +15,7 @@ from .db_paths import ensure_db_parent, resolve_db_path as resolve_kernel_db_pat
 from .employee_comms import communication_protocol
 
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(os.environ.get("OPENCLAW_COMPANY_KERNEL_ROOT", str(Path(__file__).resolve().parents[1]))).resolve()
 APP_PATH = Path("/Applications/Antigravity.app")
 AGY_COMMAND = "agy"
 
@@ -328,16 +328,70 @@ def resolve_managed_workspace(task: sqlite3.Row, emp: sqlite3.Row) -> Path:
     return ROOT
 
 
-def run_agy_print(message: str, timeout: int, workspace: Path | None = None) -> tuple[int, str, str]:
+# ---------------------------------------------------------------- agy persistent memory (opt-in)
+# agy persists each conversation as a <UUID>.db file and `--print` can resume one with
+# `--conversation <UUID>`. Like codex, agy can't name a conversation on creation, so memory mode
+# snapshots the conversations dir around the run and captures the one new UUID, then resumes it next
+# time. Ambiguous diff (0 or >1 new) → stay stateless (never resume the wrong conversation). No
+# memory_key → unchanged behavior.
+def _agy_conversation_dirs() -> list[Path]:
+    home = Path(os.environ.get("ANTIGRAVITY_HOME", str(Path.home() / ".gemini")))
+    return [home / "antigravity-cli" / "conversations", home / "antigravity" / "conversations"]
+
+
+def _agy_snapshot() -> set[str]:
+    out: set[str] = set()
+    for d in _agy_conversation_dirs():
+        if d.exists():
+            out |= {str(p) for p in d.glob("*.db")}
+    return out
+
+
+def _agy_conversation_id(path: str) -> str:
+    name = Path(path).stem  # the .db filename IS the conversation UUID
+    return name if re.fullmatch(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", name) else ""
+
+
+def _agy_memory_marker(agent: str, memory_key: str) -> Path:
+    safe = re.sub(r"[^A-Za-z0-9_.-]", "_", memory_key)[:120]
+    return ROOT / "employees" / agent / "agy-sessions" / f"{safe}.json"
+
+
+def agy_memory_session(agent: str, memory_key: str) -> str:
+    if not memory_key:
+        return ""
+    try:
+        return str(json.loads(_agy_memory_marker(agent, memory_key).read_text(encoding="utf-8")).get("conversation_id", "") or "")
+    except (OSError, json.JSONDecodeError):
+        return ""
+
+
+def store_agy_memory_session(agent: str, memory_key: str, conversation_id: str) -> None:
+    p = _agy_memory_marker(agent, memory_key)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps({"conversation_id": conversation_id, "memory_key": memory_key, "created_at": now()}, ensure_ascii=False), encoding="utf-8")
+
+
+def run_agy_print(message: str, timeout: int, workspace: Path | None = None, memory_key: str = "", agent: str = "antigravity") -> tuple[int, str, str]:
     command = shutil.which(AGY_COMMAND)
     if not command:
         return 127, "", "agy command not found"
     cwd = (workspace or ROOT)
+    resume_id = agy_memory_session(agent, memory_key) if memory_key else ""
+    capture = bool(memory_key) and not resume_id
+    before = _agy_snapshot() if capture else set()
     cmd = [command]
     if Path(cwd).resolve() != ROOT:
         cmd += ["--add-dir", str(cwd)]   # ensure the review repo is in agy's workspace
     cmd += ["--print", message, "--print-timeout", f"{timeout}s"]
+    if resume_id:
+        cmd += ["--conversation", resume_id]  # resume this memory-key's conversation
     cp = subprocess.run(cmd, cwd=str(cwd), text=True, capture_output=True, timeout=timeout + 10)
+    if capture and cp.returncode == 0:
+        new = [_agy_conversation_id(p) for p in (_agy_snapshot() - before)]
+        new = [u for u in new if u]
+        if len(new) == 1:  # exactly one new conversation → ours; ambiguous → stay stateless
+            store_agy_memory_session(agent, memory_key, new[0])
     return cp.returncode, cp.stdout.strip(), cp.stderr.strip()
 
 
@@ -758,7 +812,7 @@ def process(args: argparse.Namespace) -> int:
         run_companyctl(["heartbeat", "--agent", args.agent])
         before_files = git_changed_files()
         agy_prompt = args.direct_message if is_lightweight_direct_message(args.direct_message) else build_guarded_task_prompt(args.direct_message)
-        agy_code, agy_reply, agy_err = run_agy_print(agy_prompt, args.timeout)
+        agy_code, agy_reply, agy_err = run_agy_print(agy_prompt, args.timeout, memory_key=getattr(args, "memory_session", "") or "", agent=args.agent)
         after_files = git_changed_files()
         reply = agy_reply or direct_reply_text(args.direct_message)
         validation = validate_agy_reply(message=args.direct_message, reply=reply, before_files=before_files, after_files=after_files)
@@ -837,6 +891,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--direct-source", default="", help="source employee for direct GUI request")
     parser.add_argument("--direct-session-key", default="", help="session key for direct GUI request")
     parser.add_argument("--timeout", type=int, default=120, help="timeout seconds for direct CLI replies")
+    parser.add_argument("--memory-session", default="", help="stable memory key: resume ONE agy conversation across turns so it remembers (used by conversations)")
     parser.add_argument("--attendance-probe", action="store_true", help="send exact Antigravity CLI attendance probe")
     parser.add_argument("--managed-attempt", action="store_true", help="run a submitted task through Kernel-managed attempt/progress/evidence")
     parser.add_argument("--by", default="hermes", help="supervisor employee for --managed-attempt")
