@@ -97,6 +97,10 @@ def handle_callback(data: str) -> tuple[bool, str]:
         return True, "👤 你来处理(已标记)"
     if prefix == "ck_skip":
         return True, "⏭ 已跳过"
+    if prefix == "ck_discard":
+        # 丢弃卡住的任务:从受阻列表移除,确认其失败 attempt,不再处理。
+        code, out = run_companyctl(["task", "discard", "--task-id", ident, "--by", OWNER, "--reason", "Telegram 一键:丢弃"])
+        return (True, "🗑 已丢弃") if code == 0 else (False, _fail_label(out))
     return False, "⚠️ 未知操作"
 
 
