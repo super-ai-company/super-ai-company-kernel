@@ -139,6 +139,26 @@ class ProjectMemoryTest(unittest.TestCase):
         # no project workspace → no-op
         self.assertIsNone(pm.capture_approval_decision(self.conn, metadata={"description": "工作区: /tmp/x"}, action="x", decision="denied", actor="owner-shift"))
 
+    def test_executor_lock_remap_block_and_unlocked(self) -> None:
+        ws = "/Users/x/damov4/android-pos"
+        # unlocked → anything passes
+        self.assertEqual({"target": "codex", "remapped": False, "blocked": False, "project_id": "damov4"},
+                         pm.enforce_executor(self.conn, workspace=ws, target="codex"))
+        # lock to cli-only
+        pm.set_executors(self.conn, project_id="damov4", executors=["codex-cli", "claude-cli", "agy"])
+        self.assertEqual(["codex-cli", "claude-cli", "agy"], pm.project_executors(self.conn, "damov4"))
+        # an allowed target passes unchanged
+        self.assertFalse(pm.enforce_executor(self.conn, workspace=ws, target="codex-cli")["remapped"])
+        # app dispatch auto-remaps to its cli twin
+        r = pm.enforce_executor(self.conn, workspace=ws, target="codex")
+        self.assertTrue(r["remapped"]); self.assertEqual("codex-cli", r["target"])
+        r2 = pm.enforce_executor(self.conn, workspace=ws, target="antigravity")
+        self.assertEqual("agy", r2["target"])
+        # a target with no allowed twin is blocked
+        self.assertTrue(pm.enforce_executor(self.conn, workspace=ws, target="hermes")["blocked"])
+        # outside any project → no enforcement
+        self.assertFalse(pm.enforce_executor(self.conn, workspace="/tmp/x", target="codex")["blocked"])
+
     def test_digest_for_project(self) -> None:
         pm.remember(self.conn, project_id="damov4", title="约定A", entry_type="convention")
         pm.curate(self.conn, project_id="damov4")
