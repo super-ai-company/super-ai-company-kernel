@@ -111,6 +111,43 @@ class ConversationStressTest(unittest.TestCase):
         self.assertFalse(any(m["source_agent"] == "nestcar" for m in shown["messages"]))
 
 
+    def test_meeting_reads_project_memory_and_stores_its_conclusion(self):
+        """Memory ↔ meeting closed loop: a project-tied meeting injects the shared digest into each
+        speaker's prompt (memory → meeting) and writes its conclusion back into the bank (meeting →
+        memory). A meeting that doesn't feed memory is pointless."""
+        from company_kernel import project_memory as pm
+        for a, rt in (("codex", "codex"), ("hermes", "hermes")):
+            self._run(["employee", "create", "--id", a, "--name", a, "--role", "developer",
+                       "--runtime", rt, "--workspace", str(self.root / a)])
+        conn = self.ctl.connect()
+        conn.execute("UPDATE employees SET status='active' WHERE id IN ('codex','hermes')")
+        conn.commit()
+        pm.create_project(conn, project_id="proj", name="Proj", workspace=str(self.root / "repo"), lead_agent="codex")
+        pm.remember(conn, project_id="proj", title="已定:支付走 PromptPay EMV", entry_type="decision")
+        pm.curate(conn, project_id="proj")
+        self.gw.route_post("/v1/conversations", {
+            "from": "owner-shift", "participants": "owner-shift,codex,hermes",
+            "conversation_id": "conv-mem", "title": "支付评审", "body": "议程",
+        })
+        conn2 = self.ctl.connect()
+        conn2.execute("UPDATE conversations SET project_id='proj' WHERE id='conv-mem'"); conn2.commit()
+
+        seen_prompts = []
+
+        def fake_invoke(conn, agent, prompt, timeout, memory_key=""):
+            seen_prompts.append(prompt)
+            return {"ok": True, "reply": "结论:沿用 PromptPay EMV,storeId 注入测试站。", "runtime": "x", "exit_code": 0}
+
+        with mock.patch.object(self.ctl, "conversation_invoke_runtime", side_effect=fake_invoke):
+            result = self.ctl.conversation_run_internal(self.ctl.connect(), conversation_id="conv-mem",
+                                                        mode="discuss", rounds=1, synthesizer="hermes")
+        # memory → meeting: the shared digest reached the speakers' prompts
+        self.assertTrue(any("已定:支付走 PromptPay EMV" in p for p in seen_prompts), "digest must be injected into prompts")
+        # meeting → memory: the conclusion is now a decision entry in the bank
+        self.assertTrue(result.get("captured_memory"), result)
+        entries = pm.recall(self.ctl.connect(), project_id="proj")
+        self.assertTrue(any("沿用 PromptPay EMV" in e["body"] for e in entries), "conclusion must be stored")
+
     def test_human_rbac_roles_and_action_gating(self) -> None:
         gw = self.gw
         # no users.json + no env token → open self-host (owner)

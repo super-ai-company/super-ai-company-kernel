@@ -121,6 +121,7 @@ CREATE TABLE IF NOT EXISTS conversations (
   created_by TEXT NOT NULL,
   participants_json TEXT NOT NULL,
   status TEXT NOT NULL DEFAULT 'open',
+  project_id TEXT NOT NULL DEFAULT '',  -- ties this meeting to a project memory bank (read digest + store conclusion)
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );

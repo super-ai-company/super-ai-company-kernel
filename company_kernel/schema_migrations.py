@@ -7,6 +7,12 @@ from datetime import datetime, timezone
 
 MIGRATIONS = (
     {
+        "id": "20260617_conversations_project_id",
+        "table": "conversations",
+        "column": "project_id",
+        "sql": "ALTER TABLE conversations ADD COLUMN project_id TEXT NOT NULL DEFAULT ''",
+    },
+    {
         "id": "20260603_project_plan_items_task_id",
         "table": "project_plan_items",
         "column": "task_id",

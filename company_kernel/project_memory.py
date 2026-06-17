@@ -211,3 +211,23 @@ def digest_for_workspace(conn: sqlite3.Connection, workspace: str) -> str:
     if not project:
         return ""
     return str(project.get("digest") or "")
+
+
+def digest_for_project(conn: sqlite3.Connection, project_id: str) -> str:
+    p = get_project(conn, project_id) if project_id else None
+    return str(p.get("digest") or "") if p else ""
+
+
+def capture_meeting_conclusion(conn: sqlite3.Connection, *, project_id: str, title: str, conclusion: str,
+                               conversation_id: str = "", synthesizer: str = "", mode: str = "meeting") -> dict | None:
+    """Meeting → memory: a concluded conversation's synthesized 纪要/方案/决策 becomes a high-importance
+    decision entry, so the meeting's output is remembered instead of evaporating. No-op without a
+    project or an empty conclusion."""
+    if not project_id or not conclusion.strip() or not get_project(conn, project_id):
+        return None
+    label = {"meeting": "会议纪要", "standup": "站会汇总", "discuss": "方案/决策"}.get(mode, "会议结论")
+    return remember(
+        conn, project_id=project_id, title=f"【{label}】{title}", body=conclusion.strip(),
+        entry_type="decision", author_agent=synthesizer or "meeting",
+        source_conversation_id=conversation_id, importance=3,
+    )
