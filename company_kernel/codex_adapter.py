@@ -589,6 +589,17 @@ def store_codex_memory_session(agent: str, memory_key: str, session_id: str) -> 
 TIMEOUT_EXIT_CODE = 124
 
 
+def last_message_substantive(output: Path) -> bool:
+    """Did codex produce a real result before a timeout killed it? Drops the timeout note we write,
+    so a genuine answer (vs an empty/aborted run) tells us 'review it' vs 'dead hang'."""
+    try:
+        txt = output.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return False
+    body = re.sub(r"codex exec killed after exceeding timeout.*", "", txt).strip()
+    return len(body) >= 200
+
+
 def run_codex(task_card: Path, workspace: Path, output: Path, events: Path, sandbox: str, model: str, isolation: str, sandbox_profile: str, timeout_seconds: int = 1800, memory_key: str = "", agent: str = "codex") -> tuple[int, str]:
     # Opt-in persistent memory: resume an existing codex session for this memory_key, else start a
     # persisted one and capture its UUID for next time. No memory_key → unchanged ephemeral run.
@@ -1012,6 +1023,15 @@ def process(args: argparse.Namespace) -> int:
     runtime_seconds = max(0, int(round(time.monotonic() - started_monotonic)))
     if code == 0:
         verdict, verdict_reason = parse_verdict(artifact["last_message"])
+    elif code == TIMEOUT_EXIT_CODE:
+        # codex does code execution — a summary at timeout doesn't prove the code is committed, so we
+        # do NOT auto-complete. But we tell the owner whether it produced anything: review vs dead hang.
+        if last_message_substantive(artifact["last_message"]):
+            verdict = "blocked"
+            verdict_reason = "⏱ 超时但已产出结果(收尾卡住被终止)—— 代码未必全部提交,请复核产出/改动后接受或重试。"
+        else:
+            verdict = "blocked"
+            verdict_reason = "⏱ 真超时/卡死:超时被终止且无有效产出。建议重试,或在描述加「超时: 3600」给更多时间。"
     else:
         verdict, verdict_reason = "crashed", f"codex exec exit_code={code}"
     # Pluggable verifier: when the agent claims completed, an external verifier (declared in
