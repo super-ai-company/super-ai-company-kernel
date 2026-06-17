@@ -1419,6 +1419,17 @@ def route_post(path: str, body: dict) -> tuple[int, dict]:
             return HTTPStatus.BAD_REQUEST, {"ok": False, "error": f"mode must be one of {sorted(companyctl.ROUTE_APPROVAL_MODES)}", "got": mode}
         code, payload = run_companyctl(["approval", "mode", "--set", mode, "--by", str(body.get("by", "owner") or "owner")])
         return (HTTPStatus.OK if code == 0 else HTTPStatus.BAD_REQUEST), payload
+    if path == "/v1/memory/projects":  # create a project
+        code, payload = run_companyctl(["memory", "project", "create",
+            "--id", str(body.get("id", "") or ""), "--name", str(body.get("name", "") or ""),
+            "--workspace", str(body.get("workspace", "") or ""), "--lead", str(body.get("lead", "hermes") or "hermes")])
+        return (HTTPStatus.OK if code == 0 else HTTPStatus.BAD_REQUEST), payload
+    if path.startswith("/v1/memory/projects/") and path.endswith("/executors"):  # lock who may work it
+        pid = path.removeprefix("/v1/memory/projects/").removesuffix("/executors").strip("/")
+        execs = body.get("executors", [])
+        execs_csv = ",".join(str(x) for x in execs) if isinstance(execs, list) else str(execs or "")
+        code, payload = run_companyctl(["memory", "project", "set-executors", "--id", pid, "--executors", execs_csv])
+        return (HTTPStatus.OK if code == 0 else HTTPStatus.BAD_REQUEST), payload
     if path.startswith("/v1/memory/projects/") and path.endswith("/remember"):
         pid = path.removeprefix("/v1/memory/projects/").removesuffix("/remember").strip("/")
         code, payload = run_companyctl(["memory", "remember", "--project", pid,

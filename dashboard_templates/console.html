@@ -413,12 +413,28 @@ label{font-size:12px;color:var(--muted);display:block;margin-bottom:4px}
 <section class="view" id="v-memory">
   <div class="section-head"><h2 data-i18n="mem_title">项目记忆库</h2><span class="hint" data-i18n="mem_hint">每个项目的共享记忆 · 主负责人策展的 digest + 条目</span></div>
   <div class="grid" style="grid-template-columns:280px 1fr;gap:14px">
-    <div class="card"><h3 data-i18n="mem_projects">📚 项目</h3><div class="list" id="memProjList"><div class="empty" data-i18n="loading">加载中…</div></div></div>
+    <div class="card">
+      <div style="display:flex;align-items:center;gap:8px"><h3 style="flex:1" data-i18n="mem_projects">📚 项目</h3>
+        <button onclick="document.getElementById('newProjForm').style.display=document.getElementById('newProjForm').style.display==='none'?'block':'none'">➕ 新建</button></div>
+      <div id="newProjForm" style="display:none;margin:8px 0;padding:8px;border:1px solid var(--line2);border-radius:8px">
+        <input id="npId" placeholder="项目 id(英文,如 foodlib)" style="width:100%;margin-bottom:5px">
+        <input id="npName" placeholder="名称" style="width:100%;margin-bottom:5px">
+        <input id="npWs" placeholder="工作区绝对路径(/Users/.../foodlib)" style="width:100%;margin-bottom:5px">
+        <input id="npLead" placeholder="主负责人(默认 hermes)" style="width:100%;margin-bottom:5px">
+        <button class="ok" onclick="createProject()">建项目</button>
+      </div>
+      <div class="list" id="memProjList"><div class="empty" data-i18n="loading">加载中…</div></div></div>
     <div class="card">
       <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
         <h3 id="memDigestTitle" style="flex:1">选择一个项目</h3>
         <button class="ok" onclick="memCurate()" title="主负责人策展:去重+重建摘要">🧹 策展</button>
         <button onclick="document.getElementById('memForm').style.display=document.getElementById('memForm').style.display==='none'?'block':'none'">✍️ 记一条</button>
+      </div>
+      <div id="memExecBox" style="margin:10px 0;padding:10px;border:1px solid var(--brass,#B08A3E);border-radius:8px">
+        <div style="font-weight:600;margin-bottom:6px">🔒 项目锁:勾选可接本项目的员工(不勾=不限)</div>
+        <div id="memExecList" style="display:flex;flex-wrap:wrap;gap:10px;font-size:13px"></div>
+        <button class="ok" style="margin-top:8px" onclick="saveExecutors()">保存项目锁</button>
+        <span class="muted" style="font-size:11px;margin-left:8px">勾 codex-cli 不勾 codex = 只让后台 cli 干,app 进不来</span>
       </div>
       <div id="memForm" style="display:none;margin:10px 0;padding:10px;border:1px solid var(--line2);border-radius:8px">
         <div style="display:flex;gap:8px;margin-bottom:6px">
@@ -724,7 +740,9 @@ async function showMemoryProject(id){
   window._memSel = id;
   try{
     const d = await api("/v1/memory/projects/"+encodeURIComponent(id));
-    const p = d.project||{}, entries = d.memory||[];
+    const p = d.project||{}, entries = d.memory||[], roster = d.roster||[];
+    const locked = p.executors||[];
+    $("memExecList").innerHTML = roster.map(r=>`<label style="cursor:pointer"><input type="checkbox" class="execCb" value="${esc(r.id)}" ${locked.includes(r.id)?'checked':''}> ${esc(r.id)}</label>`).join("") || '<span class="muted">无在岗员工</span>';
     $("memDigestTitle").textContent = (p.name||id) + " — digest（主负责人 "+(p.lead_agent||'-')+"）";
     $("memDigest").textContent = p.digest || "(尚无 digest，等主负责人策展)";
     $("memEntries").innerHTML = entries.map(e=>`<div class="row">
@@ -733,6 +751,25 @@ async function showMemoryProject(id){
         <button class="bad" style="margin-left:auto;font-size:11px;padding:2px 8px" onclick="memArchive('${esc(e.id)}')" title="归档(从记忆移除)">归档</button></div>
       ${e.body?`<div class="body">${esc(e.body)}</div>`:""}</div>`).join("") || `<div class="empty">还没有记忆条目</div>`;
   }catch(e){ $("memDigest").textContent = "加载失败: "+(e.message||e); }
+}
+async function createProject(){
+  const id = $("npId").value.trim();
+  if(!id) return toast("项目 id 必填","err");
+  try{
+    await api("/v1/memory/projects", {method:"POST", body:{id, name:$("npName").value.trim()||id, workspace:$("npWs").value.trim(), lead:$("npLead").value.trim()||"hermes"}});
+    toast("项目已建：1+id","ok"); $("newProjForm").style.display="none";
+    $("npId").value=$("npName").value=$("npWs").value=$("npLead").value="";
+    window._memSel=id; loadMemory();
+  }catch(e){ toast("建项目失败:"+(e.message||e),"err"); }
+}
+async function saveExecutors(){
+  if(!window._memSel) return;
+  const execs = Array.from(document.querySelectorAll(".execCb:checked")).map(c=>c.value);
+  try{
+    await api(`/v1/memory/projects/${encodeURIComponent(window._memSel)}/executors`, {method:"POST", body:{executors:execs}});
+    toast(execs.length?("项目锁已设："+execs.join("、")):"已解锁(谁都能接)","ok");
+    showMemoryProject(window._memSel);
+  }catch(e){ toast("保存锁失败:"+(e.message||e),"err"); }
 }
 async function memRemember(){
   if(!window._memSel) return toast("先选一个项目","err");

@@ -472,6 +472,7 @@ CREATE TABLE IF NOT EXISTS memory_banks (
   lead_agent TEXT NOT NULL DEFAULT 'hermes', -- the memory 主负责人 (curator)
   status TEXT NOT NULL DEFAULT 'active',
   digest TEXT NOT NULL DEFAULT '',           -- curated current-truth markdown
+  executors_json TEXT NOT NULL DEFAULT '[]',  -- 项目锁:只有这些员工能接本项目的活(空=不限)
   digest_updated_at TEXT NOT NULL DEFAULT '',
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL

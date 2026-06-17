@@ -7929,6 +7929,20 @@ def cmd_task_submit(args: argparse.Namespace) -> int:
     conn = connect()
     source = resolve_employee_alias(args.source)
     target = resolve_employee_alias(args.target)
+    # project executor lock: if this task's workspace belongs to a project that restricts who may
+    # work on it, remap (app↔cli twin) or refuse — so "this project = cli only" is enforced server-side.
+    _ws = ""
+    _m = re.search(r"(?:工作区|workspace)\s*[:：]\s*(\S+)", str(args.description or ""))
+    if _m:
+        _ws = _m.group(1)
+    if _ws:
+        _lock = project_memory.enforce_executor(conn, workspace=_ws, target=target)
+        if _lock.get("blocked"):
+            emit({"ok": False, "error": "project executor lock", "note": _lock.get("note", ""), "target": target, "project_id": _lock.get("project_id", "")})
+            return 2
+        if _lock.get("remapped"):
+            args.target = _lock["target"]
+            target = _lock["target"]
     require_employee(conn, source)
     require_employee(conn, target)
     rejection = validate_task_submission(conn, target=target, title=args.title, description=args.description, force=getattr(args, "force_submit", False))
@@ -11092,7 +11106,24 @@ def cmd_membank_show(args: argparse.Namespace) -> int:
     if not project:
         emit({"ok": False, "error": "unknown project", "id": args.id})
         return 1
-    emit({"ok": True, "project": project, "memory": project_memory.recall(conn, project_id=args.id, limit=args.limit)})
+    project["executors"] = project_memory.project_executors(conn, args.id)  # parsed list for the UI
+    roster = [{"id": r["id"], "runtime": r["runtime"], "status": r["status"]}
+              for r in rows(conn, "SELECT id, runtime, status FROM employees WHERE status='active' ORDER BY id")]
+    emit({"ok": True, "project": project, "memory": project_memory.recall(conn, project_id=args.id, limit=args.limit),
+          "roster": roster})
+    return 0
+
+
+def cmd_membank_set_executors(args: argparse.Namespace) -> int:
+    conn = connect()
+    execs = [resolve_employee_alias(x) for x in parse_csv(args.executors)] if args.executors else []
+    try:
+        result = project_memory.set_executors(conn, project_id=args.id, executors=execs)
+    except ValueError as exc:
+        emit({"ok": False, "error": str(exc)})
+        return 1
+    audit(conn, "owner", "project.set_executors", args.id, {"executors": result["executors"]})
+    emit(result)
     return 0
 
 
@@ -14283,6 +14314,10 @@ def build_parser() -> argparse.ArgumentParser:
     project_show.add_argument("--id", required=True)
     project_show.add_argument("--limit", type=int, default=50)
     project_show.set_defaults(func=cmd_membank_show)
+    project_execs = memory_project_sub.add_parser("set-executors", help="lock who may work this project (comma-separated employee ids; empty = unlock)")
+    project_execs.add_argument("--id", required=True)
+    project_execs.add_argument("--executors", default="", help="e.g. codex-cli,claude-cli,agy  (空=解锁,谁都能接)")
+    project_execs.set_defaults(func=cmd_membank_set_executors)
     memory_remember = memory_sub.add_parser("remember")
     memory_remember.add_argument("--project", required=True)
     memory_remember.add_argument("--title", required=True)

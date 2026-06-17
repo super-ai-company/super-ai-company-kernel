@@ -13,6 +13,7 @@ row. No external DB. Pure stdlib so it stays dependency-free; all functions take
 """
 from __future__ import annotations
 
+import json
 import re
 import sqlite3
 import uuid
@@ -216,6 +217,52 @@ def digest_block_for_task(conn: sqlite3.Connection, task: dict) -> str:
     return ("\n\n---\n## 📚 项目记忆(全员共享 · 开工前先读)\n"
             "下面是本项目到目前为止沉淀的共享记忆(决策/约定/诊断/风险/已知阻塞)。"
             "请基于它工作,别重复已确认的事、别重犯已知坑:\n\n" + digest)
+
+
+# ---------------------------------------------------------------- project executor lock (后台勾选员工)
+# app↔cli pairs so "lock to cli" can auto-remap an app dispatch to its headless twin (and vice versa).
+APP_CLI_PAIRS = {"codex": "codex-cli", "claude": "claude-cli", "antigravity": "agy"}
+CLI_APP_PAIRS = {v: k for k, v in APP_CLI_PAIRS.items()}
+
+
+def project_executors(conn: sqlite3.Connection, project_id: str) -> list:
+    p = get_project(conn, project_id)
+    if not p:
+        return []
+    try:
+        v = json.loads(p.get("executors_json") or "[]")
+        return [str(x) for x in v] if isinstance(v, list) else []
+    except (json.JSONDecodeError, TypeError):
+        return []
+
+
+def set_executors(conn: sqlite3.Connection, *, project_id: str, executors: list) -> dict:
+    if not get_project(conn, project_id):
+        raise ValueError(f"unknown project: {project_id}")
+    clean = [str(x).strip() for x in (executors or []) if str(x).strip()]
+    conn.execute("UPDATE memory_banks SET executors_json = ?, updated_at = ? WHERE id = ?",
+                 (json.dumps(clean, ensure_ascii=False), now(), project_id))
+    conn.commit()
+    return {"ok": True, "project_id": project_id, "executors": clean}
+
+
+def enforce_executor(conn: sqlite3.Connection, *, workspace: str, target: str) -> dict:
+    """Given a task's workspace + intended target, return the actual target the project lock allows.
+    No project / no lock / target allowed → unchanged. Target not allowed but its app/cli twin is →
+    remap (e.g. lock=cli, someone派 codex → route to codex-cli). Can't remap → blocked=True so the
+    caller can refuse rather than leak the task to a forbidden employee."""
+    project = resolve_project_for_workspace(conn, workspace)
+    if not project:
+        return {"target": target, "remapped": False, "blocked": False, "project_id": ""}
+    allowed = project_executors(conn, project["id"])
+    if not allowed or target in allowed:
+        return {"target": target, "remapped": False, "blocked": False, "project_id": project["id"]}
+    twin = APP_CLI_PAIRS.get(target) or CLI_APP_PAIRS.get(target)
+    if twin and twin in allowed:
+        return {"target": twin, "remapped": True, "blocked": False, "project_id": project["id"],
+                "note": f"项目锁:{target} 不在允许列表,自动改派给 {twin}"}
+    return {"target": target, "remapped": False, "blocked": True, "project_id": project["id"],
+            "note": f"项目锁:{target} 不被允许接本项目,允许的是 {allowed}"}
 
 
 def digest_for_workspace(conn: sqlite3.Connection, workspace: str) -> str:

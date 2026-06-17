@@ -7,6 +7,12 @@ from datetime import datetime, timezone
 
 MIGRATIONS = (
     {
+        "id": "20260617_memory_banks_executors",
+        "table": "memory_banks",
+        "column": "executors_json",
+        "sql": "ALTER TABLE memory_banks ADD COLUMN executors_json TEXT NOT NULL DEFAULT '[]'",
+    },
+    {
         "id": "20260617_conversations_project_id",
         "table": "conversations",
         "column": "project_id",
