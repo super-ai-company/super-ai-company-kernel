@@ -59,3 +59,4 @@ run-gemini-qa.sh
 
 # Human RBAC users + tokens — per-deployment, never uploaded
 config/users.json
+.company-memory.md

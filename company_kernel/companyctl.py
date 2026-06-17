@@ -11107,6 +11107,8 @@ def cmd_membank_show(args: argparse.Namespace) -> int:
         emit({"ok": False, "error": "unknown project", "id": args.id})
         return 1
     project["executors"] = project_memory.project_executors(conn, args.id)  # parsed list for the UI
+    _mf = project_memory.memory_file_path(project)
+    project["digest_file"] = str(_mf) if _mf else ""  # where the digest lives in the project's own dir
     roster = [{"id": r["id"], "runtime": r["runtime"], "status": r["status"]}
               for r in rows(conn, "SELECT id, runtime, status FROM employees WHERE status='active' ORDER BY id")]
     emit({"ok": True, "project": project, "memory": project_memory.recall(conn, project_id=args.id, limit=args.limit),
