@@ -108,15 +108,29 @@ def recall(conn: sqlite3.Connection, *, project_id: str, query: str = "", limit:
     return items
 
 
+def task_real_workspace(conn: sqlite3.Connection, task: dict) -> str:
+    """The REAL repo a task works in (for project mapping). Priority: explicit task.workspace →
+    the '工作区: <path>' directive in the description → the target employee's configured workspace.
+    NOT task_workspaces.path — that's a kernel-internal per-task stub under .../state/, which would
+    wrongly map every task to the company-kernel project."""
+    ws = str(task.get("workspace") or "").strip()
+    if not ws:
+        m = _WORKSPACE_RE.search(str(task.get("description") or ""))
+        if m:
+            ws = m.group(1).strip()
+    if not ws:
+        agent = str(task.get("target_agent") or task.get("claimed_by") or "")
+        if agent:
+            row = conn.execute("SELECT workspace FROM employees WHERE id = ?", (agent,)).fetchone()
+            ws = str(row["workspace"]) if row and row["workspace"] else ""
+    return ws.rstrip("/")
+
+
 def capture_task_outcome(conn: sqlite3.Connection, task: dict, *, kind: str, summary: str = "",
                          blocker: str = "", evidence: str = "") -> dict | None:
     """Auto-capture hook: a task finishing in a project becomes a memory entry. kind: done|blocked.
-    Resolved by the task's workspace; no project mapping → no-op (returns None)."""
-    workspace = str(task.get("workspace") or "")
-    if not workspace:
-        wsrow = conn.execute("SELECT path FROM task_workspaces WHERE task_id = ?", (task.get("id"),)).fetchone()
-        workspace = str(wsrow["path"]) if wsrow else ""
-    project = resolve_project_for_workspace(conn, workspace)
+    Resolved by the task's REAL workspace; no project mapping → no-op (returns None)."""
+    project = resolve_project_for_workspace(conn, task_real_workspace(conn, task))
     if not project:
         return None
     if kind == "blocked":
@@ -196,11 +210,7 @@ def curate_all(conn: sqlite3.Connection, *, actor: str = "") -> dict:
 def digest_block_for_task(conn: sqlite3.Connection, task: dict) -> str:
     """Consumption: a prompt-ready memory block for whatever project owns this task's workspace, so
     the employee reads the shared project memory before working. '' if the task isn't in a project."""
-    workspace = str(task.get("workspace") or "")
-    if not workspace:
-        row = conn.execute("SELECT path FROM task_workspaces WHERE task_id = ?", (task.get("id"),)).fetchone()
-        workspace = str(row["path"]) if row else ""
-    digest = digest_for_workspace(conn, workspace)
+    digest = digest_for_workspace(conn, task_real_workspace(conn, task))
     if not digest:
         return ""
     return ("\n\n---\n## 📚 项目记忆(全员共享 · 开工前先读)\n"
