@@ -13,9 +13,12 @@ row. No external DB. Pure stdlib so it stays dependency-free; all functions take
 """
 from __future__ import annotations
 
+import re
 import sqlite3
 import uuid
 from datetime import datetime, timezone
+
+_WORKSPACE_RE = re.compile(r"(?:工作区|workspace)\s*[:：]\s*(\S+)", re.IGNORECASE)
 
 ENTRY_TYPES = {"decision", "fact", "blocker", "diagnosis", "convention", "risk", "evidence"}
 _TYPE_HEADING = {
@@ -211,6 +214,29 @@ def digest_for_workspace(conn: sqlite3.Connection, workspace: str) -> str:
     if not project:
         return ""
     return str(project.get("digest") or "")
+
+
+_AUTO_ACTORS = {"auto", "auto-sweep", "memory-curator", "system", ""}
+
+
+def capture_approval_decision(conn: sqlite3.Connection, *, metadata: dict, action: str, decision: str,
+                              actor: str, reason: str = "") -> dict | None:
+    """A real owner approval/denial is a decision worth remembering. Files into the project resolved
+    from the approval's '工作区: <path>' directive. Skips auto-approvals (no human signal) and
+    approvals not tied to any project."""
+    if actor in _AUTO_ACTORS:
+        return None
+    text = f"{metadata.get('title', '')}\n{metadata.get('description', '')}"
+    m = _WORKSPACE_RE.search(text)
+    project = resolve_project_for_workspace(conn, m.group(1)) if m else None
+    if not project:
+        return None
+    verb = {"approved": "批准", "denied": "否决"}.get(decision, decision)
+    return remember(
+        conn, project_id=project["id"], entry_type="decision", author_agent=actor, importance=3,
+        title=f"审批{verb}:{action} → {metadata.get('target', '')}",
+        body=(f"{metadata.get('title', '')}。" + (f"理由:{reason}" if reason else "")).strip(),
+    )
 
 
 def archive_entry(conn: sqlite3.Connection, *, entry_id: str, actor: str = "") -> dict | None:

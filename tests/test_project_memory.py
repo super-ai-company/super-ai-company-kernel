@@ -107,6 +107,18 @@ class ProjectMemoryTest(unittest.TestCase):
         self.assertNotIn("噪音项", pm.digest_for_project(self.conn, "damov4"))
         self.assertIsNone(pm.archive_entry(self.conn, entry_id="nope"))
 
+    def test_capture_approval_decision_only_for_human_decisions_in_a_project(self) -> None:
+        meta = {"title": "上线 v4", "description": "工作区: /Users/x/damov4/cloud", "target": "codex"}
+        entry = pm.capture_approval_decision(self.conn, metadata=meta, action="production_deploy",
+                                             decision="approved", actor="owner", reason="确认上线")
+        self.assertIsNotNone(entry)
+        self.assertEqual("decision", entry["entry_type"])
+        self.assertIn("审批批准", entry["title"])
+        # auto-approval (no human) → no-op
+        self.assertIsNone(pm.capture_approval_decision(self.conn, metadata=meta, action="x", decision="approved", actor="auto"))
+        # no project workspace → no-op
+        self.assertIsNone(pm.capture_approval_decision(self.conn, metadata={"description": "工作区: /tmp/x"}, action="x", decision="denied", actor="owner"))
+
     def test_digest_for_project(self) -> None:
         pm.remember(self.conn, project_id="damov4", title="约定A", entry_type="convention")
         pm.curate(self.conn, project_id="damov4")
