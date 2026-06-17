@@ -11428,6 +11428,8 @@ def cmd_task_show(args: argparse.Namespace) -> int:
             }
         )
     supervisor_state, correction_summary = task_supervisor_state(attempts)
+    if task_obj.get("blocker") and str(task_obj.get("status") or "") in {"blocked", "failed", "stalled", "interrupted"}:
+        task_obj["blocker_triage"] = classify_blocker(str(task_obj["blocker"]))
     approvals = task_approvals(conn, task_id)
     ceo_acceptance_contract = task_ceo_acceptance_contract(
         task=task_obj,
@@ -11946,6 +11948,22 @@ def cmd_task_block(args: argparse.Namespace) -> int:
         pass
     try:
         project_memory.capture_task_outcome(conn, dict(task), kind="blocked", blocker=args.blocker)
+    except Exception:
+        pass
+    # push the triage to the owner's Telegram: WHY it stuck + the suggested action + one-tap retry/discard
+    try:
+        tri = classify_blocker(args.blocker)
+        notification_send_result(
+            kind="error",
+            subject=f"⛔ 任务受阻:{str(task['title'])[:42]}",
+            message=(f"[{tri['label']}] {tri['reason']}\n👉 {tri['action']}\n"
+                     f"{task.get('source_agent','')} → {task.get('target_agent','')} · {args.task_id}"),
+            reply_markup={"inline_keyboard": [[
+                {"text": "🔧 重试", "callback_data": f"ck_fix:{args.task_id}"},
+                {"text": "🗑 丢弃", "callback_data": f"ck_discard:{args.task_id}"},
+                {"text": "⏭ 先放着", "callback_data": f"ck_skip:{args.task_id}"},
+            ]]},
+        )
     except Exception:
         pass
     emit({"ok": True, "task_id": args.task_id, "status": "blocked", "blocker": args.blocker, "event_id": event["id"], "synced_plan_items": synced_plan_items})
