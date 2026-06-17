@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from . import companyctl
+from . import project_memory
 from .adapter_result import compact_output, execution_detail
 from .db_paths import ensure_db_parent, resolve_db_path
 from .employee_comms import communication_protocol
@@ -379,6 +380,18 @@ def parse_verdict(output: Path) -> tuple[str, str]:
     return verdict, (last.group(2) or "").strip()
 
 
+def _project_memory_block(task: sqlite3.Row) -> str:
+    """Shared project memory injected so codex reads it before working. Never break card building."""
+    try:
+        conn = companyctl.connect()
+        try:
+            return project_memory.digest_block_for_task(conn, dict(task))
+        finally:
+            conn.close()
+    except Exception:  # noqa: BLE001
+        return ""
+
+
 def build_task_card(task: sqlite3.Row, workspace: Path, sandbox: str) -> str:
     return "\n".join(
         [
@@ -391,6 +404,7 @@ def build_task_card(task: sqlite3.Row, workspace: Path, sandbox: str) -> str:
             "## Description",
             "",
             task["description"] or "No extra description provided.",
+            _project_memory_block(task),
             "",
             "## Canonical repo / workspace",
             "",

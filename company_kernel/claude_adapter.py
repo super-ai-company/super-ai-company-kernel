@@ -14,6 +14,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from . import companyctl
+from . import project_memory
 from .adapter_result import execution_detail
 from .db_paths import ensure_db_parent, resolve_db_path
 from .employee_comms import communication_protocol
@@ -110,6 +111,19 @@ def _employee_persona(agent: str) -> str:
         return ""
 
 
+def _project_memory_block(task: sqlite3.Row) -> str:
+    """Shared project memory for this task's project, injected so the employee reads it first.
+    Never let a memory hiccup break prompt building."""
+    try:
+        conn = companyctl.connect()
+        try:
+            return project_memory.digest_block_for_task(conn, dict(task))
+        finally:
+            conn.close()
+    except Exception:  # noqa: BLE001
+        return ""
+
+
 def build_prompt(task: sqlite3.Row) -> str:
     persona = _employee_persona(task["target_agent"])
     persona_block = ["## Your role (persona)", "", persona, ""] if persona else []
@@ -134,6 +148,7 @@ def build_prompt(task: sqlite3.Row) -> str:
             "## Description",
             "",
             task["description"] or "No extra description provided.",
+            _project_memory_block(task),
             "",
             "## Required output",
             "",

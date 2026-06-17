@@ -459,3 +459,37 @@ CREATE TABLE IF NOT EXISTS a2a_requests (
   decided_at TEXT NOT NULL DEFAULT '',
   created_at TEXT NOT NULL
 );
+
+-- Project Memory Bank: a shared, curated, per-project knowledge base. Every employee's key
+-- operations (task done/blocked, decisions, diagnoses) get captured as entries; a per-project
+-- memory lead curates them into a coherent `digest` (the current truth) that whoever picks up the
+-- project reads first. Complements per-runtime native session memory (short-term working memory).
+CREATE TABLE IF NOT EXISTS memory_banks (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL DEFAULT '',
+  workspace TEXT NOT NULL DEFAULT '',        -- repo/workspace path this project maps to
+  lead_agent TEXT NOT NULL DEFAULT 'hermes', -- the memory 主负责人 (curator)
+  status TEXT NOT NULL DEFAULT 'active',
+  digest TEXT NOT NULL DEFAULT '',           -- curated current-truth markdown
+  digest_updated_at TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS project_memory (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL,
+  author_agent TEXT NOT NULL DEFAULT '',
+  entry_type TEXT NOT NULL DEFAULT 'fact',   -- decision/fact/blocker/diagnosis/convention/risk/evidence
+  title TEXT NOT NULL DEFAULT '',
+  body TEXT NOT NULL DEFAULT '',
+  source_task_id TEXT NOT NULL DEFAULT '',
+  source_conversation_id TEXT NOT NULL DEFAULT '',
+  evidence_path TEXT NOT NULL DEFAULT '',
+  importance INTEGER NOT NULL DEFAULT 1,
+  status TEXT NOT NULL DEFAULT 'active',      -- active/superseded/archived
+  superseded_by TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_project_memory_project ON project_memory(project_id, status);

@@ -506,6 +506,10 @@ def tick(config: dict) -> dict:
         # auto mode safety net: if the owner delegated full approval, clear+materialize any pending
         # route approval so nothing ever sits blocking. No-op in manual mode.
         results.append({"step": "approval.auto-sweep", "result": run_companyctl("approval", "auto-sweep")})
+    if config.get("run_memory_curation", True):
+        # project memory: the lead's auto-curation — dedup + rebuild digest for any project that got
+        # new memory this cycle, so the shared project knowledge stays coherent and current.
+        results.append({"step": "memory.curate", "result": run_companyctl("memory", "curate-all")})
     if config.get("run_supervisor_delivery_loop", config.get("run_scheduler", True)):
         results.append({"step": "supervisor.delivery-loop", "result": run_companyctl("supervisor", "delivery-loop")})
     if config.get("run_offline_reminder", True):

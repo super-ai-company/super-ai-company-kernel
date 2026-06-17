@@ -23,6 +23,7 @@ from pathlib import Path
 
 from .db_paths import ensure_db_parent
 from . import sandboxing
+from . import project_memory
 from .schema_migrations import ensure_schema_migrations
 
 DEFAULT_ROOT = Path(__file__).resolve().parents[1]
@@ -8254,6 +8255,11 @@ def complete_task_internal(
         write_dispatcher_completion_notice(conn, dict(task), status="completed", summary=summary, evidence=evidence)
     except Exception:
         pass
+    # project memory: capture this completion into the project that owns the task's workspace
+    try:
+        project_memory.capture_task_outcome(conn, dict(task), kind="done", summary=summary, evidence=evidence)
+    except Exception:
+        pass
     return {"task_id": task_id, "status": "completed", "evidence": evidence, "attempt_id": completed_attempt_id, "event_id": event["id"], "synced_plan_items": synced_plan_items}
 
 
@@ -11034,6 +11040,72 @@ def cmd_approval_mode(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_membank_create(args: argparse.Namespace) -> int:
+    conn = connect()
+    lead = resolve_employee_alias(args.lead) if args.lead else "hermes"
+    project = project_memory.create_project(conn, project_id=args.id, name=args.name, workspace=args.workspace, lead_agent=lead)
+    audit(conn, "owner-shift", "project.create", args.id, {"workspace": args.workspace, "lead": lead})
+    emit({"ok": True, "project": project})
+    return 0
+
+
+def cmd_membank_list(args: argparse.Namespace) -> int:
+    emit({"ok": True, "projects": project_memory.list_projects(connect())})
+    return 0
+
+
+def cmd_membank_show(args: argparse.Namespace) -> int:
+    conn = connect()
+    project = project_memory.get_project(conn, args.id)
+    if not project:
+        emit({"ok": False, "error": "unknown project", "id": args.id})
+        return 1
+    emit({"ok": True, "project": project, "memory": project_memory.recall(conn, project_id=args.id, limit=args.limit)})
+    return 0
+
+
+def cmd_memory_remember(args: argparse.Namespace) -> int:
+    conn = connect()
+    try:
+        entry = project_memory.remember(
+            conn, project_id=args.project, title=args.title, body=args.body, entry_type=args.type,
+            author_agent=resolve_employee_alias(args.by) if args.by else "", source_task_id=args.task_id,
+            evidence_path=args.evidence, importance=args.importance,
+        )
+    except ValueError as exc:
+        emit({"ok": False, "error": str(exc)})
+        return 1
+    emit({"ok": True, "entry": entry})
+    return 0
+
+
+def cmd_memory_recall(args: argparse.Namespace) -> int:
+    conn = connect()
+    if not project_memory.get_project(conn, args.project):
+        emit({"ok": False, "error": "unknown project", "project": args.project})
+        return 1
+    emit({"ok": True, "project": args.project,
+          "entries": project_memory.recall(conn, project_id=args.project, query=args.query, limit=args.limit)})
+    return 0
+
+
+def cmd_memory_curate(args: argparse.Namespace) -> int:
+    conn = connect()
+    try:
+        result = project_memory.curate(conn, project_id=args.project, actor=resolve_employee_alias(args.by) if args.by else "")
+    except ValueError as exc:
+        emit({"ok": False, "error": str(exc)})
+        return 1
+    audit(conn, result.get("curated_by") or "hermes", "memory.curate", args.project, {"superseded": result["superseded"], "active": result["active_entries"]})
+    emit(result)
+    return 0
+
+
+def cmd_memory_curate_all(args: argparse.Namespace) -> int:
+    emit(project_memory.curate_all(connect(), actor="memory-curator"))
+    return 0
+
+
 def cmd_approval_auto_sweep(args: argparse.Namespace) -> int:
     """Belt-and-suspenders for auto mode: approve + materialize EVERY pending *route* approval, so
     nothing a stray path created can sit blocking. Only touches route-dispatch approvals (not
@@ -11794,6 +11866,10 @@ def cmd_task_block(args: argparse.Namespace) -> int:
     audit(conn, agent, "task.block", args.task_id, {"blocker": args.blocker, "event_id": event["id"]})
     try:
         write_dispatcher_completion_notice(conn, dict(task), status="blocked", blocker=args.blocker)
+    except Exception:
+        pass
+    try:
+        project_memory.capture_task_outcome(conn, dict(task), kind="blocked", blocker=args.blocker)
     except Exception:
         pass
     emit({"ok": True, "task_id": args.task_id, "status": "blocked", "blocker": args.blocker, "event_id": event["id"], "synced_plan_items": synced_plan_items})
@@ -14062,6 +14138,44 @@ def build_parser() -> argparse.ArgumentParser:
     scheduler_skip_event.add_argument("--by", required=True)
     scheduler_skip_event.add_argument("--reason", required=True)
     scheduler_skip_event.set_defaults(func=cmd_scheduler_skip_event)
+
+    memory = sub.add_parser("memory", help="project memory bank: shared, curated, per-project memory")
+    memory_sub = memory.add_subparsers(dest="memory_cmd", required=True)
+    memory_project = memory_sub.add_parser("project", help="manage memory-bank projects")
+    memory_project_sub = memory_project.add_subparsers(dest="memory_project_cmd", required=True)
+    project_create = memory_project_sub.add_parser("create")
+    project_create.add_argument("--id", required=True)
+    project_create.add_argument("--name", default="")
+    project_create.add_argument("--workspace", default="", help="repo/workspace path this project maps to")
+    project_create.add_argument("--lead", default="hermes", help="memory 主负责人 (curator)")
+    project_create.set_defaults(func=cmd_membank_create)
+    project_list = memory_project_sub.add_parser("list")
+    project_list.set_defaults(func=cmd_membank_list)
+    project_show = memory_project_sub.add_parser("show")
+    project_show.add_argument("--id", required=True)
+    project_show.add_argument("--limit", type=int, default=50)
+    project_show.set_defaults(func=cmd_membank_show)
+    memory_remember = memory_sub.add_parser("remember")
+    memory_remember.add_argument("--project", required=True)
+    memory_remember.add_argument("--title", required=True)
+    memory_remember.add_argument("--body", default="")
+    memory_remember.add_argument("--type", default="fact", choices=sorted(project_memory.ENTRY_TYPES))
+    memory_remember.add_argument("--by", default="")
+    memory_remember.add_argument("--task-id", default="")
+    memory_remember.add_argument("--evidence", default="")
+    memory_remember.add_argument("--importance", type=int, default=1)
+    memory_remember.set_defaults(func=cmd_memory_remember)
+    memory_recall = memory_sub.add_parser("recall")
+    memory_recall.add_argument("--project", required=True)
+    memory_recall.add_argument("--query", default="")
+    memory_recall.add_argument("--limit", type=int, default=50)
+    memory_recall.set_defaults(func=cmd_memory_recall)
+    memory_curate = memory_sub.add_parser("curate", help="the lead's pass: dedup + rebuild digest")
+    memory_curate.add_argument("--project", required=True)
+    memory_curate.add_argument("--by", default="")
+    memory_curate.set_defaults(func=cmd_memory_curate)
+    memory_curate_all = memory_sub.add_parser("curate-all", help="curate every project with new memory (daemon)")
+    memory_curate_all.set_defaults(func=cmd_memory_curate_all)
 
     approval = sub.add_parser("approval")
     approval_sub = approval.add_subparsers(dest="approval_cmd", required=True)
