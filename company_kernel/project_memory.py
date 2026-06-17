@@ -114,8 +114,8 @@ def capture_task_outcome(conn: sqlite3.Connection, task: dict, *, kind: str, sum
     Resolved by the task's workspace; no project mapping → no-op (returns None)."""
     workspace = str(task.get("workspace") or "")
     if not workspace:
-        wsrow = conn.execute("SELECT workspace FROM task_workspaces WHERE task_id = ?", (task.get("id"),)).fetchone()
-        workspace = str(wsrow["workspace"]) if wsrow else ""
+        wsrow = conn.execute("SELECT path FROM task_workspaces WHERE task_id = ?", (task.get("id"),)).fetchone()
+        workspace = str(wsrow["path"]) if wsrow else ""
     project = resolve_project_for_workspace(conn, workspace)
     if not project:
         return None
@@ -198,8 +198,8 @@ def digest_block_for_task(conn: sqlite3.Connection, task: dict) -> str:
     the employee reads the shared project memory before working. '' if the task isn't in a project."""
     workspace = str(task.get("workspace") or "")
     if not workspace:
-        row = conn.execute("SELECT workspace FROM task_workspaces WHERE task_id = ?", (task.get("id"),)).fetchone()
-        workspace = str(row["workspace"]) if row else ""
+        row = conn.execute("SELECT path FROM task_workspaces WHERE task_id = ?", (task.get("id"),)).fetchone()
+        workspace = str(row["path"]) if row else ""
     digest = digest_for_workspace(conn, workspace)
     if not digest:
         return ""
