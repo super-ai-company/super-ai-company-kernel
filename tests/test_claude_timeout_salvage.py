@@ -40,6 +40,14 @@ class ClaudeTimeoutSalvageTest(unittest.TestCase):
     def test_timeout_rc_constant(self) -> None:
         self.assertEqual(124, self.ca.RUNTIME_TIMEOUT_RC)
 
+    def test_adaptive_timeout_honors_directive_and_bumps_big_tasks(self) -> None:
+        rt = self.ca.resolve_claude_timeout
+        self.assertEqual(3000, rt({"description": "工作区: /x\n超时: 3000\n做事"}))
+        self.assertEqual(self.ca.CLAUDE_TIMEOUT_CAP, rt({"description": "超时: 99999"}))  # capped at 1h
+        self.assertEqual(self.ca.CLAUDE_TIMEOUT_CAP, rt({"description": "真机 全流程 E2E 重测"}))  # big-task marker
+        self.assertEqual(self.ca.CLAUDE_TIMEOUT_CAP, rt({"description": "x" * 900}))  # long description
+        self.assertEqual(self.ca.CLAUDE_RUN_TIMEOUT_SECONDS, rt({"description": "改个按钮文案"}))  # small task → short default
+
 
 if __name__ == "__main__":
     unittest.main()

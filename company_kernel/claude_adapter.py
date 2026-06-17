@@ -219,6 +219,23 @@ def resolve_claude_proxy(agent: str, model: str) -> tuple[dict, str, str]:
 
 
 CLAUDE_RUN_TIMEOUT_SECONDS = int(os.environ.get("COMPANY_CLAUDE_TIMEOUT_SECONDS", "1800"))  # 30 min; a hung claude -p must not run forever
+CLAUDE_TIMEOUT_CAP = int(os.environ.get("COMPANY_CLAUDE_TIMEOUT_CAP", "3600"))  # 1h ceiling for big tasks
+_CLAUDE_TIMEOUT_DIRECTIVE = re.compile(r"(?:超时|超時|timeout)\s*[:：]\s*(\d+)", re.IGNORECASE)
+_BIG_TASK_MARKERS = ("全流程", "完整", "重测", "e2e", "端到端", "全端", "巡检", "全系统", "全部页面", "整改", "审核 s", "s01", "s15")
+
+
+def resolve_claude_timeout(task: "sqlite3.Row") -> int:
+    """Big tasks shouldn't die at the 30-min default — that's how done work gets killed at wrap-down.
+    Honor an explicit `超时: <秒>` directive (capped at 1h); else auto-bump tasks that look large
+    (long description or big-task markers) toward the cap; small tasks keep the short default."""
+    desc = str(task["description"] or "")
+    m = _CLAUDE_TIMEOUT_DIRECTIVE.search(desc)
+    if m:
+        return max(120, min(int(m.group(1)), CLAUDE_TIMEOUT_CAP))
+    low = desc.lower()
+    if len(desc) >= 800 or any(k in low for k in _BIG_TASK_MARKERS):
+        return CLAUDE_TIMEOUT_CAP
+    return CLAUDE_RUN_TIMEOUT_SECONDS
 
 
 # When routed through the pool, each model has its own quota and they get exhausted under load one
@@ -433,7 +450,7 @@ def process(args: argparse.Namespace) -> int:
         emit({"ok": done_code == 0, "processed": 1, "executed": False, "task_id": task["id"], "prompt": str(artifact["prompt"]), "report": str(artifact["report"]), "companyctl_stdout": done_out, "companyctl_stderr": done_err})
         return done_code
     memory_key = parse_memory_key(task["description"] or "")
-    code, cmd = run_claude(artifact["prompt"], artifact["output"], workspace, args.model, args.permission_mode, args.agent, memory_key=memory_key)
+    code, cmd = run_claude(artifact["prompt"], artifact["output"], workspace, args.model, args.permission_mode, args.agent, memory_key=memory_key, timeout=resolve_claude_timeout(task))
     if code == 0:
         detail = execution_detail(cmd, artifact["output"], success=True)
         write_report(artifact["report"], task, executed=True, status="completed", detail=detail, prompt=artifact["prompt"], output=artifact["output"])
