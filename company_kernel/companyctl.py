@@ -11125,6 +11125,17 @@ def cmd_memory_curate(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_memory_archive(args: argparse.Namespace) -> int:
+    conn = connect()
+    result = project_memory.archive_entry(conn, entry_id=args.entry_id, actor=resolve_employee_alias(args.by) if args.by else "owner")
+    if not result:
+        emit({"ok": False, "error": "entry not found", "entry_id": args.entry_id})
+        return 1
+    project_memory.curate(conn, project_id=result["project_id"], actor="memory-curator")  # rebuild digest without it
+    emit(result)
+    return 0
+
+
 def cmd_memory_curate_all(args: argparse.Namespace) -> int:
     emit(project_memory.curate_all(connect(), actor="memory-curator"))
     return 0
@@ -14202,6 +14213,10 @@ def build_parser() -> argparse.ArgumentParser:
     memory_curate.set_defaults(func=cmd_memory_curate)
     memory_curate_all = memory_sub.add_parser("curate-all", help="curate every project with new memory (daemon)")
     memory_curate_all.set_defaults(func=cmd_memory_curate_all)
+    memory_archive = memory_sub.add_parser("archive", help="retire a memory entry (manual curation)")
+    memory_archive.add_argument("--entry-id", required=True)
+    memory_archive.add_argument("--by", default="")
+    memory_archive.set_defaults(func=cmd_memory_archive)
 
     approval = sub.add_parser("approval")
     approval_sub = approval.add_subparsers(dest="approval_cmd", required=True)

@@ -1416,6 +1416,23 @@ def route_post(path: str, body: dict) -> tuple[int, dict]:
             return HTTPStatus.BAD_REQUEST, {"ok": False, "error": f"mode must be one of {sorted(companyctl.ROUTE_APPROVAL_MODES)}", "got": mode}
         code, payload = run_companyctl(["approval", "mode", "--set", mode, "--by", str(body.get("by", "owner") or "owner")])
         return (HTTPStatus.OK if code == 0 else HTTPStatus.BAD_REQUEST), payload
+    if path.startswith("/v1/memory/projects/") and path.endswith("/remember"):
+        pid = path.removeprefix("/v1/memory/projects/").removesuffix("/remember").strip("/")
+        code, payload = run_companyctl(["memory", "remember", "--project", pid,
+            "--title", str(body.get("title", "") or ""), "--body", str(body.get("body", "") or ""),
+            "--type", str(body.get("type", "fact") or "fact"), "--by", str(body.get("by", "owner") or "owner"),
+            "--importance", str(int(body.get("importance", 2) or 2))])
+        if code == 0:
+            run_companyctl(["memory", "curate", "--project", pid, "--by", "owner"])  # reflect it in the digest now
+        return (HTTPStatus.OK if code == 0 else HTTPStatus.BAD_REQUEST), payload
+    if path.startswith("/v1/memory/projects/") and path.endswith("/curate"):
+        pid = path.removeprefix("/v1/memory/projects/").removesuffix("/curate").strip("/")
+        code, payload = run_companyctl(["memory", "curate", "--project", pid, "--by", str(body.get("by", "owner") or "owner")])
+        return (HTTPStatus.OK if code == 0 else HTTPStatus.BAD_REQUEST), payload
+    if path.startswith("/v1/memory/entries/") and path.endswith("/archive"):
+        eid = path.removeprefix("/v1/memory/entries/").removesuffix("/archive").strip("/")
+        code, payload = run_companyctl(["memory", "archive", "--entry-id", eid, "--by", str(body.get("by", "owner") or "owner")])
+        return (HTTPStatus.OK if code == 0 else HTTPStatus.NOT_FOUND), payload
     if path == "/v1/notifications/send":
         result = companyctl.notification_send_result(
             message=str(body.get("message", "")),
