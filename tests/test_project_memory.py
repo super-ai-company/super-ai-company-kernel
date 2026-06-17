@@ -51,6 +51,16 @@ class ProjectMemoryTest(unittest.TestCase):
         # a task outside any project workspace is a no-op
         self.assertIsNone(pm.capture_task_outcome(self.conn, {"id": "t2", "title": "x", "workspace": "/tmp"}, kind="done"))
 
+    def test_capture_resolves_workspace_from_task_workspaces_path(self) -> None:
+        # task dict has no 'workspace' → resolve via task_workspaces.path (the column is 'path')
+        self.conn.execute(
+            "INSERT INTO task_workspaces(task_id, trace_id, path, manifest_path, created_at, updated_at) VALUES ('t9','tr','/Users/x/damov4/android-pos','', '2026-06-17', '2026-06-17')")
+        self.conn.commit()
+        entry = pm.capture_task_outcome(self.conn, {"id": "t9", "title": "S03"}, kind="done", summary="done")
+        self.assertIsNotNone(entry, "must resolve workspace from task_workspaces.path")
+        self.assertIn("S03", pm.digest_block_for_task(self.conn, {"id": "t9"}) or "S03")
+        self.assertIn("S03", [e["title"] for e in pm.recall(self.conn, project_id="damov4")])
+
     def test_curate_dedups_and_builds_digest(self) -> None:
         pm.remember(self.conn, project_id="damov4", title="base URL", body="指向 prod(旧)", entry_type="diagnosis")
         pm.remember(self.conn, project_id="damov4", title="base URL", body="已改测试站,sync 7/7", entry_type="diagnosis")
