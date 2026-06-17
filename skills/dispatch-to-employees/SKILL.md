@@ -9,6 +9,19 @@ An employee executes work through its **runtime**. Dispatch the same way for eve
 *content* (directives, scope) is what differs. Get the directives wrong and the task times out,
 runs in the wrong place, or silently does nothing.
 
+## App vs CLI: 同一运行时拆成两个员工(别让 app 和守护抢)
+
+每个有桌面 app 的运行时拆成**两个独立员工**,各有各的任务队列,互不抢:
+
+| 派给 | 谁执行 | 何时用 |
+|---|---|---|
+| `codex` / `claude` | 你的**桌面 app**(签到接单,你看着它干,可视化) | 想在 app 里看见接收/执行/回报;app 开着时 |
+| `codex-cli` / `claude-cli` | **守护无头**(daemon 每 tick 自动跑) | 要后台自动、无人值守也跑;不想打断你用 app |
+
+(`gemini` 无 app,只走守护;`antigravity`/`agy` 暂未拆,仍 app+守护共用。)
+**默认**:要后台自动完成 → 派 `*-cli`;要 app 里可视化协作 → 派 app 名(`codex`/`claude`)。
+拆分前两者抢同一队列(有锁不重复但 app 每次弹签到),拆分后清爽。
+
 ## Three ways to dispatch
 
 1. **Native MCP tool** (the interactive apps — Codex / Claude / Antigravity): they have the
