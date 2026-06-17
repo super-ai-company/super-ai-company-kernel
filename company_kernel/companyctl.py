@@ -11027,6 +11027,14 @@ def decide_approval(args: argparse.Namespace, status: str) -> int:
         },
     )
     materialized = materialize_route_task(conn, approval, actor) if status == "approved" else None
+    # project memory: a real owner approval/denial is a decision worth remembering (auto-approvals skipped)
+    if status in {"approved", "denied"}:
+        try:
+            meta = detail.get("metadata", {}) if isinstance(detail.get("metadata"), dict) else {}
+            project_memory.capture_approval_decision(conn, metadata=meta, action=str(approval.get("action") or ""),
+                                                     decision=status, actor=actor, reason=args.reason)
+        except Exception:
+            pass
     out = {"ok": True, "approval": approval, "file": path, "event": event}
     if materialized:
         out["materialized_task"] = materialized
