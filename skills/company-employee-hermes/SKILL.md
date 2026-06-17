@@ -79,6 +79,26 @@ Rules:
 - Hermes can supervise routing and review evidence, but task execution must still go through Company Kernel status/evidence.
 - Prefer SQLite/local state as the memory source of truth unless the owner explicitly confirms a different canonical memory backend.
 
+## Autonomous Orchestration Loop (this is where the automation actually lives)
+
+There are TWO Hermes execution contexts. Confusing them is the #1 reason owners think "Hermes won't auto-run":
+
+- **Conversational Hermes** (you chat with it in the console / a direct message): a ONE-SHOT reply. It can dispatch a task in that turn, then it stops. It has no background loop — no prompt can make it keep running. Use it only to hand Hermes a goal or ask status.
+- **Daemon Hermes** (`bin/company-hermes-adapter --agent hermes --execute`, run every tick by the daemon): the autonomous part. This is what advances the plan without anyone chatting.
+
+The daemon loop (in `hermes_adapter.advance_from_completions`) works like this each tick:
+
+1. When a task Hermes dispatched finishes/blocks/cancels, the kernel drops a `result-*.json` completion notice into Hermes's inbox (`write_dispatcher_completion_notice`).
+2. The daemon-run Hermes **consumes those notices and runs the brain directly on them** — dispatch the next step (dev done → review; review passed → next phase; review failed → fix), or summarize the round — with **no self-task on the board**. Then it archives the notice.
+3. After a phase advances, it pushes a concise progress line to the owner via `message send` (`report_progress_to_owner`), which the owner-message → Telegram mirror forwards to the owner's phone. Pure block/cancel batches are skipped (the watchdog already alerts those).
+
+Requirements / gotchas:
+
+- The daemon's Hermes adapter_worker MUST pass `--execute` (in `config/daemon.json`). Without it Hermes only dry-runs every tick and the brain never starts — the round stalls after one step. (This is local config; not shipped.)
+- The daemon is `--once` per launchd tick, so code/config changes take effect next tick — no restart needed.
+- Do NOT teach the conversational Hermes to "loop / auto-execute". It can't. Point owners at the daemon loop + Telegram progress instead.
+- Project memory binds automatically: any task whose workspace maps to a project (or whose target is a project's locked executor) gets a `记忆会话: <project>` directive stamped at submit time, so workers resume their project session instead of re-scanning, and all three (codex/claude/hermes) share the curated `.company-memory.md` digest.
+
 ## Blocked Cases
 
 Block when Hermes CLI is missing, provider/auth status is unknown, runtime agent id and session key disagree, runtime agent-to-agent allowlist denies the target, requested action changes infrastructure config without approval, or no evidence path can be produced.

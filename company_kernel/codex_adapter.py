@@ -600,6 +600,25 @@ def last_message_substantive(output: Path) -> bool:
     return len(body) >= 200
 
 
+_CODEX_MEMORY_DIRECTIVE = re.compile(r"(?:记忆会话|memory-session)\s*[:：]\s*(\S+)")
+
+
+def task_memory_key(args: argparse.Namespace, task) -> str:
+    """Resume key for this codex session: an explicit --memory-session flag wins, else the
+    `记忆会话: <key>` directive in the task description (the kernel auto-stamps it per project). With
+    it, a daemon-run codex-cli RESUMES its project session each task instead of cold-starting and
+    re-scanning the whole repo. No key → unchanged ephemeral run."""
+    explicit = (getattr(args, "memory_session", "") or "").strip()
+    if explicit:
+        return explicit
+    try:
+        desc = str(task["description"] or "")
+    except (KeyError, TypeError, IndexError):
+        desc = ""
+    m = _CODEX_MEMORY_DIRECTIVE.search(desc)
+    return m.group(1) if m else ""
+
+
 def run_codex(task_card: Path, workspace: Path, output: Path, events: Path, sandbox: str, model: str, isolation: str, sandbox_profile: str, timeout_seconds: int = 1800, memory_key: str = "", agent: str = "codex") -> tuple[int, str]:
     # Opt-in persistent memory: resume an existing codex session for this memory_key, else start a
     # persisted one and capture its UUID for next time. No memory_key → unchanged ephemeral run.
@@ -1019,7 +1038,7 @@ def process(args: argparse.Namespace) -> int:
     )
     run_companyctl(["task", "progress", "--task-id", task["id"], "--agent", args.agent, "--attempt-id", attempt_id, "--state", "acknowledged", "--message", "Codex adapter acknowledged managed execution", "--progress", "5"])
     started_monotonic = time.monotonic()
-    code, cmd = run_codex(artifact["task_card"], workspace, artifact["last_message"], artifact["events"], args.sandbox, args.model, args.isolation, args.sandbox_profile, timeout_seconds=task_timeout)
+    code, cmd = run_codex(artifact["task_card"], workspace, artifact["last_message"], artifact["events"], args.sandbox, args.model, args.isolation, args.sandbox_profile, timeout_seconds=task_timeout, memory_key=task_memory_key(args, task), agent=args.agent)
     runtime_seconds = max(0, int(round(time.monotonic() - started_monotonic)))
     if code == 0:
         verdict, verdict_reason = parse_verdict(artifact["last_message"])

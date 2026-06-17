@@ -89,5 +89,29 @@ class CodexMemorySessionTest(unittest.TestCase):
         self.assertNotIn("resume", " ".join(captured[0]))
 
 
+
+class TaskMemoryKeyTest(unittest.TestCase):
+    """The per-project memory key the kernel auto-stamps (`记忆会话: <project>`) must be picked up by
+    codex from the task DESCRIPTION (not only the --memory-session flag), so a daemon-run codex-cli
+    resumes its project session instead of re-scanning the repo each task."""
+    def setUp(self) -> None:
+        import argparse
+        from company_kernel import codex_adapter
+        self.ca = codex_adapter
+        self.ns = argparse.Namespace
+
+    def test_parses_directive_from_description(self) -> None:
+        task = {"description": "工作区: /x/foodlib\n记忆会话: foodlib\n做事"}
+        self.assertEqual("foodlib", self.ca.task_memory_key(self.ns(memory_session=""), task))
+
+    def test_explicit_flag_wins(self) -> None:
+        task = {"description": "记忆会话: foodlib"}
+        self.assertEqual("conv:1", self.ca.task_memory_key(self.ns(memory_session="conv:1"), task))
+
+    def test_no_directive_is_ephemeral(self) -> None:
+        self.assertEqual("", self.ca.task_memory_key(self.ns(memory_session=""), {"description": "纯做事"}))
+        self.assertEqual("", self.ca.task_memory_key(self.ns(memory_session=""), {"description": None}))
+
+
 if __name__ == "__main__":
     unittest.main()

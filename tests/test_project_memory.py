@@ -187,5 +187,23 @@ class ProjectMemoryTest(unittest.TestCase):
             pm.curate(self.conn, project_id="nope")
 
 
+    def test_project_for_executor_binds_when_unique(self) -> None:
+        pm.set_executors(self.conn, project_id="damov4", executors=["codex-cli", "claude-cli"])
+        self.assertEqual("damov4", pm.project_for_executor(self.conn, "codex-cli"))
+        self.assertIsNone(pm.project_for_executor(self.conn, "nobody"))
+        # ambiguous: same agent locked to two projects → None (fall back to workspace)
+        pm.create_project(self.conn, project_id="proj2", workspace="/Users/x/proj2")
+        pm.set_executors(self.conn, project_id="proj2", executors=["codex-cli"])
+        self.assertIsNone(pm.project_for_executor(self.conn, "codex-cli"))
+
+    def test_workspace_directive_ignores_trailing_punctuation(self) -> None:
+        # "工作区: /path。验收…" must resolve to the project, not /path。(which matches nothing)
+        task = {"id": "tp", "title": "x", "target_agent": "codex",
+                "description": "做审核。工作区: /Users/x/damov4/android-pos。验收范围…"}
+        entry = pm.capture_task_outcome(self.conn, task, kind="done", summary="ok")
+        self.assertIsNotNone(entry, "trailing 。must not break workspace→project resolution")
+        self.assertEqual("damov4", entry["project_id"])
+
+
 if __name__ == "__main__":
     unittest.main()

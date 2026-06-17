@@ -2923,9 +2923,12 @@ def cmd_task_cancel(args: argparse.Namespace) -> int:
     conn.execute("UPDATE tasks SET status = 'cancelled', blocker = ?, updated_at = ? WHERE id = ?", (args.reason, ts, args.task_id))
     conn.execute("DELETE FROM locks WHERE resource_key = ?", (f"task:{args.task_id}",))
     conn.commit()
+    # Tell the dispatcher so they stop waiting on a task that will never finish.
+    notice_path = write_dispatcher_completion_notice(
+        conn, dict(task), status="cancelled", blocker=f"已取消(cancelled by {actor}): {args.reason}")
     event = record_event(conn, "supervisor.cancel_requested", actor, task_id=args.task_id, trace_id=attempt["trace_id"], payload={"attempt_id": args.attempt_id, "reason": args.reason, "pid": attempt.get("pid", "")})
     audit(conn, actor, "task.cancel", args.task_id, {"attempt_id": args.attempt_id, "reason": args.reason, "event_id": event["id"]})
-    emit({"ok": True, "task_id": args.task_id, "status": "cancelled", "attempt": row_by_id(conn, "execution_attempts", "attempt_id", args.attempt_id), "event_id": event["id"]})
+    emit({"ok": True, "task_id": args.task_id, "status": "cancelled", "attempt": row_by_id(conn, "execution_attempts", "attempt_id", args.attempt_id), "event_id": event["id"], "dispatcher_notified": notice_path or None})
     return 0
 
 
@@ -7932,9 +7935,10 @@ def cmd_task_submit(args: argparse.Namespace) -> int:
     # project executor lock: if this task's workspace belongs to a project that restricts who may
     # work on it, remap (app↔cli twin) or refuse — so "this project = cli only" is enforced server-side.
     _ws = ""
-    _m = re.search(r"(?:工作区|workspace)\s*[:：]\s*(\S+)", str(args.description or ""))
+    _m = re.search(r"(?:工作区|workspace)\s*[:：]\s*([^\s。，、；;,]+)", str(args.description or ""))
     if _m:
         _ws = _m.group(1)
+    _pid = ""
     if _ws:
         _lock = project_memory.enforce_executor(conn, workspace=_ws, target=target)
         if _lock.get("blocked"):
@@ -7943,6 +7947,14 @@ def cmd_task_submit(args: argparse.Namespace) -> int:
         if _lock.get("remapped"):
             args.target = _lock["target"]
             target = _lock["target"]
+        _pid = _lock.get("project_id") or ""
+    # Force-bind project memory: workspace directive first, else the target's executor lock — so EVERY
+    # task tied to a project carries a `记忆会话: <project>` key (codex rollout / claude --resume) and
+    # never cold-starts / re-scans the repo. Skip only if the description already set one.
+    if not _pid:
+        _pid = project_memory.project_for_executor(conn, target) or ""
+    if _pid and not re.search(r"(?:记忆会话|memory-session)\s*[:：]", str(args.description or "")):
+        args.description = str(args.description or "").rstrip() + f"\n记忆会话: {_pid}"
     require_employee(conn, source)
     require_employee(conn, target)
     rejection = validate_task_submission(conn, target=target, title=args.title, description=args.description, force=getattr(args, "force_submit", False))
@@ -8323,7 +8335,7 @@ def write_dispatcher_completion_notice(conn: sqlite3.Connection, task: dict, *, 
         "type": f"task.{status}", "task_id": task.get("id"), "title": task.get("title"),
         "done_by": target, "status": status, "summary": summary, "evidence_path": evidence,
         "blocker": blocker, "at": now(),
-        "note": f"你派给 {target} 的任务「{task.get('title')}」已{'完成' if status == 'completed' else '受阻'}",
+        "note": f"你派给 {target} 的任务「{task.get('title')}」已{ {'completed': '完成', 'done': '完成', 'cancelled': '取消'}.get(status, '受阻') }",
     }
     path = inbox / f"result-{task.get('id')}.json"
     path.write_text(json.dumps(notice, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
@@ -8701,10 +8713,26 @@ def cmd_employee_offline_report(args: argparse.Namespace) -> int:
     return 0
 
 
+def mirror_owner_message_to_telegram(target: str, body: str, source: str = "") -> dict:
+    """Owner-addressed messages (watchdog alerts, Hermes status reports) also get pushed to the owner's
+    Telegram via the configured notification route — not just dropped in the inbox file, which the owner
+    may never open. Gated to the owner only (inter-agent messages never mirror). Best-effort: returns a
+    result but never raises, so a Telegram hiccup can't break message delivery."""
+    try:
+        owner = os.environ.get("COMPANY_KERNEL_OWNER", "owner")
+        if resolve_employee_alias(target) != owner:
+            return {"skipped": True}
+        subject = f"📨 {source} → 你" if source else "📨 Company Kernel"
+        return notification_send_result(message=str(body or ""), subject=subject, kind="error")
+    except Exception as exc:  # never let notification failure break the message send
+        return {"ok": False, "error": str(exc)}
+
+
 def cmd_message_send(args: argparse.Namespace) -> int:
     conn = connect()
     result = send_message_internal(conn, source=args.source, target=args.target, body=args.body, message_id=args.message_id)
-    emit({"ok": True, **result})
+    telegram = mirror_owner_message_to_telegram(args.target, args.body, args.source)
+    emit({"ok": True, **result, "telegram_mirror": telegram})
     return 0
 
 
@@ -12143,8 +12171,13 @@ def cmd_task_discard(args: argparse.Namespace) -> int:
     event = record_event(conn, "task.discarded", actor, task_id=args.task_id, payload={"reason": args.reason})
     conn.commit()
     updated = dict(conn.execute("SELECT * FROM tasks WHERE id = ?", (args.task_id,)).fetchone())
+    # Tell the dispatcher their task was dropped — so they stop waiting and can re-dispatch or move on
+    # (same result-*.json channel as completions; Hermes consumes 'cancelled' and re-plans).
+    notice_path = write_dispatcher_completion_notice(
+        conn, updated, status="cancelled", blocker=f"已取消(discarded by {actor}): {args.reason}")
     audit(conn, actor, "task.discard", args.task_id, {"reason": args.reason, "event_id": event["id"], "acked_adapter_runs": acked_runs})
-    emit({"ok": True, "task": updated, "event_id": event["id"], "acknowledged_adapter_runs": acked_runs})
+    emit({"ok": True, "task": updated, "event_id": event["id"], "acknowledged_adapter_runs": acked_runs,
+          "dispatcher_notified": notice_path or None})
     return 0
 
 

@@ -11,6 +11,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from . import companyctl
+from . import project_memory
 from .adapter_result import execution_detail
 from .db_paths import ensure_db_parent, resolve_db_path
 from .employee_comms import communication_protocol
@@ -111,6 +112,155 @@ def next_task(agent: str) -> sqlite3.Row | None:
         ).fetchone()
     finally:
         conn.close()
+
+
+def inbox_dir(agent: str) -> Path:
+    return ROOT / "employees" / agent / "inbox"
+
+
+def is_actionable_completion(notice: dict) -> bool:
+    """A completion notice the Hermes brain should advance: a real task that finished or blocked.
+    Loop-guarded — an `advance`/orchestration tick leaves no task_id, so it can never feed itself.
+    """
+    tid = str(notice.get("task_id") or "").strip()
+    status = str(notice.get("status") or "").strip()
+    return bool(tid) and status in ("completed", "done", "blocked", "cancelled")
+
+
+def build_advance_prompt(notices: list[dict]) -> str:
+    """One prompt that hands the Hermes brain everything that just finished, so it advances the plan
+    in a single run — dispatch the next step, or summarize the round. No self-task is ever created.
+    """
+    lines = [
+        "# Hermes 编排推进(完成回件触发)",
+        "",
+        "你是 Hermes,Super AI Company 的协调者。你派出去的任务有完成/受阻回件了,据此推进编排。",
+        "硬规则:只做编排与汇总(派活 / 改派 / 汇总),绝不自己写代码,绝不改项目配置,绝不外发。",
+        "派活用 MCP `dispatch_task`:开发派 `codex-cli`,审核派 `claude-cli`,汇总回业主派 `owner`。",
+        "已经处理过的别重复派。",
+        "",
+        "## 刚完成 / 受阻的回件",
+    ]
+    _verbs = {"blocked": "受阻", "cancelled": "已取消"}
+    for n in notices:
+        verb = _verbs.get(str(n.get("status")), "完成")
+        who = n.get("done_by") or n.get("agent") or "?"
+        body = str(n.get("summary") or n.get("blocker") or "").strip()
+        lines.append(f"- 「{n.get('title', '')}」({n.get('task_id')})由 {who} {verb}:")
+        lines.append(f"  {body or '(无摘要)'}")
+    lines += [
+        "",
+        "## 你要做的(选其一或组合)",
+        "- 中间步(开发完→该审核):派下一步给对应同事。",
+        "- 整轮完成:把战报(做了什么/结论/关键风险/下一步)用一段话汇总给业主 owner。",
+        "- 受阻:判断改派、补输入还是上报业主。",
+        "- 已取消:这任务不会再有结果,别再等——判断重派(换更合适的同事/补全信息)还是放弃并告知业主。",
+    ]
+    return "\n".join(lines)
+
+
+def _project_digest_for_notices(notices: list[dict]) -> str:
+    """Shared project-memory digest for the project these completions belong to, so Hermes decides
+    with the SAME curated knowledge (decisions/conventions/outcomes) that codex/claude already get
+    injected — i.e. all three share one project memory. Best-effort; never blocks the tick."""
+    conn = None
+    try:
+        conn = connect()
+        for n in notices:
+            tid = n.get("task_id")
+            if not tid:
+                continue
+            row = conn.execute("SELECT * FROM tasks WHERE id = ?", (tid,)).fetchone()
+            if row:
+                block = project_memory.digest_block_for_task(conn, dict(row))
+                if block:
+                    return block
+        return ""
+    except Exception:
+        return ""
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+
+def report_progress_to_owner(agent: str, actionable: list[dict], output_path: Path) -> bool:
+    """After Hermes advances a phase, push a concise progress line to the owner — which the message
+    mirror forwards to the owner's Telegram — so every phase's outcome reaches the owner's phone, not
+    just stall alerts. Pure block/cancel batches are skipped (the watchdog already alerts those).
+    Best-effort: never raises, never blocks the tick. Returns True if a progress note was sent."""
+    try:
+        if not any(str(n.get("status")) in ("completed", "done") for n in actionable):
+            return False
+        owner = os.environ.get("COMPANY_KERNEL_OWNER", "owner")
+        titles = "、".join(f"「{str(n.get('title', ''))[:24]}」" for n in actionable[:3])
+        snippet = ""
+        try:
+            snippet = output_path.read_text(encoding="utf-8").strip()[:400]
+        except OSError:
+            pass
+        body = f"📊 进度:{titles} 已完成,hermes 已推进下一步。\n{snippet}".strip()
+        run_companyctl(["message", "send", "--from", agent, "--to", owner, "--body", body])
+        return True
+    except Exception:
+        return False
+
+
+def advance_from_completions(args: argparse.Namespace, workspace: Path) -> dict | None:
+    """Taskless orchestration tick: if completion notices are waiting, run the Hermes brain directly
+    on them so it advances the plan — WITHOUT creating any self-task on the board (the only visible
+    tasks stay the real dev/review work Hermes dispatches). Archives consumed notices. Returns a
+    result dict, or None when nothing is waiting (event-gated — no polling, no clutter).
+    """
+    inbox = inbox_dir(args.agent)
+    if not inbox.exists():
+        return None
+    paths = sorted(inbox.glob("result-*.json"), key=lambda x: x.stat().st_mtime)
+    if not paths:
+        return None
+    notices = []
+    for p in paths:
+        try:
+            n = json.loads(p.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            n = {}
+        n["__path"] = p
+        notices.append(n)
+    actionable = [n for n in notices if is_actionable_completion(n)]
+    archive = inbox / "processed"
+    archive.mkdir(parents=True, exist_ok=True)
+
+    def _archive(p: Path) -> None:
+        try:
+            p.rename(archive / p.name)
+        except OSError:
+            pass
+
+    if not actionable:
+        for n in notices:
+            _archive(n["__path"])  # clear non-actionable stragglers so the inbox stays clean
+        return None
+    if not args.execute:
+        # dry-run: don't lose the completions — leave them for a real --execute tick
+        return {"advanced": [n.get("task_id") for n in actionable], "executed": False,
+                "note": "dry-run; left notices for an --execute tick"}
+    base = ROOT / "employees" / args.agent / "reports" / "advance"
+    base.mkdir(parents=True, exist_ok=True)
+    prompt_path = base / "advance-prompt.md"
+    output_path = base / "advance-output.md"
+    digest = _project_digest_for_notices(actionable)
+    prompt_text = build_advance_prompt(actionable)
+    if digest:
+        prompt_text = digest.rstrip() + "\n\n" + prompt_text  # share the same project memory codex/claude get
+    prompt_path.write_text(prompt_text, encoding="utf-8")
+    code, _cmd = run_hermes(prompt_path, output_path, workspace, args.model, args.provider, args.isolation, args.sandbox_profile)
+    reported = report_progress_to_owner(args.agent, actionable, output_path)
+    for n in notices:
+        _archive(n["__path"])  # consumed this tick
+    return {"advanced": [n.get("task_id") for n in actionable], "executed": True,
+            "exit_code": code, "output": str(output_path), "owner_progress_sent": reported}
 
 
 def paths(agent: str, task_id: str) -> dict[str, Path]:
@@ -256,6 +406,24 @@ def process(args: argparse.Namespace) -> int:
             }
         )
         return 1
+    workspace = Path(args.workspace or emp["workspace"] or DEFAULT_WORKSPACE).expanduser()
+    # Taskless orchestration tick: if a dispatched step just finished, run the Hermes brain on those
+    # completion notices directly — advance the plan (dispatch next step / summarize) with NO
+    # self-task on the board. Event-gated: returns None when nothing finished.
+    advanced = advance_from_completions(args, workspace)
+    if advanced is not None:
+        run_companyctl(["heartbeat", "--agent", args.agent])
+        emit(
+            {
+                "ok": True,
+                "processed": 0,
+                "advanced_from_completions": advanced,
+                "agent": args.agent,
+                "note": "advanced plan from completion notices",
+                "codex_pm_supervisor": {"exit_code": pm_code, "stdout": pm_out, "stderr": pm_err, "result": pm_result},
+            }
+        )
+        return 0
     task = next_task(args.agent)
     if not task:
         run_companyctl(["heartbeat", "--agent", args.agent])
@@ -269,7 +437,6 @@ def process(args: argparse.Namespace) -> int:
             }
         )
         return 0
-    workspace = Path(args.workspace or emp["workspace"] or DEFAULT_WORKSPACE).expanduser()
     artifact = paths(args.agent, task["id"])
     artifact["prompt"].write_text(build_prompt(task), encoding="utf-8")
     claim_code, claim_out, claim_err = run_companyctl(["task", "claim", "--agent", args.agent, "--task-id", task["id"]])

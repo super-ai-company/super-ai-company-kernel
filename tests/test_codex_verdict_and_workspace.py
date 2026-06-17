@@ -181,7 +181,7 @@ class QueueVerdictIntegrationTest(unittest.TestCase):
                 return 0, json.dumps({"ok": True, "attempt": {"attempt_id": "att-test", "status": "finished"}}), ""
             return 0, "{}", ""
 
-        def fake_run_codex(task_card, workspace, output, events, sandbox, model, isolation, sandbox_profile, timeout_seconds=1800):
+        def fake_run_codex(task_card, workspace, output, events, sandbox, model, isolation, sandbox_profile, timeout_seconds=1800, **kwargs):
             ran["called"] = True
             ran["workspace"] = workspace
             output.write_text(codex_output, encoding="utf-8")
