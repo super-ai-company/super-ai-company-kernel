@@ -608,6 +608,9 @@ def sanitize_task_list_payload(payload: dict) -> dict:
         for key in ("title", "description", "summary", "blocker"):
             if key in item:
                 item[key] = ABSOLUTE_PATH_RE.sub("[REDACTED_PATH]", companyctl.sanitize_log_text(item.get(key, "")))
+        if isinstance(item.get("blocker_triage"), dict) and item["blocker_triage"].get("reason"):
+            item["blocker_triage"] = {**item["blocker_triage"],
+                "reason": ABSOLUTE_PATH_RE.sub("[REDACTED_PATH]", companyctl.sanitize_log_text(item["blocker_triage"]["reason"]))}
         if isinstance(item.get("current_attempt"), dict):
             item["current_attempt"] = companyctl.sanitize_json_like(item["current_attempt"])
         sanitized_tasks.append(item)
