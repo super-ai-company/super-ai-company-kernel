@@ -213,6 +213,17 @@ def digest_for_workspace(conn: sqlite3.Connection, workspace: str) -> str:
     return str(project.get("digest") or "")
 
 
+def archive_entry(conn: sqlite3.Connection, *, entry_id: str, actor: str = "") -> dict | None:
+    """Manual curation: retire an entry (noise / wrong / superseded). It drops out of recall + the
+    next digest. Returns the project_id so the caller can re-curate, or None if the entry is gone."""
+    row = conn.execute("SELECT project_id FROM project_memory WHERE id = ?", (entry_id,)).fetchone()
+    if not row:
+        return None
+    conn.execute("UPDATE project_memory SET status='archived', updated_at=? WHERE id=?", (now(), entry_id))
+    conn.commit()
+    return {"ok": True, "entry_id": entry_id, "project_id": row["project_id"], "archived_by": actor}
+
+
 def digest_for_project(conn: sqlite3.Connection, project_id: str) -> str:
     p = get_project(conn, project_id) if project_id else None
     return str(p.get("digest") or "") if p else ""

@@ -95,6 +95,18 @@ class ProjectMemoryTest(unittest.TestCase):
         self.assertIsNone(pm.capture_meeting_conclusion(self.conn, project_id="", title="x", conclusion="y"))
         self.assertIsNone(pm.capture_meeting_conclusion(self.conn, project_id="damov4", title="x", conclusion="   "))
 
+    def test_archive_entry_removes_it_from_recall_and_digest(self) -> None:
+        keep = pm.remember(self.conn, project_id="damov4", title="保留项", entry_type="convention")
+        drop = pm.remember(self.conn, project_id="damov4", title="噪音项", entry_type="fact")
+        res = pm.archive_entry(self.conn, entry_id=drop["id"], actor="owner-shift")
+        self.assertEqual("damov4", res["project_id"])
+        titles = [e["title"] for e in pm.recall(self.conn, project_id="damov4")]
+        self.assertIn("保留项", titles)
+        self.assertNotIn("噪音项", titles)
+        pm.curate(self.conn, project_id="damov4")
+        self.assertNotIn("噪音项", pm.digest_for_project(self.conn, "damov4"))
+        self.assertIsNone(pm.archive_entry(self.conn, entry_id="nope"))
+
     def test_digest_for_project(self) -> None:
         pm.remember(self.conn, project_id="damov4", title="约定A", entry_type="convention")
         pm.curate(self.conn, project_id="damov4")

@@ -415,7 +415,19 @@ label{font-size:12px;color:var(--muted);display:block;margin-bottom:4px}
   <div class="grid" style="grid-template-columns:280px 1fr;gap:14px">
     <div class="card"><h3 data-i18n="mem_projects">📚 项目</h3><div class="list" id="memProjList"><div class="empty" data-i18n="loading">加载中…</div></div></div>
     <div class="card">
-      <h3 id="memDigestTitle">选择一个项目</h3>
+      <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+        <h3 id="memDigestTitle" style="flex:1">选择一个项目</h3>
+        <button class="ok" onclick="memCurate()" title="主负责人策展:去重+重建摘要">🧹 策展</button>
+        <button onclick="document.getElementById('memForm').style.display=document.getElementById('memForm').style.display==='none'?'block':'none'">✍️ 记一条</button>
+      </div>
+      <div id="memForm" style="display:none;margin:10px 0;padding:10px;border:1px solid var(--line2);border-radius:8px">
+        <div style="display:flex;gap:8px;margin-bottom:6px">
+          <select id="memType" style="width:auto"><option value="decision">决策</option><option value="convention">约定</option><option value="fact">事实</option><option value="diagnosis">诊断</option><option value="risk">风险</option><option value="blocker">阻塞</option></select>
+          <input id="memTitle" placeholder="标题(必填)" style="flex:1">
+        </div>
+        <textarea id="memBody" placeholder="正文(可选)" style="width:100%;min-height:54px"></textarea>
+        <button class="ok" style="margin-top:6px" onclick="memRemember()">保存到项目记忆</button>
+      </div>
       <pre id="memDigest" style="white-space:pre-wrap;font-family:var(--mono);font-size:12.5px;line-height:1.6;background:transparent;border:0;margin:0 0 14px"></pre>
       <h3 data-i18n="mem_entries" style="margin-top:8px">记忆条目</h3>
       <div class="list" id="memEntries"><div class="empty">—</div></div>
@@ -715,9 +727,32 @@ async function showMemoryProject(id){
     $("memDigest").textContent = p.digest || "(尚无 digest，等主负责人策展)";
     $("memEntries").innerHTML = entries.map(e=>`<div class="row">
       <div class="head"><span class="badge">${esc(e.entry_type)}</span> <span class="who">${esc(e.title)}</span>
-        <span class="emp-sub">${esc(e.author_agent||'-')}</span><span class="when">${fmtTime(e.created_at)}</span></div>
+        <span class="emp-sub">${esc(e.author_agent||'-')}</span><span class="when">${fmtTime(e.created_at)}</span>
+        <button class="bad" style="margin-left:auto;font-size:11px;padding:2px 8px" onclick="memArchive('${esc(e.id)}')" title="归档(从记忆移除)">归档</button></div>
       ${e.body?`<div class="body">${esc(e.body)}</div>`:""}</div>`).join("") || `<div class="empty">还没有记忆条目</div>`;
   }catch(e){ $("memDigest").textContent = "加载失败: "+(e.message||e); }
+}
+async function memRemember(){
+  if(!window._memSel) return toast("先选一个项目","err");
+  const title = $("memTitle").value.trim();
+  if(!title) return toast("标题必填","err");
+  try{
+    await api(`/v1/memory/projects/${encodeURIComponent(window._memSel)}/remember`, {method:"POST",
+      body:{title, body:$("memBody").value.trim(), type:$("memType").value, by:OWNER, importance:2}});
+    $("memTitle").value=""; $("memBody").value=""; $("memForm").style.display="none";
+    toast("已记入项目记忆","ok"); showMemoryProject(window._memSel);
+  }catch(e){ toast("保存失败:"+(e.message||e),"err"); }
+}
+async function memCurate(){
+  if(!window._memSel) return;
+  try{ const d = await api(`/v1/memory/projects/${encodeURIComponent(window._memSel)}/curate`, {method:"POST",body:{by:OWNER}});
+    toast(`策展完成:去重 ${d.superseded||0}、活跃 ${d.active_entries||0}`,"ok"); showMemoryProject(window._memSel);
+  }catch(e){ toast("策展失败:"+(e.message||e),"err"); }
+}
+async function memArchive(id){
+  try{ await api(`/v1/memory/entries/${encodeURIComponent(id)}/archive`, {method:"POST",body:{by:OWNER}});
+    toast("已归档","ok"); showMemoryProject(window._memSel);
+  }catch(e){ toast("归档失败:"+(e.message||e),"err"); }
 }
 
 /* ---------- metrics (survival indicators) ---------- */
