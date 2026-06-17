@@ -18,6 +18,29 @@ import re
 import sqlite3
 import uuid
 from datetime import datetime, timezone
+from pathlib import Path
+
+MEMORY_FILENAME = ".company-memory.md"  # digest mirrored into the project's own dir (hybrid storage)
+
+
+def memory_file_path(project: dict) -> Path | None:
+    """Where this project's digest lives inside its own repo, so it travels with the project and
+    agents read it naturally. None if the project has no real workspace."""
+    ws = str((project or {}).get("workspace") or "").rstrip("/")
+    return Path(ws) / MEMORY_FILENAME if ws else None
+
+
+def _write_digest_file(project: dict, digest: str) -> str:
+    """Mirror the curated digest into <workspace>/.company-memory.md. Best-effort: skip if the dir
+    doesn't exist (don't create stray dirs) or isn't writable. Returns the path written, or ''."""
+    p = memory_file_path(project)
+    if not p or not p.parent.exists():
+        return ""
+    try:
+        p.write_text(digest, encoding="utf-8")
+        return str(p)
+    except OSError:
+        return ""
 
 _WORKSPACE_RE = re.compile(r"(?:工作区|workspace)\s*[:：]\s*(\S+)", re.IGNORECASE)
 
@@ -190,8 +213,10 @@ def curate(conn: sqlite3.Connection, *, project_id: str, actor: str = "") -> dic
     conn.execute("UPDATE memory_banks SET digest=?, digest_updated_at=?, updated_at=? WHERE id=?",
                  (digest, ts, ts, project_id))
     conn.commit()
+    # hybrid storage: mirror the digest into the project's own dir so it travels with the project
+    digest_file = _write_digest_file(project, digest)
     return {"ok": True, "project_id": project_id, "curated_by": actor or project.get("lead_agent"),
-            "superseded": superseded, "active_entries": len(remaining), "digest": digest}
+            "superseded": superseded, "active_entries": len(remaining), "digest": digest, "digest_file": digest_file}
 
 
 def curate_all(conn: sqlite3.Connection, *, actor: str = "") -> dict:

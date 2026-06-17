@@ -159,6 +159,23 @@ class ProjectMemoryTest(unittest.TestCase):
         # outside any project → no enforcement
         self.assertFalse(pm.enforce_executor(self.conn, workspace="/tmp/x", target="codex")["blocked"])
 
+    def test_curate_mirrors_digest_into_project_dir(self) -> None:
+        import tempfile
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as d:
+            pm.create_project(self.conn, project_id="local", name="Local", workspace=d, lead_agent="codex")
+            pm.remember(self.conn, project_id="local", title="约定X", entry_type="convention")
+            res = pm.curate(self.conn, project_id="local")
+            f = Path(d) / pm.MEMORY_FILENAME
+            self.assertTrue(f.exists(), "digest must be mirrored into the project dir")
+            self.assertIn("约定X", f.read_text(encoding="utf-8"))
+            self.assertEqual(str(f), res["digest_file"])
+
+    def test_curate_skips_file_when_workspace_dir_missing(self) -> None:
+        # damov4's workspace /Users/x/damov4 doesn't exist here → no stray dir/file, no crash
+        pm.remember(self.conn, project_id="damov4", title="y")
+        self.assertEqual("", pm.curate(self.conn, project_id="damov4")["digest_file"])
+
     def test_digest_for_project(self) -> None:
         pm.remember(self.conn, project_id="damov4", title="约定A", entry_type="convention")
         pm.curate(self.conn, project_id="damov4")
