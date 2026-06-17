@@ -124,6 +124,16 @@ class ResolveTaskWorkspaceTest(unittest.TestCase):
         self.assertEqual(3600, codex_adapter.resolve_task_timeout(fake_task(description="x" * 900), 1800))
         self.assertEqual(1800, codex_adapter.resolve_task_timeout(fake_task(description="改个字段名"), 1800))
 
+
+    def test_last_message_substantive_distinguishes_output_from_hang(self) -> None:
+        import tempfile
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as d:
+            full = Path(d)/"m.md"; full.write_text("STATUS: 已实现登录端点并通过单测。"*12, encoding="utf-8")
+            self.assertTrue(codex_adapter.last_message_substantive(full))
+            empty = Path(d)/"e.md"; empty.write_text("codex exec killed after exceeding timeout of 1800 seconds", encoding="utf-8")
+            self.assertFalse(codex_adapter.last_message_substantive(empty))
+
     def test_prose_path_without_keyword_ignored(self) -> None:
         # a path mentioned in prose (no workspace keyword+colon) must NOT be grabbed as the workspace
         for desc in ("参考 /tmp/x.md 里的说明", "在 v4 容器内跑:项目 /home/h 里"):

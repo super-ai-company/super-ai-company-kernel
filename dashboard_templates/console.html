@@ -1583,7 +1583,7 @@ function renderOverview() {
   if (!stuck.length) { if(card) card.style.display="none"; }
   else {
     if(card) card.style.display="block";
-    const triBadge = {timeout:'#B08A3E',quota:'#B08A3E',credential:'#c0633a',owner_env:'#c0633a',missing_input:'#7C7462',runtime_error:'#9C5151'};
+    const triBadge = {timeout:'#B08A3E',timeout_review:'#8A6D3B',quota:'#B08A3E',credential:'#c0633a',owner_env:'#c0633a',missing_input:'#7C7462',runtime_error:'#9C5151'};
     $("ovStuck").innerHTML = stuck.slice(0,12).map(t=>{
       const tr = t.blocker_triage;
       const triRow = tr ? `<div style="margin:5px 0 2px;font-size:12.5px;line-height:1.5">

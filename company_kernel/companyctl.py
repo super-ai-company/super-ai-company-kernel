@@ -11213,6 +11213,8 @@ def classify_blocker(text: str) -> dict:
     def res(cat: str, label: str, action: str) -> dict:
         return {"category": cat, "label": label, "reason": reason or label, "action": action}
 
+    if ("超时" in low or "timeout" in low) and ("已产出" in low or "可能已完成" in low or "请复核" in low):
+        return res("timeout_review", "超时但有产出(待复核)", "复核产出/改动:像完成就接受,否则重试/调高超时")
     if "exit_code=124" in low or "timeout" in low or "killed after" in low or "超时" in low:
         return res("timeout", "执行超时", "可重试;大任务调高超时或换更快模型")
     if any(k in low for k in ("resource_exhausted", "all_quota", "rate limit", "rate-limited", "quota", "额度")):

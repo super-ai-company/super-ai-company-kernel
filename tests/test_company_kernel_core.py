@@ -4965,6 +4965,9 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual("credential", cred["category"])
         self.assertIn("v4 设备凭证", cred["reason"])  # human reason extracted, runtime tail stripped
         self.assertTrue(cred["action"])
+        tr = cb("⏱ 超时但已产出结果(收尾卡住被终止)—— 代码未必全部提交,请复核产出/改动后接受或重试。")
+        self.assertEqual("timeout_review", tr["category"])  # distinct from a dead-hang timeout
+        self.assertIn("复核", tr["action"])
         self.assertEqual("owner_env", cb("MuMu 与 A5 不同网段，真机无法直连")["category"])
         self.assertEqual("missing_input", cb("codex ran in empty workspace, 缺工作区")["category"])
         self.assertEqual("runtime_error", cb("something unexpected happened")["category"])
