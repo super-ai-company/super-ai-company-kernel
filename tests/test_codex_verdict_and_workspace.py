@@ -118,6 +118,11 @@ class ResolveTaskWorkspaceTest(unittest.TestCase):
         self.assertEqual(3600, codex_adapter.resolve_task_timeout(fake_task(description="超时: 99999"), 1800))
         # garbage / zero falls back to default
         self.assertEqual(1800, codex_adapter.resolve_task_timeout(fake_task(description="超时: 0"), 1800))
+        # no directive but a big task (marker or long desc) auto-bumps to the cap; small stays default
+        self.assertEqual(3600, codex_adapter.resolve_task_timeout(fake_task(description="全流程 E2E 重测打包 APK"), 1800))
+        self.assertEqual(3600, codex_adapter.resolve_task_timeout(fake_task(description="v3→v4 会员订单 ETL 迁移对账"), 1800))
+        self.assertEqual(3600, codex_adapter.resolve_task_timeout(fake_task(description="x" * 900), 1800))
+        self.assertEqual(1800, codex_adapter.resolve_task_timeout(fake_task(description="改个字段名"), 1800))
 
     def test_prose_path_without_keyword_ignored(self) -> None:
         # a path mentioned in prose (no workspace keyword+colon) must NOT be grabbed as the workspace
