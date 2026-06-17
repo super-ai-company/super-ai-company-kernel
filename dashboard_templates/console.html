@@ -225,6 +225,7 @@ label{font-size:12px;color:var(--muted);display:block;margin-bottom:4px}
   <div class="tab" data-v="conversations"><span data-i18n="tab_conversations">对话</span> <span class="cnt" id="cntConv">-</span></div>
   <div class="tab" data-v="reports"><span data-i18n="tab_reports">完成回报</span> <span class="cnt" id="cntReport">-</span></div>
   <div class="tab" data-v="approvals"><span data-i18n="tab_approvals">审批</span> <span class="cnt" id="cntAppr">-</span></div>
+  <div class="tab" data-v="memory"><span data-i18n="tab_memory">记忆</span> <span class="cnt" id="cntMem">-</span></div>
   <div class="tab" data-v="metrics"><span data-i18n="tab_metrics">指标</span></div>
   <div class="tab" data-v="activity"><span data-i18n="tab_activity">活动流</span></div>
 </div>
@@ -405,6 +406,19 @@ label{font-size:12px;color:var(--muted);display:block;margin-bottom:4px}
       <h3 data-i18n="met_acc">🎯 验收器抽检准确率</h3>
       <div id="accTotals" class="met-totals"><div class="empty" data-i18n="loading">加载中…</div></div>
       <div id="accTable"></div>
+    </div>
+  </div>
+</section>
+
+<section class="view" id="v-memory">
+  <div class="section-head"><h2 data-i18n="mem_title">项目记忆库</h2><span class="hint" data-i18n="mem_hint">每个项目的共享记忆 · 主负责人策展的 digest + 条目</span></div>
+  <div class="grid" style="grid-template-columns:280px 1fr;gap:14px">
+    <div class="card"><h3 data-i18n="mem_projects">📚 项目</h3><div class="list" id="memProjList"><div class="empty" data-i18n="loading">加载中…</div></div></div>
+    <div class="card">
+      <h3 id="memDigestTitle">选择一个项目</h3>
+      <pre id="memDigest" style="white-space:pre-wrap;font-family:var(--mono);font-size:12.5px;line-height:1.6;background:transparent;border:0;margin:0 0 14px"></pre>
+      <h3 data-i18n="mem_entries" style="margin-top:8px">记忆条目</h3>
+      <div class="list" id="memEntries"><div class="empty">—</div></div>
     </div>
   </div>
 </section>
@@ -627,6 +641,7 @@ function activateTab(t){
   t.classList.add("active"); t.setAttribute("aria-selected","true"); $("v-"+t.dataset.v).classList.add("active");
   if(t.dataset.v==="metrics") loadMetrics();
   if(t.dataset.v==="reports") loadReports();
+  if(t.dataset.v==="memory") loadMemory();
 }
 // a11y (agy review): tabs are keyboard-reachable — role/tabindex + Enter/Space activate, arrows move focus
 $("tabs").setAttribute("role","tablist");
@@ -677,6 +692,32 @@ async function showReport(id) {
       <div class="emp-sub" style="font-family:var(--mono);font-size:11px;margin-bottom:8px">证据：${esc(d.evidence_path||'-')}</div>
       ${body}`;
   } catch(e){ $("reportView").innerHTML = `<div class="empty">${esc(e.message)}</div>`; }
+}
+
+/* ---------- project memory bank ---------- */
+async function loadMemory(){
+  try{
+    const d = await api("/v1/memory/projects");
+    const projects = d.projects || [];
+    if($("cntMem")) $("cntMem").textContent = projects.length;
+    $("memProjList").innerHTML = projects.map(p=>`<div class="row" style="cursor:pointer" onclick="showMemoryProject('${esc(p.id)}')">
+      <div class="head"><span class="who">${esc(p.name||p.id)}</span> <span class="emp-sub">lead ${esc(p.lead_agent||'-')}</span></div>
+      <div class="body" style="font-size:11px;opacity:.65">${esc(p.workspace||'')}</div></div>`).join("") || `<div class="empty">还没有项目。用 companyctl memory project create 建一个</div>`;
+    if(projects.length){ showMemoryProject(window._memSel && projects.some(p=>p.id===window._memSel) ? window._memSel : projects[0].id); }
+  }catch(e){ $("memProjList").innerHTML = `<div class="empty">加载失败</div>`; }
+}
+async function showMemoryProject(id){
+  window._memSel = id;
+  try{
+    const d = await api("/v1/memory/projects/"+encodeURIComponent(id));
+    const p = d.project||{}, entries = d.memory||[];
+    $("memDigestTitle").textContent = (p.name||id) + " — digest（主负责人 "+(p.lead_agent||'-')+"）";
+    $("memDigest").textContent = p.digest || "(尚无 digest，等主负责人策展)";
+    $("memEntries").innerHTML = entries.map(e=>`<div class="row">
+      <div class="head"><span class="badge">${esc(e.entry_type)}</span> <span class="who">${esc(e.title)}</span>
+        <span class="emp-sub">${esc(e.author_agent||'-')}</span><span class="when">${fmtTime(e.created_at)}</span></div>
+      ${e.body?`<div class="body">${esc(e.body)}</div>`:""}</div>`).join("") || `<div class="empty">还没有记忆条目</div>`;
+  }catch(e){ $("memDigest").textContent = "加载失败: "+(e.message||e); }
 }
 
 /* ---------- metrics (survival indicators) ---------- */
