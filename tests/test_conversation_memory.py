@@ -36,10 +36,9 @@ class ConversationMemoryTest(unittest.TestCase):
             captured["cmd"] = cmd
             return mock.Mock(returncode=0, stdout="hi", stderr="")
 
-        conn = _FakeConn({"id": "claude" if runtime != "codex" else "codex", "runtime": runtime})
+        conn = _FakeConn({"id": runtime, "runtime": runtime})
         with mock.patch.object(companyctl.subprocess, "run", side_effect=fake_run):
-            companyctl.conversation_invoke_runtime(conn, "claude" if runtime != "codex" else "codex",
-                                                   "say hi", 30, memory_key="meeting-7")
+            companyctl.conversation_invoke_runtime(conn, runtime, "say hi", 30, memory_key="meeting-7")
         return captured["cmd"]
 
     def test_claude_conversation_gets_memory_session(self) -> None:
@@ -55,6 +54,11 @@ class ConversationMemoryTest(unittest.TestCase):
         cmd = self._capture_cmd("codex")
         self.assertIn("--memory-session", cmd)
         self.assertIn("conv:meeting-7:codex", cmd)
+
+    def test_antigravity_conversation_gets_memory_session(self) -> None:
+        cmd = self._capture_cmd("antigravity")
+        self.assertIn("--memory-session", cmd)
+        self.assertIn("conv:meeting-7:antigravity", cmd)
 
     def test_no_memory_key_means_no_flag(self) -> None:
         captured = {}
