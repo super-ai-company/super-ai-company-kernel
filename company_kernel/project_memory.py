@@ -42,7 +42,9 @@ def _write_digest_file(project: dict, digest: str) -> str:
     except OSError:
         return ""
 
-_WORKSPACE_RE = re.compile(r"(?:工作区|workspace)\s*[:：]\s*(\S+)", re.IGNORECASE)
+# stop the capture at sentence punctuation so a directive mid-text — "工作区: /x/foodlib。验收…" —
+# doesn't swallow the trailing 。into the path (which would break project resolution).
+_WORKSPACE_RE = re.compile(r"(?:工作区|workspace)\s*[:：]\s*([^\s。，、；;,]+)", re.IGNORECASE)
 
 ENTRY_TYPES = {"decision", "fact", "blocker", "diagnosis", "convention", "risk", "evidence"}
 _TYPE_HEADING = {
@@ -259,6 +261,24 @@ def project_executors(conn: sqlite3.Connection, project_id: str) -> list:
         return [str(x) for x in v] if isinstance(v, list) else []
     except (json.JSONDecodeError, TypeError):
         return []
+
+
+def project_for_executor(conn: sqlite3.Connection, agent: str) -> str | None:
+    """The project id if `agent` is a locked executor of EXACTLY ONE active project — so every task
+    to a project-locked worker force-binds to that project's memory even when the task's workspace
+    directive is missing or malformed. Ambiguous (0 or >1 projects) → None (fall back to workspace)."""
+    agent = (agent or "").strip()
+    if not agent:
+        return None
+    hits = []
+    for row in conn.execute("SELECT id, executors_json FROM memory_banks WHERE status = 'active'").fetchall():
+        try:
+            ex = json.loads(row["executors_json"] or "[]")
+        except (json.JSONDecodeError, TypeError):
+            ex = []
+        if isinstance(ex, list) and agent in [str(x) for x in ex]:
+            hits.append(str(row["id"]))
+    return hits[0] if len(hits) == 1 else None
 
 
 def set_executors(conn: sqlite3.Connection, *, project_id: str, executors: list) -> dict:

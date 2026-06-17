@@ -1337,7 +1337,7 @@ class CompanyKernelCoreTest(unittest.TestCase):
 
         calls: list[dict] = []
 
-        def fake_run_codex(task_card: Path, workspace_arg: Path, output: Path, events: Path, sandbox: str, model: str, isolation: str, sandbox_profile: str, timeout_seconds: int = 1800) -> tuple[int, str]:
+        def fake_run_codex(task_card: Path, workspace_arg: Path, output: Path, events: Path, sandbox: str, model: str, isolation: str, sandbox_profile: str, timeout_seconds: int = 1800, **kwargs) -> tuple[int, str]:
             calls.append({"task_card": task_card, "workspace": workspace_arg, "sandbox": sandbox})
             task_text = task_card.read_text(encoding="utf-8")
             self.assertIn("Mandatory communication loop", task_text)
@@ -12312,7 +12312,7 @@ class CompanyKernelCoreTest(unittest.TestCase):
 
         calls: list[dict] = []
 
-        def fake_run_codex(task_card: Path, workspace: Path, output: Path, events: Path, sandbox: str, model: str, isolation: str, sandbox_profile: str, timeout_seconds: int = 1800) -> tuple[int, str]:
+        def fake_run_codex(task_card: Path, workspace: Path, output: Path, events: Path, sandbox: str, model: str, isolation: str, sandbox_profile: str, timeout_seconds: int = 1800, **kwargs) -> tuple[int, str]:
             calls.append({"task_card": task_card, "workspace": workspace, "output": output, "events": events, "sandbox": sandbox, "model": model, "isolation": isolation, "sandbox_profile": sandbox_profile})
             output.write_text("codex completed\nSTATUS: completed\n", encoding="utf-8")
             events.write_text(json.dumps({"event": "done"}, ensure_ascii=False) + "\n", encoding="utf-8")
@@ -12373,7 +12373,7 @@ class CompanyKernelCoreTest(unittest.TestCase):
         )
         self.assertEqual(code, 0, submitted)
 
-        def fake_run_codex(task_card: Path, workspace: Path, output: Path, events: Path, sandbox: str, model: str, isolation: str, sandbox_profile: str, timeout_seconds: int = 1800) -> tuple[int, str]:
+        def fake_run_codex(task_card: Path, workspace: Path, output: Path, events: Path, sandbox: str, model: str, isolation: str, sandbox_profile: str, timeout_seconds: int = 1800, **kwargs) -> tuple[int, str]:
             output.write_text("codex failed\n", encoding="utf-8")
             events.write_text(json.dumps({"event": "error"}, ensure_ascii=False) + "\n", encoding="utf-8")
             return 7, f"codex exec -C {workspace} -s {sandbox}"
