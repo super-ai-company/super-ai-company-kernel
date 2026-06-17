@@ -1614,6 +1614,43 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual("candidate", shown["employee"]["status"])
         self.assertNotIn("unavailable_reason", shown["profile"])
 
+    def test_task_submit_stamps_project_memory_key(self) -> None:
+        # A task whose workspace maps to a project must get a `记忆会话: <project>` directive stamped at
+        # submit (past validation/approval), so the runtime resumes its project session instead of
+        # re-scanning. Verified end-to-end through the real submit CLI.
+        ws = str(self.root / "proj-x-workspace")
+        code, _ = run_cli("employee", "create", "--id", "main", "--name", "main", "--role", "operator", "--runtime", "openclaw", "--workspace", str(self.root / "workspace" / "main"))
+        self.assertEqual(0, code)
+        code, _ = run_cli("employee", "create", "--id", "codex-cli", "--name", "Codex CLI", "--role", "engineer", "--runtime", "codex", "--workspace", str(self.root / "workspace" / "codex-cli"))
+        self.assertEqual(0, code)
+        conn = companyctl.connect()
+        try:
+            conn.execute("UPDATE employees SET status='active', updated_at=? WHERE id IN ('main','codex-cli')", (companyctl.now(),))
+            conn.commit()
+        finally:
+            conn.close()
+        code, _ = run_cli("memory", "project", "create", "--id", "projx", "--name", "projx", "--workspace", ws, "--lead", "main")
+        self.assertEqual(0, code)
+        # a project task → stamped with that project's memory key
+        code, submitted = run_cli("task", "submit", "--from", "main", "--to", "codex-cli", "--task-id", "task-stamp-1", "--title", "build", "--description", f"工作区: {ws}\nbuild it")
+        self.assertEqual(0, code, submitted)
+        conn = companyctl.connect()
+        try:
+            desc = conn.execute("SELECT description FROM tasks WHERE id = 'task-stamp-1'").fetchone()["description"]
+        finally:
+            conn.close()
+        self.assertIn("记忆会话: projx", desc)
+        # idempotent: a description that already declares a memory session is not double-stamped
+        code, _ = run_cli("task", "submit", "--from", "main", "--to", "codex-cli", "--task-id", "task-stamp-2", "--title", "build2", "--description", f"工作区: {ws}\n记忆会话: custom\nbuild")
+        self.assertEqual(0, code)
+        conn = companyctl.connect()
+        try:
+            desc2 = conn.execute("SELECT description FROM tasks WHERE id = 'task-stamp-2'").fetchone()["description"]
+        finally:
+            conn.close()
+        self.assertEqual(1, desc2.count("记忆会话"))
+        self.assertIn("记忆会话: custom", desc2)
+
     def test_task_submit_rejects_candidate_employee(self) -> None:
         code, created = run_cli("employee", "create", "--id", "main", "--name", "main", "--role", "operator", "--runtime", "openclaw", "--workspace", str(self.root / "workspace" / "main"))
         self.assertEqual(0, code, created)
