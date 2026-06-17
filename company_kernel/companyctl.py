@@ -11195,6 +11195,37 @@ def cmd_approval_resolve(args: argparse.Namespace) -> int:
     return decide_approval(args, "resolved")
 
 
+def classify_blocker(text: str) -> dict:
+    """Triage a blocker into {category, label, reason, action} so the console/Telegram can tell the
+    owner WHY it stuck and what to do (retry / configure / reassign / discard) — fault tolerance is
+    not just 'don't crash', it's giving the owner a clear, actionable error result."""
+    raw = (text or "").strip()
+    low = raw.lower()
+    reason = raw
+    for marker in ("verdict: blocked —", "verdict: blocked -", "blocked —", "blocked:", "blocker:"):
+        i = low.find(marker)
+        if i >= 0:
+            reason = raw[i + len(marker):].strip()
+            break
+    # strip the technical runtime tail (command=…, exit_code, output paths) so the owner sees the cause
+    reason = re.split(r"runtime execution failed|\n\n|\.?\s*command=|\s*exit_code=", reason)[0].strip()[:220]
+
+    def res(cat: str, label: str, action: str) -> dict:
+        return {"category": cat, "label": label, "reason": reason or label, "action": action}
+
+    if "exit_code=124" in low or "timeout" in low or "killed after" in low or "超时" in low:
+        return res("timeout", "执行超时", "可重试;大任务调高超时或换更快模型")
+    if any(k in low for k in ("resource_exhausted", "all_quota", "rate limit", "rate-limited", "quota", "额度")):
+        return res("quota", "额度耗尽", "稍后重试,或在 :8080 池补/换号")
+    if any(k in low for k in ("401", "403", "422", "unauthorized", "credential", "凭证", "lan_order_token", "token is empty", "lan token", "secret")):
+        return res("credential", "缺凭证/鉴权失败", "配好凭证/token 后『修复并重开』,或『丢弃』")
+    if any(k in low for k in ("真机", "mumu", "网段", "subnet", "设备", "device")):
+        return res("owner_env", "需你的设备/环境", "搭好环境后重开,或『丢弃』")
+    if any(k in low for k in ("工作区", "no repo", "empty workspace", "missing workspace", "无工作区")):
+        return res("missing_input", "缺工作区/输入", "补绝对仓库路径后『修复并重开』")
+    return res("runtime_error", "执行失败", "看详情决定『重试 / 改派 / 丢弃』")
+
+
 def cmd_task_list(args: argparse.Namespace) -> int:
     conn = connect()
     where = ""
@@ -11211,6 +11242,8 @@ def cmd_task_list(args: argparse.Namespace) -> int:
         task["current_attempt"] = hydrated_attempt
         if attempt:
             task.update(long_task_state_for_attempt(hydrated_attempt, generated_at=generated_at))
+        if task.get("blocker") and str(task.get("status") or "") in {"blocked", "failed", "stalled", "interrupted"}:
+            task["blocker_triage"] = classify_blocker(str(task["blocker"]))
     emit({"ok": True, "tasks": tasks})
     return 0
 

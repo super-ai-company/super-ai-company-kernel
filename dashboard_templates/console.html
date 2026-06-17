@@ -1580,16 +1580,25 @@ function renderOverview() {
   if (!stuck.length) { if(card) card.style.display="none"; }
   else {
     if(card) card.style.display="block";
-    $("ovStuck").innerHTML = stuck.slice(0,12).map(t=>`<div class="row">
+    const triBadge = {timeout:'#B08A3E',quota:'#B08A3E',credential:'#c0633a',owner_env:'#c0633a',missing_input:'#7C7462',runtime_error:'#9C5151'};
+    $("ovStuck").innerHTML = stuck.slice(0,12).map(t=>{
+      const tr = t.blocker_triage;
+      const triRow = tr ? `<div style="margin:5px 0 2px;font-size:12.5px;line-height:1.5">
+        <span style="background:${triBadge[tr.category]||'#9C927A'};color:#fff;border-radius:4px;padding:1px 7px;font-size:11px">${esc(tr.label)}</span>
+        <span style="color:var(--bad,#c0633a)"> ${esc(tr.reason||'')}</span>
+        <div style="color:var(--dim,#7C7462);margin-top:2px">👉 ${esc(tr.action||'')}</div></div>` : "";
+      return `<div class="row">
       <div class="head"><span class="who">${esc(t.title)}</span>
         <span class="prio ${esc(t.priority||'P2')}">${esc(t.priority||'P2')}</span>
         <span class="emp-sub">${esc(t.source_agent)} → ${esc(t.target_agent)} · ${ago(t.updated_at||t.created_at)}</span>
         <span class="when">${esc(t.status)}</span></div>
+      ${triRow}
       <div style="display:flex;gap:6px;margin-top:7px;flex-wrap:wrap">
         <button class="ok" style="font-size:12px;padding:4px 10px" onclick="showTask('${esc(t.id)}')">🔧 ${LANG==='zh'?'修复并重开':'Fix & reopen'}</button>
         <button style="font-size:12px;padding:4px 10px" onclick="taskReassignPrompt('${esc(t.id)}')">${LANG==='zh'?'改派':'Reassign'}</button>
         <button class="bad" style="font-size:12px;padding:4px 10px" onclick="taskDiscard('${esc(t.id)}')">🗑 ${LANG==='zh'?'丢弃':'Discard'}</button>
-      </div></div>`).join("");
+      </div></div>`;
+    }).join("");
   }
 }
 

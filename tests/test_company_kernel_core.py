@@ -4957,6 +4957,26 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertIn("<td>yes</td>", html)
         self.assertIn("<td>1</td><td>done task</td>", html)
 
+    def test_classify_blocker_triage_categories_and_actions(self) -> None:
+        cb = companyctl.classify_blocker
+        self.assertEqual("timeout", cb("runtime execution failed exit_code=124. command=claude -p")["category"])
+        self.assertEqual("quota", cb("ALL_QUOTA_EXHAUSTED: 代理池所有模型被限速")["category"])
+        cred = cb("codex verdict: blocked — 缺少 v4 设备凭证，config 返回 401/422")
+        self.assertEqual("credential", cred["category"])
+        self.assertIn("v4 设备凭证", cred["reason"])  # human reason extracted, runtime tail stripped
+        self.assertTrue(cred["action"])
+        self.assertEqual("owner_env", cb("MuMu 与 A5 不同网段，真机无法直连")["category"])
+        self.assertEqual("missing_input", cb("codex ran in empty workspace, 缺工作区")["category"])
+        self.assertEqual("runtime_error", cb("something unexpected happened")["category"])
+
+    def test_task_list_attaches_blocker_triage_to_blocked_tasks(self) -> None:
+        run_cli("task", "submit", "--from", "ops", "--to", "maker", "--task-id", "task-triage", "--title", "x")
+        run_cli("task", "block", "--agent", "maker", "--task-id", "task-triage", "--blocker", "exit_code=124 timeout")
+        code, listed = run_cli("task", "list")
+        self.assertEqual(0, code)
+        t = next(x for x in listed["tasks"] if x["id"] == "task-triage")
+        self.assertEqual("timeout", t["blocker_triage"]["category"])
+
     def test_completing_task_acknowledges_its_failed_adapter_runs(self) -> None:
         # a task that failed some attempts then SUCCEEDED must not leave phantom "任务失败" noise
         code, sub = run_cli("task", "submit", "--from", "ops", "--to", "maker", "--task-id", "task-ack-on-done", "--title", "retry then done")
