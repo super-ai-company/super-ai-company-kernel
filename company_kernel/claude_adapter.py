@@ -124,6 +124,22 @@ def _project_memory_block(task: sqlite3.Row) -> str:
         return ""
 
 
+RUNTIME_TIMEOUT_RC = 124
+
+
+def output_is_substantive(output: Path) -> bool:
+    """Did the runtime actually produce a real result before it got killed? Used to auto-judge a
+    timeout: a full answer present = it executed (and only the wrap-down hung); empty/tiny = a real
+    hang. We drop the stderr tail we append and the timeout note before measuring."""
+    try:
+        txt = output.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return False
+    body = txt.split("## stderr", 1)[0]
+    body = re.sub(r"claude -p killed after exceeding.*", "", body).strip()
+    return len(body) >= 200  # a genuine result, not just a one-line error/timeout note
+
+
 def build_prompt(task: sqlite3.Row) -> str:
     persona = _employee_persona(task["target_agent"])
     persona_block = ["## Your role (persona)", "", persona, ""] if persona else []
@@ -433,8 +449,19 @@ def process(args: argparse.Namespace) -> int:
         if task["source_agent"]:
             run_companyctl(["message", "send", "--from", args.agent, "--to", task["source_agent"],
                             "--body", f"⚠ 我({args.agent})暂时接不了活:{detail} 任务 {task['id']}「{task['title']}」未执行,请你处理。"])
+    elif code == RUNTIME_TIMEOUT_RC and output_is_substantive(artifact["output"]):
+        # Auto-judge: it timed out, BUT produced a full result before the wrap-down hung. For an
+        # analysis/review runtime (claude/gemini/agy-via-proxy) the output IS the deliverable, so
+        # accept it as completed rather than red-alarming a task whose work is actually done.
+        detail = "⏱ 运行超时但已产出完整结果(收尾卡住被终止)—— 按已完成采纳。\n\n" + execution_detail(cmd, artifact["output"], success=True)
+        write_report(artifact["report"], task, executed=True, status="completed", detail=detail, prompt=artifact["prompt"], output=artifact["output"])
+        evidence_report = copy_report_to_task_evidence(task["id"], artifact["report"])
+        done_code, done_out, done_err = run_companyctl(["task", "done", "--agent", args.agent, "--task-id", task["id"], "--summary", detail, "--evidence", str(evidence_report)])
+        code = 0  # treat as success for the adapter's own exit + reporting
     else:
-        detail = execution_detail(cmd, artifact["output"], exit_code=code, success=False)
+        timed_out_empty = code == RUNTIME_TIMEOUT_RC
+        detail = (("⏱ 真超时/卡死:超时被终止且无有效产出,建议重试或调高超时。\n\n" if timed_out_empty else "")
+                  + execution_detail(cmd, artifact["output"], exit_code=code, success=False))
         write_report(artifact["report"], task, executed=True, status="blocked", detail=detail, prompt=artifact["prompt"], output=artifact["output"])
         done_code, done_out, done_err = run_companyctl(["task", "block", "--agent", args.agent, "--task-id", task["id"], "--blocker", detail])
     run_companyctl(["heartbeat", "--agent", args.agent])
