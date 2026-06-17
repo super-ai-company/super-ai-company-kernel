@@ -7948,13 +7948,11 @@ def cmd_task_submit(args: argparse.Namespace) -> int:
             args.target = _lock["target"]
             target = _lock["target"]
         _pid = _lock.get("project_id") or ""
-    # Force-bind project memory: workspace directive first, else the target's executor lock — so EVERY
-    # task tied to a project carries a `记忆会话: <project>` key (codex rollout / claude --resume) and
-    # never cold-starts / re-scans the repo. Skip only if the description already set one.
+    # Force-bind project memory: workspace directive first, else the target's executor lock. The actual
+    # `记忆会话: <project>` stamp is applied AFTER validation/approval below, so a project id is never
+    # mistaken for a risk keyword by the approval detector.
     if not _pid:
         _pid = project_memory.project_for_executor(conn, target) or ""
-    if _pid and not re.search(r"(?:记忆会话|memory-session)\s*[:：]", str(args.description or "")):
-        args.description = str(args.description or "").rstrip() + f"\n记忆会话: {_pid}"
     require_employee(conn, source)
     require_employee(conn, target)
     rejection = validate_task_submission(conn, target=target, title=args.title, description=args.description, force=getattr(args, "force_submit", False))
@@ -7971,6 +7969,11 @@ def cmd_task_submit(args: argparse.Namespace) -> int:
     if not gate.get("allowed"):
         emit({"ok": False, "error": "approval required", "target": target, "approval_action": approval_action, "approval": gate["approval_request"], "approval_file": gate["file"]})
         return 2
+    # Now stamp the per-project memory key so the runtime RESUMES its project session (codex rollout /
+    # claude --resume) instead of re-scanning. Applied here — past validation/approval — so a project id
+    # can't be misread as a risk keyword. Persisted in the task description below.
+    if _pid and not re.search(r"(?:记忆会话|memory-session)\s*[:：]", str(args.description or "")):
+        args.description = str(args.description or "").rstrip() + f"\n记忆会话: {_pid}"
     task_id = args.task_id or f"task-{datetime.now().strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:6]}"
     ts = now()
     conn.execute(
