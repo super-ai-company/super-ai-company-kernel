@@ -732,6 +732,13 @@ def route_get(path: str, query: dict[str, list[str]]) -> tuple[int, dict]:
     if path == "/v1/approval/mode":
         code, payload = run_companyctl(["approval", "mode"])
         return (HTTPStatus.OK if code == 0 else HTTPStatus.BAD_REQUEST), payload
+    if path == "/v1/memory/projects":
+        code, payload = run_companyctl(["memory", "project", "list"])
+        return (HTTPStatus.OK if code == 0 else HTTPStatus.BAD_REQUEST), payload
+    if path.startswith("/v1/memory/projects/"):
+        pid = path.removeprefix("/v1/memory/projects/").strip("/")
+        code, payload = run_companyctl(["memory", "project", "show", "--id", pid])
+        return (HTTPStatus.OK if code == 0 else HTTPStatus.NOT_FOUND), payload
     if path in {"/v1/doctor", "/doctor"}:
         argv = ["doctor", "--summary"]
         if query_value(query, "strict_launchd") in {"1", "true", "yes"}:
