@@ -577,6 +577,10 @@ def sync_backlog_from_queue_file(conn: sqlite3.Connection) -> None:
             if evidence_rel:
                 evidence_abs = str((ROOT / evidence_rel).resolve())
 
+            # route imported backlog through the same normalization as a fresh dispatch (app→cli reroute
+            # / executor lock / 记忆会话 stamp) so a synced pending task reaches a real cli worker and
+            # carries project memory instead of stranding on a passive app.
+            target, desc, _ = normalize_submission(conn, target=target, description=desc)
             conn.execute(
                 """
                 INSERT INTO tasks (id, source_agent, target_agent, title, description, priority, status, claimed_by, summary, evidence_path, blocker, created_at, updated_at)

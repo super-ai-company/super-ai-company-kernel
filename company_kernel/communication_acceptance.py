@@ -219,6 +219,10 @@ def ensure_acceptance_task(conn: sqlite3.Connection, *, task_id: str, status: st
             (HERMES_AGENT, CODEX_AGENT, title, status, CODEX_AGENT if status == "claimed" else "", created_at, task_id),
         )
     else:
+        # INTENTIONALLY EXEMPT from submit normalization (no app→cli reroute / executor lock / 记忆会话
+        # stamp): this `acceptance-*` task is local communication-acceptance scaffolding that must target
+        # the CODEX_AGENT runtime exactly to verify that specific channel — rerouting it to a cli twin
+        # would defeat the test. Not a real work dispatch.
         conn.execute(
             """
             INSERT INTO tasks(id, source_agent, target_agent, title, description, priority, status, claimed_by, created_at, updated_at)
