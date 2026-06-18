@@ -256,9 +256,14 @@ def advance_from_completions(args: argparse.Namespace, workspace: Path) -> dict 
         prompt_text = digest.rstrip() + "\n\n" + prompt_text  # share the same project memory codex/claude get
     prompt_path.write_text(prompt_text, encoding="utf-8")
     code, _cmd = run_hermes(prompt_path, output_path, workspace, args.model, args.provider, args.isolation, args.sandbox_profile)
+    if code != 0:
+        # the brain run failed (crash / timeout / API 529) — do NOT archive the notices; leave them for
+        # the next tick to retry, so a failed advance never silently drops a completion / orchestration step.
+        return {"advanced": [n.get("task_id") for n in actionable], "executed": True, "exit_code": code,
+                "output": str(output_path), "owner_progress_sent": False, "retry_pending": True}
     reported = report_progress_to_owner(args.agent, actionable, output_path)
     for n in notices:
-        _archive(n["__path"])  # consumed this tick
+        _archive(n["__path"])  # consumed this tick (only after a successful brain run)
     return {"advanced": [n.get("task_id") for n in actionable], "executed": True,
             "exit_code": code, "output": str(output_path), "owner_progress_sent": reported}
 

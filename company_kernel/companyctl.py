@@ -7958,14 +7958,20 @@ def cmd_task_submit(args: argparse.Namespace) -> int:
         if _trow and _trow["status"] == "active":
             args.target = _twin
             target = _twin
-    # Force-bind project memory: workspace directive first, else the target's executor lock. The actual
-    # `记忆会话: <project>` stamp is applied AFTER validation/approval below, so a project id is never
-    # mistaken for a risk keyword by the approval detector.
-    if not _pid:
+    # Force-bind project memory by the target's executor lock ONLY when the task carries no workspace at
+    # all (a context-less review task). If it names a workspace that just isn't a registered project, do
+    # NOT override — stamping the worker's locked project would resume the WRONG project's session.
+    if not _pid and not _ws:
         _pid = project_memory.project_for_executor(conn, target) or ""
+    # Stamp the per-project memory key into the description NOW, before the approval gate, so a task that
+    # gets parked for approval and later materialized still carries it. Validation + approval detection
+    # run on the ORIGINAL (un-stamped) text, so a project id can never be misread as a risk keyword.
+    _orig_desc = str(args.description or "")
+    if _pid and not re.search(r"(?:记忆会话|memory-session)\s*[:：]", _orig_desc):
+        args.description = _orig_desc.rstrip() + f"\n记忆会话: {_pid}"
     require_employee(conn, source)
     require_employee(conn, target)
-    rejection = validate_task_submission(conn, target=target, title=args.title, description=args.description, force=getattr(args, "force_submit", False))
+    rejection = validate_task_submission(conn, target=target, title=args.title, description=_orig_desc, force=getattr(args, "force_submit", False))
     if rejection:
         emit({**rejection, "target": target, "title": args.title})
         return 2
@@ -7974,16 +7980,11 @@ def cmd_task_submit(args: argparse.Namespace) -> int:
         emit(inactive)
         return 2
     policy = require_communication_allowed(source, target, "task.submit")
-    approval_action = detect_route_approval_action(args.title, args.description, args.requires_approval)
+    approval_action = detect_route_approval_action(args.title, _orig_desc, args.requires_approval)
     gate = route_approval_gate(conn, args, source, target, [{"agent": target, "reason": "direct_submit"}], approval_action)
     if not gate.get("allowed"):
         emit({"ok": False, "error": "approval required", "target": target, "approval_action": approval_action, "approval": gate["approval_request"], "approval_file": gate["file"]})
         return 2
-    # Now stamp the per-project memory key so the runtime RESUMES its project session (codex rollout /
-    # claude --resume) instead of re-scanning. Applied here — past validation/approval — so a project id
-    # can't be misread as a risk keyword. Persisted in the task description below.
-    if _pid and not re.search(r"(?:记忆会话|memory-session)\s*[:：]", str(args.description or "")):
-        args.description = str(args.description or "").rstrip() + f"\n记忆会话: {_pid}"
     task_id = args.task_id or f"task-{datetime.now().strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:6]}"
     ts = now()
     conn.execute(
@@ -8351,7 +8352,11 @@ def write_dispatcher_completion_notice(conn: sqlite3.Connection, task: dict, *, 
         "note": f"你派给 {target} 的任务「{task.get('title')}」已{ {'completed': '完成', 'done': '完成', 'cancelled': '取消'}.get(status, '受阻') }",
     }
     path = inbox / f"result-{task.get('id')}.json"
-    path.write_text(json.dumps(notice, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    # atomic write (temp + rename) so a concurrent reader (e.g. the hermes adapter draining notices)
+    # never parses a half-written file. The temp name is dot-prefixed/.tmp so it won't match result-*.json.
+    tmp = inbox / f".result-{task.get('id')}.json.tmp"
+    tmp.write_text(json.dumps(notice, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    tmp.replace(path)
     prune_inbox_dir(inbox)
     return str(path)
 
