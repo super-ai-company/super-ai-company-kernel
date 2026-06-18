@@ -12,6 +12,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from company_kernel import companyctl
+from company_kernel import project_memory
 
 
 def resolve_daemon_paths() -> dict[str, Path]:
@@ -300,11 +301,17 @@ def check_unclaimed_tasks(config: dict) -> list[dict]:
     sender = str(watchdog.get("from", "openclaw-main") or "openclaw-main")
     limit = int(watchdog.get("max_alerts_per_tick", 5) or 5)
     cutoff = (datetime.now(timezone.utc).astimezone() - timedelta(minutes=minutes)).isoformat(timespec="seconds")
+    # Interactive app employees (codex/claude/antigravity) don't auto-claim — an unclaimed app task is
+    # not an outage, just a task waiting for the owner to open the app. Autonomous work is dispatched to
+    # the CLI twins, which the daemon claims promptly. So never raise watchdog alerts for app targets.
+    app_targets = tuple(project_memory.APP_CLI_PAIRS.keys())
+    placeholders = ",".join("?" for _ in app_targets)
     conn = companyctl.connect()
     try:
         rows = conn.execute(
-            "SELECT id, target_agent, title, created_at FROM tasks WHERE status = 'submitted' AND created_at <= ? ORDER BY created_at LIMIT ?",
-            (cutoff, limit),
+            "SELECT id, target_agent, title, created_at FROM tasks WHERE status = 'submitted' "
+            f"AND created_at <= ? AND target_agent NOT IN ({placeholders}) ORDER BY created_at LIMIT ?",
+            (cutoff, *app_targets, limit),
         ).fetchall()
     finally:
         conn.close()

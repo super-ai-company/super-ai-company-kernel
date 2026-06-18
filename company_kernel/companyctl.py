@@ -8654,6 +8654,13 @@ def employee_offline_report_internal(conn: sqlite3.Connection, *, stale_minutes:
         if employee_has_fresh_heartbeat(conn, eid, stale_minutes=stale_minutes):
             online.append(entry)
             continue
+        if eid in project_memory.APP_CLI_PAIRS:
+            # interactive app employees (codex/claude/antigravity) run only when the owner opens them —
+            # being "offline" is normal, not an outage, so never alert on them (treat as dormant). Their
+            # CLI twins (codex-cli/claude-cli/agy) are the daemon workers that SHOULD stay online and
+            # still get reported if they drop.
+            dormant.append(entry)
+            continue
         try:
             stale_min = (cutoff_now - parse_time(last)).total_seconds() / 60 if last else 10 ** 9
         except (ValueError, TypeError):
