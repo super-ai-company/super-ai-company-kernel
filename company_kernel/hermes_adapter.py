@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import shutil
 import sqlite3
 import subprocess
@@ -246,26 +247,45 @@ def advance_from_completions(args: argparse.Namespace, workspace: Path) -> dict 
         # dry-run: don't lose the completions — leave them for a real --execute tick
         return {"advanced": [n.get("task_id") for n in actionable], "executed": False,
                 "note": "dry-run; left notices for an --execute tick"}
+    # clear non-actionable stragglers (already-processed markers, malformed files) so the inbox stays clean
+    for n in notices:
+        if not is_actionable_completion(n):
+            _archive(n["__path"])
+    # Group actionable completions BY PROJECT so independent projects / orchestration rounds never get
+    # merged into one brain run (which would cross-pollute the next-step dispatch, the summary, and the
+    # injected digest). Each group advances on its own, with its own project memory and output files.
+    groups: dict[str, list[dict]] = {}
+    for n in actionable:
+        groups.setdefault(str(n.get("project_id") or ""), []).append(n)
     base = ROOT / "employees" / args.agent / "reports" / "advance"
     base.mkdir(parents=True, exist_ok=True)
-    prompt_path = base / "advance-prompt.md"
-    output_path = base / "advance-output.md"
-    digest = _project_digest_for_notices(actionable)
-    prompt_text = build_advance_prompt(actionable)
-    if digest:
-        prompt_text = digest.rstrip() + "\n\n" + prompt_text  # share the same project memory codex/claude get
-    prompt_path.write_text(prompt_text, encoding="utf-8")
-    code, _cmd = run_hermes(prompt_path, output_path, workspace, args.model, args.provider, args.isolation, args.sandbox_profile)
-    if code != 0:
-        # the brain run failed (crash / timeout / API 529) — do NOT archive the notices; leave them for
-        # the next tick to retry, so a failed advance never silently drops a completion / orchestration step.
-        return {"advanced": [n.get("task_id") for n in actionable], "executed": True, "exit_code": code,
-                "output": str(output_path), "owner_progress_sent": False, "retry_pending": True}
-    reported = report_progress_to_owner(args.agent, actionable, output_path)
-    for n in notices:
-        _archive(n["__path"])  # consumed this tick (only after a successful brain run)
-    return {"advanced": [n.get("task_id") for n in actionable], "executed": True,
-            "exit_code": code, "output": str(output_path), "owner_progress_sent": reported}
+    advanced: list = []
+    reported_any = False
+    any_retry = False
+    for pid, group in groups.items():
+        # unique batch id (project + earliest task) so rapid/concurrent ticks never overwrite each other's
+        # prompt/output, keeping progress + failure evidence traceable per batch.
+        gid = re.sub(r"[^A-Za-z0-9_.-]", "_", f"{pid or 'noproj'}-{sorted(str(n.get('task_id') or '') for n in group)[0]}")[:80]
+        prompt_path = base / f"advance-{gid}-prompt.md"
+        output_path = base / f"advance-{gid}-output.md"
+        digest = _project_digest_for_notices(group)
+        prompt_text = build_advance_prompt(group)
+        if digest:
+            prompt_text = digest.rstrip() + "\n\n" + prompt_text  # same project memory codex/claude get
+        prompt_path.write_text(prompt_text, encoding="utf-8")
+        code, _cmd = run_hermes(prompt_path, output_path, workspace, args.model, args.provider, args.isolation, args.sandbox_profile)
+        if code != 0:
+            # this group's brain run failed (crash / timeout / 529) — leave ITS notices for the next tick
+            # to retry; other project groups still proceed independently.
+            any_retry = True
+            continue
+        if report_progress_to_owner(args.agent, group, output_path):
+            reported_any = True
+        for n in group:
+            _archive(n["__path"])  # consumed only after a successful brain run for this group
+        advanced.extend(n.get("task_id") for n in group)
+    return {"advanced": advanced, "executed": True, "groups": len(groups),
+            "owner_progress_sent": reported_any, "retry_pending": any_retry}
 
 
 def paths(agent: str, task_id: str) -> dict[str, Path]:
