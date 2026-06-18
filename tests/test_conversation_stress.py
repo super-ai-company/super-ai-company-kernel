@@ -234,9 +234,13 @@ class ConversationStressTest(unittest.TestCase):
         self.ctl.record_event(self.ctl.connect(), "conversation.message", "codex",
                               payload={"conversation_id": "conv-feed", "body": "我先做搜索"})
         self.ctl.record_event(self.ctl.connect(), "tool.call.started", "codex", payload={"x": 1})  # noise
+        # a dispatch event — the orchestrator's work must be visible, not just the executor's completion
+        self.ctl.record_event(self.ctl.connect(), "task.dispatched", "codex",
+                              payload={"target_agent": "claude-cli", "title": "建后台"})
         feed = self.ctl.company_feed(self.ctl.connect(), limit=20)
         texts = [f["text"] for f in feed]
         self.assertTrue(any("发言" in t and "周会" in t for t in texts), texts)
+        self.assertTrue(any("派单给 claude-cli" in t for t in texts), texts)
         # internal plumbing is excluded from the owner feed
         self.assertFalse(any("tool.call" in f["event_type"] for f in feed))
         # the meeting row carries a jump id so the console can open it

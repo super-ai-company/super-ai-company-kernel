@@ -686,7 +686,7 @@ def record_event(conn: sqlite3.Connection, event_type: str, source_agent: str, *
 # to the events an operator actually wants to watch as ONE chronological "全公司动态" stream: who
 # dispatched/ran/finished/blocked work, who messaged whom, who spoke in a meeting, approvals.
 FEED_EVENT_ICON = {
-    "message.send": "💬", "conversation.message": "🗣",
+    "message.send": "💬", "conversation.message": "🗣", "task.dispatched": "📤",
     "task.managed_run.started": "🛰", "task.done": "✅", "task.blocked": "⛔",
     "task.reopened": "♻️", "task.reassigned": "🔁", "task.retried": "🔁",
     "task.discarded": "🗑", "approval.requested": "🟡", "approval.approved": "👍",
@@ -702,6 +702,8 @@ def _feed_snippet(payload: dict) -> str:
 def _feed_text(etype: str, actor: str, payload: dict, task_title: str, conv_title: str) -> str:
     snip = _feed_snippet(payload)
     tgt = payload.get("target_agent") or ""
+    if etype == "task.dispatched":
+        return f"{actor} 派单给 {tgt}「{task_title or payload.get('title','')}」"
     if etype == "message.send":
         return f"{actor} → {tgt}:{snip}" if tgt else f"{actor}:{snip}"
     if etype == "conversation.message":
@@ -8120,6 +8122,10 @@ def cmd_task_submit(args: argparse.Namespace) -> int:
         (task_id, json.dumps(metadata, ensure_ascii=False), ts),
     )
     conn.commit()
+    # Emit the dispatch event so the orchestrator's work (who assigned what to whom) is visible in the
+    # feed — otherwise only the executor's completion shows and the dispatcher (e.g. codex) looks idle.
+    record_event(conn, "task.dispatched", source, task_id=task_id, trace_id=metadata["trace_id"],
+                 payload={"target_agent": target, "title": args.title, "priority": args.priority})
     workspace = ensure_task_workspace(conn, task_id, metadata["trace_id"])
     inbox = employee_paths(target)["inbox"]
     inbox.mkdir(parents=True, exist_ok=True)
@@ -8335,6 +8341,9 @@ def submit_task_internal(
         (tid, json.dumps(task_metadata_obj, ensure_ascii=False), ts),
     )
     conn.commit()
+    # visibility: surface the dispatch (see cmd_task_submit) so the dispatcher isn't invisible in the feed
+    record_event(conn, "task.dispatched", source, task_id=tid, trace_id=task_metadata_obj["trace_id"],
+                 payload={"target_agent": target, "title": title, "priority": priority})
     workspace = ensure_task_workspace(conn, tid, task_metadata_obj["trace_id"])
     inbox = employee_paths(target)["inbox"]
     inbox.mkdir(parents=True, exist_ok=True)

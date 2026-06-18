@@ -6061,8 +6061,11 @@ class CompanyKernelCoreTest(unittest.TestCase):
 
         code, scheduled = run_cli("scheduler", "run")
         self.assertEqual(code, 0, scheduled)
-        self.assertEqual(["maker-done-publish-approval"], scheduled["events"][0]["matched_hooks"])
-        self.assertEqual(1, len(scheduled["events"][0]["blocked"]))
+        # find the hook-matching event by content, not position — task.dispatched & others share the scan
+        matched = [e for e in scheduled["events"] if e["matched_hooks"]]
+        self.assertEqual(1, len(matched), scheduled["events"])
+        self.assertEqual(["maker-done-publish-approval"], matched[0]["matched_hooks"])
+        self.assertEqual(1, len(matched[0]["blocked"]))
 
         code, detail = run_cli("task", "show", "--task-id", "task-video-001")
         self.assertEqual(code, 0, detail)
