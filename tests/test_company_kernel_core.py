@@ -3055,6 +3055,31 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertFalse(verification["local_smoke"]["cockpit_visible"])
         self.assertIn("cockpit visibility", verification["owner_next_action"])
 
+    def test_new_attempt_reaps_prior_active_attempt(self) -> None:
+        """Opening a new attempt for the same task+employee reaps the prior still-active one, so it
+        can't linger forever as a 'running' zombie polluting 'what is this agent doing now'."""
+        run_cli("employee", "create", "--id", "main", "--name", "main", "--role", "operator", "--runtime", "openclaw", "--workspace", str(self.root / "workspace" / "main"))
+        run_cli("employee", "create", "--id", "skill-worker", "--name", "Skill Worker", "--role", "skill-worker", "--runtime", "skill", "--workspace", str(self.root / "workspace" / "skill-worker"))
+        conn = companyctl.connect()
+        try:
+            conn.execute("UPDATE employees SET status='active', updated_at=? WHERE id='skill-worker'", (companyctl.now(),))
+            conn.commit()
+        finally:
+            conn.close()
+        run_cli("heartbeat", "--agent", "skill-worker")
+        task_id = "task-reap-zombie"
+        run_cli("task", "submit", "--from", "main", "--to", "skill-worker", "--task-id", task_id, "--title", "reap test")
+        run_cli("task", "run", "--task-id", task_id, "--agent", "skill-worker", "--by", "main", "--adapter-type", "retry")
+        run_cli("task", "run", "--task-id", task_id, "--agent", "skill-worker", "--by", "main", "--adapter-type", "retry")
+        conn = companyctl.connect()
+        try:
+            statuses = [r["status"] for r in conn.execute("SELECT status FROM execution_attempts WHERE task_id=?", (task_id,)).fetchall()]
+        finally:
+            conn.close()
+        active = [s for s in statuses if s in ("starting", "running", "correcting")]
+        self.assertEqual(1, len(active), statuses)   # only the latest attempt remains active
+        self.assertIn("failed", statuses)            # the prior attempt was reaped, not left a zombie
+
     def test_cockpit_ignores_orphan_active_attempts_on_finished_tasks(self) -> None:
         code, created = run_cli("employee", "create", "--id", "main", "--name", "main", "--role", "operator", "--runtime", "openclaw", "--workspace", str(self.root / "workspace" / "main"))
         self.assertEqual(0, code, created)

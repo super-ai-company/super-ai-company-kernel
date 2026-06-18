@@ -1470,6 +1470,16 @@ def start_execution_attempt_internal(
     trace_id = trace_id_for_task(conn, task_id)
     attempt_id = f"attempt-{datetime.now().strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:8]}"
     ts = now()
+    # Reap any prior still-"active" attempt for this task+employee before opening a new one: a new
+    # attempt means the previous was superseded (retry/restart). Otherwise the old row lingers forever
+    # in 'running'/'starting' as a zombie that pollutes "what is this agent doing right now".
+    _active_statuses = sorted(MANAGED_ATTEMPT_ACTIVE_STATUSES)
+    conn.execute(
+        f"UPDATE execution_attempts SET status='failed', finished_at=?, "
+        f"error_message=CASE WHEN error_message='' THEN 'superseded by a newer attempt' ELSE error_message END "
+        f"WHERE task_id=? AND employee_id=? AND status IN ({','.join('?' * len(_active_statuses))})",
+        (ts, task_id, employee_id, *_active_statuses),
+    )
     first_seen = last_heartbeat_at or ts
     first_progress = last_progress_at or ts
     attempt = {
