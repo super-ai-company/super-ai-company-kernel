@@ -255,6 +255,8 @@ def queue_supervisor_notification(result: dict[str, Any]) -> dict[str, Any]:
 
 ESCALATION_COOLDOWN_SECONDS = 6 * 3600  # re-remind the same stuck task at most once per 6h (else flood)
 MAX_ESCALATIONS_PER_ISSUE = 3  # circuit breaker: after N reminders of the same stuck task, stop auto-notifying
+MAX_ESCALATIONS_TOTAL = 6  # hard cap per task across ALL status churn — a task flipping submitted↔claimed↔
+#                            blocked (e.g. a retry loop) must not re-arm the per-issue breaker and flood.
 
 
 def _escalation_dedup_path() -> Path:
@@ -282,8 +284,12 @@ def _should_escalate_now(task_id: str, fingerprint: str) -> bool:
     if not task_id:
         return True
     entry = _load_escalation_dedup().get(task_id)
-    if not entry or entry.get("fingerprint") != fingerprint:
-        return True  # never notified, or the issue changed — notify
+    if not entry:
+        return True  # never notified
+    if int(entry.get("total", 0)) >= MAX_ESCALATIONS_TOTAL:
+        return False  # hard total cap per task — stop even if status churn keeps changing the fingerprint
+    if entry.get("fingerprint") != fingerprint:
+        return True  # the issue changed (e.g. running→blocked) — worth one re-notify (still under total cap)
     if int(entry.get("count", 0)) >= MAX_ESCALATIONS_PER_ISSUE:
         return False  # circuit breaker: reminded enough; stop auto-notifying, owner handles manually
     try:
@@ -304,7 +310,8 @@ def _record_escalation(task_id: str, fingerprint: str) -> None:
     state = _load_escalation_dedup()
     prev = state.get(task_id, {})
     count = int(prev.get("count", 0)) + 1 if prev.get("fingerprint") == fingerprint else 1
-    state[task_id] = {"fingerprint": fingerprint, "notified_at": now(), "count": count}
+    total = int(prev.get("total", 0)) + 1  # always increments, across every status/fingerprint change
+    state[task_id] = {"fingerprint": fingerprint, "notified_at": now(), "count": count, "total": total}
     path = _escalation_dedup_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(state, ensure_ascii=False), encoding="utf-8")

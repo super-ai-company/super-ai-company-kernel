@@ -391,7 +391,15 @@ def parse_verdict(output: Path) -> tuple[str, str]:
     return verdict, (last.group(2) or "").strip()
 
 
-_REVIEW_TASK_RE = re.compile(r"任务类型\s*[:：]\s*(?:审核|review)|只读审核|只读复审|代码审核|code\s*review", re.IGNORECASE)
+_REVIEW_TASK_RE = re.compile(
+    r"任务类型\s*[:：]\s*(?:审核|复审|review)"          # explicit task-type marker (canonical)
+    r"|只读\S{0,6}(?:审核|复审|复核|验收)"              # 只读审核 / 只读复审 / 只读终轮复审 / 只读代码审核
+    r"|代码审核|视觉验收|审核任务"
+    r"|请(?:审核|复核|评审)"
+    r"|code\s*review\s+(?:the\s+)?(?:diff|pr|change|changes|branch|代码|改动)"  # not a bare feature name
+    r"|review\s+(?:the\s+)?(?:diff|pr|branch|changes?)\b",
+    re.IGNORECASE,
+)
 
 
 def is_review_task(description: str) -> bool:
