@@ -19,6 +19,7 @@ SCHEMA = Path(__file__).resolve().parents[1] / "company_kernel" / "schema.sql"
 class OfflineReportTest(unittest.TestCase):
     def setUp(self) -> None:
         self.conn = sqlite3.connect(":memory:")
+        self.addCleanup(self.conn.close)
         self.conn.row_factory = sqlite3.Row
         self.conn.executescript(SCHEMA.read_text(encoding="utf-8"))
 

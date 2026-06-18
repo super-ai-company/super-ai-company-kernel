@@ -35,6 +35,16 @@ class ConversationStressTest(unittest.TestCase):
         importlib.reload(companyctl); importlib.reload(api_gateway)
         self.ctl = companyctl
         self.gw = api_gateway
+        # close any connections the tests open via ctl.connect() before the module reload (LIFO: this
+        # runs before _restore_modules) so they don't leak as ResourceWarnings at GC.
+        self.addCleanup(self._close_open_connections)
+
+    def _close_open_connections(self):
+        for conn in list(getattr(self.ctl, "_OPEN_CONNECTIONS", [])):
+            try:
+                conn.close()
+            except Exception:
+                pass
 
     def _restore_modules(self):
         import importlib
