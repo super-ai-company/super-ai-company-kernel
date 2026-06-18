@@ -59,6 +59,19 @@ def t_dispatch_task(from_agent: str, to_agent: str, title: str, description: str
     return _ctl(["task", "submit", "--from", from_agent, "--to", to_agent, "--title", title, "--description", description])
 
 
+def t_start_meeting(from_agent: str, topic: str, participants: str, question: str, project: str = "", **_) -> dict:
+    """Call a quick meeting to settle a hard decision; runs async in the background."""
+    args = ["meeting", "request", "--from", from_agent, "--topic", topic,
+            "--participants", participants, "--question", question]
+    if project:
+        args += ["--project", project]
+    return _ctl(args)
+
+
+def t_meeting_result(conversation_id: str, **_) -> dict:
+    return _ctl(["meeting", "result", "--conversation-id", conversation_id])
+
+
 def t_check_completions(agent: str, **_) -> dict:
     """Completions of tasks THIS agent dispatched (the result-*.json notices in its inbox)."""
     inbox = ROOT / "employees" / agent / "inbox"
@@ -94,6 +107,12 @@ TOOLS = [
     {"name": "check_completions", "fn": t_check_completions,
      "description": "Check results of tasks YOU dispatched that have finished (the kernel pushes these to your inbox the instant they complete).",
      "schema": {"type": "object", "properties": {"agent": {"type": "string"}}, "required": ["agent"]}},
+    {"name": "start_meeting", "fn": t_start_meeting,
+     "description": "Call a quick meeting with colleagues to settle a hard decision you can't decide alone (e.g. a design fork). Runs async in the background; poll meeting_result for the conclusion. Use this instead of guessing or blocking on a fork — meetings are for the few genuinely hard calls.",
+     "schema": {"type": "object", "properties": {"from_agent": {"type": "string", "description": "your id"}, "topic": {"type": "string", "description": "short meeting title"}, "participants": {"type": "string", "description": "comma-separated colleague ids to invite, e.g. codex-cli,claude-cli"}, "question": {"type": "string", "description": "the exact decision/question to settle"}, "project": {"type": "string", "description": "optional project id to tie the meeting to its memory bank"}}, "required": ["from_agent", "topic", "participants", "question"]}},
+    {"name": "meeting_result", "fn": t_meeting_result,
+     "description": "Poll a meeting you started for its conclusion (the chair's 方案/决策/纪要). Returns done=false while colleagues are still talking.",
+     "schema": {"type": "object", "properties": {"conversation_id": {"type": "string"}}, "required": ["conversation_id"]}},
 ]
 _BY_NAME = {t["name"]: t for t in TOOLS}
 

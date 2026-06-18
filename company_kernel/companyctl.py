@@ -734,8 +734,10 @@ def company_feed(conn: sqlite3.Connection, limit: int = 40) -> list[dict]:
     '谁派活/谁执行/谁开会/谁说了啥' view the console Overview shows so flows aren't scattered."""
     types = tuple(FEED_EVENT_ICON)
     qmarks = ",".join("?" * len(types))
+    # id is the tiebreaker so same-second events keep a stable order across refreshes (ids embed a
+    # monotonic timestamp+seq, so id DESC ≈ insertion order within a second).
     evs = rows(conn, f"SELECT * FROM company_events WHERE event_type IN ({qmarks}) "
-                     f"ORDER BY created_at DESC LIMIT ?", (*types, limit))
+                     f"ORDER BY created_at DESC, id DESC LIMIT ?", (*types, limit))
     parsed = []
     task_ids, conv_ids = set(), set()
     for e in evs:
@@ -9536,6 +9538,80 @@ def conversation_start_internal(
     return {"conversation": {"id": cid, "title": title, "participants": participants, "status": "open"}, "message": message, "files": files, "event_id": event["id"]}
 
 
+def meeting_request_internal(conn: sqlite3.Connection, *, requester: str, topic: str, participants,
+                             question: str, project_id: str = "", mode: str = "discuss",
+                             rounds: int = 1, synthesizer: str = "") -> dict:
+    """An employee calls a quick meeting to settle a hard decision it can't decide alone. Creates the
+    conversation and launches the autonomous run DETACHED — a meeting takes minutes (each turn spawns
+    a runtime), so the requester must NOT block on it. The discussion + conclusion then show up in the
+    Overview feed / Conversations tab / project memory; the requester polls meeting_result for the
+    outcome. This is the agent-initiated counterpart to the owner/console 发起会议."""
+    parts = participants if isinstance(participants, list) else [p.strip() for p in str(participants).split(",")]
+    parts = [p for p in parts if p]
+    if requester not in parts:
+        parts.insert(0, requester)
+    started = conversation_start_internal(conn, source=requester, participants=parts, title=topic,
+                                          body=question, conversation_id="", project_id=project_id)
+    cid = started["conversation"]["id"]
+    argv = [str(ROOT / "bin" / "companyctl"), "conversation", "run", "--conversation-id", cid,
+            "--mode", mode, "--rounds", str(int(rounds))]
+    if synthesizer:
+        argv += ["--synthesizer", synthesizer]
+    if project_id:
+        argv += ["--project", project_id]
+    log_fh = None
+    try:
+        log_dir = ROOT / "logs" / "conversation-run"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        log_fh = open(log_dir / f"{cid}.log", "ab")
+        subprocess.Popen(argv, cwd=str(ROOT), stdout=log_fh, stderr=subprocess.STDOUT,
+                         stdin=subprocess.DEVNULL, start_new_session=True)
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "conversation_id": cid, "error": f"会议已建但后台讨论未能启动:{exc}"}
+    finally:
+        if log_fh is not None:
+            try:
+                log_fh.close()
+            except Exception:
+                pass
+    return {"ok": True, "conversation_id": cid, "status": "running", "participants": parts,
+            "note": "讨论已在后台进行;用 `meeting result --conversation-id` 轮询结论,或控制台「对话」标签查看全过程。"}
+
+
+def meeting_result_internal(conn: sqlite3.Connection, conversation_id: str) -> dict:
+    """Read back a meeting's conclusion (the chair's 【方案/决策】/【会议纪要】/【站会汇总】) so a
+    requesting agent can poll for the outcome of a meeting it started."""
+    msgs = rows(conn, "SELECT * FROM conversation_messages WHERE conversation_id = ? ORDER BY created_at ASC", (conversation_id,))
+    if not msgs:
+        return {"ok": False, "conversation_id": conversation_id, "error": "无此会议或尚无发言"}
+    conclusion = ""
+    for m in reversed(msgs):
+        body = str(m["body"]).lstrip()
+        if any(body.startswith(prefix) for prefix in CONVERSATION_SYNTH_PREFIX.values()):
+            conclusion = str(m["body"])
+            break
+    return {"ok": True, "conversation_id": conversation_id, "done": bool(conclusion),
+            "conclusion": conclusion, "turns": len(msgs),
+            "transcript": [{"speaker": m["source_agent"], "body": str(m["body"])[:400]} for m in msgs]}
+
+
+def cmd_meeting_request(args: argparse.Namespace) -> int:
+    conn = connect()
+    out = meeting_request_internal(conn, requester=args.source, topic=args.topic,
+                                   participants=args.participants, question=args.question,
+                                   project_id=getattr(args, "project", "") or "", mode=args.mode,
+                                   rounds=args.rounds, synthesizer=args.synthesizer)
+    print(json.dumps(out, ensure_ascii=False, indent=2))
+    return 0 if out.get("ok") else 1
+
+
+def cmd_meeting_result(args: argparse.Namespace) -> int:
+    conn = connect()
+    out = meeting_result_internal(conn, args.conversation_id)
+    print(json.dumps(out, ensure_ascii=False, indent=2))
+    return 0 if out.get("ok") else 1
+
+
 def ensure_human_owner(conn: sqlite3.Connection, owner_id: str = "owner-shift") -> dict:
     row = conn.execute("SELECT * FROM employees WHERE id = ?", (owner_id,)).fetchone()
     ts = now()
@@ -14358,6 +14434,22 @@ def build_parser() -> argparse.ArgumentParser:
     conversation_probe.add_argument("--timeout", type=int, default=90, help="per-probe runtime timeout seconds")
     conversation_probe.add_argument("--no-persist", action="store_true", help="do not write results to the meeting-capable allowlist")
     conversation_probe.set_defaults(func=cmd_conversation_probe)
+
+    meeting = sub.add_parser("meeting", help="employee-initiated meetings: an agent calls colleagues to settle a hard decision (async)")
+    meeting_sub = meeting.add_subparsers(dest="meeting_cmd", required=True)
+    meeting_req = meeting_sub.add_parser("request", help="ask colleagues for a quick discussion on a decision; runs in the background")
+    meeting_req.add_argument("--from", dest="source", required=True, help="your employee id (the requester)")
+    meeting_req.add_argument("--topic", required=True, help="short meeting title")
+    meeting_req.add_argument("--participants", required=True, help="comma-separated colleague ids to invite")
+    meeting_req.add_argument("--question", required=True, help="the decision/question to settle")
+    meeting_req.add_argument("--mode", choices=sorted(CONVERSATION_MODES), default="discuss")
+    meeting_req.add_argument("--rounds", type=int, default=1)
+    meeting_req.add_argument("--synthesizer", default="", help="chair who writes the conclusion (default: hermes if present)")
+    meeting_req.add_argument("--project", default="", help="tie to a project memory bank (read digest + store conclusion)")
+    meeting_req.set_defaults(func=cmd_meeting_request)
+    meeting_res = meeting_sub.add_parser("result", help="read back a meeting's conclusion (poll after requesting)")
+    meeting_res.add_argument("--conversation-id", required=True)
+    meeting_res.set_defaults(func=cmd_meeting_result)
 
     user = sub.add_parser("user", help="manage human API users + roles (RBAC: viewer/operator/admin/owner)")
     user_sub = user.add_subparsers(dest="user_cmd", required=True)

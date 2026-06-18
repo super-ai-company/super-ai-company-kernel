@@ -22,7 +22,7 @@ class McpServerTest(unittest.TestCase):
         names = {t["name"] for t in r["result"]["tools"]}
         self.assertEqual(
             {"list_my_tasks", "show_task", "claim_task", "report_done", "report_blocked",
-             "dispatch_task", "check_completions"}, names)
+             "dispatch_task", "check_completions", "start_meeting", "meeting_result"}, names)
         for t in r["result"]["tools"]:  # every tool must self-describe (so apps know how to call it)
             self.assertTrue(t["description"])
             self.assertEqual("object", t["inputSchema"]["type"])
