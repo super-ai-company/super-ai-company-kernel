@@ -291,6 +291,7 @@ def run_pm_completed_scenario(conn: sqlite3.Connection, *, run_id: str, timestam
         schema_path=SCHEMA,
         workspace=workspace,
         report_root=report_root,
+        include_fixtures=True,  # self-test deliberately supervises its acceptance-* fixture
     )
     return {"ok": result.get("status") == "completed" and result.get("evidence_path") == str(completed.resolve()), "task_id": task_id, "supervisor": result}
 
@@ -313,6 +314,7 @@ def run_mismatch_stale_scenario(conn: sqlite3.Connection, *, run_id: str, timest
         schema_path=SCHEMA,
         workspace=workspace,
         report_root=report_root,
+        include_fixtures=True,  # self-test deliberately supervises its acceptance-* fixture
     )
     return {"ok": result.get("status") in {"stalled", "blocked"}, "task_id": task_id, "mismatch_supervisor": result}
 

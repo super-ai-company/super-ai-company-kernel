@@ -166,7 +166,7 @@ class CodexPmSupervisorTest(unittest.TestCase):
     def test_stalled_supervisor_result_notifies_human_once(self) -> None:
         self._write_progress("working")
         with mock.patch.object(codex_pm_supervisor.companyctl, "notification_send_result", return_value={"ok": True, "platform": "macos"}) as notify:
-            result = codex_pm_supervisor.supervise_once(agent="codex", now_ts="2026-06-06T00:40:00+07:00", stale_minutes=10)
+            result = codex_pm_supervisor.supervise_once(agent="codex", now_ts="2026-06-06T00:40:00+07:00", stale_minutes=10, notify=True)
 
         self.assertTrue(result["ok"], result)
         self.assertEqual("stalled", result["status"])
@@ -177,10 +177,21 @@ class CodexPmSupervisorTest(unittest.TestCase):
         self.assertEqual("Company Kernel supervisor escalation", kwargs["subject"])
         self.assertIn("Codex 卡住", kwargs["message"])
 
+    def test_supervisor_does_not_notify_unless_production_opts_in(self) -> None:
+        """Safe by default: a programmatic/test supervise_once (no notify=True) still DETECTS the stall
+        but must NEVER reach the real send — this is what stops the test suite / a full-access review
+        from leaking ghost 'Codex 卡住' escalations to the owner's Telegram."""
+        self._write_progress("working")
+        with mock.patch.object(codex_pm_supervisor.companyctl, "notification_send_result") as notify:
+            result = codex_pm_supervisor.supervise_once(agent="codex", now_ts="2026-06-06T00:40:00+07:00", stale_minutes=10)
+        self.assertEqual("stalled", result["status"])      # still detects the stall
+        notify.assert_not_called()                          # but never reaches the real send
+        self.assertTrue(result["notification"]["skipped"])
+
     def test_stalled_supervisor_queues_notification_when_sync_send_fails(self) -> None:
         self._write_progress("working")
         with mock.patch.object(codex_pm_supervisor.companyctl, "notification_send_result", return_value={"ok": False, "error": "route unavailable"}):
-            result = codex_pm_supervisor.supervise_once(agent="codex", now_ts="2026-06-06T00:40:00+07:00", stale_minutes=10)
+            result = codex_pm_supervisor.supervise_once(agent="codex", now_ts="2026-06-06T00:40:00+07:00", stale_minutes=10, notify=True)
 
         self.assertTrue(result["ok"], result)
         self.assertEqual("stalled", result["status"])
