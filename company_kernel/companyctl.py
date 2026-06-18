@@ -9897,9 +9897,13 @@ def conversation_run_internal(
                 conversation_reply_internal(conn, source=spk, conversation_id=conversation_id, body=res["reply"])
                 transcript.append({"round": rnd, "speaker": spk, "ok": True, "reply": res["reply"]})
             else:
+                reason = (res.get("error") or f"exit_code={res.get('exit_code')}")
+                # surface the failure INSIDE the meeting so a partial/empty meeting is never silent — the
+                # owner sees "codex-cli hit 529/timeout" instead of a blank room.
+                conversation_reply_internal(conn, source=spk, conversation_id=conversation_id,
+                                            body=f"⚠️（本轮未能发言:{str(reason)[:140]}）")
                 transcript.append({"round": rnd, "speaker": spk, "ok": False,
-                                   "error": res.get("error") or f"exit_code={res.get('exit_code')}",
-                                   "stderr": res.get("stderr", "")})
+                                   "error": reason, "stderr": res.get("stderr", "")})
 
     thread = conversation_thread_text(conn, conversation_id, limit=80)
     synth_prompt = conversation_synth_prompt(mode, synth, title, thread) + memory_preamble
@@ -9921,9 +9925,11 @@ def conversation_run_internal(
         except Exception:
             captured_memory = None
     else:
+        s_reason = synth_res.get("error") or f"synthesis exit_code={synth_res.get('exit_code')}"
+        conversation_reply_internal(conn, source=synth, conversation_id=conversation_id,
+                                    body=f"⚠️（主持人未能出纪要:{str(s_reason)[:140]} —— 稍后重跑或换主持人）")
         transcript.append({"round": rounds + 1, "speaker": synth, "ok": False,
-                           "error": synth_res.get("error") or f"synthesis exit_code={synth_res.get('exit_code')}",
-                           "stderr": synth_res.get("stderr", "")})
+                           "error": s_reason, "stderr": synth_res.get("stderr", "")})
 
     audit(conn, synth, "conversation.run", conversation_id,
           {"mode": mode, "rounds": rounds, "speakers": speakers, "synthesizer": synth, "turns": len(transcript)})
