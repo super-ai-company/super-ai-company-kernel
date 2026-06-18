@@ -183,6 +183,29 @@ class ConversationStressTest(unittest.TestCase):
         self.assertNotIn(self.ctl.MEETING_SYSNOTE_PREFIX, ctx)
         self.assertNotIn("未能发言", ctx)
 
+    def test_agent_initiated_meeting_creates_and_reads_back(self):
+        """An employee can call its own meeting (async): the conversation is created with the requester
+        auto-added, the discussion is launched detached, and the conclusion is pollable afterwards."""
+        for a, rt in (("codex", "codex"), ("claude", "claude")):
+            self._run(["employee", "create", "--id", a, "--name", a, "--role", "developer",
+                       "--runtime", rt, "--workspace", str(self.root / a)])
+        with mock.patch.object(self.ctl.subprocess, "Popen") as popen:  # don't run real runtimes in unit tests
+            out = self.ctl.meeting_request_internal(self.ctl.connect(), requester="codex", topic="选型",
+                                                    participants="claude", question="A 还是 B?")
+        self.assertTrue(out["ok"], out)
+        self.assertTrue(popen.called, "must launch the discussion detached so the requester never blocks")
+        self.assertIn("codex", out["participants"])  # requester auto-added
+        self.assertIn("claude", out["participants"])
+        cid = out["conversation_id"]
+        # before any conclusion: done=false (colleagues still talking)
+        r0 = self.ctl.meeting_result_internal(self.ctl.connect(), cid)
+        self.assertTrue(r0["ok"]); self.assertFalse(r0["done"])
+        # chair posts a conclusion → pollable
+        self.ctl.conversation_reply_internal(self.ctl.connect(), source="claude", conversation_id=cid,
+                                             body="【方案/决策】结论:选 A。")
+        r1 = self.ctl.meeting_result_internal(self.ctl.connect(), cid)
+        self.assertTrue(r1["done"]); self.assertIn("选 A", r1["conclusion"])
+
     def test_company_feed_renders_readable_stream(self):
         """The unified Overview feed collapses the raw event ledger into owner-readable one-liners
         (with jump ids), and filters out internal plumbing (tool.call/budget/session)."""
