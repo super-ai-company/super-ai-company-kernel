@@ -9585,13 +9585,20 @@ def meeting_result_internal(conn: sqlite3.Connection, conversation_id: str) -> d
     if not msgs:
         return {"ok": False, "conversation_id": conversation_id, "error": "无此会议或尚无发言"}
     conclusion = ""
+    chair_failed = False
     for m in reversed(msgs):
         body = str(m["body"]).lstrip()
         if any(body.startswith(prefix) for prefix in CONVERSATION_SYNTH_PREFIX.values()):
             conclusion = str(m["body"])
             break
-    return {"ok": True, "conversation_id": conversation_id, "done": bool(conclusion),
-            "conclusion": conclusion, "turns": len(msgs),
+        # the chair tried but failed to write minutes — the meeting IS over (no verdict). Without this
+        # the poller would wait forever thinking colleagues are still talking. Report done + failed.
+        if body.startswith(MEETING_SYSNOTE_PREFIX) and "未能出纪要" in body:
+            chair_failed = True
+            break
+    status = "concluded" if conclusion else ("chair_failed" if chair_failed else "in_progress")
+    return {"ok": True, "conversation_id": conversation_id, "done": bool(conclusion) or chair_failed,
+            "status": status, "chair_failed": chair_failed, "conclusion": conclusion, "turns": len(msgs),
             "transcript": [{"speaker": m["source_agent"], "body": str(m["body"])[:400]} for m in msgs]}
 
 

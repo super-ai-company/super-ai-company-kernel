@@ -205,6 +205,23 @@ class ConversationStressTest(unittest.TestCase):
                                              body="【方案/决策】结论:选 A。")
         r1 = self.ctl.meeting_result_internal(self.ctl.connect(), cid)
         self.assertTrue(r1["done"]); self.assertIn("选 A", r1["conclusion"])
+        self.assertEqual("concluded", r1["status"])
+
+    def test_meeting_result_reports_done_when_chair_fails(self):
+        """If the chair couldn't write minutes, the meeting IS over — the poller must see done=true
+        (chair_failed) instead of waiting forever for a verdict that will never come."""
+        self._run(["employee", "create", "--id", "codex", "--name", "codex", "--role", "developer",
+                   "--runtime", "codex", "--workspace", str(self.root / "codex")])
+        self.gw.route_post("/v1/conversations", {
+            "from": "owner-shift", "participants": "owner-shift,codex",
+            "conversation_id": "conv-chairfail", "title": "t", "body": "议程"})
+        self.ctl.conversation_reply_internal(self.ctl.connect(), source="codex", conversation_id="conv-chairfail",
+                                             body="codex 发言")
+        self.ctl.conversation_reply_internal(self.ctl.connect(), source="codex", conversation_id="conv-chairfail",
+                                             body=f"{self.ctl.MEETING_SYSNOTE_PREFIX} 主持人未能出纪要:529 —— 稍后重跑")
+        r = self.ctl.meeting_result_internal(self.ctl.connect(), "conv-chairfail")
+        self.assertTrue(r["done"]); self.assertTrue(r["chair_failed"])
+        self.assertEqual("chair_failed", r["status"]); self.assertEqual("", r["conclusion"])
 
     def test_company_feed_renders_readable_stream(self):
         """The unified Overview feed collapses the raw event ledger into owner-readable one-liners
