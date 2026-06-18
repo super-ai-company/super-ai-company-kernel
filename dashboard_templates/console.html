@@ -237,6 +237,10 @@ label{font-size:12px;color:var(--muted);display:block;margin-bottom:4px}
   <div class="report-band"><div class="rb-row"><span class="rb-title" data-i18n="rep_band">每日运营报告</span><span class="rb-date masthead-date"></span></div></div>
   <div class="grid cards-3" id="ovCards"></div>
   <div style="height:14px"></div>
+  <div class="card" style="margin-bottom:14px">
+    <h3><span data-i18n="ov_feed">📜 全公司动态</span> <span class="emp-sub" data-i18n="ov_feed_hint" style="font-weight:400">谁派活 · 谁执行 · 谁开会 · 谁说了啥</span></h3>
+    <div class="list feed" id="ovFeed"><div class="empty" data-i18n="loading">加载中…</div></div>
+  </div>
   <div class="card" id="ovStuckCard" style="display:none;margin-bottom:14px;border-color:var(--bad)">
     <h3 style="color:var(--bad)" data-i18n="ov_stuck">⚠️ 卡住待处理（升级）</h3>
     <div class="list" id="ovStuck"></div>
@@ -493,7 +497,7 @@ const I18N = {
     met_title:"生死指标", met_hint:"毛利 + 验收准确率，决定加码 / 改模式 / 收手", met_econ:"💰 单位经济（按任务类型）", met_acc:"🎯 验收器抽检准确率",
     met_margin:"毛利", met_revenue:"营收", met_cost:"成本", met_type:"类型", met_count:"笔数", met_kind:"验收类型", met_total:"总数",
     met_accuracy:"准确率", met_reviewed:"已抽检", met_fp:"误放", met_fn:"误拦", met_noecon:"暂无已完成任务的经济数据", met_noacc:"暂无验收记录", met_unavailable:"指标接口不可用（需较新网关）",
-    ov_pendingApprovals:"⏳ 待审批", ov_stuck:"⚠️ 卡住待处理（升级）", ov_latestEvents:"🔔 最新事件", loading:"加载中…", none:"无",
+    ov_pendingApprovals:"⏳ 待审批", ov_stuck:"⚠️ 卡住待处理（升级）", ov_latestEvents:"🔔 最新事件", ov_feed:"📜 全公司动态", ov_feed_hint:"谁派活 · 谁执行 · 谁开会 · 谁说了啥", loading:"加载中…", none:"无",
     emp_title:"AI 员工", emp_hint:"心跳 10 分钟内 = 在岗", emp_add:"＋ 新增员工", emp_sweep:"📋 全员考勤探测", emp_offline:"📴 离线提醒",
     emp_onboardTitle:"🧑‍💼 新增员工（onboard）", emp_register:"注册员工", emp_registerHint:"注册后如需自动接任务，再在 daemon.json 启用 worker",
     f_name:"名称", f_role:"角色", f_runtime:"运行时", f_workspace:"工作区（绝对路径）", f_skills:"技能（逗号分隔）", f_canTalk:"可对话对象（逗号分隔）",
@@ -521,7 +525,7 @@ const I18N = {
     met_title:"Survival metrics", met_hint:"margin + verifier accuracy — decide to scale / pivot / stop", met_econ:"💰 Unit economics (by task type)", met_acc:"🎯 Verifier sampling accuracy",
     met_margin:"Margin", met_revenue:"Revenue", met_cost:"Cost", met_type:"Type", met_count:"Count", met_kind:"Kind", met_total:"Total",
     met_accuracy:"Accuracy", met_reviewed:"Reviewed", met_fp:"False+", met_fn:"False-", met_noecon:"No economics data from completed tasks yet", met_noacc:"No verifier records yet", met_unavailable:"Metrics API unavailable (needs newer gateway)",
-    ov_pendingApprovals:"⏳ Pending approvals", ov_stuck:"⚠️ Stuck / escalations", ov_latestEvents:"🔔 Latest events", loading:"Loading…", none:"None",
+    ov_pendingApprovals:"⏳ Pending approvals", ov_stuck:"⚠️ Stuck / escalations", ov_latestEvents:"🔔 Latest events", ov_feed:"📜 Company activity", ov_feed_hint:"who dispatched · ran · met · said what", loading:"Loading…", none:"None",
     emp_title:"AI Employees", emp_hint:"heartbeat within 10 min = on duty", emp_add:"＋ Add employee", emp_sweep:"📋 Attendance sweep", emp_offline:"📴 Offline alert",
     emp_onboardTitle:"🧑‍💼 Onboard employee", emp_register:"Register", emp_registerHint:"After registering, enable a worker in daemon.json for auto task pickup",
     f_name:"Name", f_role:"Role", f_runtime:"Runtime", f_workspace:"Workspace (absolute path)", f_skills:"Skills (comma-separated)", f_canTalk:"Can talk to (comma-separated)",
@@ -1574,6 +1578,23 @@ async function decide(id, action) {
   } catch(e){ toast("操作失败："+e.message,"bad"); }
 }
 
+/* ---------- unified company feed (谁派活/谁执行/谁开会/谁说了啥) ---------- */
+function feedOpenConv(cid){ document.querySelector('[data-v="conversations"]').click(); openMeeting(cid); }
+async function loadFeed() {
+  try {
+    const d = await api("/v1/feed?limit=40");
+    const items = d.feed || d.items || [];
+    $("ovFeed").innerHTML = items.map(it=>{
+      const jump = it.conversation_id ? `onclick="feedOpenConv('${esc(it.conversation_id)}')"`
+                 : it.task_id ? `onclick="showTask('${esc(it.task_id)}')"` : "";
+      const cur = (it.conversation_id||it.task_id) ? ' style="cursor:pointer"' : "";
+      return `<div class="row"${cur} ${jump}><div class="head">
+        <span class="who">${esc(it.icon)} ${esc(it.text)}</span>
+        <span class="when">${ago(it.ts)}</span></div></div>`;
+    }).join("") || `<div class="empty">暂无动态 · 派一个任务或发起一场会议就会出现在这里</div>`;
+  } catch(e){ $("ovFeed").innerHTML = `<div class="empty">${esc(e.message)}</div>`; }
+}
+
 /* ---------- activity ---------- */
 async function loadActivity() {
   try {
@@ -1645,7 +1666,7 @@ function renderOverview() {
 /* ---------- refresh loop ---------- */
 async function refreshAll(manual=false) {
   if(manual) toast("刷新中…");
-  await Promise.allSettled([loadHealth(), loadEmployees(), loadTasks(), loadApprovals(), loadActivity(), loadDeliveryTargets()]);
+  await Promise.allSettled([loadHealth(), loadEmployees(), loadTasks(), loadApprovals(), loadActivity(), loadFeed(), loadDeliveryTargets()]);
   renderOverview();
   if($("msgAgent").value) loadMessages();
   loadConversations();

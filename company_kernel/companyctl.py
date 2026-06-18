@@ -681,6 +681,95 @@ def record_event(conn: sqlite3.Connection, event_type: str, source_agent: str, *
     return event
 
 
+# Curated, owner-readable activity feed. The raw company_events ledger is mostly internal plumbing
+# (tool.call / budget / runtime.session / artifact / task.attempt). This allowlist collapses it down
+# to the events an operator actually wants to watch as ONE chronological "全公司动态" stream: who
+# dispatched/ran/finished/blocked work, who messaged whom, who spoke in a meeting, approvals.
+FEED_EVENT_ICON = {
+    "message.send": "💬", "conversation.message": "🗣",
+    "task.managed_run.started": "🛰", "task.done": "✅", "task.blocked": "⛔",
+    "task.reopened": "♻️", "task.reassigned": "🔁", "task.retried": "🔁",
+    "task.discarded": "🗑", "approval.requested": "🟡", "approval.approved": "👍",
+    "progress.notification": "📣",
+}
+
+
+def _feed_snippet(payload: dict) -> str:
+    body = str(payload.get("body") or payload.get("summary") or payload.get("message") or "").strip().replace("\n", " ")
+    return (body[:50] + "…") if len(body) > 50 else body
+
+
+def _feed_text(etype: str, actor: str, payload: dict, task_title: str, conv_title: str) -> str:
+    snip = _feed_snippet(payload)
+    tgt = payload.get("target_agent") or ""
+    if etype == "message.send":
+        return f"{actor} → {tgt}:{snip}" if tgt else f"{actor}:{snip}"
+    if etype == "conversation.message":
+        where = f"「{conv_title}」" if conv_title else "会议"
+        return f"{actor} 在{where}发言:{snip}"
+    if etype == "task.managed_run.started":
+        return f"{actor} 开始执行「{task_title}」" if task_title else f"{actor} 开始执行任务"
+    if etype == "task.done":
+        return f"{actor} 完成「{task_title}」" + (f":{snip}" if snip else "")
+    if etype == "task.blocked":
+        return f"{actor} 受阻「{task_title}」" + (f":{snip}" if snip else "")
+    if etype == "task.reopened":
+        return f"{actor} 重开「{task_title}」"
+    if etype in ("task.reassigned", "task.retried"):
+        verb = "改派" if etype == "task.reassigned" else "重试"
+        return f"{verb}「{task_title}」"
+    if etype == "task.discarded":
+        return f"{actor} 丢弃「{task_title}」"
+    if etype == "approval.requested":
+        return f"{actor} 申请审批「{task_title}」"
+    if etype == "approval.approved":
+        return f"批准「{task_title}」"
+    if etype == "progress.notification":
+        return f"进度上报:{snip}" if snip else "进度上报"
+    return f"{actor} {etype}"
+
+
+def company_feed(conn: sqlite3.Connection, limit: int = 40) -> list[dict]:
+    """One human-readable, chronological stream of what the company is doing — the unified
+    '谁派活/谁执行/谁开会/谁说了啥' view the console Overview shows so flows aren't scattered."""
+    types = tuple(FEED_EVENT_ICON)
+    qmarks = ",".join("?" * len(types))
+    evs = rows(conn, f"SELECT * FROM company_events WHERE event_type IN ({qmarks}) "
+                     f"ORDER BY created_at DESC LIMIT ?", (*types, limit))
+    parsed = []
+    task_ids, conv_ids = set(), set()
+    for e in evs:
+        try:
+            payload = json.loads(e["payload_json"] or "{}")
+        except (json.JSONDecodeError, TypeError):
+            payload = {}
+        if e["task_id"]:
+            task_ids.add(e["task_id"])
+        if payload.get("conversation_id"):
+            conv_ids.add(payload["conversation_id"])
+        parsed.append((e, payload))
+    titles, conv_titles = {}, {}
+    if task_ids:
+        qm = ",".join("?" * len(task_ids))
+        for r in rows(conn, f"SELECT id, title FROM tasks WHERE id IN ({qm})", tuple(task_ids)):
+            titles[r["id"]] = r["title"]
+    if conv_ids:
+        qm = ",".join("?" * len(conv_ids))
+        for r in rows(conn, f"SELECT id, title FROM conversations WHERE id IN ({qm})", tuple(conv_ids)):
+            conv_titles[r["id"]] = r["title"]
+    out = []
+    for e, payload in parsed:
+        etype = e["event_type"]
+        cid = payload.get("conversation_id", "")
+        out.append({
+            "ts": e["created_at"], "icon": FEED_EVENT_ICON.get(etype, "·"),
+            "event_type": etype, "actor": e["source_agent"] or "",
+            "text": _feed_text(etype, e["source_agent"] or "", payload, titles.get(e["task_id"], ""), conv_titles.get(cid, "")),
+            "task_id": e["task_id"] or "", "conversation_id": cid,
+        })
+    return out
+
+
 def safe_path_token(value: str) -> str:
     token = "".join(ch if ch.isalnum() or ch in "._-" else "_" for ch in str(value or ""))
     return token.strip("._-") or "task"
