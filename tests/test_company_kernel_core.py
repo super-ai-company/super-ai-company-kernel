@@ -1691,6 +1691,22 @@ class CompanyKernelCoreTest(unittest.TestCase):
             conn.close()
         self.assertEqual("antigravity", target)  # agy (twin) not active → no remap, stays as dispatched
 
+    def test_internal_submit_also_reroutes_app_to_cli_twin(self) -> None:
+        # The shared normalization must also cover submit_task_internal (used by task route / hooks /
+        # workflow / split), not just cmd_task_submit — else those paths could strand work on a passive app.
+        run_cli("employee", "create", "--id", "main", "--name", "main", "--role", "operator", "--runtime", "openclaw", "--workspace", str(self.root / "workspace" / "main"))
+        run_cli("employee", "create", "--id", "claude", "--name", "Claude", "--role", "analyst", "--runtime", "claude", "--workspace", str(self.root / "workspace" / "claude"))
+        run_cli("employee", "create", "--id", "claude-cli", "--name", "Claude CLI", "--role", "analyst", "--runtime", "claude", "--workspace", str(self.root / "workspace" / "claude-cli"))
+        conn = companyctl.connect()
+        try:
+            conn.execute("UPDATE employees SET status='active', updated_at=? WHERE id IN ('main','claude','claude-cli')", (companyctl.now(),))
+            conn.commit()
+            companyctl.submit_task_internal(conn, source="main", target="claude", title="review", description="x", task_id="task-internal-route")
+            target = conn.execute("SELECT target_agent FROM tasks WHERE id = 'task-internal-route'").fetchone()["target_agent"]
+        finally:
+            conn.close()
+        self.assertEqual("claude-cli", target)  # internal path normalized app → active cli twin
+
     def test_task_submit_no_force_bind_when_workspace_is_not_a_project(self) -> None:
         # A worker locked to project A, given a task whose workspace is NOT a registered project, must NOT
         # be stamped with A's memory key — that would resume the wrong project's session.

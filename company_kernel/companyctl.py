@@ -7928,47 +7928,57 @@ def cmd_task_auto_triage(args: argparse.Namespace) -> int:
     return 0
 
 
+def normalize_submission(conn: sqlite3.Connection, *, target: str, description: str) -> tuple[str, str, dict | None]:
+    """Shared submit normalization applied by EVERY entry point (cmd_task_submit, task route, hooks,
+    workflow, split) so routing/memory rules can't be bypassed:
+      - project executor lock: app↔cli remap, or block when the workspace's project forbids the target;
+      - global reroute of a passive app employee to its ACTIVE cli twin (so dispatched work isn't stuck);
+      - per-project `记忆会话:` stamp so the runtime resumes its project session instead of re-scanning.
+    Returns (target, description, error). error is a dict the caller surfaces when the lock blocks the
+    target. The caller runs approval/validation on the ORIGINAL description, then persists the returned
+    (stamped) one."""
+    target = resolve_employee_alias(target)
+    desc = str(description or "")
+    ws = ""
+    m = re.search(r"(?:工作区|workspace)\s*[:：]\s*([^\s。，、；;,]+)", desc)
+    if m:
+        ws = m.group(1)
+    pid = ""
+    if ws:
+        lock = project_memory.enforce_executor(conn, workspace=ws, target=target)
+        if lock.get("blocked"):
+            return target, desc, {"ok": False, "error": "project executor lock", "note": lock.get("note", ""), "target": target, "project_id": lock.get("project_id", "")}
+        if lock.get("remapped"):
+            target = lock["target"]
+        pid = lock.get("project_id") or ""
+    # A passive app employee never auto-claims — reroute to its active cli twin so the work actually runs.
+    twin = project_memory.APP_CLI_PAIRS.get(target)
+    if twin:
+        trow = conn.execute("SELECT status FROM employees WHERE id = ?", (twin,)).fetchone()
+        if trow and trow["status"] == "active":
+            target = twin
+    # Executor-lock memory fallback ONLY when the task carries no workspace at all (a context-less review
+    # task); a task naming a non-project workspace must NOT be bound to the worker's locked project.
+    if not pid and not ws:
+        pid = project_memory.project_for_executor(conn, target) or ""
+    if pid and not re.search(r"(?:记忆会话|memory-session)\s*[:：]", desc):
+        desc = desc.rstrip() + f"\n记忆会话: {pid}"
+    return target, desc, None
+
+
 def cmd_task_submit(args: argparse.Namespace) -> int:
     conn = connect()
     source = resolve_employee_alias(args.source)
     target = resolve_employee_alias(args.target)
-    # project executor lock: if this task's workspace belongs to a project that restricts who may
-    # work on it, remap (app↔cli twin) or refuse — so "this project = cli only" is enforced server-side.
-    _ws = ""
-    _m = re.search(r"(?:工作区|workspace)\s*[:：]\s*([^\s。，、；;,]+)", str(args.description or ""))
-    if _m:
-        _ws = _m.group(1)
-    _pid = ""
-    if _ws:
-        _lock = project_memory.enforce_executor(conn, workspace=_ws, target=target)
-        if _lock.get("blocked"):
-            emit({"ok": False, "error": "project executor lock", "note": _lock.get("note", ""), "target": target, "project_id": _lock.get("project_id", "")})
-            return 2
-        if _lock.get("remapped"):
-            args.target = _lock["target"]
-            target = _lock["target"]
-        _pid = _lock.get("project_id") or ""
-    # A passive app employee (codex/claude/antigravity) never auto-claims a dispatched task — it only
-    # runs when the owner opens it. Route the task to the app's CLI twin (the daemon worker) when that
-    # twin is active, so dispatched work actually gets done instead of sitting at `submitted` forever.
-    # (A project lock above may already have remapped; this is the global fallback for unlocked tasks.)
-    _twin = project_memory.APP_CLI_PAIRS.get(target)
-    if _twin:
-        _trow = conn.execute("SELECT status FROM employees WHERE id = ?", (_twin,)).fetchone()
-        if _trow and _trow["status"] == "active":
-            args.target = _twin
-            target = _twin
-    # Force-bind project memory by the target's executor lock ONLY when the task carries no workspace at
-    # all (a context-less review task). If it names a workspace that just isn't a registered project, do
-    # NOT override — stamping the worker's locked project would resume the WRONG project's session.
-    if not _pid and not _ws:
-        _pid = project_memory.project_for_executor(conn, target) or ""
-    # Stamp the per-project memory key into the description NOW, before the approval gate, so a task that
-    # gets parked for approval and later materialized still carries it. Validation + approval detection
-    # run on the ORIGINAL (un-stamped) text, so a project id can never be misread as a risk keyword.
+    # Shared normalization (executor lock / app→cli reroute / 记忆会话 stamp) used by EVERY submit path,
+    # so routing & memory rules can't be bypassed. Approval + validation run on the ORIGINAL description
+    # (so a project id is never misread as a risk keyword); the stamped one gets persisted / parked.
     _orig_desc = str(args.description or "")
-    if _pid and not re.search(r"(?:记忆会话|memory-session)\s*[:：]", _orig_desc):
-        args.description = _orig_desc.rstrip() + f"\n记忆会话: {_pid}"
+    target, args.description, _norm_err = normalize_submission(conn, target=target, description=args.description)
+    args.target = target
+    if _norm_err is not None:
+        emit(_norm_err)
+        return 2
     require_employee(conn, source)
     require_employee(conn, target)
     rejection = validate_task_submission(conn, target=target, title=args.title, description=_orig_desc, force=getattr(args, "force_submit", False))
@@ -8188,7 +8198,11 @@ def submit_task_internal(
     force: bool = False,
 ) -> dict:
     source = resolve_employee_alias(source)
-    target = resolve_employee_alias(target)
+    # same normalization every CLI/hook/workflow/route submit gets — executor lock / app→cli reroute /
+    # 记忆会话 stamp — so internal submitters can't bypass routing & memory binding.
+    target, description, _norm_err = normalize_submission(conn, target=target, description=description)
+    if _norm_err is not None:
+        raise SystemExit(json.dumps(_norm_err, ensure_ascii=False))
     require_employee(conn, source)
     require_employee(conn, target)
     inactive = require_active_employee(conn, target, "task.submit")
@@ -8345,10 +8359,16 @@ def write_dispatcher_completion_notice(conn: sqlite3.Connection, task: dict, *, 
         return ""
     inbox = employee_paths(source)["inbox"]
     inbox.mkdir(parents=True, exist_ok=True)
+    # tag the notice with its project (= the stamped 记忆会话 key) + trace, so a dispatcher consuming a
+    # mixed inbox can group completions by project/orchestration instead of merging unrelated rounds.
+    _pm = re.search(r"(?:记忆会话|memory-session)\s*[:：]\s*(\S+)", str(task.get("description") or ""))
+    project_id = _pm.group(1).strip() if _pm else ""
+    metadata = task.get("metadata") if isinstance(task.get("metadata"), dict) else {}
     notice = {
         "type": f"task.{status}", "task_id": task.get("id"), "title": task.get("title"),
         "done_by": target, "status": status, "summary": summary, "evidence_path": evidence,
-        "blocker": blocker, "at": now(),
+        "blocker": blocker, "at": now(), "source_agent": source,
+        "project_id": project_id, "trace_id": str(metadata.get("trace_id") or ""),
         "note": f"你派给 {target} 的任务「{task.get('title')}」已{ {'completed': '完成', 'done': '完成', 'cancelled': '取消'}.get(status, '受阻') }",
     }
     path = inbox / f"result-{task.get('id')}.json"
@@ -10023,12 +10043,6 @@ def cmd_task_conversations(args: argparse.Namespace) -> int:
         conversations.append(obj)
     emit({"ok": True, "task_id": args.task_id, "conversation_ids": conversation_ids, "conversations": conversations})
     return 0
-
-
-def load_json_file(path: Path) -> dict:
-    if not path.exists():
-        raise SystemExit(f"config not found: {path}")
-    return json.loads(path.read_text(encoding="utf-8"))
 
 
 def followup_paths(status: str = "pending") -> Path:

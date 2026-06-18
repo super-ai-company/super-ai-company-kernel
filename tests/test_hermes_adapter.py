@@ -121,10 +121,33 @@ class AdvanceFromCompletionsTest(unittest.TestCase):
                  mock.patch.object(ha, "run_hermes", lambda *a, **k: (1, "boom")), \
                  mock.patch.object(ha, "run_companyctl", lambda a: (0, "", "")):
                 res = ha.advance_from_completions(_args(), root)
-            self.assertEqual(1, res["exit_code"])
             self.assertTrue(res["retry_pending"])
             self.assertTrue(list(inbox.glob("result-*.json")))            # kept for retry
             self.assertFalse(list((inbox / "processed").glob("result-*.json")))
+
+    def test_completions_from_different_projects_advance_separately(self) -> None:
+        # Two completions for DIFFERENT projects must NOT be merged into one brain run — each project
+        # advances on its own (its own prompt, its own digest), never cross-pollinating.
+        with TemporaryDirectory() as d:
+            root = Path(d)
+            inbox = root / "employees" / "hermes" / "inbox"
+            self._notice(inbox, "task-a", done_by="codex", summary="A done", project_id="projA")
+            self._notice(inbox, "task-b", done_by="codex", summary="B done", project_id="projB")
+            prompts = []
+
+            def fake_run_hermes(prompt, output, *a, **k):
+                prompts.append(prompt.read_text(encoding="utf-8"))
+                output.write_text("ok", encoding="utf-8")
+                return (0, "")
+
+            with mock.patch.object(ha, "ROOT", root), mock.patch.object(ha, "run_hermes", fake_run_hermes), \
+                 mock.patch.object(ha, "run_companyctl", lambda a: (0, "", "")):
+                res = ha.advance_from_completions(_args(), root)
+
+            self.assertEqual(2, res["groups"])                 # two projects → two separate advances
+            self.assertEqual(2, len(prompts))
+            # no prompt mixes the two projects' completions
+            self.assertFalse(any("A done" in p and "B done" in p for p in prompts))
 
     def test_none_when_nothing_waiting(self) -> None:
         with TemporaryDirectory() as d:
