@@ -37,9 +37,13 @@ def emit(obj: dict) -> None:
 
 def connect() -> sqlite3.Connection:
     conn = sqlite3.connect(ensure_db_parent(DB_PATH))
-    conn.row_factory = sqlite3.Row
-    conn.executescript((ROOT / "company_kernel" / "schema.sql").read_text(encoding="utf-8"))
-    conn.commit()
+    try:
+        conn.row_factory = sqlite3.Row
+        conn.executescript((ROOT / "company_kernel" / "schema.sql").read_text(encoding="utf-8"))
+        conn.commit()
+    except Exception:
+        conn.close()  # don't leak a half-opened connection if schema bootstrap fails
+        raise
     return conn
 
 

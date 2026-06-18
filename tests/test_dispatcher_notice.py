@@ -28,6 +28,7 @@ class DispatcherNoticeTest(unittest.TestCase):
         importlib.reload(companyctl)
         self.ctl = companyctl
         self.conn = companyctl.connect()
+        self.addCleanup(self.conn.close)
         self.conn.execute("INSERT INTO employees(id,name,role,runtime,workspace,status,created_at,updated_at) "
                           "VALUES('codex','Codex','dev','codex','/tmp','active','t','t')")
         self.conn.commit()
