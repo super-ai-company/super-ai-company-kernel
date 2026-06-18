@@ -158,6 +158,31 @@ class ConversationStressTest(unittest.TestCase):
         entries = pm.recall(self.ctl.connect(), project_id="proj")
         self.assertTrue(any("沿用 PromptPay EMV" in e["body"] for e in entries), "conclusion must be stored")
 
+    def test_meeting_sysnote_visible_but_excluded_from_context(self):
+        """A mid-meeting failure note is shown in the console thread (no silent empty meeting),
+        but MUST be excluded from the context fed to later speakers / the synthesizer — otherwise
+        a "⚠️ codex hit 529" line pollutes the minutes and next-round reasoning."""
+        self._run(["employee", "create", "--id", "codex", "--name", "codex", "--role", "developer",
+                   "--runtime", "codex", "--workspace", str(self.root / "codex")])
+        self.gw.route_post("/v1/conversations", {
+            "from": "owner", "participants": "owner,codex",
+            "conversation_id": "conv-note", "title": "t", "body": "议程",
+        })
+        self.ctl.conversation_reply_internal(self.ctl.connect(), source="codex", conversation_id="conv-note",
+                                             body="codex 的真实发言:先做搜索")
+        self.ctl.conversation_reply_internal(self.ctl.connect(), source="codex", conversation_id="conv-note",
+                                             body=f"{self.ctl.MEETING_SYSNOTE_PREFIX} codex 本轮未能发言:529(已跳过)")
+        # console view shows BOTH messages — the failure is visible, never silent
+        _, shown = self.gw.route_get("/v1/conversations/conv-note", {})
+        bodies = [m["body"] for m in shown["messages"]]
+        self.assertTrue(any(self.ctl.MEETING_SYSNOTE_PREFIX in b for b in bodies),
+                        "failure note must be visible in the console thread")
+        # but the LLM context excludes the system note (no pollution)
+        ctx = self.ctl.conversation_thread_text(self.ctl.connect(), "conv-note")
+        self.assertIn("codex 的真实发言", ctx)
+        self.assertNotIn(self.ctl.MEETING_SYSNOTE_PREFIX, ctx)
+        self.assertNotIn("未能发言", ctx)
+
     def test_human_rbac_roles_and_action_gating(self) -> None:
         gw = self.gw
         # no users.json + no env token → open self-host (owner)
