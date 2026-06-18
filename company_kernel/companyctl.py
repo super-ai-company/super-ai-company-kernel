@@ -7948,6 +7948,16 @@ def cmd_task_submit(args: argparse.Namespace) -> int:
             args.target = _lock["target"]
             target = _lock["target"]
         _pid = _lock.get("project_id") or ""
+    # A passive app employee (codex/claude/antigravity) never auto-claims a dispatched task — it only
+    # runs when the owner opens it. Route the task to the app's CLI twin (the daemon worker) when that
+    # twin is active, so dispatched work actually gets done instead of sitting at `submitted` forever.
+    # (A project lock above may already have remapped; this is the global fallback for unlocked tasks.)
+    _twin = project_memory.APP_CLI_PAIRS.get(target)
+    if _twin:
+        _trow = conn.execute("SELECT status FROM employees WHERE id = ?", (_twin,)).fetchone()
+        if _trow and _trow["status"] == "active":
+            args.target = _twin
+            target = _twin
     # Force-bind project memory: workspace directive first, else the target's executor lock. The actual
     # `记忆会话: <project>` stamp is applied AFTER validation/approval below, so a project id is never
     # mistaken for a risk keyword by the approval detector.
