@@ -9656,9 +9656,16 @@ def conversation_invoke_runtime(conn: sqlite3.Connection, agent: str, prompt: st
     }
 
 
+# System notes (a speaker/chair failure surfaced INTO the thread for visibility) carry this prefix.
+# They are shown in the console but MUST be excluded from the context fed to later speakers and the
+# synthesizer — otherwise a "⚠️ codex hit 529" line leaks into the minutes and next-round reasoning.
+MEETING_SYSNOTE_PREFIX = "⚠️〔会议系统〕"
+
+
 def conversation_thread_text(conn: sqlite3.Connection, conversation_id: str, limit: int = 40) -> str:
     msgs = rows(conn, "SELECT * FROM conversation_messages WHERE conversation_id = ? ORDER BY created_at ASC", (conversation_id,))
-    return "\n".join(f"{m['source_agent']}: {m['body']}" for m in msgs[-limit:])
+    real = [m for m in msgs if not str(m["body"]).startswith(MEETING_SYSNOTE_PREFIX)]
+    return "\n".join(f"{m['source_agent']}: {m['body']}" for m in real[-limit:])
 
 
 # Meeting modes. "meeting" = sync goals/norms (each employee confirms understanding, raises
@@ -9899,9 +9906,10 @@ def conversation_run_internal(
             else:
                 reason = (res.get("error") or f"exit_code={res.get('exit_code')}")
                 # surface the failure INSIDE the meeting so a partial/empty meeting is never silent — the
-                # owner sees "codex-cli hit 529/timeout" instead of a blank room.
+                # owner sees "codex-cli hit 529/timeout" instead of a blank room. The MEETING_SYSNOTE_PREFIX
+                # keeps it out of later speakers'/synth context (so it can't pollute the minutes).
                 conversation_reply_internal(conn, source=spk, conversation_id=conversation_id,
-                                            body=f"⚠️（本轮未能发言:{str(reason)[:140]}）")
+                                            body=f"{MEETING_SYSNOTE_PREFIX} {spk} 本轮未能发言:{str(reason)[:140]}(已跳过,可稍后重跑本会)")
                 transcript.append({"round": rnd, "speaker": spk, "ok": False,
                                    "error": reason, "stderr": res.get("stderr", "")})
 
@@ -9927,7 +9935,7 @@ def conversation_run_internal(
     else:
         s_reason = synth_res.get("error") or f"synthesis exit_code={synth_res.get('exit_code')}"
         conversation_reply_internal(conn, source=synth, conversation_id=conversation_id,
-                                    body=f"⚠️（主持人未能出纪要:{str(s_reason)[:140]} —— 稍后重跑或换主持人）")
+                                    body=f"{MEETING_SYSNOTE_PREFIX} 主持人未能出纪要:{str(s_reason)[:140]} —— 稍后重跑或换主持人")
         transcript.append({"round": rounds + 1, "speaker": synth, "ok": False,
                            "error": s_reason, "stderr": synth_res.get("stderr", "")})
 
