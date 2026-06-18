@@ -50,12 +50,18 @@ def employee(conn: sqlite3.Connection, agent: str) -> sqlite3.Row | None:
     return conn.execute("SELECT * FROM employees WHERE id = ?", (agent,)).fetchone()
 
 
-def active_task(conn: sqlite3.Connection, agent: str) -> sqlite3.Row | None:
+def active_task(conn: sqlite3.Connection, agent: str, *, include_fixtures: bool = False) -> sqlite3.Row | None:
+    # `acceptance-*` ids are self-test fixtures (communication_acceptance creates them with aged
+    # timestamps to exercise the supervisor's own escalation path). In production they must NEVER be
+    # supervised — otherwise the self-test leaks ghost "Codex 卡住" escalations to the owner's Telegram,
+    # and since the fixture is deleted after the test, handling it 404s. The self-test opts in explicitly.
+    fixture_clause = "" if include_fixtures else "AND id NOT LIKE 'acceptance-%'"
     return conn.execute(
-        """
+        f"""
         SELECT * FROM tasks
         WHERE target_agent = ?
           AND status IN ('submitted', 'claimed')
+          {fixture_clause}
         ORDER BY updated_at DESC, created_at DESC
         LIMIT 1
         """,
@@ -317,7 +323,17 @@ def _record_escalation(task_id: str, fingerprint: str) -> None:
     path.write_text(json.dumps(state, ensure_ascii=False), encoding="utf-8")
 
 
+# Safe by default: real owner notifications only fire from the production CLI entrypoint (main, which
+# the daemon runs). Every test / acceptance script / programmatic supervise_once call leaves this off,
+# so running the test suite — even with secrets loaded (e.g. codex reviewing with full access) — can
+# NEVER leak ghost "Codex 卡住" escalations to the owner's Telegram.
+_NOTIFY_ENABLED = False
+
+
 def notify_if_escalation(result: dict[str, Any]) -> dict[str, Any]:
+    if not _NOTIFY_ENABLED:
+        result["notification"] = {"ok": True, "skipped": True, "reason": "notify disabled (non-production context)"}
+        return result
     if result.get("status") not in {"stalled", "blocked"}:
         return result
     message = str(result.get("human_message") or result.get("blocker") or "").strip()
@@ -371,12 +387,16 @@ def supervise_once(
     schema_path: Path | None = None,
     workspace: Path | None = None,
     report_root: Path | None = None,
+    include_fixtures: bool = False,
+    notify: bool = False,
 ) -> dict[str, Any]:
+    global _NOTIFY_ENABLED
     ts = now_ts or now()
     db_path = (db_path or DB_PATH).expanduser().resolve()
     schema_path = (schema_path or SCHEMA).expanduser().resolve()
     report_root = (report_root or ROOT).expanduser().resolve()
     conn = connect(db_path=db_path, schema_path=schema_path)
+    _NOTIFY_ENABLED = bool(notify)  # only the production main() opts in; everything else stays silent
     try:
         emp = employee(conn, agent)
         if not emp:
@@ -390,7 +410,7 @@ def supervise_once(
                 "workspace": str(workspace.expanduser().resolve()) if workspace else "",
             }
             return finalize_result(agent, result, report_root)
-        task = active_task(conn, agent)
+        task = active_task(conn, agent, include_fixtures=include_fixtures)
         effective_workspace = workspace.expanduser().resolve() if workspace else Path(emp["workspace"]).expanduser().resolve()
         progress_path, progress = latest_progress(effective_workspace, str(task["id"]) if task else "")
         if not task:
@@ -524,6 +544,7 @@ def supervise_once(
         return finalize_result(agent, result, report_root)
     finally:
         conn.close()
+        _NOTIFY_ENABLED = False  # restore safe default so a later programmatic call can't inherit it
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -549,6 +570,7 @@ def main(argv: list[str] | None = None) -> int:
         schema_path=Path(args.schema_path),
         workspace=workspace,
         report_root=Path(args.report_root),
+        notify=True,  # production entrypoint (run by the daemon) — the ONLY path that may notify the owner
     )
     emit(result)
     return 0 if result.get("ok") else 1
