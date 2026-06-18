@@ -10999,6 +10999,11 @@ def materialize_route_task(conn: sqlite3.Connection, approval: dict, actor: str)
         return None  # already materialized (idempotent re-approval)
     source = resolve_employee_alias(meta.get("source") or approval.get("source_agent") or "")
     target = resolve_employee_alias(meta["target"])
+    # Apply the SAME submit normalization (executor lock / app→cli reroute / 记忆会话 stamp) the direct
+    # submit paths use — an approved route task must not bypass routing & memory binding either.
+    target, description, _norm_err = normalize_submission(conn, target=target, description=meta.get("description", ""))
+    if _norm_err is not None:
+        return None  # the project lock forbids this target — don't materialize an unrunnable task
     try:
         require_employee(conn, source)
         require_employee(conn, target)
@@ -11012,7 +11017,7 @@ def materialize_route_task(conn: sqlite3.Connection, approval: dict, actor: str)
         INSERT INTO tasks(id, source_agent, target_agent, title, description, priority, status, created_at, updated_at)
         VALUES (?, ?, ?, ?, ?, ?, 'submitted', ?, ?)
         """,
-        (task_id, source, target, meta["title"], meta.get("description", ""), priority, ts, ts),
+        (task_id, source, target, meta["title"], description, priority, ts, ts),
     )
     metadata = {
         "trace_id": new_trace_id(),
@@ -11043,7 +11048,7 @@ def materialize_route_task(conn: sqlite3.Connection, approval: dict, actor: str)
         "source_agent": source,
         "target_agent": target,
         "title": meta["title"],
-        "description": meta.get("description", ""),
+        "description": description,
         "priority": priority,
         "status": "submitted",
         "metadata": metadata,
