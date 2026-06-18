@@ -1691,6 +1691,28 @@ class CompanyKernelCoreTest(unittest.TestCase):
             conn.close()
         self.assertEqual("antigravity", target)  # agy (twin) not active → no remap, stays as dispatched
 
+    def test_materialize_route_task_normalizes_target_and_memory(self) -> None:
+        # An approval-gated route task, when materialized after approval, must ALSO go through
+        # normalize_submission (app→cli reroute + 记忆会话 stamp) — not bypass it.
+        run_cli("employee", "create", "--id", "main", "--name", "main", "--role", "operator", "--runtime", "openclaw", "--workspace", str(self.root / "workspace" / "main"))
+        run_cli("employee", "create", "--id", "claude", "--name", "Claude", "--role", "analyst", "--runtime", "claude", "--workspace", str(self.root / "workspace" / "claude"))
+        run_cli("employee", "create", "--id", "claude-cli", "--name", "Claude CLI", "--role", "analyst", "--runtime", "claude", "--workspace", str(self.root / "workspace" / "claude-cli"))
+        run_cli("memory", "project", "create", "--id", "projM", "--name", "projM", "--workspace", str(self.root / "projM"), "--lead", "main")
+        run_cli("memory", "project", "set-executors", "--id", "projM", "--executors", "claude-cli")
+        conn = companyctl.connect()
+        try:
+            conn.execute("UPDATE employees SET status='active', updated_at=? WHERE id IN ('main','claude','claude-cli')", (companyctl.now(),))
+            conn.commit()
+            approval = {"id": "appr-mat-1", "source_agent": "main",
+                        "detail": {"metadata": {"route": True, "title": "review", "target": "claude",
+                                                 "description": "review it", "source": "main"}}}
+            task = companyctl.materialize_route_task(conn, approval, actor="main")
+        finally:
+            conn.close()
+        self.assertIsNotNone(task)
+        self.assertEqual("claude-cli", task["target_agent"])      # app → active cli twin
+        self.assertIn("记忆会话: projM", task["description"])      # memory key force-bound via executor lock
+
     def test_internal_submit_also_reroutes_app_to_cli_twin(self) -> None:
         # The shared normalization must also cover submit_task_internal (used by task route / hooks /
         # workflow / split), not just cmd_task_submit — else those paths could strand work on a passive app.
