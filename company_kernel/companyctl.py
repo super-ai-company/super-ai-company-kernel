@@ -14698,4 +14698,12 @@ def main(argv: list[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
+    # Restore default SIGPIPE so `companyctl … | head` (or any truncating pipe) exits quietly like a
+    # normal Unix tool instead of dumping a BrokenPipeError traceback. Only when run as the CLI — the
+    # in-process test/daemon callers go through main() directly and keep Python's default handling.
+    try:
+        import signal as _signal
+        _signal.signal(_signal.SIGPIPE, _signal.SIG_DFL)
+    except (AttributeError, ValueError, OSError):
+        pass
     raise SystemExit(main())
