@@ -1651,6 +1651,46 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual(1, desc2.count("记忆会话"))
         self.assertIn("记忆会话: custom", desc2)
 
+    def test_task_submit_routes_app_target_to_active_cli_twin(self) -> None:
+        # Dispatching to a passive app employee (claude) must route to its active CLI twin (claude-cli),
+        # the daemon worker — otherwise the task sits unclaimed forever.
+        run_cli("employee", "create", "--id", "main", "--name", "main", "--role", "operator", "--runtime", "openclaw", "--workspace", str(self.root / "workspace" / "main"))
+        run_cli("employee", "create", "--id", "claude", "--name", "Claude", "--role", "analyst", "--runtime", "claude", "--workspace", str(self.root / "workspace" / "claude"))
+        run_cli("employee", "create", "--id", "claude-cli", "--name", "Claude CLI", "--role", "analyst", "--runtime", "claude", "--workspace", str(self.root / "workspace" / "claude-cli"))
+        conn = companyctl.connect()
+        try:
+            conn.execute("UPDATE employees SET status='active', updated_at=? WHERE id IN ('main','claude','claude-cli')", (companyctl.now(),))
+            conn.commit()
+        finally:
+            conn.close()
+        code, submitted = run_cli("task", "submit", "--from", "main", "--to", "claude", "--task-id", "task-app-route", "--title", "review")
+        self.assertEqual(0, code, submitted)
+        conn = companyctl.connect()
+        try:
+            target = conn.execute("SELECT target_agent FROM tasks WHERE id = 'task-app-route'").fetchone()["target_agent"]
+        finally:
+            conn.close()
+        self.assertEqual("claude-cli", target)
+
+    def test_task_submit_keeps_app_target_when_cli_twin_inactive(self) -> None:
+        # If the CLI twin isn't active, don't route to a dead worker — leave the app target as-is.
+        run_cli("employee", "create", "--id", "main", "--name", "main", "--role", "operator", "--runtime", "openclaw", "--workspace", str(self.root / "workspace" / "main"))
+        run_cli("employee", "create", "--id", "antigravity", "--name", "Antigravity", "--role", "designer", "--runtime", "antigravity", "--workspace", str(self.root / "workspace" / "antigravity"))
+        conn = companyctl.connect()
+        try:
+            conn.execute("UPDATE employees SET status='active', updated_at=? WHERE id IN ('main','antigravity')", (companyctl.now(),))
+            conn.commit()
+        finally:
+            conn.close()
+        code, submitted = run_cli("task", "submit", "--from", "main", "--to", "antigravity", "--task-id", "task-app-noroute", "--title", "review")
+        self.assertEqual(0, code, submitted)
+        conn = companyctl.connect()
+        try:
+            target = conn.execute("SELECT target_agent FROM tasks WHERE id = 'task-app-noroute'").fetchone()["target_agent"]
+        finally:
+            conn.close()
+        self.assertEqual("antigravity", target)  # agy (twin) not active → no remap, stays as dispatched
+
     def test_task_submit_rejects_candidate_employee(self) -> None:
         code, created = run_cli("employee", "create", "--id", "main", "--name", "main", "--role", "operator", "--runtime", "openclaw", "--workspace", str(self.root / "workspace" / "main"))
         self.assertEqual(0, code, created)
