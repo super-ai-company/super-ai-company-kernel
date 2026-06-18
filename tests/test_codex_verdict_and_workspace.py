@@ -268,9 +268,13 @@ class ReviewTaskVerdictTest(unittest.TestCase):
         self.assertTrue(codex_adapter.is_review_task("只读审核 这个分支"))
         self.assertTrue(codex_adapter.is_review_task("任务类型: 审核\n看 diff"))
         self.assertTrue(codex_adapter.is_review_task("第3轮复审:只读复审 main 改动"))
+        self.assertTrue(codex_adapter.is_review_task("只读终轮复审。读 VERSION-SUMMARY.md"))  # words between 只读…复审
         self.assertTrue(codex_adapter.is_review_task("please code review the change"))
         self.assertFalse(codex_adapter.is_review_task("实现登录功能并提交"))
         self.assertFalse(codex_adapter.is_review_task(""))
+        # must NOT match a dev task that merely names a "code review" feature (codex round-6 finding)
+        self.assertFalse(codex_adapter.is_review_task("实现 code review dashboard 功能并提交"))
+        self.assertFalse(codex_adapter.is_review_task("build a review system for orders"))
 
 
 if __name__ == "__main__":
