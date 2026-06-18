@@ -580,7 +580,9 @@ def sync_backlog_from_queue_file(conn: sqlite3.Connection) -> None:
             # route imported backlog through the same normalization as a fresh dispatch (app→cli reroute
             # / executor lock / 记忆会话 stamp) so a synced pending task reaches a real cli worker and
             # carries project memory instead of stranding on a passive app.
-            target, desc, _ = normalize_submission(conn, target=target, description=desc)
+            target, desc, _norm_err = normalize_submission(conn, target=target, description=desc)
+            if _norm_err is not None:
+                continue  # the project lock forbids this target — skip importing a forbidden task
             conn.execute(
                 """
                 INSERT INTO tasks (id, source_agent, target_agent, title, description, priority, status, claimed_by, summary, evidence_path, blocker, created_at, updated_at)
@@ -12242,13 +12244,19 @@ def cmd_task_reassign(args: argparse.Namespace) -> int:
     if not can_manage_task_recovery(conn, task, actor):
         emit({"ok": False, "error": "actor cannot reassign task", "task_id": args.task_id, "by": actor})
         return 2
+    # normalize the new target + the task's description (app→cli reroute / executor lock / 记忆会话) just
+    # like a fresh dispatch — a reassign must not re-strand work on a passive app or drop project memory.
+    target, _new_desc, _norm_err = normalize_submission(conn, target=target, description=task["description"] or "")
+    if _norm_err is not None:
+        emit(_norm_err)
+        return 2
     policy = require_communication_allowed(actor, target, "task.submit")
     previous_target = task["target_agent"]
     previous_attempt = latest_attempt_for_task(conn, args.task_id)
     previous_attempt_id = previous_attempt["attempt_id"] if previous_attempt else ""
     conn.execute(
-        "UPDATE tasks SET target_agent = ?, status = 'submitted', claimed_by = '', blocker = '', updated_at = ? WHERE id = ?",
-        (target, now(), args.task_id),
+        "UPDATE tasks SET target_agent = ?, description = ?, status = 'submitted', claimed_by = '', blocker = '', updated_at = ? WHERE id = ?",
+        (target, _new_desc, now(), args.task_id),
     )
     conn.execute("DELETE FROM locks WHERE resource_key = ?", (f"task:{args.task_id}",))
     synced_plan_items = sync_project_plan_owner_for_task(conn, task_id=args.task_id, owner=target, actor=actor)

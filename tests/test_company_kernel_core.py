@@ -1691,6 +1691,28 @@ class CompanyKernelCoreTest(unittest.TestCase):
             conn.close()
         self.assertEqual("antigravity", target)  # agy (twin) not active → no remap, stays as dispatched
 
+    def test_task_reassign_normalizes_app_target_to_cli_twin(self) -> None:
+        # Reassigning a task to a passive app must reroute to its active cli twin (and re-bind memory),
+        # not re-strand the work — reassign goes through normalize_submission too.
+        run_cli("employee", "create", "--id", "main", "--name", "main", "--role", "operator", "--runtime", "openclaw", "--workspace", str(self.root / "workspace" / "main"))
+        run_cli("employee", "create", "--id", "claude", "--name", "Claude", "--role", "analyst", "--runtime", "claude", "--workspace", str(self.root / "workspace" / "claude"))
+        run_cli("employee", "create", "--id", "claude-cli", "--name", "Claude CLI", "--role", "analyst", "--runtime", "claude", "--workspace", str(self.root / "workspace" / "claude-cli"))
+        conn = companyctl.connect()
+        try:
+            conn.execute("UPDATE employees SET status='active', updated_at=? WHERE id IN ('main','claude','claude-cli')", (companyctl.now(),))
+            conn.commit()
+        finally:
+            conn.close()
+        run_cli("task", "submit", "--from", "main", "--to", "claude-cli", "--task-id", "task-ra", "--title", "x", "--description", "do it")
+        code, res = run_cli("task", "reassign", "--task-id", "task-ra", "--by", "main", "--to", "claude", "--reason", "test")
+        self.assertEqual(0, code, res)
+        conn = companyctl.connect()
+        try:
+            target = conn.execute("SELECT target_agent FROM tasks WHERE id = 'task-ra'").fetchone()["target_agent"]
+        finally:
+            conn.close()
+        self.assertEqual("claude-cli", target)  # reassign to app normalized → active cli twin
+
     def test_materialize_route_task_normalizes_target_and_memory(self) -> None:
         # An approval-gated route task, when materialized after approval, must ALSO go through
         # normalize_submission (app→cli reroute + 记忆会话 stamp) — not bypass it.
