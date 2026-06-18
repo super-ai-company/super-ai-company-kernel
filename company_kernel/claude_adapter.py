@@ -321,6 +321,20 @@ def claude_session_flags(agent: str, memory_key: str, attempt: int) -> tuple[lis
     return ["--session-id", sid], sid
 
 
+_SESSION_IN_USE = re.compile(r"already in use|session id .*in use", re.IGNORECASE)
+
+
+def _run_claude_once(cmd: list[str], workspace: Path, proxy_env: dict, limit: int) -> tuple[int, str, str]:
+    """One `claude -p` subprocess run. Returns (rc, stdout, stderr). Timeout → rc 124 with a clear note."""
+    try:
+        cp = subprocess.run(cmd, cwd=str(workspace), text=True, capture_output=True,
+                            env={**os.environ, **proxy_env}, timeout=limit)
+        return cp.returncode, cp.stdout or "", cp.stderr or ""
+    except subprocess.TimeoutExpired as exc:
+        out = (exc.stdout.decode() if isinstance(exc.stdout, bytes) else (exc.stdout or "")) if exc.stdout else ""
+        return 124, out, f"claude -p killed after exceeding {limit}s timeout (was hanging)"
+
+
 def run_claude(prompt: Path, output: Path, workspace: Path, model: str, permission_mode: str, agent: str = "claude", timeout: int | None = None, memory_key: str = "") -> tuple[int, str]:
     proxy_env, model, route = resolve_claude_proxy(agent, model)
     # PER-EMPLOYEE 权限覆盖:profile.json 设了 permission_mode 就用它(例如 gemini QA 需要工具/浏览器 → bypassPermissions,
@@ -366,14 +380,17 @@ def run_claude(prompt: Path, output: Path, workspace: Path, model: str, permissi
             cmd.extend(["--model", m])
         if permission_mode:
             cmd.extend(["--permission-mode", permission_mode])
-        try:
-            cp = subprocess.run(cmd, cwd=str(workspace), text=True, capture_output=True,
-                                env={**os.environ, **proxy_env}, timeout=limit)
-            rc, out, err = cp.returncode, cp.stdout or "", cp.stderr or ""
-        except subprocess.TimeoutExpired as exc:
-            rc = 124
-            out = (exc.stdout.decode() if isinstance(exc.stdout, bytes) else (exc.stdout or "")) if exc.stdout else ""
-            err = f"claude -p killed after exceeding {limit}s timeout (was hanging)"
+        rc, out, err = _run_claude_once(cmd, workspace, proxy_env, limit)
+        # Salvage a stale/locked memory session: a crashed/killed prior run can leave the session "already
+        # in use", which would otherwise fail every later task. Rerun this attempt stateless so the task
+        # still completes (loses continuity for this run; the session resumes once the lock clears).
+        if memory_key and "--no-session-persistence" not in sess_flags and _SESSION_IN_USE.search(out + err):
+            cmd_stateless = [claude_bin, "-p", prompt_text, "--no-session-persistence", "--output-format", "text"]
+            if m:
+                cmd_stateless.extend(["--model", m])
+            if permission_mode:
+                cmd_stateless.extend(["--permission-mode", permission_mode])
+            rc, out, err = _run_claude_once(cmd_stateless, workspace, proxy_env, limit)
         used = m
         if not (proxy_env and _quota_exhausted(out + err)):
             break  # success, or a non-quota failure → stop trying other models

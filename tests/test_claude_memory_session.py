@@ -88,5 +88,27 @@ class ClaudeMemorySessionTest(unittest.TestCase):
         self.assertNotIn("--resume", captured[0])
 
 
+    def test_session_in_use_salvages_to_stateless(self) -> None:
+        # A stale/locked memory session ("already in use") must NOT fail the task — rerun stateless once.
+        prompt = self.root / "p.md"; prompt.write_text("hi", encoding="utf-8")
+        out = self.root / "o.md"
+        captured = []
+
+        def fake_run(cmd, **kw):
+            captured.append(cmd)
+            if "--no-session-persistence" in cmd:
+                return mock.Mock(returncode=0, stdout="completed", stderr="")
+            return mock.Mock(returncode=1, stdout="", stderr="Error: Session ID abc is already in use")
+
+        with mock.patch.object(self.ca, "resolve_claude_proxy", return_value=({}, "", "native")), \
+             mock.patch.object(self.ca, "subprocess") as sp:
+            sp.run.side_effect = fake_run
+            rc, _ = self.ca.run_claude(prompt, out, self.root, "", "", "claude", memory_key="conv-x")
+
+        self.assertEqual(0, rc)                                   # salvaged, not a failed task
+        self.assertIn("--session-id", captured[0])               # first tried the (locked) session
+        self.assertIn("--no-session-persistence", captured[1])   # then retried stateless and succeeded
+
+
 if __name__ == "__main__":
     unittest.main()
