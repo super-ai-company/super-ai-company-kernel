@@ -391,6 +391,17 @@ def parse_verdict(output: Path) -> tuple[str, str]:
     return verdict, (last.group(2) or "").strip()
 
 
+_REVIEW_TASK_RE = re.compile(r"任务类型\s*[:：]\s*(?:审核|review)|只读审核|只读复审|代码审核|code\s*review", re.IGNORECASE)
+
+
+def is_review_task(description: str) -> bool:
+    """A review/analysis task whose DELIVERABLE is the verdict itself. For these, a 'blocked / 不能合
+    main' conclusion is a FINDING, not a failure of the task — so a substantive review must mark the
+    task completed (verdict in the summary), not blocked. Detected by an explicit review marker so a
+    normal dev task that happens to report blocked is never mis-accepted."""
+    return bool(_REVIEW_TASK_RE.search(description or ""))
+
+
 def _project_memory_block(task: sqlite3.Row) -> str:
     """Shared project memory injected so codex reads it before working. Never break card building."""
     try:
@@ -1042,10 +1053,19 @@ def process(args: argparse.Namespace) -> int:
     runtime_seconds = max(0, int(round(time.monotonic() - started_monotonic)))
     if code == 0:
         verdict, verdict_reason = parse_verdict(artifact["last_message"])
+        # A review/analysis task's deliverable IS the verdict — a 'blocked / 不能合' conclusion is a
+        # finding, not a failure. As long as it produced a substantive report, mark it completed (the
+        # conclusion goes into the summary) so review tasks don't pile up on the board as 'blocked'.
+        if verdict == "blocked" and is_review_task(task["description"] or "") and last_message_substantive(artifact["last_message"]):
+            verdict, verdict_reason = "completed", f"审核完成 · 结论:{verdict_reason or '见报告'}"
     elif code == TIMEOUT_EXIT_CODE:
         # codex does code execution — a summary at timeout doesn't prove the code is committed, so we
         # do NOT auto-complete. But we tell the owner whether it produced anything: review vs dead hang.
-        if last_message_substantive(artifact["last_message"]):
+        if is_review_task(task["description"] or "") and last_message_substantive(artifact["last_message"]):
+            # a review/analysis task that produced substantive findings before timing out is still a
+            # usable review — accept it (don't block; it has no code to commit).
+            verdict, verdict_reason = "completed", "审核完成(超时前已产出结论,可能不完整,见报告)"
+        elif last_message_substantive(artifact["last_message"]):
             verdict = "blocked"
             verdict_reason = "⏱ 超时但已产出结果(收尾卡住被终止)—— 代码未必全部提交,请复核产出/改动后接受或重试。"
         else:

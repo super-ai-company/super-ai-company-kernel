@@ -260,6 +260,19 @@ class QueueVerdictIntegrationTest(unittest.TestCase):
         self.assertIn("RFC", block_argv[block_argv.index("--blocker") + 1])
 
 
+class ReviewTaskVerdictTest(unittest.TestCase):
+    """A review/analysis task's deliverable is the verdict — a 'blocked / can't merge' conclusion is a
+    finding, not a task failure, so review tasks must be detected and not pile up as 'blocked'."""
+
+    def test_is_review_task_detection(self) -> None:
+        self.assertTrue(codex_adapter.is_review_task("只读审核 这个分支"))
+        self.assertTrue(codex_adapter.is_review_task("任务类型: 审核\n看 diff"))
+        self.assertTrue(codex_adapter.is_review_task("第3轮复审:只读复审 main 改动"))
+        self.assertTrue(codex_adapter.is_review_task("please code review the change"))
+        self.assertFalse(codex_adapter.is_review_task("实现登录功能并提交"))
+        self.assertFalse(codex_adapter.is_review_task(""))
+
+
 if __name__ == "__main__":
     unittest.main()
 
