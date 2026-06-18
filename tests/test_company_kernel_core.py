@@ -1651,6 +1651,27 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertEqual(1, desc2.count("记忆会话"))
         self.assertIn("记忆会话: custom", desc2)
 
+    def test_task_submit_rejects_reserved_acceptance_prefix(self) -> None:
+        """Business tasks can't claim the `acceptance-` self-test namespace via --task-id (or intake):
+        the PM supervisor exempts that prefix from escalation, so such a task would be silently
+        never-escalated. The fixture path (ensure_acceptance_task) bypasses this and is unaffected."""
+        run_cli("employee", "create", "--id", "main", "--name", "main", "--role", "operator", "--runtime", "openclaw", "--workspace", str(self.root / "workspace" / "main"))
+        run_cli("employee", "create", "--id", "codex-cli", "--name", "Codex CLI", "--role", "engineer", "--runtime", "codex", "--workspace", str(self.root / "workspace" / "codex-cli"))
+        conn = companyctl.connect()
+        try:
+            conn.execute("UPDATE employees SET status='active', updated_at=? WHERE id IN ('main','codex-cli')", (companyctl.now(),))
+            conn.commit()
+        finally:
+            conn.close()
+        code, out = run_cli("task", "submit", "--from", "main", "--to", "codex-cli", "--task-id", "acceptance-evil", "--title", "x", "--description", "工作区: /tmp/x")
+        self.assertNotEqual(0, code, out)
+        self.assertIn("保留", str(out))
+        conn = companyctl.connect()
+        try:
+            self.assertIsNone(conn.execute("SELECT 1 FROM tasks WHERE id='acceptance-evil'").fetchone())
+        finally:
+            conn.close()
+
     def test_task_submit_routes_app_target_to_active_cli_twin(self) -> None:
         # Dispatching to a passive app employee (claude) must route to its active CLI twin (claude-cli),
         # the daemon worker — otherwise the task sits unclaimed forever.

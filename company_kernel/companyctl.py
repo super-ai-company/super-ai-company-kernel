@@ -7950,11 +7950,21 @@ def codex_target_workspace_ok(conn: sqlite3.Connection, target: str, description
     return True, ""
 
 
-def validate_task_submission(conn: sqlite3.Connection, *, target: str, title: str, description: str, force: bool = False) -> dict | None:
+# Reserved for communication_acceptance self-test fixtures. The PM supervisor exempts this id prefix
+# from escalation, so a REAL task created with it would be silently never-escalated — block business
+# submissions (CLI --task-id, intake payload) from claiming the namespace. Fixtures use a separate
+# internal path (ensure_acceptance_task) that doesn't go through here, so they're unaffected.
+RESERVED_TASK_ID_PREFIX = "acceptance-"
+
+
+def validate_task_submission(conn: sqlite3.Connection, *, target: str, title: str, description: str, force: bool = False, task_id: str = "") -> dict | None:
     """Submit-time guardrails. Returns None if allowed, else a rejection dict. Prevents:
     1) non-executable codex tasks (no repo workspace) — they only ever block;
     2) duplicates of an already-active task;
-    3) re-creating a task that was just discarded (the '丢弃了又出现' loop)."""
+    3) re-creating a task that was just discarded (the '丢弃了又出现' loop);
+    4) business tasks claiming the reserved `acceptance-` self-test namespace (even under force)."""
+    if task_id and str(task_id).startswith(RESERVED_TASK_ID_PREFIX):
+        return {"ok": False, "error": f"task_id 前缀 '{RESERVED_TASK_ID_PREFIX}' 为自检夹具保留,业务任务不可使用", "task_id": task_id}
     if force or not submit_guards_on():
         return None
     target = resolve_employee_alias(target)
@@ -8078,7 +8088,7 @@ def cmd_task_submit(args: argparse.Namespace) -> int:
         return 2
     require_employee(conn, source)
     require_employee(conn, target)
-    rejection = validate_task_submission(conn, target=target, title=args.title, description=_orig_desc, force=getattr(args, "force_submit", False))
+    rejection = validate_task_submission(conn, target=target, title=args.title, description=_orig_desc, force=getattr(args, "force_submit", False), task_id=getattr(args, "task_id", "") or "")
     if rejection:
         emit({**rejection, "target": target, "title": args.title})
         return 2
@@ -8305,7 +8315,7 @@ def submit_task_internal(
     inactive = require_active_employee(conn, target, "task.submit")
     if inactive and not allow_candidate:
         raise SystemExit(json.dumps(inactive, ensure_ascii=False))
-    rejection = validate_task_submission(conn, target=target, title=title, description=description, force=force)
+    rejection = validate_task_submission(conn, target=target, title=title, description=description, force=force, task_id=task_id)
     if rejection:
         raise SystemExit(json.dumps(rejection, ensure_ascii=False))
     policy = require_communication_allowed(source, target, "task.submit")
