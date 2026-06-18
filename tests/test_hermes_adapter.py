@@ -110,6 +110,22 @@ class AdvanceFromCompletionsTest(unittest.TestCase):
             self.assertFalse(res["executed"])
             self.assertTrue(list(inbox.glob("result-*.json")))   # not lost — left for an --execute tick
 
+    def test_failed_brain_run_keeps_notices_for_retry(self) -> None:
+        # If the hermes brain run fails (crash/timeout/529), notices must NOT be archived — they stay for
+        # the next tick to retry, so a failed advance never silently drops a completion.
+        with TemporaryDirectory() as d:
+            root = Path(d)
+            inbox = root / "employees" / "hermes" / "inbox"
+            self._notice(inbox, "task-x", done_by="codex", summary="done")
+            with mock.patch.object(ha, "ROOT", root), \
+                 mock.patch.object(ha, "run_hermes", lambda *a, **k: (1, "boom")), \
+                 mock.patch.object(ha, "run_companyctl", lambda a: (0, "", "")):
+                res = ha.advance_from_completions(_args(), root)
+            self.assertEqual(1, res["exit_code"])
+            self.assertTrue(res["retry_pending"])
+            self.assertTrue(list(inbox.glob("result-*.json")))            # kept for retry
+            self.assertFalse(list((inbox / "processed").glob("result-*.json")))
+
     def test_none_when_nothing_waiting(self) -> None:
         with TemporaryDirectory() as d:
             with mock.patch.object(ha, "ROOT", Path(d)):

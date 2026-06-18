@@ -1691,6 +1691,28 @@ class CompanyKernelCoreTest(unittest.TestCase):
             conn.close()
         self.assertEqual("antigravity", target)  # agy (twin) not active → no remap, stays as dispatched
 
+    def test_task_submit_no_force_bind_when_workspace_is_not_a_project(self) -> None:
+        # A worker locked to project A, given a task whose workspace is NOT a registered project, must NOT
+        # be stamped with A's memory key — that would resume the wrong project's session.
+        run_cli("employee", "create", "--id", "main", "--name", "main", "--role", "operator", "--runtime", "openclaw", "--workspace", str(self.root / "workspace" / "main"))
+        run_cli("employee", "create", "--id", "codex-cli", "--name", "Codex CLI", "--role", "engineer", "--runtime", "codex", "--workspace", str(self.root / "workspace" / "codex-cli"))
+        conn = companyctl.connect()
+        try:
+            conn.execute("UPDATE employees SET status='active', updated_at=? WHERE id IN ('main','codex-cli')", (companyctl.now(),))
+            conn.commit()
+        finally:
+            conn.close()
+        run_cli("memory", "project", "create", "--id", "projA", "--name", "projA", "--workspace", str(self.root / "projA"), "--lead", "main")
+        run_cli("memory", "project", "set-executors", "--id", "projA", "--executors", "codex-cli")
+        code, submitted = run_cli("task", "submit", "--from", "main", "--to", "codex-cli", "--task-id", "task-xproj", "--title", "build", "--description", f"工作区: {self.root / 'unrelated'}\nbuild it")
+        self.assertEqual(0, code, submitted)
+        conn = companyctl.connect()
+        try:
+            desc = conn.execute("SELECT description FROM tasks WHERE id = 'task-xproj'").fetchone()["description"]
+        finally:
+            conn.close()
+        self.assertNotIn("记忆会话", desc)  # not force-bound to projA — the workspace isn't projA
+
     def test_task_submit_rejects_candidate_employee(self) -> None:
         code, created = run_cli("employee", "create", "--id", "main", "--name", "main", "--role", "operator", "--runtime", "openclaw", "--workspace", str(self.root / "workspace" / "main"))
         self.assertEqual(0, code, created)
