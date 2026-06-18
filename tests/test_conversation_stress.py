@@ -183,6 +183,25 @@ class ConversationStressTest(unittest.TestCase):
         self.assertNotIn(self.ctl.MEETING_SYSNOTE_PREFIX, ctx)
         self.assertNotIn("未能发言", ctx)
 
+    def test_company_feed_renders_readable_stream(self):
+        """The unified Overview feed collapses the raw event ledger into owner-readable one-liners
+        (with jump ids), and filters out internal plumbing (tool.call/budget/session)."""
+        self._run(["employee", "create", "--id", "codex", "--name", "codex", "--role", "developer",
+                   "--runtime", "codex", "--workspace", str(self.root / "codex")])
+        self.gw.route_post("/v1/conversations", {
+            "from": "owner", "participants": "owner,codex",
+            "conversation_id": "conv-feed", "title": "周会", "body": "议程"})
+        self.ctl.record_event(self.ctl.connect(), "conversation.message", "codex",
+                              payload={"conversation_id": "conv-feed", "body": "我先做搜索"})
+        self.ctl.record_event(self.ctl.connect(), "tool.call.started", "codex", payload={"x": 1})  # noise
+        feed = self.ctl.company_feed(self.ctl.connect(), limit=20)
+        texts = [f["text"] for f in feed]
+        self.assertTrue(any("发言" in t and "周会" in t for t in texts), texts)
+        # internal plumbing is excluded from the owner feed
+        self.assertFalse(any("tool.call" in f["event_type"] for f in feed))
+        # the meeting row carries a jump id so the console can open it
+        self.assertTrue(any(f["conversation_id"] == "conv-feed" for f in feed))
+
     def test_human_rbac_roles_and_action_gating(self) -> None:
         gw = self.gw
         # no users.json + no env token → open self-host (owner)

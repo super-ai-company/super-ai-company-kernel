@@ -819,6 +819,19 @@ def route_get(path: str, query: dict[str, list[str]]) -> tuple[int, dict]:
             event["payload"] = sanitize_payload_values(payload)
             events.append(event)
         return HTTPStatus.OK, {"ok": True, "events": events}
+    if path == "/v1/feed":
+        try:
+            limit = max(1, min(int(query_value(query, "limit") or 40), 200))
+        except ValueError:
+            limit = 40
+        conn = companyctl.connect()
+        try:
+            items = companyctl.company_feed(conn, limit=limit)
+        finally:
+            conn.close()
+        for it in items:
+            it["text"] = sanitize_dashboard_text(it.get("text", ""))
+        return HTTPStatus.OK, {"ok": True, "feed": items}
     if path == "/v1/heartbeats":
         conn = companyctl.connect()
         try:
