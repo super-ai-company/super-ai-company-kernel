@@ -323,15 +323,14 @@ def _record_escalation(task_id: str, fingerprint: str) -> None:
     path.write_text(json.dumps(state, ensure_ascii=False), encoding="utf-8")
 
 
-# Safe by default: real owner notifications only fire from the production CLI entrypoint (main, which
-# the daemon runs). Every test / acceptance script / programmatic supervise_once call leaves this off,
-# so running the test suite — even with secrets loaded (e.g. codex reviewing with full access) — can
-# NEVER leak ghost "Codex 卡住" escalations to the owner's Telegram.
-_NOTIFY_ENABLED = False
-
-
-def notify_if_escalation(result: dict[str, Any]) -> dict[str, Any]:
-    if not _NOTIFY_ENABLED:
+def notify_if_escalation(result: dict[str, Any], notify: bool) -> dict[str, Any]:
+    # Safe by default: real owner notifications only fire when the caller explicitly opts in (the
+    # production CLI main(), which the daemon runs). Every test / acceptance script / programmatic
+    # supervise_once call passes notify=False, so running the test suite — even with secrets loaded
+    # (e.g. codex reviewing with full access) — can NEVER leak ghost escalations to the owner's Telegram.
+    # notify is threaded as a parameter (not a module global) so concurrent/interleaved supervise_once
+    # calls in one process can't cross-contaminate each other's send decision.
+    if not notify:
         result["notification"] = {"ok": True, "skipped": True, "reason": "notify disabled (non-production context)"}
         return result
     if result.get("status") not in {"stalled", "blocked"}:
@@ -371,8 +370,8 @@ def notify_if_escalation(result: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
-def finalize_result(agent: str, result: dict[str, Any], report_root: Path) -> dict[str, Any]:
-    notify_if_escalation(result)
+def finalize_result(agent: str, result: dict[str, Any], report_root: Path, notify: bool = False) -> dict[str, Any]:
+    notify_if_escalation(result, notify)
     result["report_path"] = str(write_pm_report(agent, result, report_root=report_root))
     return result
 
@@ -390,13 +389,11 @@ def supervise_once(
     include_fixtures: bool = False,
     notify: bool = False,
 ) -> dict[str, Any]:
-    global _NOTIFY_ENABLED
     ts = now_ts or now()
     db_path = (db_path or DB_PATH).expanduser().resolve()
     schema_path = (schema_path or SCHEMA).expanduser().resolve()
     report_root = (report_root or ROOT).expanduser().resolve()
     conn = connect(db_path=db_path, schema_path=schema_path)
-    _NOTIFY_ENABLED = bool(notify)  # only the production main() opts in; everything else stays silent
     try:
         emp = employee(conn, agent)
         if not emp:
@@ -409,7 +406,7 @@ def supervise_once(
                 "db_path": str(db_path),
                 "workspace": str(workspace.expanduser().resolve()) if workspace else "",
             }
-            return finalize_result(agent, result, report_root)
+            return finalize_result(agent, result, report_root, notify=notify)
         task = active_task(conn, agent, include_fixtures=include_fixtures)
         effective_workspace = workspace.expanduser().resolve() if workspace else Path(emp["workspace"]).expanduser().resolve()
         progress_path, progress = latest_progress(effective_workspace, str(task["id"]) if task else "")
@@ -423,7 +420,7 @@ def supervise_once(
                 "db_path": str(db_path),
                 "workspace": str(effective_workspace),
             }
-            return finalize_result(agent, result, report_root)
+            return finalize_result(agent, result, report_root, notify=notify)
         task_title = short_text(task["title"])
         if not progress_path:
             # Grace period: a freshly-claimed/actively-running task hasn't written its progress file
@@ -446,7 +443,7 @@ def supervise_once(
                     "workspace": str(effective_workspace),
                     "progress_history": [],
                 }
-                return finalize_result(agent, result, report_root)
+                return finalize_result(agent, result, report_root, notify=notify)
             result = {
                 "ok": True,
                 "status": "stalled",
@@ -459,7 +456,7 @@ def supervise_once(
                 "workspace": str(effective_workspace),
                 "progress_history": [],
             }
-            return finalize_result(agent, result, report_root)
+            return finalize_result(agent, result, report_root, notify=notify)
         history = progress_history(effective_workspace, str(task["id"]))
         state = progress_state(progress)
         layer = progress_layer(progress)
@@ -484,7 +481,7 @@ def supervise_once(
             }
             if close_completed:
                 close_task(conn, task, "completed", result["human_message"], evidence, ts)
-            return finalize_result(agent, result, report_root)
+            return finalize_result(agent, result, report_root, notify=notify)
         if state == "blocked":
             result = {
                 "ok": True,
@@ -503,7 +500,7 @@ def supervise_once(
                 "progress_history": history,
             }
             close_task(conn, task, "blocked", result["human_message"], evidence, ts)
-            return finalize_result(agent, result, report_root)
+            return finalize_result(agent, result, report_root, notify=notify)
         created = parse_time(progress_created_at(progress, ts))
         age_minutes = (parse_time(ts) - created).total_seconds() / 60
         if layer in {"received", "working"} and age_minutes > stale_minutes:
@@ -524,7 +521,7 @@ def supervise_once(
                 "progress_history": history,
             }
             close_task(conn, task, "stalled", result["human_message"], evidence, ts)
-            return finalize_result(agent, result, report_root)
+            return finalize_result(agent, result, report_root, notify=notify)
         result = {
             "ok": True,
             "status": state or "in_progress",
@@ -541,10 +538,9 @@ def supervise_once(
             "workspace": str(effective_workspace),
             "progress_history": history,
         }
-        return finalize_result(agent, result, report_root)
+        return finalize_result(agent, result, report_root, notify=notify)
     finally:
         conn.close()
-        _NOTIFY_ENABLED = False  # restore safe default so a later programmatic call can't inherit it
 
 
 def build_parser() -> argparse.ArgumentParser:

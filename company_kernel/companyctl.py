@@ -9593,7 +9593,7 @@ def meeting_result_internal(conn: sqlite3.Connection, conversation_id: str) -> d
             break
         # the chair tried but failed to write minutes — the meeting IS over (no verdict). Without this
         # the poller would wait forever thinking colleagues are still talking. Report done + failed.
-        if body.startswith(MEETING_SYSNOTE_PREFIX) and "未能出纪要" in body:
+        if body.startswith(MEETING_SYSNOTE_PREFIX) and MEETING_CHAIR_FAIL_MARK in body:
             chair_failed = True
             break
     status = "concluded" if conclusion else ("chair_failed" if chair_failed else "in_progress")
@@ -9832,6 +9832,10 @@ def conversation_invoke_runtime(conn: sqlite3.Connection, agent: str, prompt: st
 # They are shown in the console but MUST be excluded from the context fed to later speakers and the
 # synthesizer — otherwise a "⚠️ codex hit 529" line leaks into the minutes and next-round reasoning.
 MEETING_SYSNOTE_PREFIX = "⚠️〔会议系统〕"
+# Shared marker for the chair-failed-to-synthesize note. Used at BOTH the write site (the failure note)
+# and the read site (meeting_result detecting a concluded-but-verdict-less meeting), so changing the
+# wording can't silently break the "done despite no minutes" detection.
+MEETING_CHAIR_FAIL_MARK = "主持人未能出纪要"
 
 
 def conversation_thread_text(conn: sqlite3.Connection, conversation_id: str, limit: int = 40) -> str:
@@ -10107,7 +10111,7 @@ def conversation_run_internal(
     else:
         s_reason = synth_res.get("error") or f"synthesis exit_code={synth_res.get('exit_code')}"
         conversation_reply_internal(conn, source=synth, conversation_id=conversation_id,
-                                    body=f"{MEETING_SYSNOTE_PREFIX} 主持人未能出纪要:{str(s_reason)[:140]} —— 稍后重跑或换主持人")
+                                    body=f"{MEETING_SYSNOTE_PREFIX} {MEETING_CHAIR_FAIL_MARK}:{str(s_reason)[:140]} —— 稍后重跑或换主持人")
         transcript.append({"round": rounds + 1, "speaker": synth, "ok": False,
                            "error": s_reason, "stderr": synth_res.get("stderr", "")})
 
