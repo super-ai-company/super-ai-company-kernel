@@ -1580,15 +1580,22 @@ async function decide(id, action) {
 
 /* ---------- unified company feed (谁派活/谁执行/谁开会/谁说了啥) ---------- */
 function feedOpenConv(cid){ document.querySelector('[data-v="conversations"]').click(); openMeeting(cid); }
+// one delegated listener on the stable container — survives every innerHTML refresh
+(function bindFeedClicks(){ const box=$("ovFeed"); if(!box||box._bound) return; box._bound=true;
+  box.addEventListener("click", (e)=>{ const row=e.target.closest("[data-conv],[data-task]"); if(!row) return;
+    if(row.dataset.conv) feedOpenConv(row.dataset.conv); else if(row.dataset.task) showTask(row.dataset.task); });
+})();
 async function loadFeed() {
   try {
     const d = await api("/v1/feed?limit=40");
     const items = d.feed || d.items || [];
     $("ovFeed").innerHTML = items.map(it=>{
-      const jump = it.conversation_id ? `onclick="feedOpenConv('${esc(it.conversation_id)}')"`
-                 : it.task_id ? `onclick="showTask('${esc(it.task_id)}')"` : "";
+      // ids go in data-* (HTML-escaped, round-trips via dataset) — never interpolated into an inline
+      // JS handler, so a weird id can't break the handler or form an injection boundary.
+      const conv = it.conversation_id ? ` data-conv="${esc(it.conversation_id)}"` : "";
+      const task = (!it.conversation_id && it.task_id) ? ` data-task="${esc(it.task_id)}"` : "";
       const cur = (it.conversation_id||it.task_id) ? ' style="cursor:pointer"' : "";
-      return `<div class="row"${cur} ${jump}><div class="head">
+      return `<div class="row"${cur}${conv}${task}><div class="head">
         <span class="who">${esc(it.icon)} ${esc(it.text)}</span>
         <span class="when">${ago(it.ts)}</span></div></div>`;
     }).join("") || `<div class="empty">暂无动态 · 派一个任务或发起一场会议就会出现在这里</div>`;
