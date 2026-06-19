@@ -190,6 +190,18 @@ def run_init(args: argparse.Namespace) -> int:
                 ok, detail = False, str(exc)
             if ok:
                 _say(f"  ✓ 已添加 {emp_id}")
+                # truly on-duty: install the kernel MCP + 'you are an employee' block into THIS runtime's
+                # own config, so chatting with it, it knows it's `{emp_id}` and can use the kernel.
+                from company_kernel import integration_installer as _ii
+                if rt in _ii.APP_CONFIG and _confirm(
+                        f"    把内核集成装进 {rt} 配置(对话时它就知道自己是 {emp_id}、能用 kernel)?",
+                        assume_yes=assume_yes):
+                    res = _ii.install_for_runtime(rt, agent_id=emp_id, dry_run=False)
+                    if res.get("ok"):
+                        _say(f"      集成 ✓  MCP:{res['mcp']['result']} · 指令:{res['instructions']['result']}")
+                    else:
+                        errors.append(f"integration:{rt}")
+                        _say(f"      集成 ✗ {res.get('error', '')}")
             else:
                 errors.append(f"add:{emp_id}")
                 _say(f"  ✗ 失败 {emp_id} — {detail[:160]}")

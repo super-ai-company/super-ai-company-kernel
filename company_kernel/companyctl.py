@@ -9633,6 +9633,16 @@ def meeting_result_internal(conn: sqlite3.Connection, conversation_id: str) -> d
             "transcript": [{"speaker": m["source_agent"], "body": str(m["body"])[:400]} for m in msgs]}
 
 
+def cmd_employee_install_integration(args: argparse.Namespace) -> int:
+    """Install the company-kernel MCP + 'you are an employee' instructions into the agent runtime's
+    own config, so it's truly on-duty (knows it can use the kernel), not just listed in the DB."""
+    from company_kernel import integration_installer
+    out = integration_installer.install_for_runtime(
+        args.runtime, agent_id=getattr(args, "agent_id", "") or None, dry_run=bool(getattr(args, "dry_run", False)))
+    emit(out)
+    return 0 if out.get("ok") else 1
+
+
 def cmd_employee_ensure_owner(args: argparse.Namespace) -> int:
     conn = connect()
     owner = ensure_human_owner(conn, owner_id=getattr(args, "owner_id", "owner") or "owner")
@@ -14020,6 +14030,11 @@ def build_parser() -> argparse.ArgumentParser:
     emp_offboard.add_argument("--hard-delete", action="store_true", help="delete only Company Kernel-managed employee files/workspace")
     emp_offboard.add_argument("--dry-run", action="store_true")
     emp_offboard.set_defaults(func=cmd_employee_offboard)
+    emp_integration = emp_sub.add_parser("install-integration", help="install company-kernel MCP + employee instructions into an agent runtime's own config (codex/claude/gemini) so it's truly on-duty")
+    emp_integration.add_argument("--runtime", required=True, help="codex / claude / gemini / antigravity")
+    emp_integration.add_argument("--agent-id", default="", help="employee id the agent acts as (default: the runtime name)")
+    emp_integration.add_argument("--dry-run", action="store_true", help="show what would change, write nothing")
+    emp_integration.set_defaults(func=cmd_employee_install_integration)
     emp_ensure_owner = emp_sub.add_parser("ensure-owner", help="create the human owner employee if missing (idempotent; used by `init`)")
     emp_ensure_owner.add_argument("--owner-id", default="owner")
     emp_ensure_owner.set_defaults(func=cmd_employee_ensure_owner)
