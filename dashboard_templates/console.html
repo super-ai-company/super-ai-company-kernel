@@ -1624,22 +1624,33 @@ async function decide(id, action) {
 /* ---------- priority queue: 第一屏「需要你处理」(待审批>阻塞>超时),就地操作 ---------- */
 const PQ_DISMISSED = new Set();                 // 标记已读：本地隐藏,刷新不重现
 const PQ_SEV = {1:{c:"var(--bad,#c0633a)"},2:{c:"#9C5151"},3:{c:"#B08A3E"}};
-async function loadPriorityQueue(){
+function pqRender(queue){
+  const items = (queue||[]).filter(it => !PQ_DISMISSED.has(it.kind+":"+it.id));
+  // ids go in data-* (never interpolated into an inline JS handler); clicks handled by delegation below.
+  $("ovQueue").innerHTML = items.map(it=>{
+    const sev = PQ_SEV[it.severity]||{c:"#9C927A"};
+    const age = it.age_minutes==null ? "" : (it.age_minutes<60?`${it.age_minutes}分钟前`:`${Math.floor(it.age_minutes/60)}小时前`);
+    const btns = (it.actions||[]).map(pqBtn).join("");
+    return `<div class="row" data-pqkind="${esc(it.kind)}" data-pqid="${esc(it.id)}"><div class="head">
+      <span class="prio" style="background:${sev.c};color:#fff;border-radius:4px;padding:1px 7px;font-size:11px">${esc(it.label)}</span>
+      <span class="who" data-pqact="open" style="cursor:pointer">${esc(it.title)}</span>
+      <span class="emp-sub">${esc(it.target||"")}</span><span class="when">${age}</span></div>
+      <div style="display:flex;gap:6px;margin-top:7px;flex-wrap:wrap">${btns}</div></div>`;
+  }).join("") || `<div class="empty">✅ 没有待处理的要紧事</div>`;
+}
+// SSE 实时:队列变化即时局部刷新,不重绘全页;EventSource 自动重连;轮询(refreshAll)始终作 fallback。
+let PQ_SSE=null;
+function pqStartSSE(){
+  if(!window.EventSource || PQ_SSE) return;
   try {
-    const d = await api("/v1/priority-queue?stale_minutes=30");
-    const items = (d.queue||[]).filter(it => !PQ_DISMISSED.has(it.kind+":"+it.id));
-    // ids go in data-* (never interpolated into an inline JS handler); clicks handled by delegation below.
-    $("ovQueue").innerHTML = items.map(it=>{
-      const sev = PQ_SEV[it.severity]||{c:"#9C927A"};
-      const age = it.age_minutes==null ? "" : (it.age_minutes<60?`${it.age_minutes}分钟前`:`${Math.floor(it.age_minutes/60)}小时前`);
-      const btns = (it.actions||[]).map(pqBtn).join("");
-      return `<div class="row" data-pqkind="${esc(it.kind)}" data-pqid="${esc(it.id)}"><div class="head">
-        <span class="prio" style="background:${sev.c};color:#fff;border-radius:4px;padding:1px 7px;font-size:11px">${esc(it.label)}</span>
-        <span class="who" data-pqact="open" style="cursor:pointer">${esc(it.title)}</span>
-        <span class="emp-sub">${esc(it.target||"")}</span><span class="when">${age}</span></div>
-        <div style="display:flex;gap:6px;margin-top:7px;flex-wrap:wrap">${btns}</div></div>`;
-    }).join("") || `<div class="empty">✅ 没有待处理的要紧事</div>`;
-  } catch(e){ $("ovQueue").innerHTML = `<div class="empty">${esc(e.message)}</div>`; }
+    PQ_SSE = new EventSource((API||"")+"/v1/priority-queue/stream?poll_seconds=3");
+    PQ_SSE.addEventListener("priority_queue_changed", e=>{ try{ pqRender(JSON.parse(e.data).queue); }catch(_){} });
+    PQ_SSE.onerror = ()=>{};   // 断线 EventSource 自动重连;期间轮询兜底
+  } catch(_){}
+}
+async function loadPriorityQueue(){
+  try { const d = await api("/v1/priority-queue?stale_minutes=30"); pqRender(d.queue); }
+  catch(e){ $("ovQueue").innerHTML = `<div class="empty">${esc(e.message)}</div>`; }
 }
 function pqBtn(a){
   const L={approve:["✓ 批准","ok"],deny:["✕ 拒绝","bad"],reopen:["🔧 重开",""],nudge:["📣 催办",""],reassign:["↪ 改派",""],read:["📕 已读",""]};
@@ -1772,7 +1783,7 @@ async function refreshAll(manual=false) {
   loadConversations();
 }
 applyLang();
-detectApi().then(ok => { refreshAll(); if(!ok) $("refreshMeta").textContent = "API 未连接 / not connected"; });
+detectApi().then(ok => { refreshAll(); if(ok) pqStartSSE(); else $("refreshMeta").textContent = "API 未连接 / not connected"; });
 timer = setInterval(async () => { if (!API && !(await detectApi())) return; refreshAll(); }, 15000);
 </script>
 </body>
