@@ -660,6 +660,9 @@ def process_managed_attempt(args: argparse.Namespace, emp: sqlite3.Row) -> int:
             str(args.progress_interval_seconds),
             "--stale-after-seconds",
             str(args.stale_after_seconds),
+            # pid stamp → watchdog can fast-reap an orphaned attempt if this adapter process dies
+            "--pid",
+            str(os.getpid()),
         ]
     )
     if run_code != 0:

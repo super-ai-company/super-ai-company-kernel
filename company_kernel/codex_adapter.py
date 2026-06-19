@@ -1001,7 +1001,11 @@ def process(args: argparse.Namespace) -> int:
         run_companyctl(["heartbeat", "--agent", args.agent])
         emit({"ok": done_code == 0, "processed": 1, "executed": False, "needs_quote": True, "task_id": task["id"], "blocker": blocker, "report": str(artifact["report"]), **gate_fields})
         return done_code
-    run_code, run_payload, run_err = run_companyctl_json(["task", "run", "--task-id", task["id"], "--agent", args.agent, "--by", args.agent, "--adapter-type", "codex", "--session-key", f"codex:{task['id']}"])
+    # Stamp THIS adapter process's pid on the attempt so the watchdog can detect an orphaned run:
+    # if this process dies mid-task (e.g. the daemon was killed), the attempt is left 'running' with a
+    # now-dead pid → reaped fast instead of waiting out the runtime cap. A live run keeps a live pid,
+    # so this never false-positives a legitimately long task.
+    run_code, run_payload, run_err = run_companyctl_json(["task", "run", "--task-id", task["id"], "--agent", args.agent, "--by", args.agent, "--adapter-type", "codex", "--session-key", f"codex:{task['id']}", "--pid", str(os.getpid())])
     if run_code != 0:
         emit({"ok": False, "error": "attempt start failed", "task_id": task["id"], "companyctl": run_payload, "stderr": run_err[-1000:]})
         return run_code

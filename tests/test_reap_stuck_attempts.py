@@ -44,14 +44,14 @@ class ReapStuckAttemptsTest(unittest.TestCase):
         from company_kernel import companyctl
         importlib.reload(companyctl)
 
-    def _task_with_attempt(self, *, started_minutes_ago: int, attempt_status="running", task_status="claimed", source="antigravity", target="codex", tid="t-stuck", aid="a-stuck"):
+    def _task_with_attempt(self, *, started_minutes_ago: int, attempt_status="running", task_status="claimed", source="antigravity", target="codex", tid="t-stuck", aid="a-stuck", pid=""):
         started = iso(datetime.now(timezone.utc) - timedelta(minutes=started_minutes_ago))
         self.conn.execute("INSERT INTO tasks(id,source_agent,target_agent,title,description,priority,status,claimed_by,created_at,updated_at) "
                           "VALUES(?,?,?,?,'','P2',?,?,'t','t')", (tid, source, target, "long task", task_status, target))
         self.conn.execute(
-            "INSERT INTO execution_attempts(attempt_id,task_id,employee_id,adapter_type,status,started_at,runtime_policy_json) "
-            "VALUES(?,?,?,'codex',?,?,?)",
-            (aid, tid, target, attempt_status, started, '{"max_runtime_seconds": 1800}'))
+            "INSERT INTO execution_attempts(attempt_id,task_id,employee_id,adapter_type,status,started_at,runtime_policy_json,pid) "
+            "VALUES(?,?,?,'codex',?,?,?,?)",
+            (aid, tid, target, attempt_status, started, '{"max_runtime_seconds": 1800}', str(pid)))
         self.conn.commit()
         return tid, aid
 
@@ -93,6 +93,33 @@ class ReapStuckAttemptsTest(unittest.TestCase):
         res = self.ctl.finish_execution_attempt_internal(self.conn, attempt_id=aid, status="success")
         self.assertTrue(res.get("late_finish_ignored"))
         self.assertEqual("stale", self.conn.execute("SELECT status FROM execution_attempts WHERE attempt_id=?", (aid,)).fetchone()[0])
+
+    def test_orphan_reaped_when_pid_dead_before_runtime_cap(self):
+        # 10 min in (well under the 30-min cap) but its adapter pid is dead → orphan, reaped fast.
+        dead_pid = 2_000_000_000  # implausibly-high pid → not alive
+        tid, aid = self._task_with_attempt(started_minutes_ago=10, pid=dead_pid, tid="t-orphan", aid="a-orphan")
+        result = self.ctl.reap_stuck_attempts_internal(self.conn, actor="openclaw-main")
+        self.assertEqual(1, result["reaped_count"], result)
+        self.assertEqual("worker_process_gone", result["reaped"][0]["reason"])
+        self.assertIn("worker_process_gone", self.conn.execute("SELECT blocker FROM tasks WHERE id=?", (tid,)).fetchone()[0])
+
+    def test_live_pid_within_cap_is_not_reaped(self):
+        # Our own pid is alive → a within-cap attempt owned by a live process must NOT be reaped.
+        tid, aid = self._task_with_attempt(started_minutes_ago=10, pid=os.getpid(), tid="t-live", aid="a-live")
+        result = self.ctl.reap_stuck_attempts_internal(self.conn, actor="openclaw-main")
+        self.assertEqual(0, result["reaped_count"], result)
+        self.assertEqual("running", self.conn.execute("SELECT status FROM execution_attempts WHERE attempt_id=?", (aid,)).fetchone()[0])
+
+    def test_dead_pid_within_grace_is_not_reaped(self):
+        # Dead pid but only 1 min in (< 120s orphan grace) → don't race a just-started adapter.
+        tid, aid = self._task_with_attempt(started_minutes_ago=1, pid=2_000_000_000, tid="t-grace", aid="a-grace")
+        result = self.ctl.reap_stuck_attempts_internal(self.conn, actor="openclaw-main")
+        self.assertEqual(0, result["reaped_count"], result)
+
+    def test_process_alive_helper(self):
+        self.assertTrue(self.ctl.process_alive(os.getpid()))
+        self.assertFalse(self.ctl.process_alive(2_000_000_000))
+        self.assertFalse(self.ctl.process_alive(0))
 
     def test_idempotent_no_double_reap(self):
         tid, _ = self._task_with_attempt(started_minutes_ago=120)

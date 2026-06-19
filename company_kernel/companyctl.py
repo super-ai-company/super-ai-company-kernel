@@ -13217,12 +13217,34 @@ def cmd_repair_reset_stale_claims(_args: argparse.Namespace) -> int:
 # is force-reaped. The adapter-level process-group timeout catches most hangs first (~30-75min); this
 # is the backstop for attempts whose worker died/hung without ever finishing the attempt row.
 WATCHDOG_GLOBAL_CAP_SECONDS = 5400  # 90 minutes
+# Grace before the pid-liveness (orphan) check fires, so a just-started adapter whose pid stamp is
+# milliseconds behind isn't misread as dead.
+WATCHDOG_ORPHAN_GRACE_SECONDS = 120
+
+
+def process_alive(pid: int) -> bool:
+    """True if a process with this pid currently exists (signal-0 probe). The watchdog uses this to
+    detect an ORPHANED attempt whose adapter process already died (e.g. the daemon was killed
+    mid-run) — caught fast instead of waiting out the 90-min cap. pid reuse can only cause a false
+    'alive' (a conservative miss), never a false 'dead', so this NEVER reaps a live run."""
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except (PermissionError, OSError):
+        return True  # exists but un-signalable, or unknown error → assume alive (conservative)
+    return True
 
 
 def reap_stuck_attempts_internal(conn: sqlite3.Connection, *, actor: str = "openclaw-main", now_ts: str | None = None) -> dict:
-    """Fault-tolerance watchdog (free, pure SQL): an execution attempt running past its allowed
-    runtime is force-failed so its task lands in the FAILURE list with a real reason — instead of
-    hanging forever as 'claimed' while only the heartbeat looks stale (the symptom the owner sees).
+    """Fault-tolerance watchdog (free, pure SQL): force-fail an execution attempt that is either
+    (a) running past its allowed runtime, or (b) ORPHANED — its stamped adapter pid is already dead
+    while it's still 'running' (a crashed worker / killed daemon) — so its task lands in the FAILURE
+    list with a real reason instead of hanging forever as 'claimed' while only the heartbeat looks
+    stale (the symptom the owner sees). The pid check catches the orphan FAST (next tick) without
+    waiting out the 90-min cap, and never false-positives a live run (a live process keeps a live pid).
 
     Closes the loop: attempt→stale, task→blocked('watchdog_reaped: ...'), dispatcher notified,
     `task.watchdog_reaped` event recorded. Race-safe: a conditional UPDATE means it acts only if it
@@ -13232,15 +13254,27 @@ def reap_stuck_attempts_internal(conn: sqlite3.Connection, *, actor: str = "open
     reaped: list[dict] = []
     scan = rows(conn, "SELECT * FROM execution_attempts WHERE status IN ('starting', 'running', 'correcting') ORDER BY started_at ASC")
     for attempt in scan:
+        # A correcting attempt may be parked awaiting an owner decision / cancel-in-flight — don't
+        # yank it on the same raw clock as a running one.
+        if attempt.get("status") == "correcting" and attempt.get("cancel_requested_at"):
+            continue
         policy = attempt_json_field(attempt, "runtime_policy_json")
         max_runtime = int(policy.get("max_runtime_seconds", DEFAULT_RUNTIME_POLICY["max_runtime_seconds"]) or DEFAULT_RUNTIME_POLICY["max_runtime_seconds"])
         cap = min(max_runtime, WATCHDOG_GLOBAL_CAP_SECONDS)
         runtime_age = seconds_since(attempt.get("started_at") or "", current)
-        if runtime_age < cap:
-            continue
-        # A correcting attempt may be parked awaiting an owner decision / cancel-in-flight — don't
-        # yank it on the same raw clock as a running one.
-        if attempt.get("status") == "correcting" and attempt.get("cancel_requested_at"):
+        # Two independent reap triggers:
+        #  • runtime_exceeded — ran past its cap (the universal backstop).
+        #  • worker_process_gone — its stamped adapter pid is dead while it's still 'running' (the
+        #    fast, reliable orphan signal for a crashed worker / killed daemon; never false-positives
+        #    a live run since a live process keeps a live pid). Only after a short grace.
+        reason, detail = "", ""
+        if runtime_age >= cap:
+            reason, detail = "runtime_exceeded", f"runtime_exceeded ({int(runtime_age)}s > {cap}s cap)"
+        else:
+            pid_raw = str(attempt.get("pid") or "").strip()
+            if pid_raw.isdigit() and runtime_age >= WATCHDOG_ORPHAN_GRACE_SECONDS and not process_alive(int(pid_raw)):
+                reason, detail = "worker_process_gone", f"worker_process_gone (pid {pid_raw} dead after {int(runtime_age)}s)"
+        if not reason:
             continue
         attempt_id = attempt["attempt_id"]
         prev_status = attempt["status"]
@@ -13249,12 +13283,12 @@ def reap_stuck_attempts_internal(conn: sqlite3.Connection, *, actor: str = "open
         cur = conn.execute(
             "UPDATE execution_attempts SET status = 'stale', finished_at = ?, error_message = ? "
             "WHERE attempt_id = ? AND status IN ('starting', 'running', 'correcting')",
-            (current, f"watchdog: ran {int(runtime_age)}s past cap {cap}s, reaped", attempt_id),
+            (current, f"watchdog: {detail}, reaped", attempt_id),
         )
         if cur.rowcount != 1:
             continue
         task_id = attempt["task_id"]
-        blocker = f"watchdog_reaped: runtime_exceeded ({int(runtime_age)}s > {cap}s cap)"
+        blocker = f"watchdog_reaped: {detail}"
         conn.execute(
             "UPDATE tasks SET status = 'blocked', blocker = ?, updated_at = ? "
             "WHERE id = ? AND status IN ('claimed', 'running', 'correcting', 'submitted', 'stale')",
@@ -13266,13 +13300,13 @@ def reap_stuck_attempts_internal(conn: sqlite3.Connection, *, actor: str = "open
         notice = deliver_completion_notice(conn, task, status="blocked", blocker=blocker, actor=actor)
         event = record_event(
             conn, "task.watchdog_reaped", actor, task_id=task_id, trace_id=attempt.get("trace_id", ""),
-            payload={"attempt_id": attempt_id, "employee_id": attempt.get("employee_id", ""), "reason": "runtime_exceeded",
-                     "runtime_age_seconds": int(runtime_age), "cap_seconds": cap, "previous_attempt_status": prev_status,
-                     "dispatcher_notified": bool(notice)},
+            payload={"attempt_id": attempt_id, "employee_id": attempt.get("employee_id", ""), "reason": reason,
+                     "runtime_age_seconds": int(runtime_age), "cap_seconds": cap, "pid": str(attempt.get("pid") or ""),
+                     "previous_attempt_status": prev_status, "dispatcher_notified": bool(notice)},
         )
-        audit(conn, actor, "task.watchdog_reaped", task_id, {"attempt_id": attempt_id, "runtime_age_seconds": int(runtime_age), "cap_seconds": cap, "event_id": event["id"]})
+        audit(conn, actor, "task.watchdog_reaped", task_id, {"attempt_id": attempt_id, "reason": reason, "runtime_age_seconds": int(runtime_age), "cap_seconds": cap, "event_id": event["id"]})
         reaped.append({"task_id": task_id, "attempt_id": attempt_id, "employee_id": attempt.get("employee_id", ""),
-                       "runtime_age_seconds": int(runtime_age), "cap_seconds": cap, "blocker": blocker,
+                       "reason": reason, "runtime_age_seconds": int(runtime_age), "cap_seconds": cap, "blocker": blocker,
                        "dispatcher_notified": notice or None})
     return {"scanned": len(scan), "reaped": reaped, "reaped_count": len(reaped)}
 
