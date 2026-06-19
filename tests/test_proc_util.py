@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import os
+import signal
 import subprocess
 import sys
+import tempfile
+import textwrap
 import time
 import unittest
 
@@ -30,6 +33,36 @@ class ProcUtilTest(unittest.TestCase):
                 [sys.executable, "-c", script], timeout=1, capture_output=True, text=True)
         # the test passes if the call raised after killing the group; give the OS a beat to reap
         time.sleep(0.5)
+
+    def test_timeout_sigkills_grandchild_that_ignores_sigterm(self):
+        pid_file = tempfile.NamedTemporaryFile(delete=False)
+        pid_file.close()
+        self.addCleanup(lambda: os.path.exists(pid_file.name) and os.unlink(pid_file.name))
+        script = textwrap.dedent(
+            f"""
+            import subprocess, sys, time
+            subprocess.Popen([
+                sys.executable, '-c',
+                "import os,signal,time; "
+                "signal.signal(signal.SIGTERM, signal.SIG_IGN); "
+                "open({pid_file.name!r}, 'w').write(str(os.getpid())); "
+                "time.sleep(60)"
+            ])
+            time.sleep(60)
+            """
+        )
+        with self.assertRaises(subprocess.TimeoutExpired):
+            proc_util.run_with_group_timeout(
+                [sys.executable, "-c", script], timeout=1, capture_output=True, text=True)
+        time.sleep(0.5)
+        with open(pid_file.name, encoding="utf-8") as fh:
+            child_pid = int(fh.read())
+        try:
+            os.kill(child_pid, 0)
+        except ProcessLookupError:
+            return
+        os.kill(child_pid, signal.SIGKILL)
+        self.fail("grandchild that ignored SIGTERM survived process-group timeout")
 
     def test_kill_process_group_safe_on_finished_proc(self):
         proc = subprocess.Popen([sys.executable, "-c", "pass"], start_new_session=True)
