@@ -137,6 +137,26 @@ class ReapStuckAttemptsTest(unittest.TestCase):
             out = self.ctl.notify_owner_of_reaps([{"task_id": "t1", "reason": "runtime_exceeded"}])
         self.assertEqual(False, out[0]["notified"])  # error swallowed → notified False, no raise
 
+    def test_orphan_attempt_of_terminal_task_retired_without_renotify(self):
+        # task already completed but an attempt was left 'running' → retire the stray attempt only,
+        # don't touch the task or send a dispatcher notice.
+        tid, aid = self._task_with_attempt(started_minutes_ago=5, task_status="completed", tid="t-term", aid="a-term")
+        result = self.ctl.reap_stuck_attempts_internal(self.conn, actor="openclaw-main")
+        self.assertEqual(1, result["reaped_count"], result)
+        self.assertEqual("task_already_terminal", result["reaped"][0]["reason"])
+        self.assertIsNone(result["reaped"][0]["dispatcher_notified"])
+        self.assertEqual("stale", self.conn.execute("SELECT status FROM execution_attempts WHERE attempt_id=?", (aid,)).fetchone()[0])
+        self.assertEqual("completed", self.conn.execute("SELECT status FROM tasks WHERE id=?", (tid,)).fetchone()[0])  # task untouched
+        # no dispatcher result-notice for a housekeeping cleanup
+        self.assertFalse((self.root / "employees" / "antigravity" / "inbox" / f"result-{tid}.json").exists())
+
+    def test_terminal_cleanup_not_owner_notified(self):
+        out = self.ctl.notify_owner_of_reaps([
+            {"task_id": "t-clean", "reason": "task_already_terminal", "employee_id": "codex"},
+            {"task_id": "t-real", "reason": "runtime_exceeded", "employee_id": "codex", "runtime_age_seconds": 5400},
+        ])
+        self.assertEqual(["t-real"], [s["task_id"] for s in out])  # cleanup excluded, only the real failure alerts
+
     def test_idempotent_no_double_reap(self):
         tid, _ = self._task_with_attempt(started_minutes_ago=120)
         self.ctl.reap_stuck_attempts_internal(self.conn, actor="openclaw-main")

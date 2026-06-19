@@ -2482,11 +2482,16 @@ def load_summary(conn: sqlite3.Connection) -> dict:
         "pending_events": rows(conn, "SELECT * FROM company_events WHERE processed_at = '' ORDER BY created_at ASC LIMIT 20"),
         "events": rows(conn, "SELECT * FROM company_events ORDER BY created_at DESC LIMIT 20"),
         # task.progress events for the cockpit's per-attempt latest_progress. Kept SEPARATE from the
-        # 20-row global events window above: otherwise a busy event stream pushes an active attempt's
-        # progress out of view and the cockpit shows it as having no progress (the intermittent
-        # KeyError 'progress_state' flaky). Scoped to task.progress with a generous limit so every
-        # active attempt's latest progress is reliably present.
-        "progress_events": rows(conn, "SELECT * FROM company_events WHERE event_type = 'task.progress' ORDER BY created_at DESC LIMIT 200"),
+        # 20-row global events window above (a busy event stream would otherwise push an active
+        # attempt's progress out of view → cockpit shows no progress → the intermittent KeyError
+        # 'progress_state' flaky). SCOPED to the tasks that actually have an active attempt instead of
+        # a fixed LIMIT, so it can never overflow no matter how many progress events exist globally.
+        "progress_events": rows(conn, """
+            SELECT * FROM company_events
+            WHERE event_type = 'task.progress'
+              AND task_id IN (SELECT DISTINCT task_id FROM execution_attempts WHERE status IN ('starting', 'running', 'correcting'))
+            ORDER BY created_at DESC
+        """),
         "adapter_runs": adapter_runs,
         "runtime_sessions": companyctl.list_runtime_sessions(conn, limit=20),
         "tool_calls": companyctl.list_tool_calls(conn, limit=30),

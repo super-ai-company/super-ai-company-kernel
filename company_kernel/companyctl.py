@@ -13258,6 +13258,25 @@ def reap_stuck_attempts_internal(conn: sqlite3.Connection, *, actor: str = "open
         # yank it on the same raw clock as a running one.
         if attempt.get("status") == "correcting" and attempt.get("cancel_requested_at"):
             continue
+        # Orphaned leftover: the task already reached a terminal state (done/blocked/cancelled) while
+        # this attempt was left 'running' (a race or a manual close-out). Just retire the stray attempt
+        # — don't touch the task or re-notify, it already closed out. Distinct event from a real reap.
+        task_status_row = conn.execute("SELECT status FROM tasks WHERE id = ?", (attempt.get("task_id"),)).fetchone()
+        task_status = str(task_status_row["status"]) if task_status_row else ""
+        if task_status in {"completed", "done", "blocked", "cancelled", "failed", "stale"}:
+            cur = conn.execute(
+                "UPDATE execution_attempts SET status = 'stale', finished_at = ?, error_message = ? "
+                "WHERE attempt_id = ? AND status IN ('starting', 'running', 'correcting')",
+                (current, f"watchdog: orphaned attempt of already-{task_status} task, retired", attempt["attempt_id"]),
+            )
+            if cur.rowcount == 1:
+                conn.commit()
+                record_event(conn, "task.attempt.reaped", actor, task_id=attempt.get("task_id", ""), trace_id=attempt.get("trace_id", ""),
+                             payload={"attempt_id": attempt["attempt_id"], "reason": "task_already_terminal", "task_status": task_status})
+                reaped.append({"task_id": attempt.get("task_id", ""), "attempt_id": attempt["attempt_id"],
+                               "employee_id": attempt.get("employee_id", ""), "reason": "task_already_terminal",
+                               "task_status": task_status, "dispatcher_notified": None})
+            continue
         policy = attempt_json_field(attempt, "runtime_policy_json")
         max_runtime = int(policy.get("max_runtime_seconds", DEFAULT_RUNTIME_POLICY["max_runtime_seconds"]) or DEFAULT_RUNTIME_POLICY["max_runtime_seconds"])
         cap = min(max_runtime, WATCHDOG_GLOBAL_CAP_SECONDS)
@@ -13321,7 +13340,10 @@ def notify_owner_of_reaps(reaped: list[dict]) -> list[dict]:
     internal reaper directly and never reach this, so no test ever sends a real alert."""
     sent = []
     for item in reaped:
-        label = REAP_REASON_LABEL.get(str(item.get("reason") or ""), "异常")
+        reason = str(item.get("reason") or "")
+        if reason == "task_already_terminal":
+            continue  # housekeeping cleanup of a stray attempt — the task already closed out fine, not a failure
+        label = REAP_REASON_LABEL.get(reason, "异常")
         msg = (f"任务「{str(item.get('task_id'))}」{label},已自动回收为受阻(blocked),请复核或改派。\n"
                f"员工 {item.get('employee_id', '')} · 运行 {item.get('runtime_age_seconds', 0)}s · {item.get('task_id', '')}")
         try:
