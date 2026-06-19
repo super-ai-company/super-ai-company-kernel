@@ -16,8 +16,8 @@
       {
         "id": "owner_admin_no_approval",
         "enabled": true,
-        "source": "owner-shift",
-        "_note": "管理员(owner-shift)发起的任务一律自动批准、免人工审批,直接执行。省略 action/target/risk = 匹配任意。"
+        "source": "owner",
+        "_note": "管理员(owner)发起的任务一律自动批准、免人工审批,直接执行。省略 action/target/risk = 匹配任意。"
       },
       {
         "id": "nestcar_non_p1_data_fetch_external_send",
