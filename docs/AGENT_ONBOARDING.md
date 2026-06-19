@@ -143,4 +143,4 @@ bin/company-daemon --once --summary           # 自动执行
 bin/companyctl task list --status completed    # 看到完成 + 证据
 ```
 
-完整全量回归：`python3 -B -m unittest discover -s tests`（基线 206 通过）。
+完整全量回归：`python3 -B -m unittest discover -s tests`（基线 539 通过）。

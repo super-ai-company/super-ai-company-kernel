@@ -100,4 +100,4 @@ bin/company-daemon --once --summary
 bin/companyctl task list --status completed
 ```
 
-Full regression: `python3 -B -m unittest discover -s tests` (baseline 206 passing).
+Full regression: `python3 -B -m unittest discover -s tests` (baseline 539 passing).
