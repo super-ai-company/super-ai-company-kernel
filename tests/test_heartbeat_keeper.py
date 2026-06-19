@@ -87,5 +87,27 @@ class HeartbeatKeeperThreadTest(unittest.TestCase):
             self.assertIsNone(k._thread)  # nothing to keep alive → no thread spawned
 
 
+class KeeperAgentsTest(unittest.TestCase):
+    """Regression for the integration gap codex caught: the shipped daemon config has
+    heartbeat_agents: [], so the keeper MUST still cover the enabled adapter_workers — otherwise it
+    is a no-op for exactly the workers that go stale during a long task."""
+
+    def test_enabled_workers_covered_even_with_empty_heartbeat_agents(self):
+        from company_kernel import company_daemon
+        config = {"adapter_workers": [
+            {"agent": "codex-cli", "enabled": True, "command": "x", "args": []},
+            {"agent": "claude-cli", "enabled": True, "command": "y", "args": []},
+            {"agent": "agy", "enabled": False, "command": "z", "args": []},  # disabled → excluded
+        ]}
+        agents = company_daemon.keeper_agents_for(config, heartbeat_agents=[])
+        self.assertEqual(["codex-cli", "claude-cli"], agents)
+
+    def test_union_dedups_heartbeat_and_worker_agents(self):
+        from company_kernel import company_daemon
+        config = {"adapter_workers": [{"agent": "codex-cli", "enabled": True, "command": "x", "args": []}]}
+        agents = company_daemon.keeper_agents_for(config, heartbeat_agents=["hermes", "codex-cli"])
+        self.assertEqual(["hermes", "codex-cli"], agents)  # codex-cli not duplicated
+
+
 if __name__ == "__main__":
     unittest.main()
