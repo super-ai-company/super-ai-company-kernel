@@ -33,7 +33,8 @@ class GatewayAuthTest(unittest.TestCase):
             with urllib.request.urlopen(req, timeout=10) as res:
                 return res.status, res.read()
         except urllib.error.HTTPError as e:
-            return e.code, e.read()
+            with e:
+                return e.code, e.read()
 
     def test_auth_disabled_allows_open_access(self):
         with mock.patch.dict(os.environ, {"COMPANY_KERNEL_API_TOKEN": ""}, clear=False):
