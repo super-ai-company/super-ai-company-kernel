@@ -2644,8 +2644,12 @@ def task_ceo_acceptance_contract(
     events: list[dict],
 ) -> dict:
     latest_attempt = attempts[-1] if attempts else {}
-    if latest_attempt and not latest_attempt.get("long_task_state"):
-        latest_attempt = {**latest_attempt, **long_task_state_for_attempt(latest_attempt)}
+    if latest_attempt:
+        # Always fill the derived long-task fields (long_task_state / heartbeat_state / progress_state)
+        # as a base, letting the attempt's own stored fields win. Previously these were only computed
+        # when long_task_state was absent, so an attempt that had long_task_state but no progress_state
+        # left the key missing → an intermittent KeyError in the cockpit (depending on attempt state).
+        latest_attempt = {**long_task_state_for_attempt(latest_attempt), **latest_attempt}
     metadata = parse_json_arg(task.get("metadata_json", "{}") or "{}", {})
     if not isinstance(metadata, dict):
         metadata = {}
