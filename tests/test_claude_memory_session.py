@@ -63,8 +63,7 @@ class ClaudeMemorySessionTest(unittest.TestCase):
             return mock.Mock(returncode=0, stdout="ok", stderr="")
 
         with mock.patch.object(self.ca, "resolve_claude_proxy", return_value=({}, "", "native")), \
-             mock.patch.object(self.ca, "subprocess") as sp:
-            sp.run.side_effect = fake_run
+             mock.patch.object(self.ca, "run_with_group_timeout", side_effect=fake_run):
             # first run: creates the session
             self.ca.run_claude(prompt, out, self.root, "", "", "claude", memory_key="conv-1")
             # second run: must resume (no "already in use" error)
@@ -80,8 +79,8 @@ class ClaudeMemorySessionTest(unittest.TestCase):
         out = self.root / "o.md"
         captured = []
         with mock.patch.object(self.ca, "resolve_claude_proxy", return_value=({}, "", "native")), \
-             mock.patch.object(self.ca, "subprocess") as sp:
-            sp.run.side_effect = lambda cmd, **kw: captured.append(cmd) or mock.Mock(returncode=0, stdout="ok", stderr="")
+             mock.patch.object(self.ca, "run_with_group_timeout",
+                               side_effect=lambda cmd, **kw: captured.append(cmd) or mock.Mock(returncode=0, stdout="ok", stderr="")):
             self.ca.run_claude(prompt, out, self.root, "", "", "claude")
         self.assertIn("--no-session-persistence", captured[0])
         self.assertNotIn("--session-id", captured[0])
@@ -101,8 +100,7 @@ class ClaudeMemorySessionTest(unittest.TestCase):
             return mock.Mock(returncode=1, stdout="", stderr="Error: Session ID abc is already in use")
 
         with mock.patch.object(self.ca, "resolve_claude_proxy", return_value=({}, "", "native")), \
-             mock.patch.object(self.ca, "subprocess") as sp:
-            sp.run.side_effect = fake_run
+             mock.patch.object(self.ca, "run_with_group_timeout", side_effect=fake_run):
             rc, _ = self.ca.run_claude(prompt, out, self.root, "", "", "claude", memory_key="conv-x")
 
         self.assertEqual(0, rc)                                   # salvaged, not a failed task

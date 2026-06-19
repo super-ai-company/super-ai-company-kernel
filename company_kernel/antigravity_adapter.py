@@ -13,6 +13,7 @@ from pathlib import Path
 
 from .db_paths import ensure_db_parent, resolve_db_path as resolve_kernel_db_path
 from .employee_comms import communication_protocol
+from .proc_util import run_with_group_timeout
 
 
 ROOT = Path(os.environ.get("OPENCLAW_COMPANY_KERNEL_ROOT", str(Path(__file__).resolve().parents[1]))).resolve()
@@ -386,7 +387,9 @@ def run_agy_print(message: str, timeout: int, workspace: Path | None = None, mem
     cmd += ["--print", message, "--print-timeout", f"{timeout}s"]
     if resume_id:
         cmd += ["--conversation", resume_id]  # resume this memory-key's conversation
-    cp = subprocess.run(cmd, cwd=str(cwd), text=True, capture_output=True, timeout=timeout + 10)
+    # run_with_group_timeout kills the WHOLE `agy --print` tree on timeout (a plain timeout would
+    # orphan its child processes and block the daemon tick — freezing every employee's heartbeat).
+    cp = run_with_group_timeout(cmd, timeout=timeout + 10, cwd=str(cwd), text=True, capture_output=True)
     if capture and cp.returncode == 0:
         new = [_agy_conversation_id(p) for p in (_agy_snapshot() - before)]
         new = [u for u in new if u]

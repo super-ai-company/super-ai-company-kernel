@@ -55,7 +55,7 @@ class AgyMemorySessionTest(unittest.TestCase):
             return mock.Mock(returncode=0, stdout="ok", stderr="")
 
         with mock.patch.object(self.aa.shutil, "which", return_value="/usr/bin/agy"), \
-             mock.patch.object(self.aa.subprocess, "run", side_effect=fake_run):
+             mock.patch.object(self.aa, "run_with_group_timeout", side_effect=fake_run):
             self.aa.run_agy_print("hi", 30, memory_key="conv-1", agent="antigravity")
             self.aa.run_agy_print("again", 30, memory_key="conv-1", agent="antigravity")
 
@@ -66,7 +66,7 @@ class AgyMemorySessionTest(unittest.TestCase):
     def test_no_memory_key_no_conversation_flag(self) -> None:
         captured = []
         with mock.patch.object(self.aa.shutil, "which", return_value="/usr/bin/agy"), \
-             mock.patch.object(self.aa.subprocess, "run",
+             mock.patch.object(self.aa, "run_with_group_timeout",
                                side_effect=lambda cmd, **kw: captured.append(cmd) or mock.Mock(returncode=0, stdout="ok", stderr="")):
             self.aa.run_agy_print("hi", 30)
         self.assertNotIn("--conversation", captured[0])
