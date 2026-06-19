@@ -130,6 +130,15 @@ class MetricsEndpointsTest(ConsoleUiTest):
         self.assertIn("by_task_type", data)
         self.assertIn("totals", data)
 
+    def test_cost_dashboard_endpoint(self) -> None:
+        status, ctype, body = self.fetch("/v1/cost-dashboard?days=7")
+        self.assertEqual(HTTPStatus.OK, status)
+        data = json.loads(body)
+        self.assertTrue(data["ok"])
+        self.assertIn("by_employee", data)
+        self.assertIn("by_day", data)
+        self.assertIn("on_duty_free", data["totals"])
+
     def test_verifier_accuracy_endpoint(self) -> None:
         status, ctype, body = self.fetch("/v1/verifier-accuracy")
         self.assertEqual(HTTPStatus.OK, status)
@@ -143,4 +152,6 @@ class MetricsEndpointsTest(ConsoleUiTest):
         self.assertIn('data-v="metrics"', body)
         self.assertIn("loadMetrics", body)
         self.assertIn("/v1/economics", body)
+        self.assertIn("/v1/cost-dashboard", body)
+        self.assertIn("costTable", body)
         self.assertIn("/v1/verifier-accuracy", body)

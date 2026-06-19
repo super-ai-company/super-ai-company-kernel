@@ -169,6 +169,7 @@ API_ENDPOINTS = [
     {"method": "POST", "path": "/v1/budget-events", "summary": "Record a budget/cost ledger event for adapter, tool, or model usage", "body": {"employee_id": "employee id", "task_id": "task optional", "attempt_id": "attempt optional", "trace_id": "trace optional", "cost_type": "model_api/tool_runtime/compute/etc", "amount": "number", "currency": "USD optional", "token_input": "integer optional", "token_output": "integer optional", "model_name": "optional", "provider": "optional", "runtime_seconds": "integer optional", "summary": "optional"}},
     {"method": "GET", "path": "/v1/budget-summary", "summary": "Read budget rollup for owner cockpit", "query": {"employee_id": "employee optional", "task_id": "task optional", "trace_id": "trace optional", "attempt_id": "attempt optional"}},
     {"method": "GET", "path": "/v1/economics", "summary": "Per-task-type unit economics: revenue vs cost vs margin (survival metric #1)"},
+    {"method": "GET", "path": "/v1/cost-dashboard", "summary": "Operating-cost dashboard: who is on duty free vs who spent, per employee + per day", "query": {"days": "per-day trend window optional, default 14"}},
     {"method": "GET", "path": "/v1/verifier-accuracy", "summary": "Per-kind verifier sampling accuracy vs human review (survival metric #2)"},
     {"method": "GET", "path": "/v1/tasks", "summary": "List tasks", "query": {"agent": "employee id optional", "status": "task status optional"}},
     {"method": "POST", "path": "/v1/tasks", "summary": "Submit task", "body": {"from": "employee id", "to": "employee id", "title": "string", "description": "string optional", "task_id": "string optional", "priority": "P0/P1/P2/P3 optional", "requires_approval": "action optional", "approval_id": "string optional"}},
@@ -1077,6 +1078,17 @@ def route_get(path: str, query: dict[str, list[str]]) -> tuple[int, dict]:
         finally:
             conn.close()
         return HTTPStatus.OK, {"ok": True, "source": "/v1/economics", **economics}
+    if path == "/v1/cost-dashboard":
+        try:
+            days = int(query_value(query, "days", "14") or "14")
+        except (TypeError, ValueError):
+            days = 14
+        conn = companyctl.connect_readonly()
+        try:
+            dashboard = companyctl.compute_cost_dashboard(conn, days=max(1, days))
+        finally:
+            conn.close()
+        return HTTPStatus.OK, {"ok": True, "source": "/v1/cost-dashboard", **dashboard}
     if path == "/v1/verifier-accuracy":
         conn = companyctl.connect_readonly()
         try:
