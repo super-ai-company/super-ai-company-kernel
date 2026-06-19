@@ -1579,7 +1579,11 @@ def finish_execution_attempt_internal(conn: sqlite3.Connection, *, attempt_id: s
     if current_status in {"success", "failed", "cancelled", "stale"}:
         if current_status == status:
             return {"attempt": attempt, "event_id": "", "idempotent": True}
-        raise ValueError(f"attempt is terminal and cannot be finished again: {current_status}")
+        # The watchdog (or a cancel) already reaped this attempt to a terminal state. A late adapter
+        # finish arriving afterwards must NOT raise — that would crash the adapter and pollute
+        # adapter_runs with a phantom failure. Accept it idempotently as a no-op and keep the reaper's
+        # verdict (a reaped/cancelled attempt stays reaped/cancelled).
+        return {"attempt": attempt, "event_id": "", "idempotent": True, "late_finish_ignored": True, "previous_status": current_status}
     conn.execute(
         "UPDATE execution_attempts SET status = ?, finished_at = ?, error_message = ? WHERE attempt_id = ?",
         (status, now(), error, attempt_id),
@@ -13209,6 +13213,78 @@ def cmd_repair_reset_stale_claims(_args: argparse.Namespace) -> int:
     return 0
 
 
+# Hard ceiling the watchdog enforces no matter how generous a task's own policy is: a run past this
+# is force-reaped. The adapter-level process-group timeout catches most hangs first (~30-75min); this
+# is the backstop for attempts whose worker died/hung without ever finishing the attempt row.
+WATCHDOG_GLOBAL_CAP_SECONDS = 5400  # 90 minutes
+
+
+def reap_stuck_attempts_internal(conn: sqlite3.Connection, *, actor: str = "openclaw-main", now_ts: str | None = None) -> dict:
+    """Fault-tolerance watchdog (free, pure SQL): an execution attempt running past its allowed
+    runtime is force-failed so its task lands in the FAILURE list with a real reason — instead of
+    hanging forever as 'claimed' while only the heartbeat looks stale (the symptom the owner sees).
+
+    Closes the loop: attempt→stale, task→blocked('watchdog_reaped: ...'), dispatcher notified,
+    `task.watchdog_reaped` event recorded. Race-safe: a conditional UPDATE means it acts only if it
+    wins against a normally-finishing adapter (rowcount==1), so no double-reap. No auto-retry — a
+    reaped task waits for the owner/dispatcher rather than burning budget re-running a hung task."""
+    current = now_ts or now()
+    reaped: list[dict] = []
+    scan = rows(conn, "SELECT * FROM execution_attempts WHERE status IN ('starting', 'running', 'correcting') ORDER BY started_at ASC")
+    for attempt in scan:
+        policy = attempt_json_field(attempt, "runtime_policy_json")
+        max_runtime = int(policy.get("max_runtime_seconds", DEFAULT_RUNTIME_POLICY["max_runtime_seconds"]) or DEFAULT_RUNTIME_POLICY["max_runtime_seconds"])
+        cap = min(max_runtime, WATCHDOG_GLOBAL_CAP_SECONDS)
+        runtime_age = seconds_since(attempt.get("started_at") or "", current)
+        if runtime_age < cap:
+            continue
+        # A correcting attempt may be parked awaiting an owner decision / cancel-in-flight — don't
+        # yank it on the same raw clock as a running one.
+        if attempt.get("status") == "correcting" and attempt.get("cancel_requested_at"):
+            continue
+        attempt_id = attempt["attempt_id"]
+        prev_status = attempt["status"]
+        # Race-safe terminal transition: only the reaper that flips it from active wins; if an adapter
+        # already finished it, rowcount==0 and we leave everything else alone.
+        cur = conn.execute(
+            "UPDATE execution_attempts SET status = 'stale', finished_at = ?, error_message = ? "
+            "WHERE attempt_id = ? AND status IN ('starting', 'running', 'correcting')",
+            (current, f"watchdog: ran {int(runtime_age)}s past cap {cap}s, reaped", attempt_id),
+        )
+        if cur.rowcount != 1:
+            continue
+        task_id = attempt["task_id"]
+        blocker = f"watchdog_reaped: runtime_exceeded ({int(runtime_age)}s > {cap}s cap)"
+        conn.execute(
+            "UPDATE tasks SET status = 'blocked', blocker = ?, updated_at = ? "
+            "WHERE id = ? AND status IN ('claimed', 'running', 'correcting', 'submitted', 'stale')",
+            (blocker, current, task_id),
+        )
+        conn.commit()
+        task_row = conn.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
+        task = dict(task_row) if task_row else {"id": task_id, "target_agent": attempt.get("employee_id", ""), "source_agent": ""}
+        notice = deliver_completion_notice(conn, task, status="blocked", blocker=blocker, actor=actor)
+        event = record_event(
+            conn, "task.watchdog_reaped", actor, task_id=task_id, trace_id=attempt.get("trace_id", ""),
+            payload={"attempt_id": attempt_id, "employee_id": attempt.get("employee_id", ""), "reason": "runtime_exceeded",
+                     "runtime_age_seconds": int(runtime_age), "cap_seconds": cap, "previous_attempt_status": prev_status,
+                     "dispatcher_notified": bool(notice)},
+        )
+        audit(conn, actor, "task.watchdog_reaped", task_id, {"attempt_id": attempt_id, "runtime_age_seconds": int(runtime_age), "cap_seconds": cap, "event_id": event["id"]})
+        reaped.append({"task_id": task_id, "attempt_id": attempt_id, "employee_id": attempt.get("employee_id", ""),
+                       "runtime_age_seconds": int(runtime_age), "cap_seconds": cap, "blocker": blocker,
+                       "dispatcher_notified": notice or None})
+    return {"scanned": len(scan), "reaped": reaped, "reaped_count": len(reaped)}
+
+
+def cmd_watchdog_reap_stuck(args: argparse.Namespace) -> int:
+    conn = connect()
+    actor = resolve_employee_alias(getattr(args, "by", "openclaw-main")) or "openclaw-main"
+    result = reap_stuck_attempts_internal(conn, actor=actor)
+    emit({"ok": True, **result})
+    return 0
+
+
 def heartbeat_internal(conn: sqlite3.Connection, agent: str, metadata: dict | None = None) -> dict:
     emp = conn.execute("SELECT * FROM employees WHERE id = ?", (agent,)).fetchone()
     runtime = emp["runtime"] if emp else ""
@@ -14716,6 +14792,12 @@ def build_parser() -> argparse.ArgumentParser:
     conversation_probe.add_argument("--timeout", type=int, default=90, help="per-probe runtime timeout seconds")
     conversation_probe.add_argument("--no-persist", action="store_true", help="do not write results to the meeting-capable allowlist")
     conversation_probe.set_defaults(func=cmd_conversation_probe)
+
+    watchdog_p = sub.add_parser("watchdog", help="fault-tolerance watchdog")
+    watchdog_sub = watchdog_p.add_subparsers(dest="watchdog_cmd", required=True)
+    reap_stuck = watchdog_sub.add_parser("reap-stuck", help="force-fail attempts running past their runtime cap → task blocked + dispatcher notified (so stuck work lands in the failure list instead of hanging)")
+    reap_stuck.add_argument("--by", default="openclaw-main", help="actor recorded for the reap (default openclaw-main)")
+    reap_stuck.set_defaults(func=cmd_watchdog_reap_stuck)
 
     init_p = sub.add_parser("init", help="guided first-run setup: detect installed agent CLIs, add them as employees, print next steps")
     init_p.add_argument("--yes", action="store_true", help="non-interactive: auto-accept detected runtimes")

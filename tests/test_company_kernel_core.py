@@ -7733,9 +7733,12 @@ class CompanyKernelCoreTest(unittest.TestCase):
         code, cancelled = run_cli("task", "cancel", "--task-id", "task-long-managed", "--attempt-id", attempt_id, "--by", "hermes", "--reason", "用户停止")
         self.assertEqual(0, code, cancelled)
         self.assertEqual("cancelled", cancelled["attempt"]["status"])
+        # A late finish arriving after the attempt was already reaped/cancelled is now idempotently
+        # ignored (not an error) — so a hung adapter that finally returns can't crash or revive the task.
         code, late_success = run_cli("task", "attempt", "finish", "--attempt-id", attempt_id, "--status", "success")
-        self.assertEqual(2, code, late_success)
-        self.assertIn("terminal", late_success["error"])
+        self.assertEqual(0, code, late_success)
+        self.assertTrue(late_success.get("late_finish_ignored"), late_success)
+        self.assertEqual("cancelled", late_success["attempt"]["status"])  # reaper's verdict stands
         code, shown = run_cli("task", "show", "--task-id", "task-long-managed")
         self.assertEqual(0, code, shown)
         self.assertEqual("cancelled", shown["task"]["status"])
@@ -13591,7 +13594,7 @@ class CompanyKernelCoreTest(unittest.TestCase):
         finally:
             conn.close()
 
-        state = company_daemon.tick({"version": 1, "run_repair": False, "run_scheduler": False, "run_offline_reminder": False, "run_approval_auto_sweep": False, "run_memory_curation": False, "heartbeat_agents": [], "run_retries": True, "auto_recover": {"enabled": False}})
+        state = company_daemon.tick({"version": 1, "run_repair": False, "run_watchdog_reaper": False, "run_scheduler": False, "run_offline_reminder": False, "run_approval_auto_sweep": False, "run_memory_curation": False, "heartbeat_agents": [], "run_retries": True, "auto_recover": {"enabled": False}})
         self.assertTrue(state["ok"], state)
         self.assertEqual(["retry.adapter-run"], [item["step"] for item in state["results"]])
 

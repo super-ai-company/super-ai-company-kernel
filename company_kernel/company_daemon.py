@@ -503,6 +503,11 @@ def tick(config: dict) -> dict:
         results.append({"step": "openclaw-sync.import-results", "result": run_companyctl("openclaw", "import-results")})
     if config.get("run_repair", True):
         results.append({"step": "repair.reset-stale-claims", "result": run_companyctl("repair", "reset-stale-claims")})
+    if config.get("run_watchdog_reaper", True):
+        # Fault tolerance: force-fail any attempt running past its cap BEFORE the adapter loop, so a
+        # hung run lands in the failure list (task blocked + dispatcher notified) instead of hanging
+        # forever. Runs early so it fires even on a tick where an adapter later stalls.
+        results.append({"step": "watchdog.reap-stuck", "result": run_companyctl("watchdog", "reap-stuck")})
     if config.get("run_repair", True) and config.get("run_auto_triage", True):
         # auto-discard mis-dispatched tasks (e.g. codex with no 工作区:) + feed back to the dispatcher,
         # so a doomed order never sits queued/cycling
