@@ -35,7 +35,17 @@ Note the apps **self-report** (`report_done`/`report_blocked`) because they exec
 This differs from the headless adapter path, where the kernel reports for the runtime — don't carry
 the "don't self-report" adapter rule into the apps.
 
-## Registration (local, per app — restart the app to load)
+## Registration — automated (recommended)
+
+`companyctl employee install-integration --runtime <codex|claude|gemini> [--agent-id <id>]` writes BOTH
+the MCP server entry **and** the "you are an employee" instruction block into that agent's own config
+(idempotent, backs up first). `companyctl init` offers to do this per detected runtime. After it runs,
+restart the app. This is what makes an agent *truly on-duty* — chatting with it, it knows it can use the
+kernel — instead of only being listed in the kernel DB.
+
+## Registration — manual (what the command writes, for reference)
+
+(local, per app — restart the app to load)
 
 | App | File | Key |
 |---|---|---|
