@@ -9633,6 +9633,19 @@ def meeting_result_internal(conn: sqlite3.Connection, conversation_id: str) -> d
             "transcript": [{"speaker": m["source_agent"], "body": str(m["body"])[:400]} for m in msgs]}
 
 
+def cmd_employee_ensure_owner(args: argparse.Namespace) -> int:
+    conn = connect()
+    owner = ensure_human_owner(conn, owner_id=getattr(args, "owner_id", "owner") or "owner")
+    emit({"ok": True, "owner": {"id": owner["id"], "name": owner["name"], "role": owner["role"]}})
+    return 0
+
+
+def cmd_init(args: argparse.Namespace) -> int:
+    """Guided first-run setup — detect installed agent CLIs, offer to add them as employees, etc."""
+    from company_kernel import init_wizard
+    return init_wizard.run_init(args)
+
+
 def cmd_meeting_request(args: argparse.Namespace) -> int:
     conn = connect()
     out = meeting_request_internal(conn, requester=args.source, topic=args.topic,
@@ -14007,6 +14020,9 @@ def build_parser() -> argparse.ArgumentParser:
     emp_offboard.add_argument("--hard-delete", action="store_true", help="delete only Company Kernel-managed employee files/workspace")
     emp_offboard.add_argument("--dry-run", action="store_true")
     emp_offboard.set_defaults(func=cmd_employee_offboard)
+    emp_ensure_owner = emp_sub.add_parser("ensure-owner", help="create the human owner employee if missing (idempotent; used by `init`)")
+    emp_ensure_owner.add_argument("--owner-id", default="owner")
+    emp_ensure_owner.set_defaults(func=cmd_employee_ensure_owner)
     emp_offline = emp_sub.add_parser("offline-report", help="list active employees that are offline (stale heartbeat), optionally notify")
     emp_offline.add_argument("--stale-minutes", type=int, default=10)
     emp_offline.add_argument("--dormant-minutes", type=int, default=1440, help="beyond this a stale employee is 'dormant' (logical/never-running), not an alertable drop")
@@ -14476,6 +14492,12 @@ def build_parser() -> argparse.ArgumentParser:
     conversation_probe.add_argument("--timeout", type=int, default=90, help="per-probe runtime timeout seconds")
     conversation_probe.add_argument("--no-persist", action="store_true", help="do not write results to the meeting-capable allowlist")
     conversation_probe.set_defaults(func=cmd_conversation_probe)
+
+    init_p = sub.add_parser("init", help="guided first-run setup: detect installed agent CLIs, add them as employees, print next steps")
+    init_p.add_argument("--yes", action="store_true", help="non-interactive: auto-accept detected runtimes")
+    init_p.add_argument("--execute", action="store_true", help="also enable autonomous execution on added workers (off by default)")
+    init_p.add_argument("--dry-run", action="store_true", help="show what would happen, change nothing")
+    init_p.set_defaults(func=cmd_init)
 
     meeting = sub.add_parser("meeting", help="employee-initiated meetings: an agent calls colleagues to settle a hard decision (async)")
     meeting_sub = meeting.add_subparsers(dest="meeting_cmd", required=True)
