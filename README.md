@@ -34,6 +34,8 @@ git clone https://github.com/super-ai-company/super-ai-company-kernel.git
 cd super-ai-company-kernel
 export OPENCLAW_COMPANY_KERNEL_ROOT="$PWD"      # Windows: see onboarding guide
 bin/companyctl doctor --summary                  # self-check (Win: python -m company_kernel.companyctl ...)
+bin/companyctl init                              # guided setup: detect agent CLIs, add them, next steps
+# or do it manually:
 bin/company-add-employee --id codex --name Codex --role developer \
   --runtime codex --workspace <your-repo> --enable-worker --execute
 bin/company-api-gateway --port 8765              # open http://127.0.0.1:8765/
@@ -96,6 +98,8 @@ git clone https://github.com/super-ai-company/super-ai-company-kernel.git
 cd super-ai-company-kernel
 export OPENCLAW_COMPANY_KERNEL_ROOT="$PWD"      # Windows 见接入指南
 bin/companyctl doctor --summary                  # 自检（Windows: python -m company_kernel.companyctl ...）
+bin/companyctl init                              # 引导式安装：检测本机 agent CLI、自动加员工、给出下一步
+# 或手动加一个员工：
 bin/company-add-employee --id codex --name Codex --role developer \
   --runtime codex --workspace <你的代码仓库> --enable-worker --execute
 bin/company-api-gateway --port 8765              # 浏览器开 http://127.0.0.1:8765/
