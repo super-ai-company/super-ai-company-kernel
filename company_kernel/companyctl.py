@@ -13347,6 +13347,17 @@ def heartbeat_internal(conn: sqlite3.Connection, agent: str, metadata: dict | No
     return hb
 
 
+def touch_heartbeat_internal(conn: sqlite3.Connection, agent: str) -> str:
+    """Lightweight liveness refresh: bump an existing heartbeat's last_seen_at only. Unlike
+    heartbeat_internal it does NO progress-bridge IO, file write, audit, or progress-transition
+    notification — so the daemon's keepalive thread can call it every few minutes for every worker
+    during a long tick (keeping them 'on duty') without generating noise or cost. Pure SQL, free.
+    Does not create a row for an agent that never heartbeated (a never-started worker isn't 'alive')."""
+    ts = now()
+    conn.execute("UPDATE heartbeats SET last_seen_at = ? WHERE agent_id = ?", (ts, agent))
+    return ts
+
+
 def cmd_heartbeat(args: argparse.Namespace) -> int:
     conn = connect()
     hb = heartbeat_internal(conn, args.agent)

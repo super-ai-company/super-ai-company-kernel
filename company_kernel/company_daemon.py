@@ -6,6 +6,8 @@ import os
 import signal
 import subprocess
 import sys
+import contextlib
+import threading
 import time
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -492,6 +494,51 @@ def maybe_reconcile_status(config: dict) -> list[dict]:
     return [{"step": "reconcile.status", "result": {"returncode": result.get("returncode", 1), "stdout": "", "stderr": ""}}]
 
 
+class HeartbeatKeeper:
+    """Keeps worker heartbeats fresh DURING a long tick. The daemon runs adapters synchronously, so a
+    single long run (e.g. a 30-min codex task) would otherwise leave every OTHER worker un-heartbeated
+    for the whole tick — the console then shows them all 'off duty' even though they are fine, which
+    directly undercuts the free-on-duty model. This background thread re-stamps the given agents'
+    heartbeats every `interval` seconds (pure SQL via touch_heartbeat_internal — free, no LLM) so
+    on-duty stays accurate no matter how long any adapter blocks. Used as a context manager around the
+    adapter loop. The keepalive must never crash the tick, so all errors are swallowed."""
+
+    def __init__(self, agents: list[str], interval_seconds: int = 240):
+        self._agents = list(agents)
+        self._interval = max(30, int(interval_seconds))
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+
+    def _beat_once(self) -> None:
+        """One keepalive round: refresh every tracked agent's heartbeat. Pure SQL, free."""
+        conn = companyctl.connect()
+        try:
+            for agent in self._agents:
+                companyctl.touch_heartbeat_internal(conn, agent)
+            conn.commit()
+        finally:
+            conn.close()
+
+    def _loop(self) -> None:
+        # wait() returns True when stopped → exit promptly; else fires every interval
+        while not self._stop.wait(self._interval):
+            try:
+                self._beat_once()
+            except Exception:
+                pass  # a keepalive hiccup must never take down the tick
+
+    def __enter__(self) -> "HeartbeatKeeper":
+        if self._agents:
+            self._thread = threading.Thread(target=self._loop, name="heartbeat-keeper", daemon=True)
+            self._thread.start()
+        return self
+
+    def __exit__(self, *exc) -> None:
+        self._stop.set()
+        if self._thread:
+            self._thread.join(timeout=5)
+
+
 def tick(config: dict) -> dict:
     results = []
     heartbeat("cycle-start")  # mark the loop alive before any slow step runs
@@ -529,14 +576,20 @@ def tick(config: dict) -> dict:
         results.append({"step": "presence.offline-reminder", "result": run_companyctl("employee", "offline-report", "--notify", "--dedup")})
     for result in retry_due_adapter_runs(config):
         results.append({"step": "retry.adapter-run", "result": result})
-    for agent in resolve_heartbeat_agents(config):
+    heartbeat_agents = resolve_heartbeat_agents(config)
+    for agent in heartbeat_agents:
         results.append({"step": f"heartbeat.{agent}", "result": run_companyctl("heartbeat", "--agent", agent)})
-    for worker in config.get("adapter_workers", []):
-        if not worker.get("enabled", False):
-            continue
-        heartbeat(f"adapter:{worker.get('agent', '')}")  # a long codex run must not look like a dead daemon
-        adapter_state = run_adapter(worker)
-        results.append({"step": f"adapter.{worker.get('agent', '')}", "result": {"returncode": 0 if adapter_state["ok"] else 1, "stdout": json.dumps(adapter_state, ensure_ascii=False), "stderr": ""}})
+    # Keep those heartbeats fresh while the (possibly very long) adapter loop runs synchronously, so a
+    # single long task doesn't make every other worker look 'off duty' for the whole tick.
+    keeper = (HeartbeatKeeper(heartbeat_agents, int(config.get("heartbeat_keeper_interval_seconds", 240)))
+              if config.get("run_heartbeat_keeper", True) else contextlib.nullcontext())
+    with keeper:
+        for worker in config.get("adapter_workers", []):
+            if not worker.get("enabled", False):
+                continue
+            heartbeat(f"adapter:{worker.get('agent', '')}")  # a long codex run must not look like a dead daemon
+            adapter_state = run_adapter(worker)
+            results.append({"step": f"adapter.{worker.get('agent', '')}", "result": {"returncode": 0 if adapter_state["ok"] else 1, "stdout": json.dumps(adapter_state, ensure_ascii=False), "stderr": ""}})
     for result in check_unclaimed_tasks(config):
         results.append({"step": "watchdog.unclaimed-task", "result": result})
     results.extend(maybe_backup(config))
