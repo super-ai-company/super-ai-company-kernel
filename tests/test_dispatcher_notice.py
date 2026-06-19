@@ -71,6 +71,24 @@ class DispatcherNoticeTest(unittest.TestCase):
         self.assertEqual("缺依赖", d["blocker"])
         self.assertIn("受阻", d["note"])
 
+    def test_deliver_helper_returns_path_on_success(self):
+        path = self.ctl.deliver_completion_notice(
+            self.conn, self._task(), status="completed", summary="ok", evidence="/e.txt", actor="antigravity")
+        self.assertTrue(path.endswith("codex/inbox/result-t1.json"))
+
+    def test_deliver_helper_never_raises_and_records_failure(self):
+        # Simulate a delivery failure (e.g. disk/permission error during write): the helper must
+        # NOT propagate — a finished task must not be rolled back by a notification hiccup — but the
+        # failure must leave an observable event so a broken loop is visible, not silent.
+        with mock.patch.object(self.ctl, "write_dispatcher_completion_notice", side_effect=OSError("disk full")):
+            path = self.ctl.deliver_completion_notice(
+                self.conn, self._task(), status="completed", actor="antigravity")
+        self.assertEqual("", path)
+        row = self.conn.execute(
+            "SELECT COUNT(*) FROM company_events WHERE event_type = 'task.completion_notice_failed' AND task_id = 't1'"
+        ).fetchone()[0]
+        self.assertEqual(1, row, "a failed delivery must record an observable event")
+
 
 if __name__ == "__main__":
     unittest.main()

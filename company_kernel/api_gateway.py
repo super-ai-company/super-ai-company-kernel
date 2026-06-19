@@ -8,6 +8,7 @@ import json
 import os
 import re
 import subprocess
+import sys
 import threading
 import time
 from http import HTTPStatus
@@ -2451,7 +2452,38 @@ class ApiHandler(BaseHTTPRequestHandler):
         super().log_message(format, *args)
 
 
+def is_loopback_host(host: str) -> bool:
+    """True only for addresses that never leave the machine (the whole 127/8 block + ::1)."""
+    h = (host or "").strip().lower()
+    if h in ("127.0.0.1", "::1", "localhost"):
+        return True
+    return h.startswith("127.")
+
+
+def assert_safe_bind(host: str, *, quiet: bool = False) -> None:
+    """Refuse to expose the gateway on a non-loopback interface without auth. An open gateway
+    bound to 0.0.0.0 / a LAN IP is an unauthenticated company-wide control plane — a foot-gun.
+    Require a token, or a conscious explicit override (e.g. when a reverse proxy authenticates)."""
+    if is_loopback_host(host):
+        return
+    if api_token():
+        return  # exposed but authenticated — fine
+    if str(os.environ.get("COMPANY_KERNEL_ALLOW_INSECURE_BIND", "")).strip().lower() in ("1", "true", "yes"):
+        if not quiet:
+            print(f"⚠️  gateway 绑定非 loopback 地址 {host!r} 且未设 COMPANY_KERNEL_API_TOKEN —— "
+                  f"裸奔模式(COMPANY_KERNEL_ALLOW_INSECURE_BIND 已显式放行,请确认前置有鉴权)", file=sys.stderr)
+        return
+    raise SystemExit(
+        f"拒绝启动:gateway 绑定到非 loopback 地址 {host!r} 却没有设置 COMPANY_KERNEL_API_TOKEN。\n"
+        f"这会把整个内核控制面暴露成无鉴权接口(谁连上都能派活/审批/读数据)。请三选一:\n"
+        f"  1) 设置 COMPANY_KERNEL_API_TOKEN=<强随机串> 再启动(推荐);\n"
+        f"  2) 只需本机访问就用 --host 127.0.0.1;\n"
+        f"  3) 确有反向代理负责鉴权,设 COMPANY_KERNEL_ALLOW_INSECURE_BIND=1 显式放行。"
+    )
+
+
 def run_server(host: str, port: int, quiet: bool = False) -> None:
+    assert_safe_bind(host, quiet=quiet)
     server = ThreadingHTTPServer((host, port), ApiHandler)
     server.quiet = quiet
     try:
