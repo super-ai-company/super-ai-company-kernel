@@ -14,7 +14,7 @@ from .employee_comms import communication_protocol
 
 
 ROOT = Path(os.environ.get("OPENCLAW_COMPANY_KERNEL_ROOT", Path(__file__).resolve().parents[1])).resolve()
-DEFAULT_OPENCLAW_ROOT = Path(os.environ.get("OPENCLAW_ROOT", "/Users/owner/openclaw")).resolve()
+DEFAULT_OPENCLAW_ROOT = Path(os.environ.get("OPENCLAW_ROOT", str(Path.home() / "openclaw"))).resolve()
 BRIDGE_AGENTS = {"codex": "codex", "antigravity": "antigravity", "agy": "antigravity"}
 
 

@@ -24,7 +24,7 @@ ROOT = Path(__file__).resolve().parents[1]
 DB_PATH = resolve_db_path(ROOT)
 SCHEMA = ROOT / "company_kernel" / "schema.sql"
 DEFAULT_OUTPUT_DIR = ROOT / "reports" / "communication-acceptance"
-DEFAULT_OPENCLAW_ROOT = Path("/Users/owner/openclaw")
+DEFAULT_OPENCLAW_ROOT = Path.home() / "openclaw"
 DEFAULT_OPENCLAW_LAUNCH_AGENT = Path.home() / "Library" / "LaunchAgents" / "com.shift.ops-bus-worker.plist"
 
 MAIN_AGENT = "main"

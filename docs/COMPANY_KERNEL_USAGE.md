@@ -5,7 +5,7 @@
 所有命令默认先:
 
 ```
-cd /Users/owner/openclaw/company-kernel
+cd $OPENCLAW_COMPANY_KERNEL_ROOT
 ```
 
 ---
@@ -14,7 +14,7 @@ cd /Users/owner/openclaw/company-kernel
 
 | 用途 | 路径 / 地址 |
 |---|---|
-| 内核根目录(实际运行) | `/Users/owner/openclaw/company-kernel` |
+| 内核根目录(实际运行) | `$OPENCLAW_COMPANY_KERNEL_ROOT` |
 | 主 CLI | `bin/companyctl` |
 | 控制台(浏览器打开) | `http://127.0.0.1:8765/`(及 `8788`) |
 | 数据库 | `company.sqlite` |

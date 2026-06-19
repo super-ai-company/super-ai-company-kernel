@@ -47,7 +47,7 @@ MCP server 名 `company-kernel`(`company_kernel/mcp_server.py`,纯标准库 stdi
 
 ## 3) 降级:MCP 没加载时用 CLI(全绝对路径)
 
-companyctl 一律用绝对路径 `/Users/owner/openclaw/company-kernel/bin/companyctl`
+companyctl 一律用绝对路径 `$OPENCLAW_COMPANY_KERNEL_ROOT/bin/companyctl`
 (app 在自己的项目仓库里跑,PATH 里没有它)。签到流程已实测端到端跑通
 (`task list → claim → done → completed`,2026-06-16)。
 
@@ -64,7 +64,7 @@ companyctl 一律用绝对路径 `/Users/owner/openclaw/company-kernel/bin/compa
 (`employees/<你的id>/inbox/`)。CLI 模式可 `fswatch` 这个目录:
 
 ```bash
-fswatch -0 /Users/owner/openclaw/company-kernel/employees/<id>/inbox/ \
+fswatch -0 $OPENCLAW_COMPANY_KERNEL_ROOT/employees/<id>/inbox/ \
 | while read -d "" path; do
     case "$path" in *result-*.json) cat "$path" ;; esac   # note/status/done_by/summary/evidence_path/blocker
   done

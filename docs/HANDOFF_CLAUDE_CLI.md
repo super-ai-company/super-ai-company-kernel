@@ -15,7 +15,7 @@ Company Kernel(AI 员工治理内核)运行正常:**内核健康=正常**,codex 
 
 | 用途 | 路径 / 地址 |
 |---|---|
-| 内核根目录(实际运行) | `/Users/owner/openclaw/company-kernel` |
+| 内核根目录(实际运行) | `$OPENCLAW_COMPANY_KERNEL_ROOT` |
 | 主 CLI | `bin/companyctl` |
 | 数据库 | `company.sqlite` |
 | 守护配置 | `config/daemon.json` |
@@ -24,9 +24,9 @@ Company Kernel(AI 员工治理内核)运行正常:**内核健康=正常**,codex 
 | 员工档案 / 能力 | `employees/<id>/profile.json`、`employees/<id>/capabilities.json` |
 | Console(浏览器) | `http://127.0.0.1:8765/` 与 `http://127.0.0.1:8788/` |
 | 守护日志 | `logs/daemon.log`、`logs/*.launchd.*.log` |
-| OpenClaw 根 | `/Users/owner/openclaw`(总线 `ops/agent_bus/`,失败记录在 `failed/<agent>/`) |
-| 业务代码仓库 | `/Users/owner/Documents/vdamo/damov4/`(含 `vdamo-cloud`、`webclients`、`android-pos`) |
-| codex 工作区(默认) | `/Users/owner/openclaw/workspace-xmanx/projects/openclaw-codex-controller` |
+| OpenClaw 根 | `~/openclaw`(总线 `ops/agent_bus/`,失败记录在 `failed/<agent>/`) |
+| 业务代码仓库 | `~/Documents/vdamo/damov4/`(含 `vdamo-cloud`、`webclients`、`android-pos`) |
+| codex 工作区(默认) | `~/openclaw/workspace-xmanx/projects/openclaw-codex-controller` |
 | GitHub | origin=`super-ai-company/super-ai-company-kernel`,public=`super-ai-company/super-ai-company-kernel` |
 
 ---
@@ -69,8 +69,8 @@ Company Kernel(AI 员工治理内核)运行正常:**内核健康=正常**,codex 
    `launchctl kickstart -k gui/$(id -u)/ai.openclaw.company-kernel.{console,api,daemon}`
 3. **内核健康判定**(已被本会话调整,见 §2.3/2.4):真故障才红(daemon 挂、心跳缺失、adapter 未确认失败、过期锁、能力/证据问题)。待审批/待 RFC/新鲜事件**不**算异常。
 4. **派活两道闸**:`task submit` 需 ① 发送方未 `communication_paused`(`config/company_communications.json`)② 目标 `status='active'`。adapter `--execute` 外发再过 `policy.json` 审批(owner 已免)。
-5. **OpenClaw 桥接**:任务经 `company-openclaw-adapter --execute` → `oc bus submit` 到 OpenClaw 总线,**payload 必须含 `next_command`**(已修)。失败记录在 `/Users/owner/openclaw/ops/agent_bus/failed/<agent>/`。
-6. **沙箱目录**:`/Users/owner/openclaw/ops` 等不在内核目录下,从内核脚本可直接读;注意 codex 任务若不写绝对 `工作区:` 路径会跑去 `/tmp` 找不到仓库(见下方已修例)。
+5. **OpenClaw 桥接**:任务经 `company-openclaw-adapter --execute` → `oc bus submit` 到 OpenClaw 总线,**payload 必须含 `next_command`**(已修)。失败记录在 `~/openclaw/ops/agent_bus/failed/<agent>/`。
+6. **沙箱目录**:`~/openclaw/ops` 等不在内核目录下,从内核脚本可直接读;注意 codex 任务若不写绝对 `工作区:` 路径会跑去 `/tmp` 找不到仓库(见下方已修例)。
 
 ---
 
@@ -79,14 +79,14 @@ Company Kernel(AI 员工治理内核)运行正常:**内核健康=正常**,codex 
 - "内核异常" 多次出现,**从来不是崩溃**,而是 doctor 把各种正常状态(待审批、新鲜事件、单任务失败、daemon 重启瞬间)判成 issue。已逐一收敛为"真故障才红"。
 - "任务排队不执行":目标员工**没有 enabled 的 adapter worker**(只有 codex/hermes/nestcar 有过)。已给 OpenClaw 业务员工补 worker。
 - "OpenClaw 员工任务失败 missing_next_command":桥接缺 `next_command`。已修。
-- "codex 受阻":多为沙箱限制(已给 danger-full-access)或**任务没写绝对工作区路径**(跑 /tmp)。例:webclients 返工任务把 `工作区: damov4 webclients/` 改成 `/Users/owner/Documents/vdamo/damov4/webclients` 后恢复。
+- "codex 受阻":多为沙箱限制(已给 danger-full-access)或**任务没写绝对工作区路径**(跑 /tmp)。例:webclients 返工任务把 `工作区: damov4 webclients/` 改成 `~/Documents/vdamo/damov4/webclients` 后恢复。
 
 ---
 
 ## 6. 待办(请 Claude CLI 接着做)
 
 1. **验证 OpenClaw next_command 修复是否真让员工完成任务**:最新"发日报"任务 `task-20260615-004038-d264e3`(chindahotpot)是用修好的桥接派的。确认它是 `completed` 还是又 `blocked`;若 blocked,看 blocker 现在是不是具体的 OpenClaw 侧原因(不应再是 missing_next_command)。
-   - 查:`bin/companyctl task show --task-id task-20260615-004038-d264e3`;失败看 `/Users/owner/openclaw/ops/agent_bus/failed/chindahotpot/`。
+   - 查:`bin/companyctl task show --task-id task-20260615-004038-d264e3`;失败看 `~/openclaw/ops/agent_bus/failed/chindahotpot/`。
 2. **细化员工技能/参数,让其"持证上岗"**(用户明确要求):为 OpenClaw 业务员工逐个写 `employees/<id>/capabilities.json`(skills/tools/preferred_task_types),并视情况让 `build_next_command`/派活路由结合技能。当前 next_command 是通用指令,够用但不精准。
 3. **Telegram 运营通知未配**:`config/company_communications.json` 的 `notification` 里 `bot_token_env=COMPANY_EMPLOYEE_TELEGRAM_BOT_TOKEN`、target=`telegram:<operator-chat-id>`(占位符)。需要真实 bot token + chat id 才能把审批/报错/日报类通知真正发出。**涉及密钥,让用户自己填**。
 4. **codex 在跑的真实业务任务**(webclients UI 返工、Android、vdamo-cloud 部署等):盯完成证据;部署/SSH 类需确认 192.168.1.83 可达与密钥。
@@ -97,7 +97,7 @@ Company Kernel(AI 员工治理内核)运行正常:**内核健康=正常**,codex 
 ## 7. 常用命令速查
 
 ```bash
-cd /Users/owner/openclaw/company-kernel
+cd $OPENCLAW_COMPANY_KERNEL_ROOT
 bin/companyctl doctor --summary                       # 体检(内核健康徽章的来源)
 bin/companyctl task submit --from owner --to <agent> --title "..." --description "..." --priority P1
 bin/companyctl task list --agent <agent>

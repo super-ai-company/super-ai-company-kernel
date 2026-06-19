@@ -3385,7 +3385,7 @@ class CompanyKernelCoreTest(unittest.TestCase):
         secret = "sk-testSECRET1234567890"
         code, finished = run_cli("task", "attempt", "finish", "--attempt-id", run["attempt"]["attempt_id"], "--status", "failed", "--error", f"failed with token={secret} at {self.root / '.env'}")
         self.assertEqual(0, code, finished)
-        code, blocked = run_cli("task", "block", "--agent", "codex", "--task-id", "task-api-failure-ledger", "--blocker", f"blocked with api_key={secret} /Users/owner/.ssh/id_rsa")
+        code, blocked = run_cli("task", "block", "--agent", "codex", "--task-id", "task-api-failure-ledger", "--blocker", f"blocked with api_key={secret} /home/dev/.ssh/id_rsa")
         self.assertEqual(0, code, blocked)
         conn = companyctl.connect()
         try:
@@ -3396,7 +3396,7 @@ class CompanyKernelCoreTest(unittest.TestCase):
                 """,
                 (
                     submitted["task"]["metadata"]["trace_id"],
-                    json.dumps({"stderr": f"api_key={secret} reading /Users/owner/.ssh/id_rsa", "stdout": "safe failure context"}, ensure_ascii=False),
+                    json.dumps({"stderr": f"api_key={secret} reading /home/dev/.ssh/id_rsa", "stdout": "safe failure context"}, ensure_ascii=False),
                     companyctl.now(),
                 ),
             )
@@ -3467,7 +3467,7 @@ class CompanyKernelCoreTest(unittest.TestCase):
             "--tool-type",
             "shell",
             "--input-summary",
-            f"cat /Users/owner/.ssh/id_rsa api_key={secret}",
+            f"cat /home/dev/.ssh/id_rsa api_key={secret}",
             "--risk-level",
             "low",
         )
@@ -3480,7 +3480,7 @@ class CompanyKernelCoreTest(unittest.TestCase):
             "--status",
             "success",
             "--output-summary",
-            f"checked output token={secret} without exposing raw path /Users/owner/.ssh/id_rsa",
+            f"checked output token={secret} without exposing raw path /home/dev/.ssh/id_rsa",
         )
         self.assertEqual(0, code, finished)
         code, budget = run_cli(
@@ -3554,7 +3554,7 @@ class CompanyKernelCoreTest(unittest.TestCase):
         detail_json = json.dumps(detail, ensure_ascii=False)
         self.assertIn("api_key=[REDACTED]", detail_json)
         self.assertNotIn(secret, detail_json)
-        self.assertNotIn("/Users/owner/.ssh", detail_json)
+        self.assertNotIn("/home/dev/.ssh", detail_json)
         self.assertFalse(detail["evidence_records"][0]["display"]["absolute_path_exposed"])
 
     def test_api_gateway_exposes_single_runtime_session_detail_with_related_ledgers(self) -> None:
@@ -3608,7 +3608,7 @@ class CompanyKernelCoreTest(unittest.TestCase):
             "--tool-type",
             "shell",
             "--input-summary",
-            f"session command api_key={secret} /Users/owner/.ssh/id_rsa",
+            f"session command api_key={secret} /home/dev/.ssh/id_rsa",
         )
         self.assertEqual(0, code, tool)
         code, finished = run_cli("tool-call", "finish", "--tool-call-id", "tool-session-detail-shell", "--status", "success", "--output-summary", f"session output token={secret}")
@@ -3681,7 +3681,7 @@ class CompanyKernelCoreTest(unittest.TestCase):
         detail_json = json.dumps(detail, ensure_ascii=False)
         self.assertIn("api_key=[REDACTED]", detail_json)
         self.assertNotIn(secret, detail_json)
-        self.assertNotIn("/Users/owner/.ssh", detail_json)
+        self.assertNotIn("/home/dev/.ssh", detail_json)
         self.assertFalse(detail["evidence_records"][0]["display"]["absolute_path_exposed"])
 
     def test_cli_audit_ledgers_match_api_sanitized_records(self) -> None:
@@ -3701,7 +3701,7 @@ class CompanyKernelCoreTest(unittest.TestCase):
         secret = "sk-cliAuditSECRET1234567890"
         code, finished = run_cli("task", "attempt", "finish", "--attempt-id", run["attempt"]["attempt_id"], "--status", "failed", "--error", f"failed with token={secret} at {self.root / '.env'}")
         self.assertEqual(0, code, finished)
-        code, blocked = run_cli("task", "block", "--agent", "codex", "--task-id", "task-cli-audit-failure", "--blocker", f"blocked with api_key={secret} /Users/owner/.ssh/id_rsa")
+        code, blocked = run_cli("task", "block", "--agent", "codex", "--task-id", "task-cli-audit-failure", "--blocker", f"blocked with api_key={secret} /home/dev/.ssh/id_rsa")
         self.assertEqual(0, code, blocked)
 
         conn = companyctl.connect()
@@ -3737,7 +3737,7 @@ class CompanyKernelCoreTest(unittest.TestCase):
                 """,
                 (
                     failure_task["task"]["metadata"]["trace_id"],
-                    json.dumps({"stderr": f"api_key={secret} reading /Users/owner/.ssh/id_rsa", "stdout": "safe cli failure context"}, ensure_ascii=False),
+                    json.dumps({"stderr": f"api_key={secret} reading /home/dev/.ssh/id_rsa", "stdout": "safe cli failure context"}, ensure_ascii=False),
                     companyctl.now(),
                 ),
             )
@@ -3824,7 +3824,7 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertIn("single_company_kernel_ledger", output)
         self.assertIn("sync_wait_window", output)
         self.assertIn("task_failure_decided_by_attempt_evidence", output)
-        self.assertNotIn("/Users/owner", output)
+        self.assertNotIn("/home/dev", output)
         self.assertNotIn("id_rsa", output)
         self.assertNotIn(".env", output)
         self.assertNotIn("sk-test-secret", output)
@@ -3873,7 +3873,7 @@ class CompanyKernelCoreTest(unittest.TestCase):
     def test_log_sanitizer_redacts_secrets_and_sensitive_paths(self) -> None:
         secret = "sk-testSECRET1234567890"
         raw = (
-            f"api_key={secret} stdout /Users/owner/.ssh/id_rsa "
+            f"api_key={secret} stdout /home/dev/.ssh/id_rsa "
             f"{self.root / '.env'} normal progress token=plain-secret-value"
         )
 
@@ -6430,7 +6430,7 @@ class CompanyKernelCoreTest(unittest.TestCase):
                 """,
                 (
                     trace_id,
-                    json.dumps({"stderr": f"api_key={secret} reading /Users/owner/.ssh/id_rsa", "stdout": "safe trace output"}, ensure_ascii=False),
+                    json.dumps({"stderr": f"api_key={secret} reading /home/dev/.ssh/id_rsa", "stdout": "safe trace output"}, ensure_ascii=False),
                     companyctl.now(),
                 ),
             )
@@ -6605,7 +6605,7 @@ class CompanyKernelCoreTest(unittest.TestCase):
             "--status",
             "success",
             "--output-summary",
-            f"tests passed; inspected /Users/owner/.ssh/id_rsa; token={secret}",
+            f"tests passed; inspected /home/dev/.ssh/id_rsa; token={secret}",
         )
         self.assertEqual(0, code, finished_tool)
         self.assertEqual("success", finished_tool["tool_call"]["status"])
@@ -7216,7 +7216,7 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertNotIn("payload_json", api_json)
         self.assertNotIn("detail_json", api_json)
         self.assertNotIn(str(self.root), api_json)
-        self.assertNotIn("/Users/owner", api_json)
+        self.assertNotIn("/home/dev", api_json)
         self.assertIn("evidence", api_payload["task"])
         self.assertFalse(api_payload["task"]["evidence"]["absolute_path_exposed"])
         self.assertIsInstance(api_payload["evidence"]["path"], str)
@@ -9410,13 +9410,13 @@ class CompanyKernelCoreTest(unittest.TestCase):
         handler.send_header = lambda name, value: sent.append((name, value))
         handler.end_headers = lambda: sent.append(("end", ""))
         handler.server = SimpleNamespace(quiet=True)
-        with mock.patch.object(api_gateway, "route_get", side_effect=sqlite3.OperationalError("disk I/O error /Users/owner/.env")):
+        with mock.patch.object(api_gateway, "route_get", side_effect=sqlite3.OperationalError("disk I/O error /home/dev/.env")):
             handler.do_GET()
         output = handler.wfile.getvalue().decode("utf-8")
         self.assertIn(("status", HTTPStatus.INTERNAL_SERVER_ERROR), sent)
         self.assertIn('"ok": false', output)
         self.assertIn('"path": "/v1/tasks"', output)
-        self.assertNotIn("/Users/owner", output)
+        self.assertNotIn("/home/dev", output)
         self.assertNotIn(".env", output)
 
         for agent in ["video-ops", "video-creator", "video-publisher", "codex", "openclaw-main", "hermes", "nestcar"]:
@@ -9735,12 +9735,12 @@ class CompanyKernelCoreTest(unittest.TestCase):
             {
                 "from": "hermes",
                 "action": "external_send",
-                "reason": "send customer report with token=SECRET and /Users/owner/.ssh/id_rsa",
+                "reason": "send customer report with token=SECRET and /home/dev/.ssh/id_rsa",
                 "target": "nestcar",
                 "risk": "P1",
                 "approval_id": "approval-api-detail",
                 "task_id": "task-api-approval-detail",
-                "evidence": "/Users/owner/.ssh/id_rsa",
+                "evidence": "/home/dev/.ssh/id_rsa",
             },
         )
         self.assertEqual(201, status, detail_approval)
@@ -9754,7 +9754,7 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertIn("approval.request", [item["action"] for item in detail["audit_logs"]])
         raw = json.dumps(detail, ensure_ascii=False)
         self.assertNotIn("SECRET", raw)
-        self.assertNotIn("/Users/owner/.ssh/id_rsa", raw)
+        self.assertNotIn("/home/dev/.ssh/id_rsa", raw)
         self.assertIn("sensitive_path_tokens_redacted", raw)
 
         status, mock_approval = api_gateway.route_post(
@@ -9793,11 +9793,11 @@ class CompanyKernelCoreTest(unittest.TestCase):
             "ok": False,
             "agent": "codex",
             "command": "company-codex-adapter",
-            "stdout": f"api_key={secret} reading /Users/owner/.ssh/id_rsa",
+            "stdout": f"api_key={secret} reading /home/dev/.ssh/id_rsa",
             "stderr": f"token={secret} blocked on {self.root / '.env'}",
             "runs": [
                 {
-                    "result": {"stdout": f"authorization={secret}", "stderr": "/Users/owner/project/profile.json"},
+                    "result": {"stdout": f"authorization={secret}", "stderr": "/home/dev/project/profile.json"},
                     "parsed_stdout": {"task_id": "task-api-adapter-retry", "summary": "safe progress context"},
                 }
             ],
@@ -9875,7 +9875,7 @@ class CompanyKernelCoreTest(unittest.TestCase):
                 task_id="task-api-event-sanitize",
                 payload={
                     "path": str(self.root / ".ssh" / "id_rsa"),
-                    "message": "api_key=sk-test-secret and /Users/owner/project/.env",
+                    "message": "api_key=sk-test-secret and /home/dev/project/.env",
                 },
                 trace_id="trace-api-event-sanitize",
             )
@@ -9884,7 +9884,7 @@ class CompanyKernelCoreTest(unittest.TestCase):
         status, sanitized_events = api_gateway.route_get("/v1/events", {"limit": ["1"]})
         self.assertEqual(200, status, sanitized_events)
         event_json = json.dumps(sanitized_events, ensure_ascii=False)
-        self.assertNotIn("/Users/owner", event_json)
+        self.assertNotIn("/home/dev", event_json)
         self.assertNotIn("id_rsa", event_json)
         self.assertNotIn(".env", event_json)
         self.assertNotIn("sk-test-secret", event_json)
@@ -10188,7 +10188,7 @@ class CompanyKernelCoreTest(unittest.TestCase):
             "--goal",
             "检查 Thailand REI 日报发送链路",
             "--next-command",
-            "python3 /Users/owner/openclaw/skills/thailand-real-estate-investor/scripts/daily_new_listing_monitor.py --dry-run",
+            "python3 /home/dev/openclaw/skills/thailand-real-estate-investor/scripts/daily_new_listing_monitor.py --dry-run",
             "--expected-evidence",
             "bus done receipt and no empty report send",
             "--rollback",
@@ -13421,11 +13421,11 @@ class CompanyKernelCoreTest(unittest.TestCase):
             "agent": "codex",
             "command": "company-codex-adapter",
             "processed": 1,
-            "stdout": "api_key=sk-dashboardSECRET1234567890 reading /Users/owner/.ssh/id_rsa",
+            "stdout": "api_key=sk-dashboardSECRET1234567890 reading /home/dev/.ssh/id_rsa",
             "stderr": f"token=sk-dashboardSECRET1234567890 blocked on {self.root / '.env'}",
             "runs": [
                 {
-                    "result": {"stdout": "authorization=sk-dashboardSECRET1234567890", "stderr": "/Users/owner/project/profile.json"},
+                    "result": {"stdout": "authorization=sk-dashboardSECRET1234567890", "stderr": "/home/dev/project/profile.json"},
                     "parsed_stdout": {"task_id": "task-adapter-run-dashboard", "summary": "safe dashboard progress"},
                 }
             ],

@@ -7,14 +7,14 @@
 正式继续开发目录：
 
 ```text
-/Users/owner/openclaw/workspace-xmanx/projects/super-ai-company-kernel
+~/openclaw/workspace-xmanx/projects/super-ai-company-kernel
 ```
 
 不要把下面这些目录当成当前同步根：
 
 ```text
-/Users/owner/openclaw/company-kernel
-/Users/owner/openclaw/workspace-xmanx/projects/openclaw-company-management
+$OPENCLAW_COMPANY_KERNEL_ROOT
+~/openclaw/workspace-xmanx/projects/openclaw-company-management
 ```
 
 它们和当前 GitHub 同步项目不是同一个开发根。
@@ -71,13 +71,13 @@ OpenClaw 仍然是业务 agent runtime；Company Kernel 负责更上层的任务
 OpenClaw 根目录：
 
 ```text
-/Users/owner/openclaw
+~/openclaw
 ```
 
 main workspace：
 
 ```text
-/Users/owner/openclaw/workspace-xmanx
+~/openclaw/workspace-xmanx
 ```
 
 Company Kernel 当前通过文档化 bridge 连接 OpenClaw：
@@ -272,7 +272,7 @@ tests/test_codex_pm_supervisor.py
 实测通过：
 
 ```bash
-cd /Users/owner/openclaw/workspace-xmanx/projects/super-ai-company-kernel
+cd ~/openclaw/workspace-xmanx/projects/super-ai-company-kernel
 python3 -m unittest discover -s tests -v
 ```
 
@@ -292,7 +292,7 @@ bin/company-dashboard --variant advanced
 结果：
 
 ```text
-output: /Users/owner/openclaw/workspace-xmanx/projects/super-ai-company-kernel/state/dashboard.html
+output: ~/openclaw/workspace-xmanx/projects/super-ai-company-kernel/state/dashboard.html
 employees: 4
 active_employees: 3
 candidate_employees: 1
@@ -362,7 +362,7 @@ bin/companyctl doctor --summary
 ## 10. 常用命令
 
 ```bash
-cd /Users/owner/openclaw/workspace-xmanx/projects/super-ai-company-kernel
+cd ~/openclaw/workspace-xmanx/projects/super-ai-company-kernel
 
 git status --short --branch
 git remote -v
@@ -392,7 +392,7 @@ docs/RUNTIME_ADAPTERS.md
 对下一个开发窗口的最短说明：
 
 ```text
-请接管 /Users/owner/openclaw/workspace-xmanx/projects/super-ai-company-kernel。
+请接管 ~/openclaw/workspace-xmanx/projects/super-ai-company-kernel。
 当前 GitHub remote 是 https://github.com/super-ai-company/super-ai-company-kernel.git，
 分支是 feat/internal-communication-closure。
 代码测试 121/121 通过，dashboard 可生成，但 doctor 仍非 green：

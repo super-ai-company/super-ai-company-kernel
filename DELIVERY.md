@@ -36,12 +36,12 @@ Implemented and verified:
 - RPC Gateway now exposes the same governed service layer through JSON-RPC plus a generic gRPC server contract.
 - Optional `requirements-optional.txt` pins `grpcio` for deployments that need real gRPC network service validation.
 - Service smoke now starts REST/RPC on random local ports and validates remote health/describe/get without direct SQLite access; with optional dependencies installed it also reports gRPC `ready`.
-- Owner `owner` is registered as a human approval endpoint. Telegram button approval must use an OpenClaw-native callback/plugin bridge; `/Users/owner/openclaw/scripts/ops_telegram_approval_watcher.py` is a disabled legacy smoke helper and must not run in production because it conflicts with OpenClaw's own Telegram `getUpdates` loop.
+- Owner `owner` is registered as a human approval endpoint. Telegram button approval must use an OpenClaw-native callback/plugin bridge; `~/openclaw/scripts/ops_telegram_approval_watcher.py` is a disabled legacy smoke helper and must not run in production because it conflicts with OpenClaw's own Telegram `getUpdates` loop.
 - Tools that are not installed or connected on this Mac, such as Cursor, Devin, GitHub Copilot, and local-model-agent, are tracked as `candidate` employees instead of active employees; they are excluded from heartbeat and routing until activated.
 - Sandbox isolation foundation: Codex/Hermes adapters can wrap execution commands with Docker or Firejail profiles without changing task protocol.
 - Static dashboard with runtime health, evidence health, employees, capabilities, projects, recent tasks, long-task delegation, conversations, approvals, RFCs, events, adapter runs, and locks.
 - Daemon loop with heartbeat refresh, scheduler run, repair pass, compact summary output, adapter run recording, launchd template and install/uninstall scripts.
-- OpenClaw alert integration in `/Users/owner/openclaw/workspace-xmanx/scripts`, including Company Kernel heartbeat, daemon, launchd, capability, and evidence health fields.
+- OpenClaw alert integration in `~/openclaw/workspace-xmanx/scripts`, including Company Kernel heartbeat, daemon, launchd, capability, and evidence health fields.
 
 ## 2026-06-13 Reliability Fixes (root-cause for "collaboration dies after 1-2 rounds")
 
@@ -71,9 +71,9 @@ bin/company-daemon --once --enable-worker codex --summary
 bin/companyctl task show --task-id task-daemon-worker-smoke
 bin/companyctl doctor --summary --strict-launchd
 bin/company-dashboard
-python3 /Users/owner/openclaw/workspace-xmanx/scripts/company_runtime_alert.py --json-only
-python3 /Users/owner/openclaw/workspace-xmanx/scripts/supervisor_heartbeat.py --json-only
-python3 /Users/owner/openclaw/workspace-xmanx/scripts/heartbeat_summary_router.py --print-only
+python3 ~/openclaw/workspace-xmanx/scripts/company_runtime_alert.py --json-only
+python3 ~/openclaw/workspace-xmanx/scripts/supervisor_heartbeat.py --json-only
+python3 ~/openclaw/workspace-xmanx/scripts/heartbeat_summary_router.py --print-only
 openclaw gateway probe
 ```
 

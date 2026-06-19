@@ -20,7 +20,7 @@
 
 ## 内核代码的开发流程（重要约束）
 
-- 直接以"工作区"指向 /Users/owner/openclaw/company-kernel 会被拒绝（自我保护）。
+- 直接以"工作区"指向 $OPENCLAW_COMPANY_KERNEL_ROOT 会被拒绝（自我保护）。
 - 正确路径：在你自己的工作区维护内核仓库克隆（GitHub: super-ai-company/super-ai-company-kernel，
   你之前的 PR #2 就是这么进来的）→ 开发 → 测试 → 产出 patch/分支说明，由 owner/claude 合入推送。
 - 全量回归基线：**190/190**（python3 -B -m unittest discover -s tests）。任何提交不得低于此线。

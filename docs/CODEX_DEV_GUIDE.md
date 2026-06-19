@@ -8,11 +8,11 @@
 
 | 用途 | 路径 |
 |---|---|
-| 内核根目录 | `/Users/owner/openclaw/company-kernel` |
+| 内核根目录 | `$OPENCLAW_COMPANY_KERNEL_ROOT` |
 | 主命令行 CLI | `bin/companyctl`(= `python3 -m company_kernel.companyctl`) |
 | Codex 适配器 | `bin/company-codex-adapter`(= `python3 -m company_kernel.codex_adapter`) |
 | Codex 员工档案 | `employees/codex/profile.json` |
-| **Codex 工作区(它实际改代码的地方)** | `/Users/owner/openclaw/workspace-xmanx/projects/openclaw-codex-controller` |
+| **Codex 工作区(它实际改代码的地方)** | `~/openclaw/workspace-xmanx/projects/openclaw-codex-controller` |
 | 守护进程配置 | `config/daemon.json`(`adapter_workers` → codex) |
 | 任务证据/产物 | `employees/codex/reports/<task-id>/` 与 `state/` |
 | 数据库 | `company.sqlite` |
@@ -37,7 +37,7 @@ company-codex-adapter --agent codex --execute --sandbox workspace-write --model 
 
 ```
 codex exec --model gpt-5.5 --ignore-rules --ephemeral --skip-git-repo-check \
-  -C /Users/owner/openclaw/workspace-xmanx/projects/openclaw-codex-controller \
+  -C ~/openclaw/workspace-xmanx/projects/openclaw-codex-controller \
   -s workspace-write -o <输出文件> -
 ```
 
@@ -48,7 +48,7 @@ codex exec --model gpt-5.5 --ignore-rules --ephemeral --skip-git-repo-check \
 ### 步骤 1 — 提交开发任务给 codex
 
 ```
-cd /Users/owner/openclaw/company-kernel
+cd $OPENCLAW_COMPANY_KERNEL_ROOT
 
 bin/companyctl task submit \
   --from owner \
@@ -156,7 +156,7 @@ bin/companyctl heartbeat --agent codex       # 手动打一次心跳
 ## 6. 给 Claude 的最小操作清单(复制即用)
 
 ```
-cd /Users/owner/openclaw/company-kernel
+cd $OPENCLAW_COMPANY_KERNEL_ROOT
 # 1) 派活
 bin/companyctl task submit --from owner --to codex \
   --title "<标题>" --description "<含验收标准的详细需求>" --priority P1

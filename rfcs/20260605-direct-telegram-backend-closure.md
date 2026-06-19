@@ -17,7 +17,7 @@ Complete the backend contract for the next Company Kernel iteration in the devel
 
 Allowed development path:
 
-`/Users/owner/openclaw/workspace-xmanx/projects/super-ai-company-kernel`
+`~/openclaw/workspace-xmanx/projects/super-ai-company-kernel`
 
 Protected files that may be changed under this RFC:
 
@@ -31,7 +31,7 @@ Protected files that may be changed under this RFC:
 
 ## Non-goals
 
-- No changes to active runtime `/Users/owner/openclaw/company-kernel`
+- No changes to active runtime `$OPENCLAW_COMPANY_KERNEL_ROOT`
 - No restart/deploy
 - No real Telegram token or secrets access
 - No OpenClaw root config edits

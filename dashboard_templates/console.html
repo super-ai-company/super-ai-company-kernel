@@ -1095,7 +1095,7 @@ async function showTask(id) {
         <div style="font-size:12px;color:var(--muted);margin-bottom:6px">🔧 ${LANG==='zh'?'修复任务再重开。多数卡住是因为 codex 在空工作区里找不到代码仓库 —— 填上仓库绝对路径即可。':'Fix before reopening. Most blocks: codex ran in an empty workspace with no repo — set the repo absolute path.'}</div>
         <div style="font-size:11px;color:var(--bad,#f0647c);margin-bottom:8px">${t.blocker?('⛔ '+esc(String(t.blocker).slice(0,160))):''}</div>
         <label style="font-size:11px">📁 ${LANG==='zh'?'代码仓库绝对路径（工作区）':'Repo absolute path (workspace)'}</label>
-        <input id="fixWorkspace" placeholder="/Users/owner/openclaw/.../vdamo-cloud" value="${esc(curWs)}" style="font-family:var(--mono);font-size:12px;margin-bottom:8px">
+        <input id="fixWorkspace" placeholder="/path/to/your-repo" value="${esc(curWs)}" style="font-family:var(--mono);font-size:12px;margin-bottom:8px">
         <label style="font-size:11px">📝 ${LANG==='zh'?'任务说明（可补充验收/步骤）':'Brief (clarify acceptance/steps)'}</label>
         <textarea id="fixDesc" rows="4" style="font-size:12px">${esc(t.description||"")}</textarea>
         <div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap">

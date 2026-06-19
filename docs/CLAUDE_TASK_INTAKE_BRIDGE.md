@@ -5,9 +5,9 @@
 ## 固定目录
 
 ```bash
-/Users/owner/openclaw/company-kernel/state/task-intake/incoming
-/Users/owner/openclaw/company-kernel/state/task-intake/processed
-/Users/owner/openclaw/company-kernel/state/task-intake/failed
+$OPENCLAW_COMPANY_KERNEL_ROOT/state/task-intake/incoming
+$OPENCLAW_COMPANY_KERNEL_ROOT/state/task-intake/processed
+$OPENCLAW_COMPANY_KERNEL_ROOT/state/task-intake/failed
 ```
 
 ## Claude 派任务方式
@@ -15,7 +15,7 @@
 Claude 只执行这种写文件动作：
 
 ```bash
-cd /Users/owner/openclaw/company-kernel
+cd $OPENCLAW_COMPANY_KERNEL_ROOT
 mkdir -p state/task-intake/incoming
 
 cat > state/task-intake/incoming/task-claude-to-codex-$(date +%Y%m%d-%H%M%S).json <<'JSON'
@@ -44,14 +44,14 @@ JSON
 手动导入一次：
 
 ```bash
-cd /Users/owner/openclaw/company-kernel
+cd $OPENCLAW_COMPANY_KERNEL_ROOT
 bin/company-task-intake-importer
 ```
 
 安装自动导入 LaunchAgent：
 
 ```bash
-cd /Users/owner/openclaw/company-kernel
+cd $OPENCLAW_COMPANY_KERNEL_ROOT
 bin/company-task-intake-install-launchd
 ```
 
@@ -60,7 +60,7 @@ bin/company-task-intake-install-launchd
 ## 验证
 
 ```bash
-cd /Users/owner/openclaw/company-kernel
+cd $OPENCLAW_COMPANY_KERNEL_ROOT
 bin/companyctl task list --agent codex | tail -40
 ls -lt state/task-intake/processed | head
 ls -lt state/task-intake/failed | head

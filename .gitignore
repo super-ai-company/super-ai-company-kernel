@@ -60,3 +60,10 @@ run-gemini-qa.sh
 # Human RBAC users + tokens — per-deployment, never uploaded
 config/users.json
 .company-memory.md
+
+# Personal operational scripts + owner runtime state (local only, never publish)
+*.command
+employees/owner/
+reports/*.json
+reports/openclaw-external-agent-bridge/
+reports/*.md

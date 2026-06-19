@@ -4235,7 +4235,7 @@ def openclaw_native_dispatch_plan(
     if task_id:
         payload["payload"]["kernel_task_id"] = task_id
     submit_command_preview = (
-        "python3 /Users/owner/openclaw/scripts/ops_task_bus.py submit "
+        "python3 ~/openclaw/scripts/ops_task_bus.py submit "
         f"--source-agent {source} --target-agent {target} --type {task_type} --priority {priority} "
         "--payload '<payload-json>' --rollback '<rollback-text>'"
     )

@@ -10,7 +10,7 @@ How to reliably hand a development task from any employee (e.g. `claude`, `main`
 Run everything from the kernel root:
 
 ```bash
-cd /Users/owner/openclaw/company-kernel
+cd $OPENCLAW_COMPANY_KERNEL_ROOT
 ```
 
 ## The command
@@ -33,7 +33,7 @@ Codex runs each task in an ephemeral sandbox; if the description does NOT name t
 **The path is parsed by a literal directive line.** Put it on its OWN line, keyword + colon + absolute path. The backend (`resolve_task_workspace`) recognizes `工作区:` / `工作目录:` / `仓库路径:` / `workspace:` followed by an absolute path. Cleanest, always-parsed form:
 
 ```
-工作区: /Users/<you>/path/to/repo        # vdamo 后端确认在 /Users/owner/Documents/vdamo/damov4/vdamo-cloud
+工作区: /Users/<you>/path/to/repo        # vdamo 后端确认在 ~/Documents/vdamo/damov4/vdamo-cloud
 目标/验收标准：<what done looks like, how to verify>
 关键步骤：1. … 2. …
 相关文件：<paths>
