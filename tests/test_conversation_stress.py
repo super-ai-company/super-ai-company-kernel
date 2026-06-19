@@ -121,6 +121,38 @@ class ConversationStressTest(unittest.TestCase):
         self.assertFalse(any(m["source_agent"] == "nestcar" for m in shown["messages"]))
 
 
+    def test_chair_failure_falls_back_to_initiator_for_minutes(self):
+        """When the designated chair dies at the synthesis step, the meeting INITIATOR (created_by)
+        produces the minutes — 谁发起谁收口 — so the meeting never ends without a verdict."""
+        for a, rt in (("codex", "codex"), ("hermes", "hermes")):
+            self._run(["employee", "create", "--id", a, "--name", a, "--role", "developer",
+                       "--runtime", rt, "--workspace", str(self.root / a)])
+        conn0 = self.ctl.connect()
+        conn0.execute("UPDATE employees SET status = 'active' WHERE id IN ('codex','hermes')")
+        conn0.commit()
+        # codex initiates → created_by = codex
+        self.gw.route_post("/v1/conversations", {
+            "from": "codex", "participants": "codex,hermes",
+            "conversation_id": "conv-chair-fail", "title": "决策X", "body": "议程：X",
+        })
+
+        def fake_invoke(conn, agent, prompt, timeout, memory_key=""):
+            # hermes can talk in probe/rounds but DIES when asked to synthesize ("负责收口" marks the synth prompt)
+            if agent == "hermes" and "负责收口" in prompt:
+                return {"ok": False, "reply": "", "error": "synth timeout", "exit_code": 1}
+            return {"ok": True, "reply": f"{agent} 发言", "runtime": "x", "exit_code": 0}
+
+        with mock.patch.object(self.ctl, "conversation_invoke_runtime", side_effect=fake_invoke):
+            conn = self.ctl.connect()
+            result = self.ctl.conversation_run_internal(
+                conn, conversation_id="conv-chair-fail", mode="meeting", rounds=1, synthesizer="hermes")
+
+        self.assertTrue(result["final_plan"], "initiator must produce minutes when the chair fails")
+        self.assertEqual("codex", result["synthesizer"])  # fell back to the initiator
+        _, shown = self.gw.route_get("/v1/conversations/conv-chair-fail", {})
+        self.assertTrue(any("改由发起人 codex 收口" in m["body"] for m in shown["messages"]),
+                        [m["body"][:60] for m in shown["messages"]])
+
     def test_meeting_reads_project_memory_and_stores_its_conclusion(self):
         """Memory ↔ meeting closed loop: a project-tied meeting injects the shared digest into each
         speaker's prompt (memory → meeting) and writes its conclusion back into the bank (meeting →
