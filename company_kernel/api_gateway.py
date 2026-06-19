@@ -2258,6 +2258,50 @@ class ApiHandler(BaseHTTPRequestHandler):
             except (BrokenPipeError, ConnectionResetError):
                 break
 
+    def stream_priority_queue(self, query: dict[str, list[str]]) -> None:
+        """SSE for the console's first-screen queue: pushes `priority_queue_changed` + `badge_counts`
+        only when the queue actually changes (else a heartbeat). Lets the console refresh the queue in
+        real time without repainting the page; the front-end keeps polling as a fallback."""
+        poll_raw, cycles_raw = query_value(query, "poll_seconds", "3"), query_value(query, "max_cycles", "100")
+        poll_seconds = max(1, min(int(poll_raw) if str(poll_raw).isdigit() else 3, 15))
+        max_cycles = max(1, min(int(cycles_raw) if str(cycles_raw).isdigit() else 100, 600))
+        try:
+            stale = max(1, min(int(query_value(query, "stale_minutes", "30")), 1440))
+        except ValueError:
+            stale = 30
+        self.send_response(HTTPStatus.OK)
+        self.send_cors_headers()
+        self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+        self.send_header("Cache-Control", "no-cache")
+        self.send_header("Connection", "keep-alive")
+        self.end_headers()
+        self.send_sse_event("stream_status", {"ok": True, "mode": "priority_queue_short_poll", "poll_seconds": poll_seconds})
+        last_fp = None
+        for _ in range(max_cycles):
+            try:
+                conn = companyctl.connect()
+                try:
+                    items = companyctl.company_priority_queue(conn, stale_minutes=stale)
+                finally:
+                    conn.close()
+                for it in items:
+                    it["title"] = sanitize_dashboard_text(it.get("title", ""))
+                    it["target"] = sanitize_dashboard_text(it.get("target", ""))
+                counts = {"total": len(items),
+                          "approval": sum(1 for i in items if i["kind"] == "approval"),
+                          "blocked": sum(1 for i in items if i["label"] == "阻塞"),
+                          "stale": sum(1 for i in items if i["label"] == "超时")}
+                fp = json.dumps([(i["kind"], i["id"], i["severity"]) for i in items], ensure_ascii=False)
+                if fp != last_fp:
+                    self.send_sse_event("badge_counts", counts)
+                    self.send_sse_event("priority_queue_changed", {"queue": items, "counts": counts})
+                    last_fp = fp
+                else:
+                    self.send_sse_event("heartbeat", {"ok": True, "created_at": companyctl.now()})
+                time.sleep(poll_seconds)
+            except (BrokenPipeError, ConnectionResetError):
+                break
+
     def do_OPTIONS(self) -> None:
         self.send_response(HTTPStatus.NO_CONTENT)
         self.send_cors_headers()
@@ -2322,6 +2366,9 @@ class ApiHandler(BaseHTTPRequestHandler):
         query = parse_qs(parsed.query)
         if parsed.path == "/v1/events/stream":
             self.stream_events(query)
+            return
+        if parsed.path == "/v1/priority-queue/stream":
+            self.stream_priority_queue(query)
             return
         try:
             status, payload = route_get(unquote(parsed.path), query)
