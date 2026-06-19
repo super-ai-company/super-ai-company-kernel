@@ -29,7 +29,7 @@ class InitWizardTest(unittest.TestCase):
         run_mock.assert_not_called()   # dry-run must not spawn company-add-employee
         ctl_mock.assert_not_called()   # dry-run must not call companyctl (no owner/doctor side effects)
 
-    def test_yes_mode_adds_detected_runtimes_without_execute_by_default(self):
+    def test_yes_mode_registers_runtime_but_never_writes_worker_config_by_default(self):
         args = argparse.Namespace(yes=True, execute=False, dry_run=False)
         calls = []
         def fake_run(cmd, **kw):
@@ -44,6 +44,39 @@ class InitWizardTest(unittest.TestCase):
         self.assertEqual(1, len(add_calls), calls)               # exactly the one detected runtime
         self.assertIn("codex", [str(x) for x in add_calls[0]])
         self.assertNotIn("--execute", add_calls[0])               # safe default: no autonomous execution
+        self.assertNotIn("--enable-worker", add_calls[0])         # safe default: no config/daemon.json write
+
+    def test_execute_flag_enables_worker_and_execution(self):
+        args = argparse.Namespace(yes=True, execute=True, dry_run=False)
+        calls = []
+        with mock.patch.object(init_wizard.shutil, "which", side_effect=lambda b: f"/usr/local/bin/{b}" if b == "codex" else None), \
+             mock.patch.object(init_wizard.subprocess, "run", side_effect=lambda cmd, **kw: calls.append(cmd) or mock.Mock(returncode=0, stdout="ok", stderr="")), \
+             mock.patch.object(init_wizard, "_run_ctl", return_value=(0, '{"ok": true, "counts": {"employees": 1}}')):
+            init_wizard.run_init(args)
+        add = [c for c in calls if any("company-add-employee" in str(x) for x in c)][0]
+        self.assertIn("--enable-worker", add)
+        self.assertIn("--execute", add)
+
+    def test_failed_step_makes_init_exit_nonzero(self):
+        """A failed add-employee must propagate — init returns non-zero, never a false 'done'."""
+        args = argparse.Namespace(yes=True, execute=False, dry_run=False)
+        with mock.patch.object(init_wizard.shutil, "which", side_effect=lambda b: f"/usr/local/bin/{b}" if b == "codex" else None), \
+             mock.patch.object(init_wizard.subprocess, "run", return_value=mock.Mock(returncode=1, stdout="", stderr="boom")), \
+             mock.patch.object(init_wizard, "_run_ctl", return_value=(0, '{"ok": true, "counts": {}}')):
+            code = init_wizard.run_init(args)
+        self.assertEqual(2, code)
+
+    def test_no_tty_without_yes_is_plan_only(self):
+        """No interactive terminal and no --yes: print the plan, mutate nothing."""
+        args = argparse.Namespace(yes=False, execute=False, dry_run=False)
+        with mock.patch.object(init_wizard.shutil, "which", side_effect=lambda b: f"/usr/local/bin/{b}"), \
+             mock.patch.object(init_wizard, "_interactive", return_value=False), \
+             mock.patch.object(init_wizard.subprocess, "run") as run_mock, \
+             mock.patch.object(init_wizard, "_run_ctl") as ctl_mock:
+            code = init_wizard.run_init(args)
+        self.assertEqual(0, code)
+        run_mock.assert_not_called()
+        ctl_mock.assert_not_called()
 
 
 if __name__ == "__main__":
