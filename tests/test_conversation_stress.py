@@ -294,6 +294,26 @@ class ConversationStressTest(unittest.TestCase):
         self.assertEqual(["approve", "deny"], q[0]["actions"])         # approval's in-place actions
         self.assertGreaterEqual(q[2]["age_minutes"], 30)               # timed-out item shows its age
 
+    def test_priority_queue_same_severity_oldest_first_and_endpoint_clamps(self):
+        """Within a severity the longest-waiting item surfaces first; the /v1/priority-queue endpoint
+        clamps a wild stale_minutes and sanitizes output."""
+        import datetime as _dt
+        n = self.ctl.now()
+        older = (_dt.datetime.fromisoformat(n) - _dt.timedelta(minutes=50)).isoformat()
+        newer = (_dt.datetime.fromisoformat(n) - _dt.timedelta(minutes=5)).isoformat()
+        conn = self.ctl.connect()
+        for tid, ts in (("task-newer", newer), ("task-older", older)):
+            conn.execute("INSERT INTO tasks(id,source_agent,target_agent,title,description,priority,status,created_at,updated_at) "
+                         "VALUES(?,?,?,?,?,?,?,?,?)", (tid, "m", "codex", tid, "", "P2", "blocked", ts, ts))
+        conn.commit()
+        q = self.ctl.company_priority_queue(self.ctl.connect(), stale_minutes=30)
+        self.assertEqual(["task-older", "task-newer"], [it["id"] for it in q])   # oldest-waiting first
+        # endpoint: wild stale_minutes is clamped, response is well-formed
+        status, body = self.gw.route_get("/v1/priority-queue", {"stale_minutes": ["999999"]})
+        self.assertEqual(200, status)
+        self.assertTrue(body["ok"])
+        self.assertEqual(2, body["counts"]["blocked"])
+
     def test_human_rbac_roles_and_action_gating(self) -> None:
         gw = self.gw
         # no users.json + no env token → open self-host (owner)
