@@ -28,7 +28,7 @@ execute → feedback, all visible. That visibility is the point.
 | `report_blocked(agent, task_id, blocker)` | mark blocked with a concrete reason — never fake done |
 | `dispatch_task(from_agent, to_agent, title, description)` | hand work to a colleague (codex backend / claude analysis / antigravity(agy) frontend review / hermes coordination). codex needs `工作区: /abs/repo`; big agy review needs `超时: 3600` |
 | `check_completions(agent)` | results of tasks YOU dispatched — the kernel pushes a `result-*.json` to your inbox the instant they finish (no polling) |
-| `start_meeting(from_agent, topic, participants, question)` | stuck on a hard decision you can't make alone (e.g. a design fork)? convene a quick meeting with colleagues instead of guessing. Runs async in the background; reserve it for the few genuinely hard calls |
+| `start_meeting(from_agent, topic, participants, question, project?)` | stuck on a hard decision you can't make alone (e.g. a design fork)? convene a quick meeting with colleagues instead of guessing. Runs async in the background; reserve it for the few genuinely hard calls. Optional `project` ties the meeting to a project memory bank (reads its digest, stores the conclusion). |
 | `meeting_result(conversation_id)` | poll a meeting you started for its conclusion (the chair's 方案/决策/纪要). Returns `done=false` while colleagues are still talking |
 
 Note the apps **self-report** (`report_done`/`report_blocked`) because they execute interactively.
