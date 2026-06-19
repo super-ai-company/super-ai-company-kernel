@@ -2191,7 +2191,7 @@ class ApiHandler(BaseHTTPRequestHandler):
     def send_cors_headers(self) -> None:
         self.send_header("Access-Control-Allow-Origin", "*")
         self.send_header("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE, OPTIONS")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization")
         # Chrome local-network access: allow file:// console to reach 127.0.0.1
         self.send_header("Access-Control-Allow-Private-Network", "true")
 
@@ -2291,7 +2291,9 @@ class ApiHandler(BaseHTTPRequestHandler):
                           "approval": sum(1 for i in items if i["kind"] == "approval"),
                           "blocked": sum(1 for i in items if i["label"] == "阻塞"),
                           "stale": sum(1 for i in items if i["label"] == "超时")}
-                fp = json.dumps([(i["kind"], i["id"], i["severity"]) for i in items], ensure_ascii=False)
+                # fingerprint the FULL items (not just kind/id/severity) so any content change —
+                # title, target, label, actions, age — pushes a fresh queue, not just kind/id/severity.
+                fp = json.dumps(items, ensure_ascii=False, sort_keys=True)
                 if fp != last_fp:
                     self.send_sse_event("badge_counts", counts)
                     self.send_sse_event("priority_queue_changed", {"queue": items, "counts": counts})
