@@ -86,6 +86,26 @@ class HeartbeatKeeperThreadTest(unittest.TestCase):
         with company_daemon.HeartbeatKeeper([], interval_seconds=30) as k:
             self.assertIsNone(k._thread)  # nothing to keep alive → no thread spawned
 
+    def test_keeper_counts_failures_instead_of_silent_swallow(self):
+        from company_kernel import company_daemon
+        keeper = company_daemon.HeartbeatKeeper(["codex"], interval_seconds=30)
+        keeper._beat_once = lambda: (_ for _ in ()).throw(RuntimeError("db locked"))  # type: ignore
+        # drive exactly one loop iteration: wait() returns False (fire) then True (stop)
+        fire = iter([False, True])
+        keeper._stop.wait = lambda t: next(fire)  # type: ignore
+        keeper._loop()  # must not raise — failure is counted, not swallowed silently
+        self.assertEqual(1, keeper.consecutive_failures)
+
+    def test_keeper_failure_counter_resets_on_success(self):
+        from company_kernel import company_daemon
+        keeper = company_daemon.HeartbeatKeeper(["codex"], interval_seconds=30)
+        keeper.consecutive_failures = 3
+        keeper._beat_once = lambda: None  # type: ignore — a successful round
+        fire = iter([False, True])
+        keeper._stop.wait = lambda t: next(fire)  # type: ignore
+        keeper._loop()
+        self.assertEqual(0, keeper.consecutive_failures)
+
 
 class KeeperAgentsTest(unittest.TestCase):
     """Regression for the integration gap codex caught: the shipped daemon config has
