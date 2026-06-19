@@ -246,6 +246,34 @@ class ConversationStressTest(unittest.TestCase):
         # the meeting row carries a jump id so the console can open it
         self.assertTrue(any(f["conversation_id"] == "conv-feed" for f in feed))
 
+    def test_dispatch_refused_to_off_duty_stale_heartbeat_employee(self):
+        """Confirm real on-duty status before dispatching: a status='active' worker whose heartbeat
+        went stale is refused (it isn't actually running), so colleagues don't send work to a dead
+        employee. Fresh / never-heartbeated employees are fine."""
+        import datetime as _dt
+        self._run(["employee", "create", "--id", "codex", "--name", "codex", "--role", "developer",
+                   "--runtime", "codex", "--workspace", str(self.root / "codex")])
+        conn = self.ctl.connect()
+        conn.execute("UPDATE employees SET status='active' WHERE id='codex'")
+        conn.commit()
+        # no heartbeat yet → benefit of the doubt (allowed)
+        self.assertIsNone(self.ctl.require_active_employee(self.ctl.connect(), "codex", "task.submit"))
+        # stale heartbeat (20 min ago) → refused
+        stale = (_dt.datetime.fromisoformat(self.ctl.now()) - _dt.timedelta(minutes=20)).isoformat()
+        conn = self.ctl.connect()
+        conn.execute("INSERT OR REPLACE INTO heartbeats(agent_id, runtime, workspace, status, last_seen_at, metadata_json) "
+                     "VALUES ('codex','codex','/tmp','alive',?,'{}')", (stale,))
+        conn.commit()
+        rej = self.ctl.require_active_employee(self.ctl.connect(), "codex", "task.submit")
+        self.assertIsNotNone(rej)
+        self.assertIn("stale heartbeat", rej["error"])
+        self.assertGreaterEqual(rej["heartbeat_age_minutes"], 15)
+        # fresh heartbeat → allowed again
+        conn = self.ctl.connect()
+        conn.execute("UPDATE heartbeats SET last_seen_at=? WHERE agent_id='codex'", (self.ctl.now(),))
+        conn.commit()
+        self.assertIsNone(self.ctl.require_active_employee(self.ctl.connect(), "codex", "task.submit"))
+
     def test_human_rbac_roles_and_action_gating(self) -> None:
         gw = self.gw
         # no users.json + no env token → open self-host (owner)
