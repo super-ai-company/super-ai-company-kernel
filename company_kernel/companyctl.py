@@ -774,6 +774,42 @@ def company_feed(conn: sqlite3.Connection, limit: int = 40) -> list[dict]:
     return out
 
 
+def company_priority_queue(conn: sqlite3.Connection, *, stale_minutes: int = 30, limit: int = 60) -> list[dict]:
+    """The console's first-screen "what needs you" queue: pending approvals (top), then blocked tasks,
+    then timed-out/stale tasks. Merged to one row per object (key = kind+id, highest severity wins),
+    sorted by severity then recency, each carrying a primary in-place action set. Pure SQL — free."""
+    now_dt = datetime.fromisoformat(now())
+
+    def age_min(ts: object) -> int | None:
+        try:
+            return max(0, int((now_dt - datetime.fromisoformat(str(ts))).total_seconds() // 60))
+        except (ValueError, TypeError):
+            return None
+
+    by_key: dict[tuple, dict] = {}
+
+    def add(kind: str, oid: str, title: str, severity: int, label: str, ts: str, actions: list[str], target: str = "") -> None:
+        key = (kind, oid)
+        prev = by_key.get(key)
+        if prev is None or severity < prev["severity"]:
+            t = str(title or oid).replace("\n", " ").strip()
+            by_key[key] = {"kind": kind, "id": oid, "title": (t[:60] + "…") if len(t) > 60 else t,
+                           "severity": severity, "label": label, "ts": ts or "", "age_minutes": age_min(ts),
+                           "actions": actions, "target": target or ""}
+
+    for a in rows(conn, "SELECT * FROM approvals WHERE status='pending' ORDER BY created_at DESC LIMIT ?", (limit,)):
+        add("approval", a["id"], a["action"] or a["reason"] or a["id"], 1, "待审批", a["created_at"], ["approve", "deny"], a["source_agent"])
+    for t in rows(conn, "SELECT id,title,target_agent,updated_at,created_at FROM tasks WHERE status IN ('blocked','failed','interrupted') ORDER BY updated_at DESC LIMIT ?", (limit,)):
+        add("task", t["id"], t["title"], 2, "阻塞", t["updated_at"] or t["created_at"], ["reopen", "read"], t["target_agent"])
+    for t in rows(conn, "SELECT id,title,target_agent,updated_at,created_at,status FROM tasks WHERE status IN ('submitted','stale','stalled')"):
+        ts = t["updated_at"] or t["created_at"]
+        am = age_min(ts)
+        if t["status"] in ("stale", "stalled") or (t["status"] == "submitted" and am is not None and am >= stale_minutes):
+            add("task", t["id"], t["title"], 3, "超时", ts, ["nudge", "reassign", "read"], t["target_agent"])
+
+    return sorted(by_key.values(), key=lambda x: (x["severity"], x["ts"]))[:limit]
+
+
 def safe_path_token(value: str) -> str:
     token = "".join(ch if ch.isalnum() or ch in "._-" else "_" for ch in str(value or ""))
     return token.strip("._-") or "task"

@@ -832,6 +832,22 @@ def route_get(path: str, query: dict[str, list[str]]) -> tuple[int, dict]:
         for it in items:
             it["text"] = sanitize_dashboard_text(it.get("text", ""))
         return HTTPStatus.OK, {"ok": True, "feed": items}
+    if path == "/v1/priority-queue":
+        try:
+            stale = max(1, min(int(query_value(query, "stale_minutes") or 30), 1440))
+        except ValueError:
+            stale = 30
+        conn = companyctl.connect()
+        try:
+            items = companyctl.company_priority_queue(conn, stale_minutes=stale)
+        finally:
+            conn.close()
+        for it in items:
+            it["title"] = sanitize_dashboard_text(it.get("title", ""))
+        return HTTPStatus.OK, {"ok": True, "queue": items, "counts": {"total": len(items),
+                "approval": sum(1 for i in items if i["kind"] == "approval"),
+                "blocked": sum(1 for i in items if i["label"] == "阻塞"),
+                "stale": sum(1 for i in items if i["label"] == "超时")}}
     if path == "/v1/heartbeats":
         conn = companyctl.connect()
         try:
