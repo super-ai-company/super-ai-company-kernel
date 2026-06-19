@@ -26,7 +26,11 @@ CTL = ROOT / "bin" / "companyctl"
 REPORT = ROOT / "state" / "status-reconcile-report.txt"
 
 CLI_RUNTIMES = {"codex": "codex", "hermes": "hermes", "claude": "claude", "trae": "trae"}
-GUI_ONLY_RUNTIMES = {"antigravity"}  # cannot work autonomously -> archived, never online
+GUI_ONLY_RUNTIMES = {"antigravity"}  # the GUI app can't work autonomously -> archived, never online
+# …but a GUI runtime can have a HEADLESS CLI twin that CAN (e.g. antigravity's `agy --print`). Map the
+# runtime to (twin employee id, its CLI binary); that twin is verified+activated like a CLI runtime
+# instead of being archived. Without this, the working headless twin gets wrongly demoted/offline.
+GUI_CLI_TWIN = {"antigravity": ("agy", "agy")}
 
 lines: list[str] = []
 def log(s: str = "") -> None:
@@ -89,8 +93,18 @@ def reconcile_one(emp: dict, oc_registered: set) -> tuple[str, str]:
         return "candidate", reason
 
     if runtime in GUI_ONLY_RUNTIMES:
-        # GUI-only runtimes can't work autonomously -> archive, not just demote, so they
-        # never appear as an online employee.
+        # The headless CLI twin (e.g. agy for antigravity) CAN work autonomously — if its CLI is
+        # installed, verify+activate it like a CLI runtime instead of archiving it.
+        twin = GUI_CLI_TWIN.get(runtime)
+        if twin and agent == twin[0] and shutil.which(twin[1]):
+            code, d = ctl(["employee", "verify-direct", "--id", agent, "--from", "main",
+                           "--rounds", "2", "--activate", "--continue-on-failure"])
+            if d.get("activation_allowed") or d.get("activated"):
+                return "active", "headless CLI 双胞胎 verify-direct 真实通过"
+            reason = verify_reason(d.get("results", []))
+            demote(agent, reason)
+            return "candidate", reason
+        # the GUI app itself can't work autonomously -> archive so it never shows as online.
         ctl(["employee", "update", "--id", agent, "--status", "archived"])
         return "archived", "GUI-only：已下线（不作为在线员工）"
 
