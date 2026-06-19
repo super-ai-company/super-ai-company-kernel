@@ -10346,31 +10346,61 @@ def conversation_run_internal(
                 transcript.append({"round": rnd, "speaker": spk, "ok": False,
                                    "error": reason, "stderr": res.get("stderr", "")})
 
-    thread = conversation_thread_text(conn, conversation_id, limit=80)
-    synth_prompt = conversation_synth_prompt(mode, synth, title, thread) + memory_preamble
+    # Durably exclude a participant that failed EVERY round (its runtime is unreliable headless):
+    # drop it from the meeting-capable cache so the NEXT meeting re-probes it and skips it until it
+    # genuinely recovers — "不可靠的别参会", without permanently banning it on a single transient blip.
+    if gate_capable:
+        succeeded = {t["speaker"] for t in transcript if t.get("ok")}
+        broken = [s for s in speakers if s not in succeeded]
+        if broken:
+            store = load_meeting_capable()
+            if any(store.pop(b, None) is not None for b in broken):
+                save_meeting_capable(store)
+
     prefix = CONVERSATION_SYNTH_PREFIX.get(mode, "【方案/决策】")
-    synth_res = conversation_invoke_runtime(conn, synth, synth_prompt, timeout, memory_key=conversation_id)
+    # Synthesis with FALLBACK so a chair that dies at runtime (e.g. a slow/unreliable runtime timing
+    # out) never leaves the meeting verdict-less. Order: the designated chair first, then the meeting
+    # INITIATOR (created_by) — "谁发起谁收口" — then any other speaker who took part. Each must be an
+    # admitted speaker. First one to produce minutes wins.
+    initiator = str(conv.get("created_by") or "")
+    synth_chain: list[str] = []
+    for cand in [synth, initiator, *speakers]:
+        if cand and (cand == synth or cand in speakers) and cand not in synth_chain:
+            synth_chain.append(cand)
     final_plan = ""
     captured_memory = None
-    if synth_res.get("ok") and synth_res.get("reply"):
-        final_plan = synth_res["reply"]
-        conversation_reply_internal(conn, source=synth, conversation_id=conversation_id,
-                                    body=f"{prefix}\n{final_plan}")
-        # meeting → memory: store the synthesized conclusion into the project memory bank so the
-        # meeting's output is remembered, not lost. No-op if the conversation isn't tied to a project.
-        try:
-            entry = project_memory.capture_meeting_conclusion(
-                conn, project_id=project_id, title=title, conclusion=final_plan,
-                conversation_id=conversation_id, synthesizer=synth, mode=mode)
-            captured_memory = entry["id"] if entry else None
-        except Exception:
-            captured_memory = None
-    else:
+    used_synth = synth
+    for idx, cand in enumerate(synth_chain):
+        thread = conversation_thread_text(conn, conversation_id, limit=80)
+        synth_prompt = conversation_synth_prompt(mode, cand, title, thread) + memory_preamble
+        synth_res = conversation_invoke_runtime(conn, cand, synth_prompt, timeout, memory_key=conversation_id)
+        if synth_res.get("ok") and synth_res.get("reply"):
+            final_plan = synth_res["reply"]
+            used_synth = cand
+            if idx > 0:  # a fallback stepped in — make the handoff visible (kept out of the minutes' context)
+                who = "发起人" if cand == initiator else "参会者"
+                conversation_reply_internal(conn, source=cand, conversation_id=conversation_id,
+                                            body=f"{MEETING_SYSNOTE_PREFIX} 主持人 {synth} 未能出纪要,改由{who} {cand} 收口")
+            conversation_reply_internal(conn, source=cand, conversation_id=conversation_id,
+                                        body=f"{prefix}\n{final_plan}")
+            # meeting → memory: store the synthesized conclusion into the project memory bank so the
+            # meeting's output is remembered, not lost. No-op if the conversation isn't tied to a project.
+            try:
+                entry = project_memory.capture_meeting_conclusion(
+                    conn, project_id=project_id, title=title, conclusion=final_plan,
+                    conversation_id=conversation_id, synthesizer=cand, mode=mode)
+                captured_memory = entry["id"] if entry else None
+            except Exception:
+                captured_memory = None
+            break
         s_reason = synth_res.get("error") or f"synthesis exit_code={synth_res.get('exit_code')}"
-        conversation_reply_internal(conn, source=synth, conversation_id=conversation_id,
-                                    body=f"{MEETING_SYSNOTE_PREFIX} {MEETING_CHAIR_FAIL_MARK}:{str(s_reason)[:140]} —— 稍后重跑或换主持人")
-        transcript.append({"round": rounds + 1, "speaker": synth, "ok": False,
+        transcript.append({"round": rounds + 1, "speaker": cand, "ok": False,
                            "error": s_reason, "stderr": synth_res.get("stderr", "")})
+    if not final_plan:
+        # every candidate failed — the meeting is over without a verdict; say so (done, not hanging).
+        conversation_reply_internal(conn, source=synth, conversation_id=conversation_id,
+                                    body=f"{MEETING_SYSNOTE_PREFIX} {MEETING_CHAIR_FAIL_MARK}:主席与发起人均未能出纪要 —— 稍后重跑或换主持人")
+    synth = used_synth
 
     audit(conn, synth, "conversation.run", conversation_id,
           {"mode": mode, "rounds": rounds, "speakers": speakers, "synthesizer": synth, "turns": len(transcript)})
