@@ -1645,8 +1645,8 @@ function pqStartSSE(){
   try {
     PQ_SSE = new EventSource((API||"")+"/v1/priority-queue/stream?poll_seconds=3");
     PQ_SSE.addEventListener("priority_queue_changed", e=>{ try{ pqRender(JSON.parse(e.data).queue); }catch(_){} });
-    PQ_SSE.onerror = ()=>{};   // 断线 EventSource 自动重连;期间轮询兜底
-  } catch(_){}
+    PQ_SSE.onerror = ()=>{ if(PQ_SSE && PQ_SSE.readyState===2){ PQ_SSE.close(); PQ_SSE=null; } }; // CLOSED(如401)→释放,下次 refreshAll 重试;期间轮询兜底
+  } catch(_){ PQ_SSE=null; }
 }
 async function loadPriorityQueue(){
   try { const d = await api("/v1/priority-queue?stale_minutes=30"); pqRender(d.queue); }
@@ -1778,6 +1778,7 @@ function renderOverview() {
 async function refreshAll(manual=false) {
   if(manual) toast("刷新中…");
   await Promise.allSettled([loadHealth(), loadEmployees(), loadTasks(), loadApprovals(), loadActivity(), loadPriorityQueue(), loadFeed(), loadDeliveryTargets()]);
+  pqStartSSE();   // (re)start SSE if it dropped (e.g. after a 401); no-op when already connected
   renderOverview();
   if($("msgAgent").value) loadMessages();
   loadConversations();
