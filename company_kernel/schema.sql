@@ -495,3 +495,8 @@ CREATE TABLE IF NOT EXISTS project_memory (
   updated_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_project_memory_project ON project_memory(project_id, status);
+-- Cockpit per-attempt latest_progress: the progress_events query filters task.progress events by the
+-- tasks that currently have an active attempt. These indexes keep it off full table scans as the
+-- event ledger grows (covers both the outer event filter and the active-attempt subquery).
+CREATE INDEX IF NOT EXISTS idx_company_events_type_task_created ON company_events(event_type, task_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_execution_attempts_status_task ON execution_attempts(status, task_id);
