@@ -13220,6 +13220,7 @@ WATCHDOG_GLOBAL_CAP_SECONDS = 5400  # 90 minutes
 # Grace before the pid-liveness (orphan) check fires, so a just-started adapter whose pid stamp is
 # milliseconds behind isn't misread as dead.
 WATCHDOG_ORPHAN_GRACE_SECONDS = 120
+TERMINAL_TASK_STATUSES = ("completed", "done", "blocked", "cancelled", "failed", "stale")
 
 
 def process_alive(pid: int) -> bool:
@@ -13263,11 +13264,15 @@ def reap_stuck_attempts_internal(conn: sqlite3.Connection, *, actor: str = "open
         # — don't touch the task or re-notify, it already closed out. Distinct event from a real reap.
         task_status_row = conn.execute("SELECT status FROM tasks WHERE id = ?", (attempt.get("task_id"),)).fetchone()
         task_status = str(task_status_row["status"]) if task_status_row else ""
-        if task_status in {"completed", "done", "blocked", "cancelled", "failed", "stale"}:
+        if task_status in TERMINAL_TASK_STATUSES:
+            # Re-confirm the task is STILL terminal inside the same atomic UPDATE (EXISTS) — otherwise a
+            # task reopened/retried between this SELECT and the UPDATE, with the old attempt still
+            # active, could be wrongly retired. rowcount==1 only if both still hold.
             cur = conn.execute(
                 "UPDATE execution_attempts SET status = 'stale', finished_at = ?, error_message = ? "
-                "WHERE attempt_id = ? AND status IN ('starting', 'running', 'correcting')",
-                (current, f"watchdog: orphaned attempt of already-{task_status} task, retired", attempt["attempt_id"]),
+                "WHERE attempt_id = ? AND status IN ('starting', 'running', 'correcting') "
+                "AND EXISTS (SELECT 1 FROM tasks WHERE id = ? AND status IN ('completed', 'done', 'blocked', 'cancelled', 'failed', 'stale'))",
+                (current, f"watchdog: orphaned attempt of already-{task_status} task, retired", attempt["attempt_id"], attempt.get("task_id")),
             )
             if cur.rowcount == 1:
                 conn.commit()
