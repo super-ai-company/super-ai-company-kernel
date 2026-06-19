@@ -17,13 +17,14 @@ Modern AI tools are each powerful but isolated: each has its own rules, state, a
 ### Key features
 
 - **Unified employee model** — register any runtime as an employee with one command; adding an agent is a command, not a code change.
-- **Task protocol** — submit / claim / done / block with mandatory evidence; multi-round conversations; event-driven hooks.
+- **Task protocol** — submit / claim / done / block with mandatory evidence; event-driven hooks.
+- **Meetings** — beyond one-off tasks, employees hold real multi-round meetings. `companyctl conversation run` spawns an autonomous discussion (each employee speaks, a chair writes the minutes/decision); a memory-tied meeting reads the project digest and writes its conclusion back. An employee stuck on a hard call can convene its own meeting (`companyctl meeting request`, also an MCP tool) instead of guessing — then poll `meeting result` for the verdict. Start one from the console's **meeting room** (🚀 发起会议) or the CLI/MCP.
 - **Verdict gate** — a worker's exit code 0 is not "done"; the agent must emit `STATUS: completed` / `STATUS: blocked - <reason>`, otherwise the task blocks for human review (no fake completions).
 - **Per-task workspace** — a task can target a specific repo via `工作区: /abs/path`; the kernel validates it and refuses to let workers modify the kernel itself.
 - **Governance** — high-risk actions (external send, deploy, kernel change) require owner approval; rule changes go through RFCs.
 - **Reliability** — execution timeout, retry policy, stale-task watchdog, honest heartbeats.
 - **Security & ops** — opt-in Bearer-token gateway auth, automatic SQLite online backup + guarded restore.
-- **Live console** — employees on-duty, task kanban, messaging, conversations, approvals, activity feed; served by the API gateway.
+- **Live console** — employees on-duty, task kanban, messaging, the meeting room, approvals, and a unified **company activity feed** (📜 who dispatched / ran / met / said what, in one stream); served by the API gateway.
 - **Interfaces** — `companyctl` CLI, REST / JSON-RPC / gRPC gateways, launchd/systemd/Task-Scheduler daemon.
 
 ### 30-second quick start
@@ -53,7 +54,7 @@ One command per employee. Supported runtimes: `codex`, `claude`, `hermes`, `open
 ### Tests
 
 ```bash
-python3 -B -m unittest discover -s tests      # baseline: 206 passing
+python3 -B -m unittest discover -s tests      # baseline: 539 passing
 ```
 
 ### Documentation index
@@ -78,13 +79,14 @@ python3 -B -m unittest discover -s tests      # baseline: 206 passing
 ### 核心能力
 
 - **统一员工模型** —— 一条命令把任意运行时注册为员工；新增智能体是命令，不是改代码。
-- **任务协议** —— 提交/领取/完成/阻塞，强制证据；多轮对话；事件驱动钩子接力。
+- **任务协议** —— 提交/领取/完成/阻塞，强制证据；事件驱动钩子接力。
+- **开会** —— 不止派单：员工能开真正的多轮会议。`companyctl conversation run` 起一场自主讨论（每个员工发言、主持人收口出纪要/决策）；绑定项目的会议会读取项目记忆摘要、并把结论写回。员工卡在难决策上时，可自己召集会议（`companyctl meeting request`，也是 MCP 工具）而不是瞎猜，再用 `meeting result` 轮询结论。控制台**会议室**（🚀 发起会议）或 CLI/MCP 都能发起。
 - **裁决门** —— worker 退出码 0 不等于"完成"；智能体必须输出 `STATUS: completed` 或 `STATUS: blocked - 原因`，否则任务进入受阻待人工复核（杜绝假完成）。
 - **任务级工作区** —— 任务可用 `工作区: /绝对路径` 指定目标仓库；内核校验路径并禁止 worker 改动内核自身。
 - **治理** —— 高风险动作（外发、部署、改内核）需 owner 审批；规则变更走 RFC。
 - **可靠性** —— 执行超时、重试策略、断链看门狗、诚实心跳。
 - **安全与运维** —— 可选 Bearer-token 网关鉴权、SQLite 自动在线备份 + 守护式恢复。
-- **实时控制台** —— 员工在岗、任务看板、消息、对话、审批、活动流，由 API 网关直接提供。
+- **实时控制台** —— 员工在岗、任务看板、消息、**会议室**、审批，以及统一的**全公司动态总流**（📜 谁派活 / 谁执行 / 谁开会 / 谁说了啥，汇成一条流），由 API 网关直接提供。
 - **接口** —— `companyctl` 命令行、REST / JSON-RPC / gRPC 网关、launchd/systemd/任务计划程序常驻。
 
 ### 30 秒上手
@@ -114,7 +116,7 @@ bin/company-api-gateway --port 8765              # 浏览器开 http://127.0.0.1
 ### 测试
 
 ```bash
-python3 -B -m unittest discover -s tests      # 基线：206 通过
+python3 -B -m unittest discover -s tests      # 基线：539 通过
 ```
 
 ### 文档索引
