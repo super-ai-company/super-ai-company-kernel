@@ -408,6 +408,15 @@ def build_traces(conn: sqlite3.Connection, *, limit: int = 20) -> list[dict]:
     return traces
 
 
+# Full-shape default so a long_task whose progress event isn't present never KeyErrors on
+# latest_progress["progress_state"] (or the other fields) — matches companyctl.task_progress_events.
+EMPTY_LATEST_PROGRESS = {
+    "event_id": "", "trace_id": "", "task_id": "", "employee_id": "", "attempt_id": "",
+    "progress_state": "", "progress_layer": "", "progress_label": "", "message": "",
+    "progress": None, "payload": {}, "created_at": "",
+}
+
+
 def long_task_state(attempt: dict, *, generated_at: str) -> dict:
     return companyctl.long_task_state_for_attempt(attempt, generated_at=generated_at)
 
@@ -601,7 +610,9 @@ def build_cockpit_summary(summary: dict) -> dict:
         return sorted(annotated, key=lambda item: (int(item.get("priority_rank", 3)), str(item.get("updated_at") or "")), reverse=False)
 
     progress_by_task = {}
-    for progress in companyctl.task_progress_events(summary.get("events", [])):
+    # Prefer the dedicated, generously-limited task.progress feed (falls back to the global events
+    # window) so an active attempt's latest progress is reliably found, not crowded out by other events.
+    for progress in companyctl.task_progress_events(summary.get("progress_events") or summary.get("events", [])):
         task_id = str(progress.get("task_id", ""))
         if task_id and task_id not in progress_by_task:
             progress_by_task[task_id] = progress
@@ -638,7 +649,7 @@ def build_cockpit_summary(summary: dict) -> dict:
                 "blocker": task.get("blocker", "") or attempt.get("error_message", ""),
                 "evidence": evidence,
                 "correction": correction,
-                "latest_progress": progress_by_task.get(task_id, {}),
+                "latest_progress": progress_by_task.get(task_id, dict(EMPTY_LATEST_PROGRESS)),
                 **state,
             }
         )
@@ -1249,7 +1260,7 @@ def build_cockpit_summary(summary: dict) -> dict:
                 "attempt_id": "",
                 "trace_id": task.get("trace_id", ""),
                 "updated_at": task.get("updated_at", ""),
-                "latest_progress": progress_by_task.get(task_id, {}),
+                "latest_progress": progress_by_task.get(task_id, dict(EMPTY_LATEST_PROGRESS)),
                 "correction": {},
                 "blocker": task.get("blocker") or task.get("summary") or "",
                 "evidence": companyctl.sanitize_evidence_path_for_display(str(task.get("evidence_path") or "")),
@@ -1276,7 +1287,7 @@ def build_cockpit_summary(summary: dict) -> dict:
                 "attempt_id": "",
                 "trace_id": task.get("trace_id", ""),
                 "updated_at": task.get("updated_at", ""),
-                "latest_progress": progress_by_task.get(task_id, {}),
+                "latest_progress": progress_by_task.get(task_id, dict(EMPTY_LATEST_PROGRESS)),
                 "correction": {},
                 "blocker": invalid.get("message", ""),
                 "evidence": companyctl.sanitize_evidence_path_for_display(str(task.get("evidence_path") or "")),
@@ -2470,6 +2481,12 @@ def load_summary(conn: sqlite3.Connection) -> dict:
         "followups": companyctl.list_followups("all")[:20],
         "pending_events": rows(conn, "SELECT * FROM company_events WHERE processed_at = '' ORDER BY created_at ASC LIMIT 20"),
         "events": rows(conn, "SELECT * FROM company_events ORDER BY created_at DESC LIMIT 20"),
+        # task.progress events for the cockpit's per-attempt latest_progress. Kept SEPARATE from the
+        # 20-row global events window above: otherwise a busy event stream pushes an active attempt's
+        # progress out of view and the cockpit shows it as having no progress (the intermittent
+        # KeyError 'progress_state' flaky). Scoped to task.progress with a generous limit so every
+        # active attempt's latest progress is reliably present.
+        "progress_events": rows(conn, "SELECT * FROM company_events WHERE event_type = 'task.progress' ORDER BY created_at DESC LIMIT 200"),
         "adapter_runs": adapter_runs,
         "runtime_sessions": companyctl.list_runtime_sessions(conn, limit=20),
         "tool_calls": companyctl.list_tool_calls(conn, limit=30),
