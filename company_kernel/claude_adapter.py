@@ -18,6 +18,7 @@ from . import project_memory
 from .adapter_result import execution_detail
 from .db_paths import ensure_db_parent, resolve_db_path
 from .employee_comms import communication_protocol
+from .proc_util import run_with_group_timeout
 
 
 ROOT = Path(os.environ.get("OPENCLAW_COMPANY_KERNEL_ROOT", Path(__file__).resolve().parents[1])).resolve()
@@ -327,8 +328,10 @@ _SESSION_IN_USE = re.compile(r"already in use|session id .*in use", re.IGNORECAS
 def _run_claude_once(cmd: list[str], workspace: Path, proxy_env: dict, limit: int) -> tuple[int, str, str]:
     """One `claude -p` subprocess run. Returns (rc, stdout, stderr). Timeout → rc 124 with a clear note."""
     try:
-        cp = subprocess.run(cmd, cwd=str(workspace), text=True, capture_output=True,
-                            env={**os.environ, **proxy_env}, timeout=limit)
+        # run_with_group_timeout kills the WHOLE `claude -p` tree on timeout (claude is a node shell
+        # that spawns child processes; a plain timeout orphans them and blocks the daemon tick).
+        cp = run_with_group_timeout(cmd, timeout=limit, cwd=str(workspace), text=True,
+                                    capture_output=True, env={**os.environ, **proxy_env})
         return cp.returncode, cp.stdout or "", cp.stderr or ""
     except subprocess.TimeoutExpired as exc:
         out = (exc.stdout.decode() if isinstance(exc.stdout, bytes) else (exc.stdout or "")) if exc.stdout else ""

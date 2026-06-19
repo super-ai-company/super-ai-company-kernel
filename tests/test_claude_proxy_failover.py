@@ -23,7 +23,7 @@ class ProxyFailoverTest(unittest.TestCase):
             with mock.patch.object(ca, "resolve_claude_proxy",
                                    return_value=({"ANTHROPIC_BASE_URL": "http://pool"}, "model-a", "proxy")), \
                  mock.patch.object(ca, "pool_models_with_quota", return_value=None), \
-                 mock.patch.object(ca.subprocess, "run", side_effect=fake_run):
+                 mock.patch.object(ca, "run_with_group_timeout", side_effect=fake_run):
                 rc, summary = ca.run_claude(prompt, out, Path(tmp), "model-a", "bypassPermissions",
                                             agent="no-such-agent")
             return rc, summary, out.read_text(encoding="utf-8")
@@ -85,7 +85,7 @@ class PoolQuotaTest(unittest.TestCase):
             with mock.patch.object(ca, "resolve_claude_proxy",
                                    return_value=({"ANTHROPIC_BASE_URL": "http://pool", "ANTHROPIC_AUTH_TOKEN": "t"}, "model-a", "proxy")), \
                  mock.patch.object(ca, "pool_models_with_quota", return_value=set()), \
-                 mock.patch.object(ca.subprocess, "run", side_effect=lambda *a, **k: calls.append(1)):
+                 mock.patch.object(ca, "run_with_group_timeout", side_effect=lambda *a, **k: calls.append(1)):
                 rc, summary = ca.run_claude(prompt, out, Path(tmp), "model-a", "bypassPermissions", agent="no-such")
             written = out.read_text(encoding="utf-8")   # read before the temp dir is cleaned up
         self.assertEqual(ca.POOL_QUOTA_EXHAUSTED_RC, rc)   # fast-failed
@@ -104,7 +104,7 @@ class PoolQuotaTest(unittest.TestCase):
             with mock.patch.object(ca, "resolve_claude_proxy",
                                    return_value=({"ANTHROPIC_BASE_URL": "http://pool", "ANTHROPIC_AUTH_TOKEN": "t"}, "model-a", "proxy")), \
                  mock.patch.object(ca, "pool_models_with_quota", return_value={"gemini-3-flash-agent"}), \
-                 mock.patch.object(ca.subprocess, "run", side_effect=fake_run):
+                 mock.patch.object(ca, "run_with_group_timeout", side_effect=fake_run):
                 rc, _ = ca.run_claude(prompt, out, Path(tmp), "model-a", "bypassPermissions", agent="no-such")
         self.assertEqual(0, rc)
         self.assertEqual(["gemini-3-flash-agent"], used)   # skipped exhausted model-a, used the available one

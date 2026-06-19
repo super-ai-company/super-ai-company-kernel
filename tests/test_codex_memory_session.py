@@ -67,7 +67,7 @@ class CodexMemorySessionTest(unittest.TestCase):
                 return mock.Mock(returncode=0)
 
             with mock.patch.object(self.ca, "wrap_command", side_effect=lambda base, **kw: base), \
-                 mock.patch.object(self.ca.subprocess, "run", side_effect=fake_run):
+                 mock.patch.object(self.ca, "run_with_group_timeout", side_effect=fake_run):
                 self.ca.run_codex(card, self.root, out, ev, "read-only", "", "", "", memory_key="conv-1", agent="codex")
                 self.ca.run_codex(card, self.root, out, ev, "read-only", "", "", "", memory_key="conv-1", agent="codex")
 
@@ -83,7 +83,7 @@ class CodexMemorySessionTest(unittest.TestCase):
         out = self.root / "out.md"; ev = self.root / "ev.jsonl"
         captured = []
         with mock.patch.object(self.ca, "wrap_command", side_effect=lambda base, **kw: base), \
-             mock.patch.object(self.ca.subprocess, "run", side_effect=lambda cmd, **kw: captured.append(cmd) or mock.Mock(returncode=0)):
+             mock.patch.object(self.ca, "run_with_group_timeout", side_effect=lambda cmd, **kw: captured.append(cmd) or mock.Mock(returncode=0)):
             self.ca.run_codex(card, self.root, out, ev, "read-only", "", "", "")
         self.assertIn("--ephemeral", captured[0])
         self.assertNotIn("resume", " ".join(captured[0]))

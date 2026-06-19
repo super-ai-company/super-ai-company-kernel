@@ -86,10 +86,12 @@ class CodexTimeoutTest(unittest.TestCase):
             output = base / "out.md"
             events = base / "events.jsonl"
 
-            def fake_run(cmd, stdin=None, stdout=None, stderr=None, text=None, timeout=None):
+            def fake_run(cmd, *, timeout=None, **kwargs):
                 raise subprocess.TimeoutExpired(cmd=cmd, timeout=timeout)
 
-            with mock.patch.object(codex_adapter.subprocess, "run", fake_run), \
+            # run_codex now runs codex in its own process group via run_with_group_timeout (so a
+            # timeout kills the WHOLE codex tree, not just the node shell). Mock that path.
+            with mock.patch.object(codex_adapter, "run_with_group_timeout", fake_run), \
                     mock.patch.object(codex_adapter, "wrap_command", lambda cmd, **kw: ["codex", "exec"]):
                 code, cmd = codex_adapter.run_codex(
                     task_card, base, output, events, "workspace-write", "", "none", "default", timeout_seconds=5

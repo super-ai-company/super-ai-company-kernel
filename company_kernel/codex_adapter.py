@@ -16,6 +16,7 @@ from . import project_memory
 from .adapter_result import compact_output, execution_detail
 from .db_paths import ensure_db_parent, resolve_db_path
 from .employee_comms import communication_protocol
+from .proc_util import run_with_group_timeout
 from .sandboxing import wrap_command
 from .verifiers import parse_verifier, verify_result
 
@@ -651,13 +652,17 @@ def run_codex(task_card: Path, workspace: Path, output: Path, events: Path, sand
     cmd = wrap_command(base, runtime="codex", workspace=workspace, isolation=isolation, profile_name=sandbox_profile)
     try:
         with task_card.open("r", encoding="utf-8") as stdin, events.open("w", encoding="utf-8") as event_out:
-            cp = subprocess.run(cmd, stdin=stdin, stdout=event_out, stderr=subprocess.STDOUT, text=True, timeout=timeout_seconds or None)
-        if capture and cp.returncode == 0:
+            # run_with_group_timeout kills the WHOLE codex process tree on timeout (codex is a node
+            # shell that spawns engine subprocesses; a plain timeout orphans them and blocks the tick).
+            cp = run_with_group_timeout(cmd, timeout=timeout_seconds, stdin=stdin,
+                                        stdout=event_out, stderr=subprocess.STDOUT, text=True)
+            returncode = cp.returncode
+        if capture and returncode == 0:
             new = [_uuid_from_rollout(p) for p in (_rollout_snapshot() - before)]
             new = [u for u in new if u]
             if len(new) == 1:  # exactly one new session → ours; ambiguous → stay stateless
                 store_codex_memory_session(agent, memory_key, new[0])
-        return cp.returncode, " ".join(cmd)
+        return returncode, " ".join(cmd)
     except subprocess.TimeoutExpired:
         note = f"codex exec killed after exceeding timeout of {timeout_seconds} seconds at {now()}"
         with events.open("a", encoding="utf-8") as event_out:
