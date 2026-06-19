@@ -4,6 +4,7 @@ __pycache__/
 
 company.sqlite
 company.sqlite-*
+company.db
 logs/
 state/
 

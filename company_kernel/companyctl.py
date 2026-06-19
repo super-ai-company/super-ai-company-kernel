@@ -626,6 +626,18 @@ def close_open_connections() -> None:
             conn.close()
 
 
+def database_integrity(conn: sqlite3.Connection) -> dict:
+    """Cheap corruption check used by doctor's post-install/self-check. A healthy DB returns
+    integrity=['ok'] and zero foreign-key violations. (Backup/restore lives in
+    company_kernel/backup.py — this is only the doctor-facing structured report.)"""
+    try:
+        integ = [r[0] for r in conn.execute("PRAGMA integrity_check").fetchall()]
+        fk = conn.execute("PRAGMA foreign_key_check").fetchall()
+    except sqlite3.Error as exc:
+        return {"ok": False, "integrity": [f"error: {exc}"], "foreign_key_violations": -1}
+    return {"ok": integ == ["ok"] and not fk, "integrity": integ, "foreign_key_violations": len(fk)}
+
+
 def emit(obj: dict) -> None:
     print(json.dumps(obj, ensure_ascii=False, indent=2))
 
@@ -3074,8 +3086,8 @@ def cmd_task_cancel(args: argparse.Namespace) -> int:
     conn.execute("DELETE FROM locks WHERE resource_key = ?", (f"task:{args.task_id}",))
     conn.commit()
     # Tell the dispatcher so they stop waiting on a task that will never finish.
-    notice_path = write_dispatcher_completion_notice(
-        conn, dict(task), status="cancelled", blocker=f"已取消(cancelled by {actor}): {args.reason}")
+    notice_path = deliver_completion_notice(
+        conn, dict(task), status="cancelled", blocker=f"已取消(cancelled by {actor}): {args.reason}", actor=actor)
     event = record_event(conn, "supervisor.cancel_requested", actor, task_id=args.task_id, trace_id=attempt["trace_id"], payload={"attempt_id": args.attempt_id, "reason": args.reason, "pid": attempt.get("pid", "")})
     audit(conn, actor, "task.cancel", args.task_id, {"attempt_id": args.attempt_id, "reason": args.reason, "event_id": event["id"]})
     emit({"ok": True, "task_id": args.task_id, "status": "cancelled", "attempt": row_by_id(conn, "execution_attempts", "attempt_id", args.attempt_id), "event_id": event["id"], "dispatcher_notified": notice_path or None})
@@ -6051,6 +6063,27 @@ def cmd_cost(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_backup(args: argparse.Namespace) -> int:
+    """Thin companyctl entrypoint over company_kernel.backup (single discoverable UX)."""
+    from company_kernel import backup as backup_mod
+    if getattr(args, "list", False):
+        snaps = backup_mod.list_snapshots()
+        emit({"ok": True, "count": len(snaps), "backup_dir": str(backup_mod.BACKUP_DIR),
+              "snapshots": [{"path": str(s), "size_bytes": s.stat().st_size} for s in snaps]})
+        return 0
+    result = backup_mod.snapshot(keep=args.keep, label=args.label)
+    emit({"action": "backup", **result})
+    return 0 if result.get("ok") else 1
+
+
+def cmd_restore(args: argparse.Namespace) -> int:
+    from company_kernel import backup as backup_mod
+    # restore() itself refuses without yes and snapshots the live DB first (pre-restore-*).
+    result = backup_mod.restore(Path(args.src), yes=args.yes)
+    emit({"action": "restore", **result})
+    return 0 if result.get("ok") else (2 if "--yes" in str(result.get("error", "")) else 1)
+
+
 def record_verifier_run_internal(conn: sqlite3.Connection, *, task_id: str, attempt_id: str,
                                  employee_id: str, kind: str, arg: str, result: str,
                                  agent_verdict: str, detail: str) -> dict:
@@ -8582,16 +8615,13 @@ def complete_task_internal(
     event = record_event(conn, "task.done", agent, task_id=task_id, payload={"summary": summary, "evidence": evidence, "attempt_id": completed_attempt_id})
     audit(conn, agent, "task.done", task_id, {"summary": summary, "evidence": evidence, "attempt_id": completed_attempt_id, "event_id": event["id"]})
     # event-driven feedback: notify the dispatcher's inbox so their always-on app can watch it
-    try:
-        write_dispatcher_completion_notice(conn, dict(task), status="completed", summary=summary, evidence=evidence)
-    except Exception:
-        pass
+    notice_path = deliver_completion_notice(conn, dict(task), status="completed", summary=summary, evidence=evidence, actor=agent)
     # project memory: capture this completion into the project that owns the task's workspace
     try:
         project_memory.capture_task_outcome(conn, dict(task), kind="done", summary=summary, evidence=evidence)
     except Exception:
         pass
-    return {"task_id": task_id, "status": "completed", "evidence": evidence, "attempt_id": completed_attempt_id, "event_id": event["id"], "synced_plan_items": synced_plan_items}
+    return {"task_id": task_id, "status": "completed", "evidence": evidence, "attempt_id": completed_attempt_id, "event_id": event["id"], "synced_plan_items": synced_plan_items, "dispatcher_notified": notice_path or None}
 
 
 def prune_inbox_dir(inbox: Path, keep: int = 100) -> int:
@@ -8656,6 +8686,26 @@ def write_dispatcher_completion_notice(conn: sqlite3.Connection, task: dict, *, 
     tmp.replace(path)
     prune_inbox_dir(inbox)
     return str(path)
+
+
+def deliver_completion_notice(conn: sqlite3.Connection, task: dict, *, status: str,
+                              summary: str = "", evidence: str = "", blocker: str = "", actor: str = "") -> str:
+    """Single uniform path for delivering the dispatcher's completion/blocked/cancelled notice.
+    Closing the feedback loop must never (a) roll back a real state change that already committed,
+    nor (b) vanish silently if delivery fails. So this never raises, but on failure records an
+    observable `task.completion_notice_failed` event — a broken loop shows up instead of hiding.
+    Used by every finish path (done/block/cancel/discard) so they behave identically."""
+    try:
+        return write_dispatcher_completion_notice(
+            conn, dict(task), status=status, summary=summary, evidence=evidence, blocker=blocker)
+    except Exception as exc:
+        with contextlib.suppress(Exception):
+            record_event(conn, "task.completion_notice_failed", actor or str(task.get("target_agent") or ""),
+                         task_id=str(task.get("id") or ""),
+                         payload={"status": status, "error": str(exc)[:300],
+                                  "source_agent": str(task.get("source_agent") or "")})
+            conn.commit()
+        return ""
 
 
 def task_with_children(conn: sqlite3.Connection, task_id: str) -> dict:
@@ -12476,10 +12526,7 @@ def cmd_task_block(args: argparse.Namespace) -> int:
     conn.commit()
     event = record_event(conn, "task.blocked", agent, task_id=args.task_id, trace_id=trace_id_for_task(conn, args.task_id), payload={"blocker": args.blocker})
     audit(conn, agent, "task.block", args.task_id, {"blocker": args.blocker, "event_id": event["id"]})
-    try:
-        write_dispatcher_completion_notice(conn, dict(task), status="blocked", blocker=args.blocker)
-    except Exception:
-        pass
+    notice_path = deliver_completion_notice(conn, dict(task), status="blocked", blocker=args.blocker, actor=agent)
     try:
         project_memory.capture_task_outcome(conn, dict(task), kind="blocked", blocker=args.blocker)
     except Exception:
@@ -12502,7 +12549,7 @@ def cmd_task_block(args: argparse.Namespace) -> int:
         )
     except Exception:
         pass
-    emit({"ok": True, "task_id": args.task_id, "status": "blocked", "blocker": args.blocker, "event_id": event["id"], "synced_plan_items": synced_plan_items})
+    emit({"ok": True, "task_id": args.task_id, "status": "blocked", "blocker": args.blocker, "event_id": event["id"], "synced_plan_items": synced_plan_items, "dispatcher_notified": notice_path or None})
     return 0
 
 
@@ -12616,8 +12663,8 @@ def cmd_task_discard(args: argparse.Namespace) -> int:
     updated = dict(conn.execute("SELECT * FROM tasks WHERE id = ?", (args.task_id,)).fetchone())
     # Tell the dispatcher their task was dropped — so they stop waiting and can re-dispatch or move on
     # (same result-*.json channel as completions; Hermes consumes 'cancelled' and re-plans).
-    notice_path = write_dispatcher_completion_notice(
-        conn, updated, status="cancelled", blocker=f"已取消(discarded by {actor}): {args.reason}")
+    notice_path = deliver_completion_notice(
+        conn, updated, status="cancelled", blocker=f"已取消(discarded by {actor}): {args.reason}", actor=actor)
     audit(conn, actor, "task.discard", args.task_id, {"reason": args.reason, "event_id": event["id"], "acked_adapter_runs": acked_runs})
     emit({"ok": True, "task": updated, "event_id": event["id"], "acknowledged_adapter_runs": acked_runs,
           "dispatcher_notified": notice_path or None})
@@ -13918,6 +13965,10 @@ def cmd_doctor(args: argparse.Namespace) -> int:
         daemon = daemon_health()
         launchd = launchd_health()
         openclaw_guard = openclaw_guard_health(conn)
+        # DB corruption check is the bedrock of "装完先自检能跑通": a corrupt company.sqlite
+        # silently rots everything. integrity_check is too heavy for the per-tick --summary
+        # alert path, so it only runs in full doctor mode.
+        db_integrity = None if args.summary else database_integrity(conn)
         # 三层分级,让"内核异常"只在内核真的坏了时才红:
         #   issues    = 基础设施故障(守护死、配置坏、锁死)→ 内核异常(红, ok=False)
         #   attention = 任务级问题(某个任务失败/缺证据)→ 需你处理,但内核没坏;另有 Stuck/回报面板呈现
@@ -13955,9 +14006,12 @@ def cmd_doctor(args: argparse.Namespace) -> int:
             issues.append("employee_capability_issues")  # 员工配置坏 = 基础设施问题
         if stale_locks:
             issues.append("stale_locks")  # 锁死会卡住调度 = 基础设施问题
+        if db_integrity and not db_integrity["ok"]:
+            issues.append("db_integrity")  # 数据库损坏 = 最底层基础设施故障
         health = {
             "ok": not issues,
             "issues": issues,
+            "db_integrity": db_integrity,
             "attention": attention,
             "attention_count": len(failed_adapter_runs) + len(evidence_issues),
             "warnings": warnings,
@@ -15079,6 +15133,17 @@ def build_parser() -> argparse.ArgumentParser:
     cost = sub.add_parser("cost", help="operating-cost dashboard: who is on duty free vs who spent (per employee + per day)")
     cost.add_argument("--days", type=int, default=14, help="per-day trend window (default 14)")
     cost.set_defaults(func=cmd_cost)
+
+    backup = sub.add_parser("backup", help="consistent SQLite snapshot (online backup API + integrity check + rolling prune)")
+    backup.add_argument("--keep", type=int, default=14, help="rolling snapshots to retain (default 14)")
+    backup.add_argument("--label", default="", help="optional label appended to the snapshot filename")
+    backup.add_argument("--list", action="store_true", help="list existing snapshots instead of creating one")
+    backup.set_defaults(func=cmd_backup)
+
+    restore = sub.add_parser("restore", help="restore the DB from a snapshot (validates source, snapshots current first)")
+    restore.add_argument("src", help="snapshot file to restore from")
+    restore.add_argument("--yes", action="store_true", help="confirm overwrite — required (refuses without it)")
+    restore.set_defaults(func=cmd_restore)
 
     verifier = sub.add_parser("verifier")
     verifier_sub = verifier.add_subparsers(dest="verifier_cmd", required=True)
