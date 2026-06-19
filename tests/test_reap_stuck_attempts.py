@@ -121,6 +121,22 @@ class ReapStuckAttemptsTest(unittest.TestCase):
         self.assertFalse(self.ctl.process_alive(2_000_000_000))
         self.assertFalse(self.ctl.process_alive(0))
 
+    def test_notify_owner_of_reaps_best_effort(self):
+        # owner notify must never raise and must report per-task; with no token configured it just
+        # reports notified=False (no real Telegram send in tests).
+        out = self.ctl.notify_owner_of_reaps([
+            {"task_id": "t1", "reason": "runtime_exceeded", "employee_id": "codex", "runtime_age_seconds": 5400},
+            {"task_id": "t2", "reason": "worker_process_gone", "employee_id": "agy", "runtime_age_seconds": 300},
+        ])
+        self.assertEqual(["t1", "t2"], [s["task_id"] for s in out])
+        for s in out:
+            self.assertIn("notified", s)
+
+    def test_notify_owner_swallows_send_errors(self):
+        with mock.patch.object(self.ctl, "notification_send_result", side_effect=RuntimeError("telegram down")):
+            out = self.ctl.notify_owner_of_reaps([{"task_id": "t1", "reason": "runtime_exceeded"}])
+        self.assertEqual(False, out[0]["notified"])  # error swallowed → notified False, no raise
+
     def test_idempotent_no_double_reap(self):
         tid, _ = self._task_with_attempt(started_minutes_ago=120)
         self.ctl.reap_stuck_attempts_internal(self.conn, actor="openclaw-main")
