@@ -539,6 +539,18 @@ class HeartbeatKeeper:
             self._thread.join(timeout=5)
 
 
+def keeper_agents_for(config: dict, heartbeat_agents: list[str]) -> list[str]:
+    """Who the keepalive thread must refresh during the adapter loop: the union of the configured
+    heartbeat agents AND every ENABLED adapter worker. The workers at risk are exactly the enabled
+    adapter_workers — each normally self-heartbeats by running its own tick, but won't run while
+    another worker's long adapter holds the loop. Including them is essential: with the shipped
+    `heartbeat_agents: []`, keying off heartbeat agents alone would make the keeper a no-op for the
+    very agents that go stale during a long task."""
+    enabled_worker_agents = [str(w.get("agent", "")) for w in config.get("adapter_workers", [])
+                             if w.get("enabled", False) and w.get("agent")]
+    return list(dict.fromkeys([*heartbeat_agents, *enabled_worker_agents]))
+
+
 def tick(config: dict) -> dict:
     results = []
     heartbeat("cycle-start")  # mark the loop alive before any slow step runs
@@ -579,9 +591,10 @@ def tick(config: dict) -> dict:
     heartbeat_agents = resolve_heartbeat_agents(config)
     for agent in heartbeat_agents:
         results.append({"step": f"heartbeat.{agent}", "result": run_companyctl("heartbeat", "--agent", agent)})
-    # Keep those heartbeats fresh while the (possibly very long) adapter loop runs synchronously, so a
-    # single long task doesn't make every other worker look 'off duty' for the whole tick.
-    keeper = (HeartbeatKeeper(heartbeat_agents, int(config.get("heartbeat_keeper_interval_seconds", 240)))
+    # Keep heartbeats fresh while the (possibly very long) adapter loop runs synchronously, so a single
+    # long task doesn't make every OTHER worker look 'off duty' for the whole tick.
+    keeper_agents = keeper_agents_for(config, heartbeat_agents)
+    keeper = (HeartbeatKeeper(keeper_agents, int(config.get("heartbeat_keeper_interval_seconds", 240)))
               if config.get("run_heartbeat_keeper", True) else contextlib.nullcontext())
     with keeper:
         for worker in config.get("adapter_workers", []):
