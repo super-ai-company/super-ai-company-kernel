@@ -695,7 +695,8 @@ function activateTab(t){
 // 4 zones (总览/执行/沟通/系统) group the 10 tabs — merge entry, don't remove functionality.
 function syncZone(zone){
   if(!zone) return;
-  document.querySelectorAll("#zones .zone").forEach(z=>z.classList.toggle("active", z.dataset.zone===zone));
+  document.querySelectorAll("#zones .zone").forEach(z=>{ const on=z.dataset.zone===zone;
+    z.classList.toggle("active", on); z.setAttribute("aria-selected", on?"true":"false"); });
   document.querySelectorAll("#tabs .tab").forEach(x=>{ x.style.display = x.dataset.zone===zone ? "" : "none"; });
 }
 function showZone(zone){
@@ -710,7 +711,15 @@ document.querySelectorAll("#tabs .tab").forEach(t=>{ t.tabIndex=0; t.setAttribut
 $("tabs").addEventListener("click", e => activateTab(e.target.closest(".tab")));
 // zone nav (4 groups) — keyboard + click; on load reveal only the active tab's zone
 $("zones").addEventListener("click", e => { const z=e.target.closest(".zone"); if(z) showZone(z.dataset.zone); });
-$("zones").addEventListener("keydown", e => { const z=e.target.closest(".zone"); if(z && (e.key==="Enter"||e.key===" ")){ e.preventDefault(); showZone(z.dataset.zone); } });
+$("zones").addEventListener("keydown", e => {
+  const z=e.target.closest(".zone"); if(!z) return;
+  if(e.key==="Enter"||e.key===" "){ e.preventDefault(); showZone(z.dataset.zone); return; }
+  if(e.key==="ArrowRight"||e.key==="ArrowLeft"){ e.preventDefault();
+    const zs=[...document.querySelectorAll("#zones .zone")];
+    const i=(zs.indexOf(z)+(e.key==="ArrowRight"?1:-1)+zs.length)%zs.length;
+    zs[i].focus(); showZone(zs[i].dataset.zone);
+  }
+});
 document.querySelectorAll("#zones .zone").forEach(z=>{ z.tabIndex=0; z.setAttribute("role","tab"); });
 syncZone((document.querySelector("#tabs .tab.active")||{}).dataset?.zone || "overview");
 $("tabs").addEventListener("keydown", e => {
@@ -718,8 +727,10 @@ $("tabs").addEventListener("keydown", e => {
   if(e.key==="Enter"||e.key===" "){ e.preventDefault(); activateTab(t); return; }
   if(e.key==="ArrowRight"||e.key==="ArrowLeft"){
     e.preventDefault();
-    const tabs=[...document.querySelectorAll("#tabs .tab")];
-    const i=(tabs.indexOf(t)+(e.key==="ArrowRight"?1:-1)+tabs.length)%tabs.length;
+    // only move among VISIBLE tabs of the current zone — never focus/activate a hidden cross-zone tab
+    const tabs=[...document.querySelectorAll("#tabs .tab")].filter(x=>x.style.display!=="none");
+    const cur=tabs.indexOf(t); if(cur<0) return;
+    const i=(cur+(e.key==="ArrowRight"?1:-1)+tabs.length)%tabs.length;
     tabs[i].focus(); activateTab(tabs[i]);
   }
 });
