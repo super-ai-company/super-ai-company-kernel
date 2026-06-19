@@ -274,6 +274,26 @@ class ConversationStressTest(unittest.TestCase):
         conn.commit()
         self.assertIsNone(self.ctl.require_active_employee(self.ctl.connect(), "codex", "task.submit"))
 
+    def test_priority_queue_orders_merges_and_excludes_healthy(self):
+        """The console first-screen queue: pending approvals (sev1) → blocked (sev2) → timed-out (sev3),
+        each with a primary action; a fresh task isn't in it."""
+        import datetime as _dt
+        n = self.ctl.now()
+        old = (_dt.datetime.fromisoformat(n) - _dt.timedelta(minutes=40)).isoformat()
+        conn = self.ctl.connect()
+        conn.execute("INSERT INTO approvals(id,source_agent,action,status,reason,created_at,updated_at) VALUES('appr-1','codex','支付审批','pending','x',?,?)", (n, n))
+        for tid, status, ts in (("task-b", "blocked", n), ("task-s", "submitted", old), ("task-fresh", "submitted", n)):
+            conn.execute("INSERT INTO tasks(id,source_agent,target_agent,title,description,priority,status,created_at,updated_at) "
+                         "VALUES(?,?,?,?,?,?,?,?,?)", (tid, "m", "codex", tid, "", "P2", status, ts, ts))
+        conn.commit()
+        q = self.ctl.company_priority_queue(self.ctl.connect(), stale_minutes=30)
+        ids = [it["id"] for it in q]
+        self.assertEqual(["appr-1", "task-b", "task-s"], ids)          # severity order
+        self.assertEqual([1, 2, 3], [it["severity"] for it in q])
+        self.assertNotIn("task-fresh", ids)                            # healthy/fresh task excluded
+        self.assertEqual(["approve", "deny"], q[0]["actions"])         # approval's in-place actions
+        self.assertGreaterEqual(q[2]["age_minutes"], 30)               # timed-out item shows its age
+
     def test_human_rbac_roles_and_action_gating(self) -> None:
         gw = self.gw
         # no users.json + no env token → open self-host (owner)

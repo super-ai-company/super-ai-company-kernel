@@ -237,6 +237,10 @@ label{font-size:12px;color:var(--muted);display:block;margin-bottom:4px}
   <div class="report-band"><div class="rb-row"><span class="rb-title" data-i18n="rep_band">每日运营报告</span><span class="rb-date masthead-date"></span></div></div>
   <div class="grid cards-3" id="ovCards"></div>
   <div style="height:14px"></div>
+  <div class="card" style="margin-bottom:14px;border-color:var(--accent)">
+    <h3><span data-i18n="ov_queue">⚡ 需要你处理</span> <span class="emp-sub" data-i18n="ov_queue_hint" style="font-weight:400">待审批 · 阻塞 · 超时 —— 按优先级排,直接处理</span></h3>
+    <div class="list" id="ovQueue"><div class="empty" data-i18n="loading">加载中…</div></div>
+  </div>
   <div class="card" style="margin-bottom:14px">
     <h3><span data-i18n="ov_feed">📜 全公司动态</span> <span class="emp-sub" data-i18n="ov_feed_hint" style="font-weight:400">谁派活 · 谁执行 · 谁开会 · 谁说了啥</span></h3>
     <div class="list feed" id="ovFeed"><div class="empty" data-i18n="loading">加载中…</div></div>
@@ -497,7 +501,7 @@ const I18N = {
     met_title:"生死指标", met_hint:"毛利 + 验收准确率，决定加码 / 改模式 / 收手", met_econ:"💰 单位经济（按任务类型）", met_acc:"🎯 验收器抽检准确率",
     met_margin:"毛利", met_revenue:"营收", met_cost:"成本", met_type:"类型", met_count:"笔数", met_kind:"验收类型", met_total:"总数",
     met_accuracy:"准确率", met_reviewed:"已抽检", met_fp:"误放", met_fn:"误拦", met_noecon:"暂无已完成任务的经济数据", met_noacc:"暂无验收记录", met_unavailable:"指标接口不可用（需较新网关）",
-    ov_pendingApprovals:"⏳ 待审批", ov_stuck:"⚠️ 卡住待处理（升级）", ov_latestEvents:"🔔 最新事件", ov_feed:"📜 全公司动态", ov_feed_hint:"谁派活 · 谁执行 · 谁开会 · 谁说了啥", loading:"加载中…", none:"无",
+    ov_pendingApprovals:"⏳ 待审批", ov_stuck:"⚠️ 卡住待处理（升级）", ov_latestEvents:"🔔 最新事件", ov_queue:"⚡ 需要你处理", ov_queue_hint:"待审批 · 阻塞 · 超时 —— 按优先级排,直接处理", ov_feed:"📜 全公司动态", ov_feed_hint:"谁派活 · 谁执行 · 谁开会 · 谁说了啥", loading:"加载中…", none:"无",
     emp_title:"AI 员工", emp_hint:"心跳 10 分钟内 = 在岗", emp_add:"＋ 新增员工", emp_sweep:"📋 全员考勤探测", emp_offline:"📴 离线提醒",
     emp_onboardTitle:"🧑‍💼 新增员工（onboard）", emp_register:"注册员工", emp_registerHint:"注册后如需自动接任务，再在 daemon.json 启用 worker",
     f_name:"名称", f_role:"角色", f_runtime:"运行时", f_workspace:"工作区（绝对路径）", f_skills:"技能（逗号分隔）", f_canTalk:"可对话对象（逗号分隔）",
@@ -525,7 +529,7 @@ const I18N = {
     met_title:"Survival metrics", met_hint:"margin + verifier accuracy — decide to scale / pivot / stop", met_econ:"💰 Unit economics (by task type)", met_acc:"🎯 Verifier sampling accuracy",
     met_margin:"Margin", met_revenue:"Revenue", met_cost:"Cost", met_type:"Type", met_count:"Count", met_kind:"Kind", met_total:"Total",
     met_accuracy:"Accuracy", met_reviewed:"Reviewed", met_fp:"False+", met_fn:"False-", met_noecon:"No economics data from completed tasks yet", met_noacc:"No verifier records yet", met_unavailable:"Metrics API unavailable (needs newer gateway)",
-    ov_pendingApprovals:"⏳ Pending approvals", ov_stuck:"⚠️ Stuck / escalations", ov_latestEvents:"🔔 Latest events", ov_feed:"📜 Company activity", ov_feed_hint:"who dispatched · ran · met · said what", loading:"Loading…", none:"None",
+    ov_pendingApprovals:"⏳ Pending approvals", ov_stuck:"⚠️ Stuck / escalations", ov_latestEvents:"🔔 Latest events", ov_queue:"⚡ Needs you", ov_queue_hint:"approvals · blocked · timed-out — sorted, act in place", ov_feed:"📜 Company activity", ov_feed_hint:"who dispatched · ran · met · said what", loading:"Loading…", none:"None",
     emp_title:"AI Employees", emp_hint:"heartbeat within 10 min = on duty", emp_add:"＋ Add employee", emp_sweep:"📋 Attendance sweep", emp_offline:"📴 Offline alert",
     emp_onboardTitle:"🧑‍💼 Onboard employee", emp_register:"Register", emp_registerHint:"After registering, enable a worker in daemon.json for auto task pickup",
     f_name:"Name", f_role:"Role", f_runtime:"Runtime", f_workspace:"Workspace (absolute path)", f_skills:"Skills (comma-separated)", f_canTalk:"Can talk to (comma-separated)",
@@ -1578,6 +1582,51 @@ async function decide(id, action) {
   } catch(e){ toast("操作失败："+e.message,"bad"); }
 }
 
+/* ---------- priority queue: 第一屏「需要你处理」(待审批>阻塞>超时),就地操作 ---------- */
+const PQ_DISMISSED = new Set();                 // 标记已读：本地隐藏,刷新不重现
+const PQ_SEV = {1:{c:"var(--bad,#c0633a)"},2:{c:"#9C5151"},3:{c:"#B08A3E"}};
+async function loadPriorityQueue(){
+  try {
+    const d = await api("/v1/priority-queue?stale_minutes=30");
+    const items = (d.queue||[]).filter(it => !PQ_DISMISSED.has(it.kind+":"+it.id));
+    const cnt = document.querySelector('[data-v="overview"] .cnt'); if(cnt) cnt.textContent = items.length||"";
+    $("ovQueue").innerHTML = items.map(it=>{
+      const key = it.kind+":"+it.id, sev = PQ_SEV[it.severity]||{c:"#9C927A"};
+      const age = it.age_minutes==null ? "" : (it.age_minutes<60?`${it.age_minutes}分钟前`:`${Math.floor(it.age_minutes/60)}小时前`);
+      const btns = (it.actions||[]).map(a=>pqBtn(it,a)).join("");
+      return `<div class="row" data-pqkey="${esc(key)}"><div class="head">
+        <span class="prio" style="background:${sev.c};color:#fff;border-radius:4px;padding:1px 7px;font-size:11px">${esc(it.label)}</span>
+        <span class="who" style="cursor:pointer" onclick="pqOpen('${esc(it.kind)}','${esc(it.id)}')">${esc(it.title)}</span>
+        <span class="emp-sub">${esc(it.target||"")}</span><span class="when">${age}</span></div>
+        <div style="display:flex;gap:6px;margin-top:7px;flex-wrap:wrap">${btns}</div></div>`;
+    }).join("") || `<div class="empty">✅ 没有待处理的要紧事</div>`;
+  } catch(e){ $("ovQueue").innerHTML = `<div class="empty">${esc(e.message)}</div>`; }
+}
+function pqBtn(it, a){
+  const L={approve:["✓ 批准","ok"],deny:["✕ 拒绝","bad"],reopen:["🔧 重开",""],nudge:["📣 催办",""],reassign:["↪ 改派",""],read:["📕 已读",""]};
+  const m={approve:`pqAct('approval','${esc(it.id)}','approve')`,deny:`pqAct('approval','${esc(it.id)}','deny')`,
+    reopen:`pqAct('task','${esc(it.id)}','reopen')`,nudge:`pqAct('task','${esc(it.id)}','reopen')`,
+    reassign:`taskReassignPrompt('${esc(it.id)}')`,read:`pqDismiss('${esc(it.kind)}:${esc(it.id)}')`};
+  const [lbl,cls]=L[a]||[a,""];
+  return `<button class="${cls}" style="font-size:12px;padding:4px 10px" onclick="${m[a]}">${lbl}</button>`;
+}
+function pqOpen(kind,id){ if(kind==="task") showTask(id); else { document.querySelector('[data-v="approvals"]').click(); } }
+function pqDismiss(key){ PQ_DISMISSED.add(key); const el=document.querySelector(`#ovQueue [data-pqkey="${key.replace(/"/g,'')}"]`); if(el) el.remove(); }
+async function pqAct(kind, id, action){
+  const row = document.querySelector(`#ovQueue [data-pqkey="${kind}:${id}"]`); if(row) row.style.opacity=.45;  // 乐观置灰
+  try {
+    if(action==="approve"||action==="deny"){
+      await api(`/v1/approvals/${encodeURIComponent(id)}/${action}`,{method:"POST",body:{by:OWNER,reason:"控制台"+(action==="approve"?"批准":"拒绝")}});
+      toast(action==="approve"?"已批准":"已拒绝","ok");
+    } else if(action==="reopen"){
+      await api(`/v1/tasks/${encodeURIComponent(id)}/reopen`,{method:"POST",body:{by:OWNER,reason:"控制台催办/重开"}});
+      toast("已重开/催办","ok");
+    }
+    if(row) row.remove();                       // 成功移除
+    loadPriorityQueue();                        // 回拉确认
+  } catch(e){ if(row) row.style.opacity=1; toast("操作失败："+e.message,"bad"); }  // 失败回滚
+}
+
 /* ---------- unified company feed (谁派活/谁执行/谁开会/谁说了啥) ---------- */
 function feedOpenConv(cid){ document.querySelector('[data-v="conversations"]').click(); openMeeting(cid); }
 // one delegated listener on the stable container — survives every innerHTML refresh
@@ -1673,7 +1722,7 @@ function renderOverview() {
 /* ---------- refresh loop ---------- */
 async function refreshAll(manual=false) {
   if(manual) toast("刷新中…");
-  await Promise.allSettled([loadHealth(), loadEmployees(), loadTasks(), loadApprovals(), loadActivity(), loadFeed(), loadDeliveryTargets()]);
+  await Promise.allSettled([loadHealth(), loadEmployees(), loadTasks(), loadApprovals(), loadActivity(), loadPriorityQueue(), loadFeed(), loadDeliveryTargets()]);
   renderOverview();
   if($("msgAgent").value) loadMessages();
   loadConversations();
