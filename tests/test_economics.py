@@ -45,5 +45,53 @@ class EconomicsTest(unittest.TestCase):
         self.assertIn("margin", cf)
 
 
+    def test_compute_cost_dashboard_separates_free_onduty_from_spenders(self):
+        import uuid
+        from datetime import datetime, timedelta
+        sfx = uuid.uuid4().hex[:8]
+        spender, idler = f"cost-spend-{sfx}", f"cost-idle-{sfx}"
+        beid = f"be-cost-{sfx}"
+        fresh = (datetime.fromisoformat(companyctl.now())).isoformat()
+        conn = companyctl.connect()
+        try:
+            for eid in (spender, idler):
+                conn.execute("INSERT OR REPLACE INTO employees(id,name,role,runtime,workspace,status,created_at,updated_at) VALUES(?,?,'dev','codex','/tmp','active','t','t')", (eid, eid))
+            # both on duty (fresh heartbeat); only `spender` has a billed execution
+            for eid in (spender, idler):
+                conn.execute("INSERT OR REPLACE INTO heartbeats(agent_id,last_seen_at) VALUES(?,?)", (eid, fresh))
+            conn.execute("INSERT INTO budget_events(budget_event_id,employee_id,cost_type,amount,currency,created_at) VALUES(?,?,'codex_runtime',3.0,'USD',?)", (beid, spender, fresh))
+            conn.commit()
+            d = companyctl.compute_cost_dashboard(conn, days=7)
+            conn.execute("DELETE FROM budget_events WHERE budget_event_id = ?", (beid,))
+            for eid in (spender, idler):
+                conn.execute("DELETE FROM heartbeats WHERE agent_id = ?", (eid,))
+                conn.execute("DELETE FROM employees WHERE id = ?", (eid,))
+            conn.commit()
+        finally:
+            conn.close()
+        by_emp = {e["employee_id"]: e for e in d["by_employee"]}
+        self.assertIn(spender, by_emp)
+        self.assertIn(idler, by_emp)
+        # spender: on duty, billed
+        self.assertTrue(by_emp[spender]["on_duty"])
+        self.assertEqual(3.0, by_emp[spender]["cost"])
+        self.assertEqual(1, by_emp[spender]["executions"])
+        # idler: on duty but free (0 cost) — the core selling point
+        self.assertTrue(by_emp[idler]["on_duty"])
+        self.assertEqual(0, by_emp[idler]["cost"])
+        self.assertGreaterEqual(d["totals"]["on_duty_free"], 1)
+        # human owner is never billed/listed as a worker
+        self.assertNotIn("owner", by_emp)
+
+    def test_cost_dashboard_excludes_human_owner(self):
+        conn = companyctl.connect_readonly()
+        try:
+            d = companyctl.compute_cost_dashboard(conn, days=1)
+        finally:
+            conn.close()
+        for e in d["by_employee"]:
+            self.assertFalse(companyctl.is_human_owner_employee({"id": e["employee_id"]}))
+
+
 if __name__ == "__main__":
     unittest.main()

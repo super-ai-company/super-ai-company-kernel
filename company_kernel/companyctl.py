@@ -5969,10 +5969,83 @@ def compute_economics(conn: sqlite3.Connection) -> dict:
     }
 
 
+def compute_cost_dashboard(conn: sqlite3.Connection, *, days: int = 14) -> dict:
+    """The operating-cost story behind the product's core promise: employees on duty are
+    FREE (internal comms + task checks are pure SQL, 0 token) — only *claimed execution*
+    spends. Aggregates the budget ledger per employee + per day so a human can SEE who is
+    on duty at zero cost vs where money actually went. Cost uses the same estimate as
+    unit-economics (recorded amount > token estimate > runtime fallback) so the two views
+    never disagree. See docs/ON_DUTY_COST_MODEL.md."""
+    rates = (load_pricing_config().get("cost_rates") or {})
+    currency = load_pricing_config().get("currency", "USD")
+    ledger = rows(conn, "SELECT employee_id, amount, token_input, token_output, runtime_seconds, "
+                        "substr(created_at,1,10) AS day FROM budget_events WHERE employee_id != ''")
+    spend: dict = {}
+    by_day: dict = {}
+    for ev in ledger:
+        cost = estimate_task_cost(ev, rates)
+        s = spend.setdefault(ev["employee_id"], {"executions": 0, "tokens": 0, "cost": 0.0})
+        s["executions"] += 1
+        s["tokens"] += int(ev.get("token_input") or 0) + int(ev.get("token_output") or 0)
+        s["cost"] += cost
+        day = ev.get("day") or ""
+        if day:
+            d = by_day.setdefault(day, {"day": day, "executions": 0, "cost": 0.0})
+            d["executions"] += 1
+            d["cost"] += cost
+    employees = [e for e in rows(conn, "SELECT id, status FROM employees ORDER BY id")
+                 if not is_human_owner_employee(e)]
+    by_employee = []
+    on_duty_free = 0
+    for e in employees:
+        eid = e["id"]
+        s = spend.get(eid, {"executions": 0, "tokens": 0, "cost": 0.0})
+        age = heartbeat_age_minutes(conn, eid)
+        on_duty = age is not None and age <= OFF_DUTY_HEARTBEAT_MINUTES
+        cost = round(s["cost"], 4)
+        if on_duty and cost == 0:
+            on_duty_free += 1
+        by_employee.append({
+            "employee_id": eid,
+            "status": e.get("status", ""),
+            "on_duty": on_duty,
+            "heartbeat_age_minutes": None if age is None or age == float("inf") else round(age, 1),
+            "executions": s["executions"],
+            "tokens": s["tokens"],
+            "cost": cost,
+        })
+    by_employee.sort(key=lambda x: (-x["cost"], -x["executions"], x["employee_id"]))
+    trend = sorted(by_day.values(), key=lambda d: d["day"], reverse=True)[:days]
+    for d in trend:
+        d["cost"] = round(d["cost"], 4)
+    return {
+        "currency": currency,
+        "by_employee": by_employee,
+        "by_day": list(reversed(trend)),  # oldest→newest for charting
+        "totals": {
+            "cost": round(sum(x["cost"] for x in by_employee), 4),
+            "executions": sum(x["executions"] for x in by_employee),
+            "on_duty": sum(1 for x in by_employee if x["on_duty"]),
+            "on_duty_free": on_duty_free,
+            "employees": len(by_employee),
+        },
+        "note": "在岗=心跳15分钟内仍活跃(内部通信/查任务0花费);cost=budget_events 估算(amount>token>runtime);只有接单执行才计费。",
+    }
+
+
 def cmd_economics(args: argparse.Namespace) -> int:
     conn = connect_readonly()
     try:
         emit({"ok": True, **compute_economics(conn)})
+    finally:
+        conn.close()
+    return 0
+
+
+def cmd_cost(args: argparse.Namespace) -> int:
+    conn = connect_readonly()
+    try:
+        emit({"ok": True, **compute_cost_dashboard(conn, days=max(1, int(getattr(args, "days", 14))))})
     finally:
         conn.close()
     return 0
@@ -15002,6 +15075,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     economics = sub.add_parser("economics")
     economics.set_defaults(func=cmd_economics)
+
+    cost = sub.add_parser("cost", help="operating-cost dashboard: who is on duty free vs who spent (per employee + per day)")
+    cost.add_argument("--days", type=int, default=14, help="per-day trend window (default 14)")
+    cost.set_defaults(func=cmd_cost)
 
     verifier = sub.add_parser("verifier")
     verifier_sub = verifier.add_subparsers(dest="verifier_cmd", required=True)

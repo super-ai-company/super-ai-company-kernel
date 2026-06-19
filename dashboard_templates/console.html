@@ -414,6 +414,11 @@ label{font-size:12px;color:var(--muted);display:block;margin-bottom:4px}
 <!-- 活动流 -->
 <section class="view" id="v-metrics">
   <div class="section-head"><h2 data-i18n="met_title">生死指标</h2><span class="hint" data-i18n="met_hint">毛利 + 验收准确率，决定加码 / 改模式 / 收手</span></div>
+  <div class="card" style="margin-bottom:14px">
+    <h3 data-i18n="cost_title">🪙 运营成本 · 在岗免费（只有接单执行才计费）</h3>
+    <div id="costTotals" class="met-totals"><div class="empty" data-i18n="loading">加载中…</div></div>
+    <div id="costTable"></div>
+  </div>
   <div class="grid" style="grid-template-columns:1fr 1fr;gap:14px">
     <div class="card">
       <h3 data-i18n="met_econ">💰 单位经济（按任务类型）</h3>
@@ -509,6 +514,7 @@ const I18N = {
     cannotConnect:"⚠ 无法连接 Company Kernel API。", runGatewayHint:"请先在终端运行 bin/company-api-gateway，或填写 API 地址：",
     zone_overview:"总览", zone_exec:"执行", zone_comm:"沟通", zone_system:"系统", tab_overview:"总览", tab_employees:"员工", tab_tasks:"任务", tab_messages:"消息", tab_conversations:"对话", tab_reports:"完成回报", tab_approvals:"审批", tab_metrics:"指标", tab_activity:"活动流",
     met_title:"生死指标", met_hint:"毛利 + 验收准确率，决定加码 / 改模式 / 收手", met_econ:"💰 单位经济（按任务类型）", met_acc:"🎯 验收器抽检准确率",
+    cost_title:"🪙 运营成本 · 在岗免费（只有接单执行才计费）", cost_spend:"执行成本", cost_onduty:"在岗", cost_free:"在岗免费", cost_exec:"执行", cost_emp:"员工", cost_status:"状态", cost_tokens:"tokens", cost_amount:"花费", cost_on:"在岗", cost_off:"离岗", cost_none:"暂无成本记录（没有员工执行过任务）",
     met_margin:"毛利", met_revenue:"营收", met_cost:"成本", met_type:"类型", met_count:"笔数", met_kind:"验收类型", met_total:"总数",
     met_accuracy:"准确率", met_reviewed:"已抽检", met_fp:"误放", met_fn:"误拦", met_noecon:"暂无已完成任务的经济数据", met_noacc:"暂无验收记录", met_unavailable:"指标接口不可用（需较新网关）",
     ov_pendingApprovals:"⏳ 待审批", ov_stuck:"⚠️ 卡住待处理（升级）", ov_latestEvents:"🔔 最新事件", ov_queue:"⚡ 需要你处理", ov_queue_hint:"待审批 · 阻塞 · 超时 —— 按优先级排,直接处理", ov_feed:"📜 全公司动态", ov_feed_hint:"谁派活 · 谁执行 · 谁开会 · 谁说了啥", loading:"加载中…", none:"无",
@@ -537,6 +543,7 @@ const I18N = {
     cannotConnect:"⚠ Cannot reach Company Kernel API.", runGatewayHint:"Run bin/company-api-gateway in a terminal, or enter the API URL:",
     zone_overview:"Overview", zone_exec:"Execution", zone_comm:"Communication", zone_system:"System", tab_overview:"Overview", tab_employees:"Employees", tab_tasks:"Tasks", tab_messages:"Messages", tab_conversations:"Conversations", tab_reports:"Results", tab_approvals:"Approvals", tab_metrics:"Metrics", tab_activity:"Activity",
     met_title:"Survival metrics", met_hint:"margin + verifier accuracy — decide to scale / pivot / stop", met_econ:"💰 Unit economics (by task type)", met_acc:"🎯 Verifier sampling accuracy",
+    cost_title:"🪙 Operating cost · on duty is free (only claimed execution is billed)", cost_spend:"Execution cost", cost_onduty:"On duty", cost_free:"On duty, free", cost_exec:"Runs", cost_emp:"Employee", cost_status:"Status", cost_tokens:"tokens", cost_amount:"Cost", cost_on:"on", cost_off:"off", cost_none:"No cost records yet (no employee has executed a task)",
     met_margin:"Margin", met_revenue:"Revenue", met_cost:"Cost", met_type:"Type", met_count:"Count", met_kind:"Kind", met_total:"Total",
     met_accuracy:"Accuracy", met_reviewed:"Reviewed", met_fp:"False+", met_fn:"False-", met_noecon:"No economics data from completed tasks yet", met_noacc:"No verifier records yet", met_unavailable:"Metrics API unavailable (needs newer gateway)",
     ov_pendingApprovals:"⏳ Pending approvals", ov_stuck:"⚠️ Stuck / escalations", ov_latestEvents:"🔔 Latest events", ov_queue:"⚡ Needs you", ov_queue_hint:"approvals · blocked · timed-out — sorted, act in place", ov_feed:"📜 Company activity", ov_feed_hint:"who dispatched · ran · met · said what", loading:"Loading…", none:"None",
@@ -845,6 +852,25 @@ async function memArchive(id){
 function fmtMoney(n){ return "$"+(Number(n||0)).toFixed(2); }
 function fmtPct(n){ return n==null ? "—" : (Number(n)*100).toFixed(1)+"%"; }
 async function loadMetrics(){
+  try {
+    const cd = await api("/v1/cost-dashboard");
+    const tot = cd.totals || {};
+    $("costTotals").innerHTML =
+      chipHtml("warn", t("cost_spend"), fmtMoney(tot.cost)) +
+      chipHtml("ok", t("cost_onduty"), (tot.on_duty||0)+"/"+(tot.employees||0)) +
+      chipHtml((tot.on_duty_free>0)?"ok":"warn", t("cost_free"), (tot.on_duty_free||0)) +
+      chipHtml("ok", t("cost_exec"), (tot.executions||0));
+    const emps = cd.by_employee || [];
+    $("costTable").innerHTML = emps.length ? (
+      "<table class='met-tbl'><thead><tr><th>"+t("cost_emp")+"</th><th>"+t("cost_status")+"</th><th>"+t("cost_exec")+"</th><th>"+t("cost_tokens")+"</th><th>"+t("cost_amount")+"</th></tr></thead><tbody>"+
+      emps.map(e=>{
+        const free = e.on_duty && (e.cost||0)===0;
+        const dot = "<span class='dot "+(e.on_duty?"ok":"")+"' style='display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:6px;"+(e.on_duty?"":"background:var(--dim)")+"'></span>";
+        return "<tr><td>"+dot+esc(e.employee_id)+"</td><td>"+t(e.on_duty?"cost_on":"cost_off")+"</td><td>"+(e.executions||0)+"</td><td>"+(e.tokens||0)+"</td><td class='"+(free?'pos':((e.cost||0)>0?'neg':''))+"'>"+((e.cost||0)===0?"—":fmtMoney(e.cost))+"</td></tr>";
+      }).join("")+
+      "</tbody></table>"
+    ) : "<div class='empty'>"+t("cost_none")+"</div>";
+  } catch(e){ $("costTotals").innerHTML="<div class='empty'>"+t("met_unavailable")+"</div>"; $("costTable").innerHTML=""; }
   try {
     const eco = await api("/v1/economics");
     const tot = eco.totals || {};
