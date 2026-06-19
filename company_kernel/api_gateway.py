@@ -844,6 +844,7 @@ def route_get(path: str, query: dict[str, list[str]]) -> tuple[int, dict]:
             conn.close()
         for it in items:
             it["title"] = sanitize_dashboard_text(it.get("title", ""))
+            it["target"] = sanitize_dashboard_text(it.get("target", ""))
         return HTTPStatus.OK, {"ok": True, "queue": items, "counts": {"total": len(items),
                 "approval": sum(1 for i in items if i["kind"] == "approval"),
                 "blocked": sum(1 for i in items if i["label"] == "阻塞"),

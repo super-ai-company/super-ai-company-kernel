@@ -777,7 +777,8 @@ def company_feed(conn: sqlite3.Connection, limit: int = 40) -> list[dict]:
 def company_priority_queue(conn: sqlite3.Connection, *, stale_minutes: int = 30, limit: int = 60) -> list[dict]:
     """The console's first-screen "what needs you" queue: pending approvals (top), then blocked tasks,
     then timed-out/stale tasks. Merged to one row per object (key = kind+id, highest severity wins),
-    sorted by severity then recency, each carrying a primary in-place action set. Pure SQL — free."""
+    sorted by severity, then OLDEST-waiting first within a severity (the longest-waiting item surfaces),
+    each carrying a primary in-place action set. Pure SQL — free."""
     now_dt = datetime.fromisoformat(now())
 
     def age_min(ts: object) -> int | None:
