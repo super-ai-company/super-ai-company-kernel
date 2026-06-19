@@ -54,6 +54,23 @@ class IntegrationInstallerTest(unittest.TestCase):
         self.assertEqual("would-add", ii._install_mcp_json(p, "company-kernel", dry_run=True))
         self.assertFalse(p.exists())                            # dry-run created nothing
 
+    def test_structurally_bad_json_is_skipped_not_crashed(self):
+        """A syntactically-valid but structurally-wrong config (list top-level, or mcpServers not an
+        object) must be left untouched, not crash with AttributeError (codex finding)."""
+        p = self.root / "claude.json"
+        p.write_text("[]", encoding="utf-8")                    # top-level list
+        self.assertEqual("skipped-malformed", ii._install_mcp_json(p, "company-kernel", dry_run=False))
+        self.assertEqual("[]", p.read_text(encoding="utf-8"))   # untouched
+        p.write_text('{"mcpServers": "oops"}', encoding="utf-8")  # wrong type
+        self.assertEqual("skipped-malformed", ii._install_mcp_json(p, "company-kernel", dry_run=False))
+
+    def test_single_marker_file_is_not_duplicated(self):
+        """A file with only the START marker (corrupted) must be left alone, not get a 2nd block."""
+        p = self.root / "AGENTS.md"
+        p.write_text(f"top\n{ii.INSTR_START}\nhalf block, no end\n", encoding="utf-8")
+        self.assertEqual("skipped-corrupted-markers", ii._install_instructions(p, "codex-cli", dry_run=False))
+        self.assertEqual(1, p.read_text(encoding="utf-8").count(ii.INSTR_START))  # no duplicate appended
+
     def test_unknown_runtime_is_rejected(self):
         out = ii.install_for_runtime("nonsense-runtime")
         self.assertFalse(out["ok"])

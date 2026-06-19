@@ -74,9 +74,15 @@ def _install_mcp_json(path: Path, key: str, dry_run: bool) -> str:
     data: dict = {}
     if path.exists():
         try:
-            data = json.loads(path.read_text(encoding="utf-8") or "{}")
+            loaded = json.loads(path.read_text(encoding="utf-8") or "{}")
         except json.JSONDecodeError:
             return "skipped-malformed"
+        if not isinstance(loaded, dict):           # e.g. top-level is a list — don't clobber it
+            return "skipped-malformed"
+        data = loaded
+    existing = data.get("mcpServers")
+    if existing is not None and not isinstance(existing, dict):  # mcpServers present but wrong type
+        return "skipped-malformed"
     servers = data.setdefault("mcpServers", {})
     desired = {"command": MCP_BIN, "args": []}
     if servers.get(key) == desired:
@@ -93,8 +99,11 @@ def _install_mcp_json(path: Path, key: str, dry_run: bool) -> str:
 def _install_instructions(path: Path, agent_id: str, dry_run: bool) -> str:
     block = _instruction_block(agent_id)
     text = path.read_text(encoding="utf-8") if path.exists() else ""
-    has_markers = INSTR_START in text and INSTR_END in text
-    if has_markers:
+    has_start, has_end = INSTR_START in text, INSTR_END in text
+    if has_start != has_end:
+        # corrupted: exactly one marker present — splicing would duplicate/mangle. Leave it for the user.
+        return "skipped-corrupted-markers"
+    if has_start and has_end:
         pre = text.split(INSTR_START)[0]
         post = text.split(INSTR_END, 1)[1]
         new = pre.rstrip() + "\n\n" + block + post
@@ -126,7 +135,8 @@ def install_for_runtime(runtime: str, *, agent_id: str | None = None, dry_run: b
     else:
         mcp_result = _install_mcp_json(mcp_path, cfg["key"], dry_run)
     instr_result = _install_instructions(instr_path, agent_id, dry_run)
-    ok = mcp_result not in ("skipped-malformed",)
+    bad = {"skipped-malformed", "skipped-corrupted-markers"}
+    ok = mcp_result not in bad and instr_result not in bad
     return {"ok": ok, "runtime": runtime, "agent_id": agent_id, "dry_run": dry_run,
             "mcp": {"file": str(mcp_path), "result": mcp_result},
             "instructions": {"file": str(instr_path), "result": instr_result}}
