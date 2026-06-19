@@ -26,6 +26,14 @@ def kill_process_group(proc: subprocess.Popen) -> None:
             proc.kill()
             proc.wait(timeout=5)
         return
+    # SAFETY (footgun guard): never SIGKILL our OWN process group. If the child was NOT started with
+    # start_new_session=True its pgid is the daemon's own group, and killpg here would take down the
+    # whole daemon and every sibling. In that case fall back to killing just this one child.
+    if pgid == os.getpgid(0):
+        with contextlib.suppress(Exception):
+            proc.kill()
+            proc.wait(timeout=5)
+        return
     try:
         os.killpg(pgid, signal.SIGTERM)
     except (ProcessLookupError, OSError):

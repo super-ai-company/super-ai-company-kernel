@@ -508,6 +508,7 @@ class HeartbeatKeeper:
         self._interval = max(30, int(interval_seconds))
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
+        self.consecutive_failures = 0  # observable: a persistently-failing keeper is NOT silent
 
     def _beat_once(self) -> None:
         """One keepalive round: refresh every tracked agent's heartbeat. Pure SQL, free."""
@@ -524,8 +525,13 @@ class HeartbeatKeeper:
         while not self._stop.wait(self._interval):
             try:
                 self._beat_once()
-            except Exception:
-                pass  # a keepalive hiccup must never take down the tick
+                self.consecutive_failures = 0
+            except Exception as exc:  # noqa: BLE001 — a keepalive hiccup must never take down the tick
+                # ...but it must NOT be swallowed silently either: a keeper whose heartbeat writes keep
+                # failing would let every worker silently go 'off duty' with no trace. Count it and warn
+                # on stderr (→ daemon log) so the failure is observable, then keep trying.
+                self.consecutive_failures += 1
+                print(f"⚠️ heartbeat-keeper write failed (x{self.consecutive_failures}): {exc}", file=sys.stderr)
 
     def __enter__(self) -> "HeartbeatKeeper":
         if self._agents:

@@ -69,6 +69,16 @@ class ProcUtilTest(unittest.TestCase):
         proc.wait()
         proc_util.kill_process_group(proc)  # must not raise even though it already exited
 
+    def test_kill_process_group_never_kills_own_group(self):
+        # FOOTGUN GUARD: a child started WITHOUT start_new_session shares THIS process's group.
+        # kill_process_group must NOT killpg (that would kill the test runner / whole daemon) — it must
+        # fall back to killing only the child. If the guard were missing, this test process would die.
+        proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])  # no start_new_session
+        self.assertEqual(os.getpgid(proc.pid), os.getpgid(0))  # confirm it's in our own group
+        proc_util.kill_process_group(proc)
+        # we are still alive (guard worked) and the child is dead (killed individually)
+        self.assertIsNotNone(proc.poll())
+
 
 if __name__ == "__main__":
     unittest.main()
