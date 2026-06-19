@@ -68,6 +68,7 @@ python3 -B -m unittest discover -s tests      # baseline: 539 passing
 | [docs/COMPLETION_REPORT.md](docs/COMPLETION_REPORT.md) | Delivered capabilities |
 | [docs/SUPER_AI_COMPANY_GOAL.md](docs/SUPER_AI_COMPANY_GOAL.md) | Project vision |
 | [docs/RUNTIME_ADAPTERS.md](docs/RUNTIME_ADAPTERS.md) | Adapter design |
+| [docs/ON_DUTY_COST_MODEL.md](docs/ON_DUTY_COST_MODEL.md) | Why employees stay on duty for free (tokens only on real work) |
 | [DELIVERY.md](DELIVERY.md) | Change log / delivery notes |
 
 ---
@@ -132,6 +133,7 @@ python3 -B -m unittest discover -s tests      # 基线：539 通过
 | [docs/COMPLETION_REPORT.md](docs/COMPLETION_REPORT.md) | 已交付能力 |
 | [docs/SUPER_AI_COMPANY_GOAL.md](docs/SUPER_AI_COMPANY_GOAL.md) | 项目愿景 |
 | [docs/RUNTIME_ADAPTERS.md](docs/RUNTIME_ADAPTERS.md) | 适配器设计 |
+| [docs/ON_DUTY_COST_MODEL.md](docs/ON_DUTY_COST_MODEL.md) | 员工为何能免费在岗(只有真干活才花 token） |
 | [DELIVERY.md](DELIVERY.md) | 交付与变更记录 |
 
 ---
