@@ -13311,10 +13311,33 @@ def reap_stuck_attempts_internal(conn: sqlite3.Connection, *, actor: str = "open
     return {"scanned": len(scan), "reaped": reaped, "reaped_count": len(reaped)}
 
 
+REAP_REASON_LABEL = {"runtime_exceeded": "运行超时", "worker_process_gone": "执行进程失联"}
+
+
+def notify_owner_of_reaps(reaped: list[dict]) -> list[dict]:
+    """Tell the owner (Telegram) when the watchdog auto-reaps a task, so a self-healing reap isn't
+    silent — the owner can review/re-dispatch. Best-effort: never raises; with no notification token
+    configured it's a no-op. Production-only entry (the daemon passes --notify); tests call the
+    internal reaper directly and never reach this, so no test ever sends a real alert."""
+    sent = []
+    for item in reaped:
+        label = REAP_REASON_LABEL.get(str(item.get("reason") or ""), "异常")
+        msg = (f"任务「{str(item.get('task_id'))}」{label},已自动回收为受阻(blocked),请复核或改派。\n"
+               f"员工 {item.get('employee_id', '')} · 运行 {item.get('runtime_age_seconds', 0)}s · {item.get('task_id', '')}")
+        try:
+            res = notification_send_result(kind="error", subject="⏱ 任务被看门狗自动回收", message=msg)
+        except Exception as exc:  # noqa: BLE001 — notification must never break the daemon tick
+            res = {"ok": False, "error": str(exc)}
+        sent.append({"task_id": item.get("task_id"), "notified": bool(res.get("ok"))})
+    return sent
+
+
 def cmd_watchdog_reap_stuck(args: argparse.Namespace) -> int:
     conn = connect()
     actor = resolve_employee_alias(getattr(args, "by", "openclaw-main")) or "openclaw-main"
     result = reap_stuck_attempts_internal(conn, actor=actor)
+    if getattr(args, "notify", False) and result.get("reaped"):
+        result["owner_notifications"] = notify_owner_of_reaps(result["reaped"])
     emit({"ok": True, **result})
     return 0
 
@@ -14840,8 +14863,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     watchdog_p = sub.add_parser("watchdog", help="fault-tolerance watchdog")
     watchdog_sub = watchdog_p.add_subparsers(dest="watchdog_cmd", required=True)
-    reap_stuck = watchdog_sub.add_parser("reap-stuck", help="force-fail attempts running past their runtime cap → task blocked + dispatcher notified (so stuck work lands in the failure list instead of hanging)")
+    reap_stuck = watchdog_sub.add_parser("reap-stuck", help="force-fail attempts running past their runtime cap or whose worker process died → task blocked + dispatcher notified (so stuck work lands in the failure list instead of hanging)")
     reap_stuck.add_argument("--by", default="openclaw-main", help="actor recorded for the reap (default openclaw-main)")
+    reap_stuck.add_argument("--notify", action="store_true", help="also alert the owner (Telegram) for each auto-reaped task; the daemon passes this in production")
     reap_stuck.set_defaults(func=cmd_watchdog_reap_stuck)
 
     init_p = sub.add_parser("init", help="guided first-run setup: detect installed agent CLIs, add them as employees, print next steps")
