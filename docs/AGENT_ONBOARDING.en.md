@@ -98,6 +98,10 @@ bin/companyctl employee list
 bin/companyctl task submit --from owner --to <id> --title "smoke test"
 bin/company-daemon --once --summary
 bin/companyctl task list --status completed
+bin/companyctl conversation probe --participants active            # which employees can actually join a meeting
+bin/companyctl meeting request --from owner --topic "choice" \
+  --participants <empA>,<empB> --question "A or B?"               # an employee convenes its own meeting (async)
+bin/companyctl meeting result --conversation-id <cid from above>    # poll for the conclusion/minutes
 ```
 
 Full regression: `python3 -B -m unittest discover -s tests` (baseline 539 passing).

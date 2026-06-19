@@ -141,6 +141,10 @@ bin/companyctl employee list                  # 看到新员工
 bin/companyctl task submit --from owner --to <员工ID> --title "smoke 测试"
 bin/company-daemon --once --summary           # 自动执行
 bin/companyctl task list --status completed    # 看到完成 + 证据
+bin/companyctl conversation probe --participants active            # 探测哪些员工真能参会
+bin/companyctl meeting request --from owner --topic "选型" \
+  --participants <员工A>,<员工B> --question "A 还是 B?"            # 员工自主发起会议(异步)
+bin/companyctl meeting result --conversation-id <上一步返回的 cid>  # 轮询会议结论/纪要
 ```
 
 完整全量回归：`python3 -B -m unittest discover -s tests`（基线 539 通过）。
