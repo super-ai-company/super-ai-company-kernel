@@ -5,7 +5,7 @@
 所有命令默认先:
 
 ```
-cd /Users/shift/openclaw/company-kernel
+cd $OPENCLAW_COMPANY_KERNEL_ROOT
 ```
 
 ---
@@ -14,7 +14,7 @@ cd /Users/shift/openclaw/company-kernel
 
 | 用途 | 路径 / 地址 |
 |---|---|
-| 内核根目录(实际运行) | `/Users/shift/openclaw/company-kernel` |
+| 内核根目录(实际运行) | `$OPENCLAW_COMPANY_KERNEL_ROOT` |
 | 主 CLI | `bin/companyctl` |
 | 控制台(浏览器打开) | `http://127.0.0.1:8765/`(及 `8788`) |
 | 数据库 | `company.sqlite` |
@@ -22,7 +22,7 @@ cd /Users/shift/openclaw/company-kernel
 | 员工档案 | `employees/<id>/profile.json` |
 | 任务证据/产物 | `employees/<id>/reports/<task-id>/` |
 | 日志 | `logs/daemon.log`、`logs/*.launchd.*.log` |
-| GitHub | `origin` = shiftshen/super-ai-company-kernel · `public` = super-ai-company/super-ai-company-kernel |
+| GitHub | `origin` = super-ai-company/super-ai-company-kernel · `public` = super-ai-company/super-ai-company-kernel |
 
 ---
 
@@ -67,7 +67,7 @@ bin/companyctl employee set-unavailable --id <id>  # 临时不可用
 bin/companyctl heartbeat --agent <id>              # 手动打心跳
 ```
 
-当前关键员工:`owner-shift`(你,human-owner)、`codex`(开发)、`hermes`、`nestcar`/`openclaw-main`(OpenClaw 运行时)。
+当前关键员工:`owner`(你,human-owner)、`codex`(开发)、`hermes`、`nestcar`/`openclaw-main`(OpenClaw 运行时)。
 
 ---
 
@@ -75,11 +75,11 @@ bin/companyctl heartbeat --agent <id>              # 手动打心跳
 
 ```
 # 提交任务给指定员工
-bin/companyctl task submit --from owner-shift --to codex \
+bin/companyctl task submit --from owner --to codex \
   --title "标题" --description "含验收标准的详细需求" --priority P1
 
 # 或:按技能/工具让内核自动选员工
-bin/companyctl task route --from owner-shift --title "..." --skills "python" --task-type dev
+bin/companyctl task route --from owner --title "..." --skills "python" --task-type dev
 
 # 查看
 bin/companyctl task list --agent codex
@@ -87,7 +87,7 @@ bin/companyctl task show --task-id <task-id>
 bin/companyctl task children --task-id <task-id>
 
 # 拆分长任务
-bin/companyctl task split --task-id <id> --by owner-shift --item "codex|子标题|描述|P2"
+bin/companyctl task split --task-id <id> --by owner --item "codex|子标题|描述|P2"
 
 # 手动认领 / 完成 / 阻塞(一般由 adapter 自动做)
 bin/companyctl task claim --agent codex --task-id <id>
@@ -109,8 +109,8 @@ bin/companyctl task block --agent codex --task-id <id> --blocker "原因"
 bin/companyctl runtime adapter-runs --agent codex                       # 列出
 bin/companyctl runtime adapter-runs --agent codex --status failed --unacknowledged-only
 bin/companyctl runtime adapter-run --run-id <run-id>                    # 详情
-bin/companyctl runtime retry-adapter-run --run-id <id> --by owner-shift --reason "..."
-bin/companyctl runtime ack-adapter-run   --run-id <id> --by owner-shift --reason "..."
+bin/companyctl runtime retry-adapter-run --run-id <id> --by owner --reason "..."
+bin/companyctl runtime ack-adapter-run   --run-id <id> --by owner --reason "..."
 ```
 
 ---

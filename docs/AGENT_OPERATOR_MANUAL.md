@@ -25,13 +25,13 @@ Company Kernel 是 AI 员工公司的控制内核。
 当前开发目录：
 
 ```bash
-cd /Users/shift/openclaw/workspace-xmanx/projects/super-ai-company-kernel
+cd ~/openclaw/workspace-xmanx/projects/super-ai-company-kernel
 ```
 
 不要操作线上目录，除非 owner 明确授权：
 
 ```bash
-/Users/shift/openclaw/company-kernel
+$OPENCLAW_COMPANY_KERNEL_ROOT
 ```
 
 启动前确认你在哪：
@@ -419,7 +419,7 @@ owner 批准后再执行：
 ```bash
 bin/companyctl approval approve \
   --approval-id <approval-id> \
-  --by owner-shift \
+  --by owner \
   --reason "确认允许"
 ```
 
@@ -476,7 +476,7 @@ bin/companyctl runtime ack-adapter-run \
 ```bash
 set -euo pipefail
 
-cd /Users/shift/openclaw/workspace-xmanx/projects/super-ai-company-kernel
+cd ~/openclaw/workspace-xmanx/projects/super-ai-company-kernel
 
 echo "== git =="
 git status --short --branch

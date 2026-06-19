@@ -95,7 +95,7 @@ The gateway binds `127.0.0.1` unless you pass `--host 0.0.0.0` — only do that 
 
 ```bash
 bin/companyctl employee list
-bin/companyctl task submit --from owner-shift --to <id> --title "smoke test"
+bin/companyctl task submit --from owner --to <id> --title "smoke test"
 bin/company-daemon --once --summary
 bin/companyctl task list --status completed
 ```

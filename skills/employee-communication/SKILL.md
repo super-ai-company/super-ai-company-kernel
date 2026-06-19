@@ -24,7 +24,7 @@ But "open" only removes the *gate* — the **medium** differs by runtime. Use th
 
 ## Who uses what (by runtime)
 
-- **owner-shift (you)** ↔ everyone: the **console** (@mention to dispatch, message center, 会议室),
+- **owner (you)** ↔ everyone: the **console** (@mention to dispatch, message center, 会议室),
   plus **Telegram** for approvals/errors coming back. You can reach anyone.
 - **Compute employees** — codex, claude, antigravity (agy), gemini, hermes: they **act on Tasks and
   Meetings**, not live chat. `message send` to them is logged but they won't "reply" like a chat —

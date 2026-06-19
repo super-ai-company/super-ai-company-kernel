@@ -74,7 +74,7 @@ def normalize_metadata(payload: dict[str, Any], source_file: Path) -> dict[str, 
     return metadata
 
 
-INTAKE_FALLBACK_SENDER = "owner-shift"
+INTAKE_FALLBACK_SENDER = "owner"
 
 
 def _known_employee(conn, agent_id: str):

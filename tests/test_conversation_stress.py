@@ -64,12 +64,12 @@ class ConversationStressTest(unittest.TestCase):
             self._run(["employee", "create", "--id", a, "--name", a, "--role", "developer",
                        "--runtime", a if a != "claude" else "claude", "--workspace", str(self.root / a)])
         status, started = self.gw.route_post("/v1/conversations", {
-            "from": "owner-shift", "participants": "owner-shift,codex,claude,hermes",
+            "from": "owner", "participants": "owner,codex,claude,hermes",
             "conversation_id": "conv-stress", "title": "长对话压测", "body": "round-0",
         })
         self.assertEqual(201, status, started)
 
-        speakers = ["codex", "claude", "hermes", "owner-shift"]
+        speakers = ["codex", "claude", "hermes", "owner"]
         expected = ["round-0"]
         for i in range(1, 31):
             who = speakers[i % len(speakers)]
@@ -96,7 +96,7 @@ class ConversationStressTest(unittest.TestCase):
         conn0.execute("UPDATE employees SET status = 'active' WHERE id IN ('codex','nestcar','hermes')")
         conn0.commit()
         self.gw.route_post("/v1/conversations", {
-            "from": "owner-shift", "participants": "owner-shift,codex,nestcar,hermes",
+            "from": "owner", "participants": "owner,codex,nestcar,hermes",
             "conversation_id": "conv-gate", "title": "规范同步", "body": "议程：新规范",
         })
 
@@ -136,7 +136,7 @@ class ConversationStressTest(unittest.TestCase):
         pm.remember(conn, project_id="proj", title="已定:支付走 PromptPay EMV", entry_type="decision")
         pm.curate(conn, project_id="proj")
         self.gw.route_post("/v1/conversations", {
-            "from": "owner-shift", "participants": "owner-shift,codex,hermes",
+            "from": "owner", "participants": "owner,codex,hermes",
             "conversation_id": "conv-mem", "title": "支付评审", "body": "议程",
         })
         conn2 = self.ctl.connect()
@@ -165,7 +165,7 @@ class ConversationStressTest(unittest.TestCase):
         self._run(["employee", "create", "--id", "codex", "--name", "codex", "--role", "developer",
                    "--runtime", "codex", "--workspace", str(self.root / "codex")])
         self.gw.route_post("/v1/conversations", {
-            "from": "owner-shift", "participants": "owner-shift,codex",
+            "from": "owner", "participants": "owner,codex",
             "conversation_id": "conv-note", "title": "t", "body": "议程",
         })
         self.ctl.conversation_reply_internal(self.ctl.connect(), source="codex", conversation_id="conv-note",
@@ -213,7 +213,7 @@ class ConversationStressTest(unittest.TestCase):
         self._run(["employee", "create", "--id", "codex", "--name", "codex", "--role", "developer",
                    "--runtime", "codex", "--workspace", str(self.root / "codex")])
         self.gw.route_post("/v1/conversations", {
-            "from": "owner-shift", "participants": "owner-shift,codex",
+            "from": "owner", "participants": "owner,codex",
             "conversation_id": "conv-chairfail", "title": "t", "body": "议程"})
         self.ctl.conversation_reply_internal(self.ctl.connect(), source="codex", conversation_id="conv-chairfail",
                                              body="codex 发言")
@@ -229,7 +229,7 @@ class ConversationStressTest(unittest.TestCase):
         self._run(["employee", "create", "--id", "codex", "--name", "codex", "--role", "developer",
                    "--runtime", "codex", "--workspace", str(self.root / "codex")])
         self.gw.route_post("/v1/conversations", {
-            "from": "owner-shift", "participants": "owner-shift,codex",
+            "from": "owner", "participants": "owner,codex",
             "conversation_id": "conv-feed", "title": "周会", "body": "议程"})
         self.ctl.record_event(self.ctl.connect(), "conversation.message", "codex",
                               payload={"conversation_id": "conv-feed", "body": "我先做搜索"})

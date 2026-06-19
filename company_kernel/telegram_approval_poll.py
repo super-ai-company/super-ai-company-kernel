@@ -19,7 +19,7 @@ from pathlib import Path
 ROOT = Path(os.environ.get("OPENCLAW_COMPANY_KERNEL_ROOT", Path(__file__).resolve().parents[1])).resolve()
 COMMS_PATH = ROOT / "config" / "company_communications.json"
 STATE_PATH = ROOT / "state" / "telegram_approval_poll.json"
-OWNER = os.environ.get("COMPANY_KERNEL_OWNER", "owner-shift")
+OWNER = os.environ.get("COMPANY_KERNEL_OWNER", "owner")
 
 
 def emit(obj: dict) -> None:

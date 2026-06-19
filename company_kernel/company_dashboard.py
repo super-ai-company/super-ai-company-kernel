@@ -1413,7 +1413,7 @@ def build_cockpit_summary(summary: dict) -> dict:
     excluded_human_owner_ids = [
         str(item.get("id") or "")
         for item in summary.get("all_employees", [])
-        if item.get("id") and (item.get("id") == "owner-shift" or item.get("role") == "human-owner" or item.get("runtime") == "human")
+        if item.get("id") and (item.get("id") == "owner" or item.get("role") == "human-owner" or item.get("runtime") == "human")
     ]
     excluded_human_owners = max(registered_total - employees_total, len(excluded_human_owner_ids))
     registry_reconciliation = {
@@ -2691,7 +2691,7 @@ def employee_view_models(summary: dict) -> list[dict]:
     conn = companyctl.connect_readonly()
     try:
         for employee in summary["employees"]:
-            if employee.get("id") == "owner-shift" or employee.get("role") == "human-owner" or employee.get("runtime") == "human":
+            if employee.get("id") == "owner" or employee.get("role") == "human-owner" or employee.get("runtime") == "human":
                 continue
             if str(employee.get("employee_status") or employee.get("status") or "") == "archived":
                 continue

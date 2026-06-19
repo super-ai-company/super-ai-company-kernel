@@ -20,7 +20,7 @@ _RUNTIME_NOTE = {
     "claude": "你可以改代码或做分析;完成回 evidence_path。",
     "gemini": "你做 PM/UX 评审;完成回 evidence_path。",
     "antigravity": "你只审查、给建议,绝不改代码或新建文件;无法验证就 status: blocked。",
-    "hermes": "你主持会议、做汇总;把纪要和结论回报给 owner-shift。",
+    "hermes": "你主持会议、做汇总;把纪要和结论回报给 owner。",
     "openclaw": "你可以 relay 到 LINE/Telegram;发客户群用 channel-send 或任务 --deliver-to。",
 }
 
@@ -43,7 +43,7 @@ def communication_protocol(agent_id: str, runtime: str) -> str:
         f'- **拿不准的决策叉路**(架构选型、接口取舍等少数真难定的事)别瞎猜也别干等 → 自己叫一场会:`{CTL} meeting request --from {agent_id} --topic "…" --participants <同事,逗号分隔> --question "<要定的具体问题>"`,后台讨论几分钟,再用 `{CTL} meeting result --conversation-id <cid>` 取结论。会议只用于个别拿不准的决策,别拿日常小事开会。',
         f"- 派活给同事 → `{CTL} task submit --from {agent_id} --to <谁> --title … --description …`(`--from` 必须是注册员工,就用你自己的 id「{agent_id}」,别用 app 名)。",
         "  同事:codex 后端/写码 · claude 分析/评审 · antigravity(agy)前端 UI 审核 · hermes 协调 · openclaw 系 客户 LINE/Telegram。派 codex 必写 `工作区: /abs/repo`;派 agy 大审核写 `超时: 3600`。",
-        "- 高风险或重大动作 → 走审批;需要老板拍板就升级给 owner-shift。",
+        "- 高风险或重大动作 → 走审批;需要老板拍板就升级给 owner。",
     ]
     note = _RUNTIME_NOTE.get(runtime, "")
     if note:
@@ -88,7 +88,7 @@ def default_onboarding_rules(agent_id: str, role: str = "", runtime: str = "") -
             "- 派 codex 必写 `工作区: /abs/repo`;派 agy 大审核写 `超时: 3600`。",
             "",
             "## 红线",
-            "- 不直接改 Company Kernel 内部;不外发、不泄密;高风险动作走审批,需老板拍板就升级 owner-shift。",
+            "- 不直接改 Company Kernel 内部;不外发、不泄密;高风险动作走审批,需老板拍板就升级 owner。",
             "- 始终返回 evidence_path 或 blocker,绝不假装完成。",
         ]
     )

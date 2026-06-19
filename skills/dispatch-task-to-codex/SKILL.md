@@ -5,12 +5,12 @@ description: Use when assigning/submitting a development task to the Codex emplo
 
 # Dispatch a Task to Codex (派活给 Codex)
 
-How to reliably hand a development task from any employee (e.g. `claude`, `main`, `owner-shift`) to the `codex` employee through Company Kernel, and how to recover when submission is rejected.
+How to reliably hand a development task from any employee (e.g. `claude`, `main`, `owner`) to the `codex` employee through Company Kernel, and how to recover when submission is rejected.
 
 Run everything from the kernel root:
 
 ```bash
-cd /Users/shift/openclaw/company-kernel
+cd $OPENCLAW_COMPANY_KERNEL_ROOT
 ```
 
 ## The command
@@ -33,7 +33,7 @@ Codex runs each task in an ephemeral sandbox; if the description does NOT name t
 **The path is parsed by a literal directive line.** Put it on its OWN line, keyword + colon + absolute path. The backend (`resolve_task_workspace`) recognizes `工作区:` / `工作目录:` / `仓库路径:` / `workspace:` followed by an absolute path. Cleanest, always-parsed form:
 
 ```
-工作区: /Users/<you>/path/to/repo        # vdamo 后端确认在 /Users/shift/Documents/vdamo/damov4/vdamo-cloud
+工作区: /Users/<you>/path/to/repo        # vdamo 后端确认在 ~/Documents/vdamo/damov4/vdamo-cloud
 目标/验收标准：<what done looks like, how to verify>
 关键步骤：1. … 2. …
 相关文件：<paths>
@@ -112,7 +112,7 @@ This requires the `codex` CLI to actually answer the probe; if it can't, fix the
 If you just need work to reach codex and don't care which employee is the nominal sender, submit from an operator/owner that is never runtime-probed and never auto-paused:
 
 ```bash
-bin/companyctl task submit --from owner-shift --to codex --title "..." --description "..." --priority P1
+bin/companyctl task submit --from owner --to codex --title "..." --description "..." --priority P1
 # or --from main
 ```
 

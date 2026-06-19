@@ -3578,7 +3578,7 @@
   let isSimulationMode = false;
   window.activeThreadId = window.activeThreadId || '';
   
-  const HUMAN_OWNER_ID = 'owner-shift';
+  const HUMAN_OWNER_ID = 'owner';
 
   function getCompanyApiBase() {
     return String(window.companyApiBase || 'http://127.0.0.1:8765').replace(/\/$/, '');
@@ -4391,7 +4391,7 @@
   }
 
   function isVerifiedEmployee(emp) {
-    return (emp.employee_status || emp.status) === 'active' && emp.id !== 'owner-shift' && emp.role !== 'human-owner' && emp.runtime !== 'human';
+    return (emp.employee_status || emp.status) === 'active' && emp.id !== 'owner' && emp.role !== 'human-owner' && emp.runtime !== 'human';
   }
 
   function activeEmployeeOptions() {
@@ -5836,7 +5836,7 @@
         ['Budget Summary', budgetSummaryDetail(budgetSummary)],
         ['Budget Events', budgetEventsSummary(budgetEvents)],
         ['Completion Contract', completionContractSummary(completionContract)],
-        ['Owner Control Contract', 'Correction: POST /v1/tasks/{task_id}/correct · Cancel: POST /v1/tasks/{task_id}/cancel · Retry: POST /v1/tasks/{task_id}/retry · Reassign: POST /v1/tasks/{task_id}/reassign · Reject/Reopen: POST /v1/tasks/{task_id}/reopen with by=owner-shift and status=submitted.'],
+        ['Owner Control Contract', 'Correction: POST /v1/tasks/{task_id}/correct · Cancel: POST /v1/tasks/{task_id}/cancel · Retry: POST /v1/tasks/{task_id}/retry · Reassign: POST /v1/tasks/{task_id}/reassign · Reject/Reopen: POST /v1/tasks/{task_id}/reopen with by=owner and status=submitted.'],
         ['Evidence Acceptance', evidenceAcceptanceSummary(evidenceRecords, completionContract)],
         ['Evidence Records Summary', evidenceRecordsSummary(evidenceRecords)],
         ['Sanitized Logs Summary', sanitizedLogsSummary(sanitizedLogs)],
@@ -7468,7 +7468,7 @@
         <div class="metric-card"><div class="metric-label">Sessions</div><div class="metric-value">${escapeHtml(String(counts.sessions || 0))}</div></div>
         <div class="metric-card"><div class="metric-label">spool_pending</div><div class="metric-value">${escapeHtml(String(counts.spool_pending || 0))}</div></div>
         <div class="metric-card"><div class="metric-label">spool_processing</div><div class="metric-value">${escapeHtml(String(counts.spool_processing || 0))}</div></div>
-        <div class="metric-card"><div class="metric-label">Kernel Registered</div><div class="metric-value">${escapeHtml(String(counts.registered || 0))}</div><div style="font-size:11px;color:var(--text-secondary);margin-top:6px;">Includes human owner records such as owner-shift.</div></div>
+        <div class="metric-card"><div class="metric-label">Kernel Registered</div><div class="metric-value">${escapeHtml(String(counts.registered || 0))}</div><div style="font-size:11px;color:var(--text-secondary);margin-top:6px;">Includes human owner records such as owner.</div></div>
         <div class="metric-card"><div class="metric-label">Missing Registered</div><div class="metric-value">${escapeHtml(String(counts.missing_registered || 0))}</div></div>
       </div>
       <div style="margin-bottom: 12px;">${missingHtml}</div>

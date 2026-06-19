@@ -33,9 +33,9 @@ OpenClaw agent_bus/inbox/codex|antigravity|agy
 Write an OpenClaw bus file under:
 
 ```text
-/Users/shift/openclaw/ops/agent_bus/inbox/codex/<task_id>.json
-/Users/shift/openclaw/ops/agent_bus/inbox/antigravity/<task_id>.json
-/Users/shift/openclaw/ops/agent_bus/inbox/agy/<task_id>.json
+~/openclaw/ops/agent_bus/inbox/codex/<task_id>.json
+~/openclaw/ops/agent_bus/inbox/antigravity/<task_id>.json
+~/openclaw/ops/agent_bus/inbox/agy/<task_id>.json
 ```
 
 Example:

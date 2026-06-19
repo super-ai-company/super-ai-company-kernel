@@ -12,7 +12,7 @@
 ## 0. 通用前置（任何系统）
 
 ```bash
-git clone https://github.com/shiftshen/super-ai-company-kernel.git
+git clone https://github.com/super-ai-company/super-ai-company-kernel.git
 cd super-ai-company-kernel
 python3 --version   # 需要 Python 3.10+
 ```
@@ -138,7 +138,7 @@ $env:COMPANY_KERNEL_API_TOKEN = "<token>"          # Windows PowerShell
 
 ```bash
 bin/companyctl employee list                  # 看到新员工
-bin/companyctl task submit --from owner-shift --to <员工ID> --title "smoke 测试"
+bin/companyctl task submit --from owner --to <员工ID> --title "smoke 测试"
 bin/company-daemon --once --summary           # 自动执行
 bin/companyctl task list --status completed    # 看到完成 + 证据
 ```

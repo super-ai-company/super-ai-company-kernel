@@ -38,7 +38,7 @@ Claude 终端命令
 进入项目：
 
 ```bash
-cd /Users/shift/openclaw/workspace-xmanx/projects/super-ai-company-kernel
+cd ~/openclaw/workspace-xmanx/projects/super-ai-company-kernel
 ```
 
 确认本地和 GitHub 一致：
@@ -354,7 +354,7 @@ Claude 收到“通过终端和 Codex 协作”任务时，直接按这段执行
 你只能使用终端命令，不要打开浏览器，不要操作桌面。
 
 请进入：
-/Users/shift/openclaw/workspace-xmanx/projects/super-ai-company-kernel
+~/openclaw/workspace-xmanx/projects/super-ai-company-kernel
 
 目标：
 通过 Company Kernel 与 codex 员工通信，不直接控制 Codex 窗口。
@@ -374,7 +374,7 @@ Claude 收到“通过终端和 Codex 协作”任务时，直接按这段执行
 - 不把 stdout 当 evidence。
 - 不绕过 Company Kernel 私下调用 Codex。
 - 不修改 OpenClaw 线上目录。
-- 不碰 /Users/shift/openclaw/company-kernel，除非 owner 明确授权。
+- 不碰 $OPENCLAW_COMPANY_KERNEL_ROOT，除非 owner 明确授权。
 ```
 
 ## 10. 一条完整 smoke 脚本
@@ -384,7 +384,7 @@ Claude 可以直接复制执行：
 ```bash
 set -euo pipefail
 
-cd /Users/shift/openclaw/workspace-xmanx/projects/super-ai-company-kernel
+cd ~/openclaw/workspace-xmanx/projects/super-ai-company-kernel
 
 echo "== git =="
 git status --short --branch
@@ -436,7 +436,7 @@ Claude 不要做：
 - 不要直接改 `employees/*/profile.json` 把 candidate 改 active。
 - 不要把 `message direct ok` 当长任务完成。
 - 不要在没有 evidence 的情况下 `task done`。
-- 不要操作 `/Users/shift/openclaw/company-kernel` 线上目录，除非 owner 明确授权。
+- 不要操作 `$OPENCLAW_COMPANY_KERNEL_ROOT` 线上目录，除非 owner 明确授权。
 
 ## 12. 参考来源
 

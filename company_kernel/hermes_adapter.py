@@ -141,7 +141,7 @@ def build_advance_prompt(notices: list[dict]) -> str:
         "",
         "你是 Hermes,Super AI Company 的协调者。你派出去的任务有完成/受阻回件了,据此推进编排。",
         "硬规则:只做编排与汇总(派活 / 改派 / 汇总),绝不自己写代码,绝不改项目配置,绝不外发。",
-        "派活用 MCP `dispatch_task`:开发派 `codex-cli`,审核派 `claude-cli`,汇总回业主派 `owner-shift`。",
+        "派活用 MCP `dispatch_task`:开发派 `codex-cli`,审核派 `claude-cli`,汇总回业主派 `owner`。",
         "已经处理过的别重复派。",
         "",
         "## 刚完成 / 受阻的回件",
@@ -157,7 +157,7 @@ def build_advance_prompt(notices: list[dict]) -> str:
         "",
         "## 你要做的(选其一或组合)",
         "- 中间步(开发完→该审核):派下一步给对应同事。",
-        "- 整轮完成:把战报(做了什么/结论/关键风险/下一步)用一段话汇总给业主 owner-shift。",
+        "- 整轮完成:把战报(做了什么/结论/关键风险/下一步)用一段话汇总给业主 owner。",
         "- 受阻:判断改派、补输入还是上报业主。",
         "- 已取消:这任务不会再有结果,别再等——判断重派(换更合适的同事/补全信息)还是放弃并告知业主。",
     ]
@@ -199,7 +199,7 @@ def report_progress_to_owner(agent: str, actionable: list[dict], output_path: Pa
     try:
         if not any(str(n.get("status")) in ("completed", "done") for n in actionable):
             return False
-        owner = os.environ.get("COMPANY_KERNEL_OWNER", "owner-shift")
+        owner = os.environ.get("COMPANY_KERNEL_OWNER", "owner")
         titles = "、".join(f"「{str(n.get('title', ''))[:24]}」" for n in actionable[:3])
         snippet = ""
         try:

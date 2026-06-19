@@ -4235,7 +4235,7 @@ def openclaw_native_dispatch_plan(
     if task_id:
         payload["payload"]["kernel_task_id"] = task_id
     submit_command_preview = (
-        "python3 /Users/shift/openclaw/scripts/ops_task_bus.py submit "
+        "python3 ~/openclaw/scripts/ops_task_bus.py submit "
         f"--source-agent {source} --target-agent {target} --type {task_type} --priority {priority} "
         "--payload '<payload-json>' --rollback '<rollback-text>'"
     )
@@ -6244,7 +6244,7 @@ def cmd_workspace_prune(args: argparse.Namespace) -> int:
 
 
 def is_human_owner_employee(employee: dict) -> bool:
-    return employee.get("id") == "owner-shift" or employee.get("role") == "human-owner" or employee.get("runtime") == "human"
+    return employee.get("id") == "owner" or employee.get("role") == "human-owner" or employee.get("runtime") == "human"
 
 
 def employee_backlog(conn: sqlite3.Connection, employee_id: str) -> dict:
@@ -8892,7 +8892,7 @@ def mirror_owner_message_to_telegram(target: str, body: str, source: str = "") -
     may never open. Gated to the owner only (inter-agent messages never mirror). Best-effort: returns a
     result but never raises, so a Telegram hiccup can't break message delivery."""
     try:
-        owner = os.environ.get("COMPANY_KERNEL_OWNER", "owner-shift")
+        owner = os.environ.get("COMPANY_KERNEL_OWNER", "owner")
         if resolve_employee_alias(target) != owner:
             return {"skipped": True}
         subject = f"📨 {source} → 你" if source else "📨 Company Kernel"
@@ -8930,7 +8930,7 @@ def send_line_push(token: str, to: str, text: str, timeout: int = 20) -> dict:
     return {"ok": True, "platform": "line", "to": to, "response": body or "ok"}
 
 
-def channel_send_internal(*, agent: str, channel: str, target_id: str, group_code: str, target_name: str, body: str, by: str = "owner-shift") -> dict:
+def channel_send_internal(*, agent: str, channel: str, target_id: str, group_code: str, target_name: str, body: str, by: str = "owner") -> dict:
     """Pure outbound message to an external channel (LINE group / Telegram chat) — NOT a task, not an
     agent invocation. Delivers the text straight to the customer channel and records it for the console feed."""
     channel = (channel or "line").strip().lower()
@@ -9650,19 +9650,19 @@ def cmd_meeting_result(args: argparse.Namespace) -> int:
     return 0 if out.get("ok") else 1
 
 
-def ensure_human_owner(conn: sqlite3.Connection, owner_id: str = "owner-shift") -> dict:
+def ensure_human_owner(conn: sqlite3.Connection, owner_id: str = "owner") -> dict:
     row = conn.execute("SELECT * FROM employees WHERE id = ?", (owner_id,)).fetchone()
     ts = now()
     workspace = str((ROOT / "employees" / owner_id).resolve())
     if row:
         conn.execute(
             "UPDATE employees SET name = ?, role = ?, runtime = ?, workspace = ?, status = 'active', updated_at = ? WHERE id = ?",
-            ("Shift Shen", "human-owner", "human", workspace, ts, owner_id),
+            ("Owner", "human-owner", "human", workspace, ts, owner_id),
         )
     else:
         conn.execute(
             "INSERT INTO employees(id, name, role, runtime, workspace, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 'active', ?, ?)",
-            (owner_id, "Shift Shen", "human-owner", "human", workspace, ts, ts),
+            (owner_id, "Owner", "human-owner", "human", workspace, ts, ts),
         )
     conn.commit()
     paths = employee_paths(owner_id)
@@ -9674,7 +9674,7 @@ def ensure_human_owner(conn: sqlite3.Connection, owner_id: str = "owner-shift") 
 
 def cmd_conversation_start(args: argparse.Namespace) -> int:
     conn = connect()
-    if resolve_employee_alias(args.source) == "owner-shift":
+    if resolve_employee_alias(args.source) == "owner":
         ensure_human_owner(conn)
     participants = parse_participants(args.participants)
     result = conversation_start_internal(conn, source=args.source, participants=participants, title=args.title, body=args.body, evidence=args.evidence, conversation_id=args.conversation_id, project_id=getattr(args, "project", "") or "")
@@ -9698,7 +9698,7 @@ def conversation_reply_internal(
         raise SystemExit(f"conversation not found: {conversation_id}")
     participants = json.loads(conv["participants_json"])
     if source not in participants:
-        if source == "owner-shift":
+        if source == "owner":
             participants.insert(0, source)
             conn.execute(
                 "UPDATE conversations SET participants_json = ? WHERE id = ?",
@@ -9736,7 +9736,7 @@ def conversation_join_internal(
     conversation_id: str,
 ) -> dict:
     agent = resolve_employee_alias(agent)
-    if agent == "owner-shift":
+    if agent == "owner":
         ensure_human_owner(conn, agent)
     require_employee(conn, agent)
     conv = conn.execute("SELECT * FROM conversations WHERE id = ?", (conversation_id,)).fetchone()
@@ -9745,7 +9745,7 @@ def conversation_join_internal(
     participants = json.loads(conv["participants_json"])
     joined = False
     if agent not in participants:
-        participants.insert(0, agent) if agent == "owner-shift" else participants.append(agent)
+        participants.insert(0, agent) if agent == "owner" else participants.append(agent)
         conn.execute(
             "UPDATE conversations SET participants_json = ?, updated_at = ? WHERE id = ?",
             (json.dumps(participants, ensure_ascii=False), now(), conversation_id),
@@ -9758,7 +9758,7 @@ def conversation_join_internal(
 
 def cmd_conversation_reply(args: argparse.Namespace) -> int:
     conn = connect()
-    if resolve_employee_alias(args.source) == "owner-shift":
+    if resolve_employee_alias(args.source) == "owner":
         ensure_human_owner(conn)
     result = conversation_reply_internal(conn, source=args.source, conversation_id=args.conversation_id, body=args.body, evidence=args.evidence, message_id=args.message_id)
     emit({"ok": True, **result})
@@ -9774,7 +9774,7 @@ def cmd_conversation_join(args: argparse.Namespace) -> int:
 
 def cmd_conversation_list(args: argparse.Namespace) -> int:
     conn = connect()
-    if resolve_employee_alias(args.agent) == "owner-shift":
+    if resolve_employee_alias(args.agent) == "owner":
         ensure_human_owner(conn)
     require_employee(conn, args.agent)
     all_rows = rows(conn, "SELECT * FROM conversations ORDER BY updated_at DESC")
@@ -9837,7 +9837,7 @@ def conversation_invoke_runtime(conn: sqlite3.Connection, agent: str, prompt: st
         msg_flag = "--converse-message" if runtime == "codex" else "--direct-message"
         cmd = [str(ROOT / "bin" / CONVERSATION_RUNTIME_BINS[runtime]),
                "--agent", agent, msg_flag, prompt,
-               "--direct-source", "owner-shift", "--direct-session-key", session_key,
+               "--direct-source", "owner", "--direct-session-key", session_key,
                "--timeout", str(timeout)]
         # claude/gemini (claude adapter), codex, and antigravity(agy) all support persistent memory
         # sessions now — each participant natively remembers prior turns of THIS conversation.
@@ -11374,7 +11374,7 @@ def cmd_approval_mode(args: argparse.Namespace) -> int:
         cfg.setdefault("route_approval", {})["mode"] = mode
         POLICY_PATH.parent.mkdir(parents=True, exist_ok=True)
         POLICY_PATH.write_text(json.dumps(cfg, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-        actor = resolve_employee_alias(getattr(args, "by", "") or "owner-shift")
+        actor = resolve_employee_alias(getattr(args, "by", "") or "owner")
         try:
             audit(conn, actor, "approval.mode_set", mode, {"mode": mode})
         except SystemExit:
@@ -11389,7 +11389,7 @@ def cmd_membank_create(args: argparse.Namespace) -> int:
     conn = connect()
     lead = resolve_employee_alias(args.lead) if args.lead else "hermes"
     project = project_memory.create_project(conn, project_id=args.id, name=args.name, workspace=args.workspace, lead_agent=lead)
-    audit(conn, "owner-shift", "project.create", args.id, {"workspace": args.workspace, "lead": lead})
+    audit(conn, "owner", "project.create", args.id, {"workspace": args.workspace, "lead": lead})
     emit({"ok": True, "project": project})
     return 0
 
@@ -11423,7 +11423,7 @@ def cmd_membank_set_executors(args: argparse.Namespace) -> int:
     except ValueError as exc:
         emit({"ok": False, "error": str(exc)})
         return 1
-    audit(conn, "owner-shift", "project.set_executors", args.id, {"executors": result["executors"]})
+    audit(conn, "owner", "project.set_executors", args.id, {"executors": result["executors"]})
     emit(result)
     return 0
 
@@ -11467,7 +11467,7 @@ def cmd_memory_curate(args: argparse.Namespace) -> int:
 
 def cmd_memory_archive(args: argparse.Namespace) -> int:
     conn = connect()
-    result = project_memory.archive_entry(conn, entry_id=args.entry_id, actor=resolve_employee_alias(args.by) if args.by else "owner-shift")
+    result = project_memory.archive_entry(conn, entry_id=args.entry_id, actor=resolve_employee_alias(args.by) if args.by else "owner")
     if not result:
         emit({"ok": False, "error": "entry not found", "entry_id": args.entry_id})
         return 1
@@ -11507,7 +11507,7 @@ def cmd_approval_auto_sweep(args: argparse.Namespace) -> int:
         task = materialize_route_task(conn, fresh, "auto-sweep")
         swept.append({"approval": ap["id"], "task": (task or {}).get("id")})
     if swept:
-        audit(conn, "owner-shift", "approval.auto_swept", str(len(swept)), {"count": len(swept)})
+        audit(conn, "owner", "approval.auto_swept", str(len(swept)), {"count": len(swept)})
     emit({"ok": True, "mode": "auto", "swept": len(swept), "tasks": swept})
     return 0
 
@@ -13481,7 +13481,7 @@ def resolve_runtime_verify_source(conn: sqlite3.Connection, requested: str = "")
         if row:
             return requested
         raise ValueError(f"unknown source employee: {requested}")
-    for candidate in ("openclaw-main", "main", "owner-shift"):
+    for candidate in ("openclaw-main", "main", "owner"):
         row = conn.execute("SELECT id FROM employees WHERE id = ?", (candidate,)).fetchone()
         if row:
             return candidate
@@ -14386,7 +14386,7 @@ def build_parser() -> argparse.ArgumentParser:
     message_channel.add_argument("--group-code", default="", help="group code from the agent's channel_target_registry, e.g. A3")
     message_channel.add_argument("--target-id", default="", help="explicit channel target id (overrides group-code)")
     message_channel.add_argument("--body", required=True)
-    message_channel.add_argument("--by", default="owner-shift")
+    message_channel.add_argument("--by", default="owner")
     message_channel.set_defaults(func=cmd_message_channel_send)
     message_direct = message_sub.add_parser("direct")
     message_direct.add_argument("--from", dest="source", required=True)
@@ -14453,7 +14453,7 @@ def build_parser() -> argparse.ArgumentParser:
     conversation_reply.add_argument("--message-id", default="")
     conversation_reply.set_defaults(func=cmd_conversation_reply)
     conversation_join = conversation_sub.add_parser("join")
-    conversation_join.add_argument("--agent", default="owner-shift")
+    conversation_join.add_argument("--agent", default="owner")
     conversation_join.add_argument("--conversation-id", required=True)
     conversation_join.set_defaults(func=cmd_conversation_join)
     conversation_list = conversation_sub.add_parser("list")
@@ -14695,7 +14695,7 @@ def build_parser() -> argparse.ArgumentParser:
     approval_show.set_defaults(func=cmd_approval_show)
     approval_mode = approval_sub.add_parser("mode", help="get/set approval posture: manual (gate) or auto (full auto-approve, owner-delegated)")
     approval_mode.add_argument("--set", default="", choices=["", "manual", "auto_low_risk", "auto"], help="set the mode; omit to just show current")
-    approval_mode.add_argument("--by", default="owner-shift", help="who is changing the mode (audit)")
+    approval_mode.add_argument("--by", default="owner", help="who is changing the mode (audit)")
     approval_mode.set_defaults(func=cmd_approval_mode)
     approval_auto_sweep = approval_sub.add_parser("auto-sweep", help="auto mode safety net: approve+materialize all pending route approvals (no-op unless mode=auto)")
     approval_auto_sweep.set_defaults(func=cmd_approval_auto_sweep)

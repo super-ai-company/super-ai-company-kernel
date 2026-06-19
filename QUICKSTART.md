@@ -71,7 +71,7 @@ bin/companyctl employee verify-runtime --agent codex --activate
 - Console **总览** → 内核 should read **正常**.
 - Dispatch a smoke task (codex needs the `工作区:` line, or the submit guard rejects it):
   ```bash
-  bin/companyctl task submit --from owner-shift --to codex --title smoke \
+  bin/companyctl task submit --from owner --to codex --title smoke \
     --description "工作区: /ABS/repo
   列出仓库根目录并回报。"
   ```

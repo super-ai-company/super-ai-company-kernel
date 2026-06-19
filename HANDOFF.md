@@ -4,7 +4,7 @@
 > 产品目标:**把你的 agent(codex/claude/gemini/antigravity/openclaw)变成受管的 AI 员工。**
 
 ## 1. 这是什么
-商用 AI 员工治理内核。GitHub: `shiftshen/super-ai-company-kernel`,根目录 `/Users/shift/openclaw/company-kernel`。
+商用 AI 员工治理内核。GitHub: `super-ai-company/super-ai-company-kernel`,根目录 `$OPENCLAW_COMPANY_KERNEL_ROOT`。
 Python CLI + launchd 托管服务 + SQLite + 网页控制台(`http://127.0.0.1:8765/`)。
 - **employee** = 绑定到 **runtime**(真正干活的 CLI)的 AI 员工。内核派活/开会/留证据/回报结果;runtime 执行。
 - 服务:**daemon**(派活循环)、**api**(控制台+REST :8765)、可选 **task-intake**(文件投递桥)。

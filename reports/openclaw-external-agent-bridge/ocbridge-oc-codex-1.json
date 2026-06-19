@@ -1,9 +1,0 @@
-{
-  "ok": true,
-  "mode": "adapter_dry_run",
-  "kernel_task_id": "ocbridge-oc-codex-1",
-  "openclaw_task_id": "oc-codex-1",
-  "agent": "codex",
-  "summary": "Bridge dry-run accepted OpenClaw task without starting external Codex/Agy runtime.",
-  "created_at": "2026-06-13T22:46:50+07:00"
-}

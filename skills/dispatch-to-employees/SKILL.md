@@ -88,7 +88,7 @@ approval (that old two-step flow is gone); re-approving is idempotent — no dup
   blocked by the submit guard. Optional `超时: 3600` for heavy ETL/builds (cap 1 h).
 - See [dispatch-task-to-codex](../dispatch-task-to-codex/SKILL.md).
 ```
-companyctl task submit --from owner-shift --to codex --title "fix login" \
+companyctl task submit --from owner --to codex --title "fix login" \
   --description "工作区: /Users/you/app
 超时: 1800
 修复登录页 race condition 并跑测试。"

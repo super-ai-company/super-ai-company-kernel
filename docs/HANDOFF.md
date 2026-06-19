@@ -11,7 +11,7 @@ $OPENCLAW_COMPANY_KERNEL_ROOT
 This is the repository that serves the current Operations Console, owns the SQLite state, and is pushed to:
 
 ```text
-https://github.com/shiftshen/super-ai-company-kernel.git
+https://github.com/super-ai-company/super-ai-company-kernel.git
 ```
 
 The older workspace project:

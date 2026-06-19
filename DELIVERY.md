@@ -36,19 +36,19 @@ Implemented and verified:
 - RPC Gateway now exposes the same governed service layer through JSON-RPC plus a generic gRPC server contract.
 - Optional `requirements-optional.txt` pins `grpcio` for deployments that need real gRPC network service validation.
 - Service smoke now starts REST/RPC on random local ports and validates remote health/describe/get without direct SQLite access; with optional dependencies installed it also reports gRPC `ready`.
-- Owner `owner-shift` is registered as a human approval endpoint. Telegram button approval must use an OpenClaw-native callback/plugin bridge; `/Users/shift/openclaw/scripts/ops_telegram_approval_watcher.py` is a disabled legacy smoke helper and must not run in production because it conflicts with OpenClaw's own Telegram `getUpdates` loop.
+- Owner `owner` is registered as a human approval endpoint. Telegram button approval must use an OpenClaw-native callback/plugin bridge; `~/openclaw/scripts/ops_telegram_approval_watcher.py` is a disabled legacy smoke helper and must not run in production because it conflicts with OpenClaw's own Telegram `getUpdates` loop.
 - Tools that are not installed or connected on this Mac, such as Cursor, Devin, GitHub Copilot, and local-model-agent, are tracked as `candidate` employees instead of active employees; they are excluded from heartbeat and routing until activated.
 - Sandbox isolation foundation: Codex/Hermes adapters can wrap execution commands with Docker or Firejail profiles without changing task protocol.
 - Static dashboard with runtime health, evidence health, employees, capabilities, projects, recent tasks, long-task delegation, conversations, approvals, RFCs, events, adapter runs, and locks.
 - Daemon loop with heartbeat refresh, scheduler run, repair pass, compact summary output, adapter run recording, launchd template and install/uninstall scripts.
-- OpenClaw alert integration in `/Users/shift/openclaw/workspace-xmanx/scripts`, including Company Kernel heartbeat, daemon, launchd, capability, and evidence health fields.
+- OpenClaw alert integration in `~/openclaw/workspace-xmanx/scripts`, including Company Kernel heartbeat, daemon, launchd, capability, and evidence health fields.
 
 ## 2026-06-13 Reliability Fixes (root-cause for "collaboration dies after 1-2 rounds")
 
 - Codex adapter worker is now enabled for real execution in `config/daemon.json` (`company-codex-adapter --execute --sandbox workspace-write --timeout-seconds 1800`), so the resident daemon drives task relay instead of any agent session.
 - `codex exec` now has a hard timeout (`--timeout-seconds`, default 1800s, exit code 124). On timeout the process is killed, an `adapter.timeout` event is appended to evidence, and the task is blocked instead of hanging forever.
 - Daemon no longer proxies heartbeats for all employees (`heartbeat_agents: []`, `heartbeat_runtimes: []`). Only workers that actually run heartbeat themselves. Expect previously "alive" idle employees to show stale heartbeats — that is honest signal, not regression.
-- New unclaimed-task watchdog: each tick the daemon alerts `owner-shift` (config `watchdog`) once per task that stays `submitted` beyond `unclaimed_minutes` (default 10), so a broken relay chain is detected in minutes instead of silently dying.
+- New unclaimed-task watchdog: each tick the daemon alerts `owner` (config `watchdog`) once per task that stays `submitted` beyond `unclaimed_minutes` (default 10), so a broken relay chain is detected in minutes instead of silently dying.
 - New tests in `tests/test_daemon_watchdog_and_timeout.py` (watchdog dedup, disabled mode, timeout blocking with evidence).
 
 ## 2026-06-13 Verdict Gate and Per-Task Workspace
@@ -71,9 +71,9 @@ bin/company-daemon --once --enable-worker codex --summary
 bin/companyctl task show --task-id task-daemon-worker-smoke
 bin/companyctl doctor --summary --strict-launchd
 bin/company-dashboard
-python3 /Users/shift/openclaw/workspace-xmanx/scripts/company_runtime_alert.py --json-only
-python3 /Users/shift/openclaw/workspace-xmanx/scripts/supervisor_heartbeat.py --json-only
-python3 /Users/shift/openclaw/workspace-xmanx/scripts/heartbeat_summary_router.py --print-only
+python3 ~/openclaw/workspace-xmanx/scripts/company_runtime_alert.py --json-only
+python3 ~/openclaw/workspace-xmanx/scripts/supervisor_heartbeat.py --json-only
+python3 ~/openclaw/workspace-xmanx/scripts/heartbeat_summary_router.py --print-only
 openclaw gateway probe
 ```
 

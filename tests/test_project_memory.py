@@ -119,7 +119,7 @@ class ProjectMemoryTest(unittest.TestCase):
     def test_archive_entry_removes_it_from_recall_and_digest(self) -> None:
         keep = pm.remember(self.conn, project_id="damov4", title="保留项", entry_type="convention")
         drop = pm.remember(self.conn, project_id="damov4", title="噪音项", entry_type="fact")
-        res = pm.archive_entry(self.conn, entry_id=drop["id"], actor="owner-shift")
+        res = pm.archive_entry(self.conn, entry_id=drop["id"], actor="owner")
         self.assertEqual("damov4", res["project_id"])
         titles = [e["title"] for e in pm.recall(self.conn, project_id="damov4")]
         self.assertIn("保留项", titles)
@@ -131,14 +131,14 @@ class ProjectMemoryTest(unittest.TestCase):
     def test_capture_approval_decision_only_for_human_decisions_in_a_project(self) -> None:
         meta = {"title": "上线 v4", "description": "工作区: /Users/x/damov4/cloud", "target": "codex"}
         entry = pm.capture_approval_decision(self.conn, metadata=meta, action="production_deploy",
-                                             decision="approved", actor="owner-shift", reason="确认上线")
+                                             decision="approved", actor="owner", reason="确认上线")
         self.assertIsNotNone(entry)
         self.assertEqual("decision", entry["entry_type"])
         self.assertIn("审批批准", entry["title"])
         # auto-approval (no human) → no-op
         self.assertIsNone(pm.capture_approval_decision(self.conn, metadata=meta, action="x", decision="approved", actor="auto"))
         # no project workspace → no-op
-        self.assertIsNone(pm.capture_approval_decision(self.conn, metadata={"description": "工作区: /tmp/x"}, action="x", decision="denied", actor="owner-shift"))
+        self.assertIsNone(pm.capture_approval_decision(self.conn, metadata={"description": "工作区: /tmp/x"}, action="x", decision="denied", actor="owner"))
 
     def test_executor_lock_remap_block_and_unlocked(self) -> None:
         ws = "/Users/x/damov4/android-pos"

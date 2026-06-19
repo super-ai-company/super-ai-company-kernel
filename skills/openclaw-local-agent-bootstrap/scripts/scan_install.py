@@ -216,7 +216,7 @@ def classify_employee(employee: dict, kernel_root: Path) -> dict:
     evidence = []
     missing = []
     workspace = Path(employee.get("workspace") or "")
-    is_human = employee.get("runtime") == "human" or employee.get("id") == "owner-shift"
+    is_human = employee.get("runtime") == "human" or employee.get("id") == "owner"
     if workspace.exists():
         evidence.append(str(workspace))
     else:

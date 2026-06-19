@@ -40,7 +40,7 @@ class BuildAdvancePromptTest(unittest.TestCase):
         self.assertIn("受阻", prompt)
         self.assertIn("codex-cli", prompt)           # told where dev goes
         self.assertIn("claude-cli", prompt)          # ...and review
-        self.assertIn("owner-shift", prompt)         # ...and the round summary
+        self.assertIn("owner", prompt)         # ...and the round summary
         self.assertIn("绝不自己写代码", prompt)       # stays an orchestrator
 
     def test_cancelled_notice_tells_brain_to_stop_waiting(self) -> None:
@@ -94,7 +94,7 @@ class AdvanceFromCompletionsTest(unittest.TestCase):
             self.assertTrue(res["owner_progress_sent"])
             sends = [c for c in calls if c[:2] == ["message", "send"]]
             self.assertEqual(1, len(sends))
-            self.assertIn("owner-shift", sends[0])
+            self.assertIn("owner", sends[0])
             # no self-task created on the board; notices consumed/archived
             self.assertFalse(list(inbox.glob("result-*.json")))
             self.assertEqual(2, len(list((inbox / "processed").glob("result-*.json"))))

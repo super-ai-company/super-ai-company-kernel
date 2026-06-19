@@ -72,7 +72,7 @@ companyctl employee onboard \
   --workspace /ABSOLUTE/path/to/the/repo \
   --skills "code,review,test" --tools "git,shell" \
   --task-types "backend,bugfix" \
-  --can-talk-to "hermes,owner-shift"
+  --can-talk-to "hermes,owner"
 ```
 
 - `--id` lowercase-kebab, unique. `--workspace` MUST be an absolute path that exists.
@@ -121,7 +121,7 @@ The daemon reads this **only at start** → restart the daemon after editing (se
 companyctl employee list                 # employee shows active, no backlog
 companyctl conversation probe --participants <id>   # can it join meetings?
 # dispatch a tiny real task (codex example — note the 工作区 directive!):
-companyctl task submit --from owner-shift --to codex --title "smoke" \
+companyctl task submit --from owner --to codex --title "smoke" \
   --description "工作区: /ABSOLUTE/repo
 列出仓库根目录文件并回报。"
 ```

@@ -28,7 +28,7 @@ class DaemonWatchdogTest(unittest.TestCase):
             "watchdog": {
                 "enabled": True,
                 "unclaimed_minutes": 10,
-                "notify": "owner-shift",
+                "notify": "owner",
                 "from": "openclaw-main",
                 "max_alerts_per_tick": 5,
                 **overrides,

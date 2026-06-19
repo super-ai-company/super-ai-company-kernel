@@ -42,7 +42,7 @@ EOF
 提交给 Codex：
 
 ```bash
-cd /Users/shift/openclaw/company-kernel
+cd $OPENCLAW_COMPANY_KERNEL_ROOT
 
 ./CLAUDE-SUBMIT-TASK.command \
   --from claude \

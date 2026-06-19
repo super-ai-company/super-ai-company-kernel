@@ -107,7 +107,7 @@ class GatewayPathDecodingTest(unittest.TestCase):
         self.assertNotEqual(raw_id, encoded, "test id must actually need encoding")
 
         with mock.patch.object(api_gateway, "route_post", fake_route_post):
-            data = json.dumps({"by": "owner-shift", "reason": "test"}).encode()
+            data = json.dumps({"by": "owner", "reason": "test"}).encode()
             req = urllib.request.Request(
                 f"http://127.0.0.1:{self.port}/v1/approvals/{encoded}/approve",
                 data=data, headers={"Content-Type": "application/json"}, method="POST",

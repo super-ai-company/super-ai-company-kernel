@@ -175,8 +175,8 @@ Frontend/UI implementation must include UI/UX Pro Max:
 
 ```text
 前端 UI/UX 强制规则：
-1. 先读取 /Users/shift/.codex/skills/ui-ux-pro-max/SKILL.md。
-2. 在目标项目运行：python3 /Users/shift/.codex/skills/ui-ux-pro-max/scripts/search.py "<product style>" --design-system --persist -p "<Project>" -f markdown
+1. 先读取 ~/.codex/skills/ui-ux-pro-max/SKILL.md。
+2. 在目标项目运行：python3 ~/.codex/skills/ui-ux-pro-max/scripts/search.py "<product style>" --design-system --persist -p "<Project>" -f markdown
 3. 具体页面加 --page "<page-name>"。
 4. 实现前读取 design-system/MASTER.md 和 page override。
 5. 输出设计系统路径、修改文件、验证命令、截图/DOM/browser 检查结果。

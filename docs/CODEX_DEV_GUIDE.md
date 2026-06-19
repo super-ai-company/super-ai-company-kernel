@@ -8,11 +8,11 @@
 
 | 用途 | 路径 |
 |---|---|
-| 内核根目录 | `/Users/shift/openclaw/company-kernel` |
+| 内核根目录 | `$OPENCLAW_COMPANY_KERNEL_ROOT` |
 | 主命令行 CLI | `bin/companyctl`(= `python3 -m company_kernel.companyctl`) |
 | Codex 适配器 | `bin/company-codex-adapter`(= `python3 -m company_kernel.codex_adapter`) |
 | Codex 员工档案 | `employees/codex/profile.json` |
-| **Codex 工作区(它实际改代码的地方)** | `/Users/shift/openclaw/workspace-xmanx/projects/openclaw-codex-controller` |
+| **Codex 工作区(它实际改代码的地方)** | `~/openclaw/workspace-xmanx/projects/openclaw-codex-controller` |
 | 守护进程配置 | `config/daemon.json`(`adapter_workers` → codex) |
 | 任务证据/产物 | `employees/codex/reports/<task-id>/` 与 `state/` |
 | 数据库 | `company.sqlite` |
@@ -37,7 +37,7 @@ company-codex-adapter --agent codex --execute --sandbox workspace-write --model 
 
 ```
 codex exec --model gpt-5.5 --ignore-rules --ephemeral --skip-git-repo-check \
-  -C /Users/shift/openclaw/workspace-xmanx/projects/openclaw-codex-controller \
+  -C ~/openclaw/workspace-xmanx/projects/openclaw-codex-controller \
   -s workspace-write -o <输出文件> -
 ```
 
@@ -48,10 +48,10 @@ codex exec --model gpt-5.5 --ignore-rules --ephemeral --skip-git-repo-check \
 ### 步骤 1 — 提交开发任务给 codex
 
 ```
-cd /Users/shift/openclaw/company-kernel
+cd $OPENCLAW_COMPANY_KERNEL_ROOT
 
 bin/companyctl task submit \
-  --from owner-shift \
+  --from owner \
   --to codex \
   --title "实现 X 功能" \
   --description "详细需求:目标、验收标准、涉及文件、回滚方式。写得越具体 codex 做得越准。" \
@@ -59,7 +59,7 @@ bin/companyctl task submit \
 ```
 
 要点:
-- `--from` 必须是有效员工(你自己用 `owner-shift`)。
+- `--from` 必须是有效员工(你自己用 `owner`)。
 - `--to codex` 指定由 codex 执行。
 - 若任务会改**受保护路径**,需带 `--changed-files a.py,b.py` 和已批准的 `--rfc <rfc路径>`(见 `PROTECTED_PATHS.md`)。
 - 命令会回显新任务的 `task-id`,记下它。
@@ -109,13 +109,13 @@ bin/companyctl runtime adapter-run --run-id <run-id>
 重试(重新排队执行):
 
 ```
-bin/companyctl runtime retry-adapter-run --run-id <run-id> --by owner-shift --reason "修了输入后重试"
+bin/companyctl runtime retry-adapter-run --run-id <run-id> --by owner --reason "修了输入后重试"
 ```
 
 确认/清理(承认失败、从健康体检里消除,不再报警):
 
 ```
-bin/companyctl runtime ack-adapter-run --run-id <run-id> --by owner-shift --reason "历史失败已复核"
+bin/companyctl runtime ack-adapter-run --run-id <run-id> --by owner --reason "历史失败已复核"
 ```
 
 ---
@@ -145,8 +145,8 @@ bin/companyctl doctor --summary
 ## 5. 常用辅助命令
 
 ```
-bin/companyctl task route --from owner-shift --title "..." --skills "python" --task-type dev   # 让内核按技能/工具自动选最合适的员工
-bin/companyctl task split --task-id <id> --by owner-shift --item "codex|子任务标题|描述|P2"      # 拆分长任务
+bin/companyctl task route --from owner --title "..." --skills "python" --task-type dev   # 让内核按技能/工具自动选最合适的员工
+bin/companyctl task split --task-id <id> --by owner --item "codex|子任务标题|描述|P2"      # 拆分长任务
 bin/companyctl task show --task-id <id>      # 看状态/证据
 bin/companyctl heartbeat --agent codex       # 手动打一次心跳
 ```
@@ -156,9 +156,9 @@ bin/companyctl heartbeat --agent codex       # 手动打一次心跳
 ## 6. 给 Claude 的最小操作清单(复制即用)
 
 ```
-cd /Users/shift/openclaw/company-kernel
+cd $OPENCLAW_COMPANY_KERNEL_ROOT
 # 1) 派活
-bin/companyctl task submit --from owner-shift --to codex \
+bin/companyctl task submit --from owner --to codex \
   --title "<标题>" --description "<含验收标准的详细需求>" --priority P1
 # 2) 等 30s 自动执行,或手动:
 bin/company-codex-adapter --agent codex --execute --sandbox workspace-write --model gpt-5.5 --timeout-seconds 1800

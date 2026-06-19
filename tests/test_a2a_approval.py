@@ -40,32 +40,32 @@ class A2AApprovalTest(unittest.TestCase):
 
     def test_approve_sets_allowed(self):
         r = self.req()
-        d = companyctl.decide_a2a_internal(self.conn, a2a_request_id=r["a2a_request_id"], by="owner-shift", decision="approved")
+        d = companyctl.decide_a2a_internal(self.conn, a2a_request_id=r["a2a_request_id"], by="owner", decision="approved")
         self.assertTrue(d["ok"])
         self.assertTrue(d["allowed"])
         self.assertEqual("approved", d["status"])
 
     def test_deny_blocks(self):
         r = self.req()
-        d = companyctl.decide_a2a_internal(self.conn, a2a_request_id=r["a2a_request_id"], by="owner-shift", decision="denied")
+        d = companyctl.decide_a2a_internal(self.conn, a2a_request_id=r["a2a_request_id"], by="owner", decision="denied")
         self.assertTrue(d["ok"])
         self.assertFalse(d["allowed"])
 
     def test_double_decision_rejected(self):
         r = self.req()
-        companyctl.decide_a2a_internal(self.conn, a2a_request_id=r["a2a_request_id"], by="owner-shift", decision="approved")
-        again = companyctl.decide_a2a_internal(self.conn, a2a_request_id=r["a2a_request_id"], by="owner-shift", decision="denied")
+        companyctl.decide_a2a_internal(self.conn, a2a_request_id=r["a2a_request_id"], by="owner", decision="approved")
+        again = companyctl.decide_a2a_internal(self.conn, a2a_request_id=r["a2a_request_id"], by="owner", decision="denied")
         self.assertFalse(again["ok"])
         self.assertIn("already", again["error"])
 
     def test_decision_is_audited(self):
         r = self.req()
-        companyctl.decide_a2a_internal(self.conn, a2a_request_id=r["a2a_request_id"], by="owner-shift", decision="approved")
+        companyctl.decide_a2a_internal(self.conn, a2a_request_id=r["a2a_request_id"], by="owner", decision="approved")
         n = self.conn.execute("SELECT COUNT(*) FROM audit_logs WHERE action = 'a2a.approve'").fetchone()[0]
         self.assertEqual(1, n)
 
     def test_unknown_request(self):
-        d = companyctl.decide_a2a_internal(self.conn, a2a_request_id="nope", by="owner-shift", decision="approved")
+        d = companyctl.decide_a2a_internal(self.conn, a2a_request_id="nope", by="owner", decision="approved")
         self.assertFalse(d["ok"])
 
 

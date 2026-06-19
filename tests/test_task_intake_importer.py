@@ -78,7 +78,7 @@ class TaskIntakeImporterTest(unittest.TestCase):
                                                           processed=root / "processed", failed=root / "failed")
             self.assertEqual(result["imported"], 1)
             kwargs = submit.call_args.kwargs
-            self.assertEqual(kwargs["source"], "owner-shift")            # remapped
+            self.assertEqual(kwargs["source"], "owner")            # remapped
             self.assertEqual(kwargs["metadata"]["intake_original_from"], "codex-app")  # original kept
 
     def test_invalid_json_moves_to_failed_without_submit(self) -> None:

@@ -69,15 +69,15 @@ def auto_approve(task_id: str) -> None:
     _, d = ctl(["approval", "list", "--status", "pending"])
     for a in d.get("approvals", []):
         if task_id in a.get("id", ""):
-            ctl(["approval", "approve", "--approval-id", a["id"], "--by", "owner-shift", "--reason", "live smoke"])
+            ctl(["approval", "approve", "--approval-id", a["id"], "--by", "owner", "--reason", "live smoke"])
 
 
 def submit(agent: str, task_id: str, title: str, desc: str) -> bool:
-    code, d = ctl(["task", "submit", "--from", "owner-shift", "--to", agent,
+    code, d = ctl(["task", "submit", "--from", "owner", "--to", agent,
                    "--task-id", task_id, "--title", title, "--description", desc, "--priority", "P3"])
     if code != 0 and d.get("approval", {}).get("id"):
-        ctl(["approval", "approve", "--approval-id", d["approval"]["id"], "--by", "owner-shift", "--reason", "live smoke"])
-        code, d = ctl(["task", "submit", "--from", "owner-shift", "--to", agent,
+        ctl(["approval", "approve", "--approval-id", d["approval"]["id"], "--by", "owner", "--reason", "live smoke"])
+        code, d = ctl(["task", "submit", "--from", "owner", "--to", agent,
                        "--task-id", task_id, "--title", title, "--description", desc, "--priority", "P3",
                        "--approval-id", d["approval"]["id"]])
     return code == 0

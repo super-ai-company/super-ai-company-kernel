@@ -12,7 +12,7 @@
    路径必须存在且不得指向内核自身（内核改动走 RFC + PR 流程，见下）。
 3. **超时保护**：codex exec 超过 1800 秒会被杀进程并 block（exit 124，证据含 adapter.timeout 事件）。
 4. **诚实心跳**：daemon 不再代打心跳；只有真实运行的 worker 才有心跳。
-5. **看门狗**：submitted 超 10 分钟无人领取 → 自动告警 owner-shift。
+5. **看门狗**：submitted 超 10 分钟无人领取 → 自动告警 owner。
 6. **--skip-git-repo-check** 已加入你的执行命令（工作区信任由内核校验承担）。
 7. **控制台**：API Gateway 直接服务实时控制台，<http://127.0.0.1:8765/> 与 :8788 同源同库；
    新增 GET /v1/events、GET /v1/heartbeats；run_companyctl 加锁修复并发空响应。
@@ -20,8 +20,8 @@
 
 ## 内核代码的开发流程（重要约束）
 
-- 直接以"工作区"指向 /Users/shift/openclaw/company-kernel 会被拒绝（自我保护）。
-- 正确路径：在你自己的工作区维护内核仓库克隆（GitHub: shiftshen/super-ai-company-kernel，
+- 直接以"工作区"指向 $OPENCLAW_COMPANY_KERNEL_ROOT 会被拒绝（自我保护）。
+- 正确路径：在你自己的工作区维护内核仓库克隆（GitHub: super-ai-company/super-ai-company-kernel，
   你之前的 PR #2 就是这么进来的）→ 开发 → 测试 → 产出 patch/分支说明，由 owner/claude 合入推送。
 - 全量回归基线：**190/190**（python3 -B -m unittest discover -s tests）。任何提交不得低于此线。
 

@@ -25,7 +25,7 @@ def fake_task(**overrides) -> FakeRow:
         "id": f"task-verdict-test-{uuid.uuid4().hex[:8]}",
         "title": "verdict test",
         "description": "",
-        "source_agent": "owner-shift",
+        "source_agent": "owner",
         "target_agent": "codex",
         "priority": "P2",
     }

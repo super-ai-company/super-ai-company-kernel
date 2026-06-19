@@ -12,7 +12,7 @@ class EmployeeCommsTest(unittest.TestCase):
         p = ec.communication_protocol("nonexistent-agent-xyz", "codex")
         self.assertIn("通讯协议", p)
         self.assertIn("companyctl message send --from nonexistent-agent-xyz", p)
-        self.assertIn("owner-shift", p)        # how to escalate
+        self.assertIn("owner", p)        # how to escalate
         self.assertIn("task done", p)          # tells the agent NOT to self-call it (adapter does)
 
     def test_runtime_note_is_role_specific(self):

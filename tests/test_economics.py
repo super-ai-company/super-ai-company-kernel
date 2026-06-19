@@ -28,7 +28,7 @@ class EconomicsTest(unittest.TestCase):
         conn = companyctl.connect()
         try:
             conn.execute("INSERT OR REPLACE INTO employees(id,name,role,runtime,workspace,status,created_at,updated_at) VALUES('codex','Codex','dev','codex','/tmp','active','t','t')")
-            conn.execute("INSERT OR REPLACE INTO tasks(id,source_agent,target_agent,title,description,priority,status,created_at,updated_at) VALUES(?,'owner-shift','codex','fix bug','修复测试','P2','completed','t','t')", (tid,))
+            conn.execute("INSERT OR REPLACE INTO tasks(id,source_agent,target_agent,title,description,priority,status,created_at,updated_at) VALUES(?,'owner','codex','fix bug','修复测试','P2','completed','t','t')", (tid,))
             conn.execute("INSERT INTO budget_events(budget_event_id,task_id,employee_id,cost_type,amount,currency,created_at) VALUES(?,?,'codex','codex_runtime',1.0,'USD','t')", (beid, tid))
             conn.commit()
             eco = companyctl.compute_economics(conn)

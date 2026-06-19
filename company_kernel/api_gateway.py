@@ -221,7 +221,7 @@ API_ENDPOINTS = [
     {"method": "GET", "path": "/v1/external-threads/{thread_id}", "summary": "Show sanitized external mirror thread and messages"},
     {"method": "GET", "path": "/v1/external-threads/{thread_id}/messages", "summary": "List sanitized external mirror messages"},
     {"method": "POST", "path": "/v1/external-mirror/import", "summary": "Import sanitized external mirror payload without secrets", "body": {"thread": "sanitized thread object", "messages": "sanitized messages list"}},
-    {"method": "POST", "path": "/v1/conversations/{conversation_id}/join", "summary": "Join an existing conversation as Human Owner or another employee", "body": {"agent": "employee id optional, defaults owner-shift"}},
+    {"method": "POST", "path": "/v1/conversations/{conversation_id}/join", "summary": "Join an existing conversation as Human Owner or another employee", "body": {"agent": "employee id optional, defaults owner"}},
     {"method": "POST", "path": "/v1/conversations/{conversation_id}/reply", "summary": "Reply to conversation", "body": {"from": "employee id", "body": "string", "message_id": "string optional", "evidence": "path optional"}},
     {"method": "POST", "path": "/v1/conversations/{conversation_id}/run", "summary": "Run an autonomous multi-employee meeting/discussion that converges to minutes/a plan", "body": {"mode": "meeting/discuss/standup optional", "rounds": "integer optional, default 2", "timeout": "per-turn seconds optional", "synthesizer": "chair employee id optional, defaults hermes"}},
     {"method": "POST", "path": "/v1/conversations/probe", "summary": "Test which employees can genuinely join a meeting and persist the allowlist", "body": {"participants": "'active' (default), 'all', or comma-separated ids", "timeout": "per-probe seconds optional"}},
@@ -1430,7 +1430,7 @@ def route_post(path: str, body: dict) -> tuple[int, dict]:
         mode = str(body.get("mode", "") or "")
         if mode not in companyctl.ROUTE_APPROVAL_MODES:
             return HTTPStatus.BAD_REQUEST, {"ok": False, "error": f"mode must be one of {sorted(companyctl.ROUTE_APPROVAL_MODES)}", "got": mode}
-        code, payload = run_companyctl(["approval", "mode", "--set", mode, "--by", str(body.get("by", "owner-shift") or "owner-shift")])
+        code, payload = run_companyctl(["approval", "mode", "--set", mode, "--by", str(body.get("by", "owner") or "owner")])
         return (HTTPStatus.OK if code == 0 else HTTPStatus.BAD_REQUEST), payload
     if path == "/v1/memory/projects":  # create a project
         code, payload = run_companyctl(["memory", "project", "create",
@@ -1447,18 +1447,18 @@ def route_post(path: str, body: dict) -> tuple[int, dict]:
         pid = path.removeprefix("/v1/memory/projects/").removesuffix("/remember").strip("/")
         code, payload = run_companyctl(["memory", "remember", "--project", pid,
             "--title", str(body.get("title", "") or ""), "--body", str(body.get("body", "") or ""),
-            "--type", str(body.get("type", "fact") or "fact"), "--by", str(body.get("by", "owner-shift") or "owner-shift"),
+            "--type", str(body.get("type", "fact") or "fact"), "--by", str(body.get("by", "owner") or "owner"),
             "--importance", str(int(body.get("importance", 2) or 2))])
         if code == 0:
-            run_companyctl(["memory", "curate", "--project", pid, "--by", "owner-shift"])  # reflect it in the digest now
+            run_companyctl(["memory", "curate", "--project", pid, "--by", "owner"])  # reflect it in the digest now
         return (HTTPStatus.OK if code == 0 else HTTPStatus.BAD_REQUEST), payload
     if path.startswith("/v1/memory/projects/") and path.endswith("/curate"):
         pid = path.removeprefix("/v1/memory/projects/").removesuffix("/curate").strip("/")
-        code, payload = run_companyctl(["memory", "curate", "--project", pid, "--by", str(body.get("by", "owner-shift") or "owner-shift")])
+        code, payload = run_companyctl(["memory", "curate", "--project", pid, "--by", str(body.get("by", "owner") or "owner")])
         return (HTTPStatus.OK if code == 0 else HTTPStatus.BAD_REQUEST), payload
     if path.startswith("/v1/memory/entries/") and path.endswith("/archive"):
         eid = path.removeprefix("/v1/memory/entries/").removesuffix("/archive").strip("/")
-        code, payload = run_companyctl(["memory", "archive", "--entry-id", eid, "--by", str(body.get("by", "owner-shift") or "owner-shift")])
+        code, payload = run_companyctl(["memory", "archive", "--entry-id", eid, "--by", str(body.get("by", "owner") or "owner")])
         return (HTTPStatus.OK if code == 0 else HTTPStatus.NOT_FOUND), payload
     if path == "/v1/notifications/send":
         result = companyctl.notification_send_result(
@@ -1809,7 +1809,7 @@ def route_post(path: str, body: dict) -> tuple[int, dict]:
         code, payload = run_companyctl(argv)
         return (HTTPStatus.CREATED if code == 0 else HTTPStatus.BAD_REQUEST), {"exit_code": code, **payload}
     if path == "/v1/messages/channel-send":
-        argv = ["message", "channel-send", "--agent", str(body.get("agent", "")), "--channel", str(body.get("channel", "line")), "--body", str(body.get("body", "")), "--by", str(body.get("by", "owner-shift"))]
+        argv = ["message", "channel-send", "--agent", str(body.get("agent", "")), "--channel", str(body.get("channel", "line")), "--body", str(body.get("body", "")), "--by", str(body.get("by", "owner"))]
         if body.get("group_code"):
             argv.extend(["--group-code", str(body["group_code"])])
         if body.get("target_id"):
@@ -2014,7 +2014,7 @@ def route_post(path: str, body: dict) -> tuple[int, dict]:
                 "conversation",
                 "join",
                 "--agent",
-                str(body.get("agent", "owner-shift") or "owner-shift"),
+                str(body.get("agent", "owner") or "owner"),
                 "--conversation-id",
                 conversation_id,
             ]
