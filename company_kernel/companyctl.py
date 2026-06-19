@@ -7901,7 +7901,7 @@ def heartbeat_age_minutes(conn: sqlite3.Connection, employee_id: str) -> float |
         cur = datetime.fromisoformat(now())
         return (cur - last).total_seconds() / 60
     except (ValueError, TypeError):
-        return None
+        return float("inf")  # a heartbeat row that won't parse is treated as off-duty (fail closed)
 
 
 def require_active_employee(conn: sqlite3.Connection, employee_id: str, action: str) -> dict | None:
@@ -7925,14 +7925,16 @@ def require_active_employee(conn: sqlite3.Connection, employee_id: str, action: 
     # employee that has never heartbeated is given the benefit of the doubt (no heartbeat row → skip).
     age = heartbeat_age_minutes(conn, employee_id)
     if age is not None and age > OFF_DUTY_HEARTBEAT_MINUTES:
+        unparseable = age == float("inf")
+        age_label = "心跳时间无法解析" if unparseable else f"{int(age)} 分钟前"
         return {
             "ok": False,
             "error": "target employee is off duty (stale heartbeat)",
             "target": employee_id,
             "status": employee.get("status", ""),
-            "heartbeat_age_minutes": int(age),
+            "heartbeat_age_minutes": None if unparseable else int(age),
             "action": action,
-            "hint": f"{employee_id} 上次心跳 {int(age)} 分钟前,守护 worker 可能没在跑;换个在岗员工或检查 daemon。",
+            "hint": f"{employee_id} 上次心跳{age_label},守护 worker 可能没在跑;换个在岗员工或检查 daemon。",
         }
     return None
 
@@ -12526,6 +12528,12 @@ def cmd_task_reassign(args: argparse.Namespace) -> int:
     target, _new_desc, _norm_err = normalize_submission(conn, target=target, description=task["description"] or "")
     if _norm_err is not None:
         emit(_norm_err)
+        return 2
+    # same real-on-duty gate as a fresh dispatch (active + fresh heartbeat) — a reassign must not send
+    # recovered work to an off-duty/dead worker either.
+    inactive = require_active_employee(conn, target, "task.reassign")
+    if inactive:
+        emit({**inactive, "task_id": args.task_id})
         return 2
     policy = require_communication_allowed(actor, target, "task.submit")
     previous_target = task["target_agent"]

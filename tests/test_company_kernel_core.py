@@ -3055,6 +3055,33 @@ class CompanyKernelCoreTest(unittest.TestCase):
         self.assertFalse(verification["local_smoke"]["cockpit_visible"])
         self.assertIn("cockpit visibility", verification["owner_next_action"])
 
+    def test_dispatch_and_reassign_refused_to_off_duty_employee_cli(self) -> None:
+        """End-to-end (real CLI): both `task submit` and `task reassign` refuse an off-duty (stale
+        heartbeat) target — recovered work must not be sent to a dead worker either."""
+        import datetime as _dt
+        for eid, rt in (("main", "openclaw"), ("claude-cli", "claude"), ("nestcar", "openclaw")):
+            run_cli("employee", "create", "--id", eid, "--name", eid, "--role", "developer", "--runtime", rt, "--workspace", str(self.root / eid))
+        conn = companyctl.connect()
+        try:
+            conn.execute("UPDATE employees SET status='active' WHERE id IN ('main','claude-cli','nestcar')")
+            fresh, stale = companyctl.now(), (_dt.datetime.fromisoformat(companyctl.now()) - _dt.timedelta(minutes=20)).isoformat()
+            conn.execute("INSERT OR REPLACE INTO heartbeats(agent_id,runtime,workspace,status,last_seen_at,metadata_json) VALUES('claude-cli','claude','/tmp','alive',?,'{}')", (fresh,))
+            conn.execute("INSERT OR REPLACE INTO heartbeats(agent_id,runtime,workspace,status,last_seen_at,metadata_json) VALUES('nestcar','openclaw','/tmp','alive',?,'{}')", (stale,))
+            conn.commit()
+        finally:
+            conn.close()
+        # submit to the fresh worker → ok
+        code, ok_task = run_cli("task", "submit", "--from", "main", "--to", "claude-cli", "--task-id", "task-fresh", "--title", "x", "--description", "do it")
+        self.assertEqual(0, code, ok_task)
+        # submit to the stale worker → refused
+        code, refused = run_cli("task", "submit", "--from", "main", "--to", "nestcar", "--title", "y", "--description", "do it")
+        self.assertNotEqual(0, code, refused)
+        self.assertIn("stale heartbeat", str(refused))
+        # reassign the existing task to the stale worker → refused (the bypass codex caught)
+        code, rj = run_cli("task", "reassign", "--task-id", "task-fresh", "--to", "nestcar", "--by", "main", "--reason", "test")
+        self.assertNotEqual(0, code, rj)
+        self.assertIn("stale heartbeat", str(rj))
+
     def test_new_attempt_reaps_prior_active_attempt(self) -> None:
         """Opening a new attempt for the same task+employee reaps the prior still-active one, so it
         can't linger forever as a 'running' zombie polluting 'what is this agent doing now'."""
