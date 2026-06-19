@@ -7885,6 +7885,25 @@ def can_manage_task_recovery(conn: sqlite3.Connection, task: sqlite3.Row, actor:
     return bool(row) and is_human_owner_employee(dict(row))
 
 
+# A worker whose heartbeat went stale is effectively off duty even if its `status` field still says
+# 'active'. Beyond this many minutes with no heartbeat, dispatch is refused so work isn't sent to a
+# dead employee — the dispatcher learns immediately instead of the task rotting until the watchdog.
+OFF_DUTY_HEARTBEAT_MINUTES = 15
+
+
+def heartbeat_age_minutes(conn: sqlite3.Connection, employee_id: str) -> float | None:
+    """Minutes since the employee's last heartbeat, or None if it has never heartbeated."""
+    row = conn.execute("SELECT last_seen_at FROM heartbeats WHERE agent_id = ?", (employee_id,)).fetchone()
+    if not row or not row["last_seen_at"]:
+        return None
+    try:
+        last = datetime.fromisoformat(str(row["last_seen_at"]))
+        cur = datetime.fromisoformat(now())
+        return (cur - last).total_seconds() / 60
+    except (ValueError, TypeError):
+        return None
+
+
 def require_active_employee(conn: sqlite3.Connection, employee_id: str, action: str) -> dict | None:
     row = conn.execute("SELECT * FROM employees WHERE id = ?", (employee_id,)).fetchone()
     if not row:
@@ -7901,6 +7920,20 @@ def require_active_employee(conn: sqlite3.Connection, employee_id: str, action: 
         }
     if is_human_owner_employee(employee):
         return {"ok": False, "error": "human owner is not schedulable", "target": employee_id, "status": employee.get("status", ""), "action": action}
+    # Real on-duty check (free, SQL): refuse if a once-heartbeating worker has gone silent past the
+    # window — so colleagues don't dispatch to an employee that isn't actually running. A brand-new
+    # employee that has never heartbeated is given the benefit of the doubt (no heartbeat row → skip).
+    age = heartbeat_age_minutes(conn, employee_id)
+    if age is not None and age > OFF_DUTY_HEARTBEAT_MINUTES:
+        return {
+            "ok": False,
+            "error": "target employee is off duty (stale heartbeat)",
+            "target": employee_id,
+            "status": employee.get("status", ""),
+            "heartbeat_age_minutes": int(age),
+            "action": action,
+            "hint": f"{employee_id} 上次心跳 {int(age)} 分钟前,守护 worker 可能没在跑;换个在岗员工或检查 daemon。",
+        }
     return None
 
 
