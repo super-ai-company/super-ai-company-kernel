@@ -15300,6 +15300,19 @@ def main(argv: list[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
+    # `python -m company_kernel.companyctl` runs THIS file as `__main__`. Split-out domain modules
+    # (watchdog.py, …) do a lazy `from company_kernel import companyctl`, which would otherwise import
+    # a SECOND, separate copy of this module under its real name — leaving two divergent module objects
+    # (split _OPEN_CONNECTIONS cleanup, mocks, and globals across both). Alias __main__ as the canonical
+    # name BEFORE any domain function runs, so the lazy import reuses this exact module. (codex review.)
+    import sys as _sys
+    _sys.modules.setdefault("company_kernel.companyctl", _sys.modules["__main__"])
+    try:
+        import company_kernel as _pkg
+        if getattr(_pkg, "companyctl", None) is not _sys.modules["__main__"]:
+            _pkg.companyctl = _sys.modules["__main__"]
+    except Exception:
+        pass
     # Restore default SIGPIPE so `companyctl … | head` (or any truncating pipe) exits quietly like a
     # normal Unix tool instead of dumping a BrokenPipeError traceback. Only when run as the CLI — the
     # in-process test/daemon callers go through main() directly and keep Python's default handling.
