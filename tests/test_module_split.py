@@ -319,5 +319,45 @@ class DashboardCoreCutTest(unittest.TestCase):
         self.assertEqual([], offenders, "economics.py must stay a leaf (no companyctl import)")
 
 
+class BuildEconomicsCutTest(unittest.TestCase):
+    """Economics build-core cut B: build_economics moved to economics.py (pure bucket aggregation),
+    compute_economics is now the shell. Golden-pinned canonical-JSON covering the two-level price
+    fallback, the margin_pct denominator-0 → 0.0 branch (a zero-revenue bucket), and the empty case."""
+
+    GOLDEN_BUCKETS = ('{"by_task_type":[{"cost":2.5,"count":1,"margin":7.5,"margin_pct":75.0,'
+                      '"revenue":10.0,"task_type":"code_fix"},{"cost":0.0,"count":1,"margin":0.0,'
+                      '"margin_pct":0.0,"revenue":0.0,"task_type":"default"}],"currency":"USD",'
+                      '"note":"revenue=按 config/pricing.json 结果价；cost=budget_events 估算'
+                      '（amount>token>runtime 兜底）。","totals":{"completed_tasks":2,"cost":2.5,'
+                      '"margin":7.5,"margin_pct":75.0,"revenue":10.0}}')
+    GOLDEN_EMPTY = ('{"by_task_type":[],"currency":"USD","note":"revenue=按 config/pricing.json 结果价'
+                    '；cost=budget_events 估算（amount>token>runtime 兜底）。","totals":'
+                    '{"completed_tasks":0,"cost":0,"margin":0,"margin_pct":0.0,"revenue":0}}')
+
+    PRICING = {"result_prices": {"code_fix": 10},
+               "cost_rates": {"token_input_per_1k": 0.003, "token_output_per_1k": 0.015, "runtime_per_minute": 0.06},
+               "currency": "USD", "task_type_keywords": {"code_fix": ["fix", "修复"]}}
+
+    @staticmethod
+    def _canon(obj):
+        return json.dumps(obj, ensure_ascii=False, sort_keys=True, allow_nan=False, separators=(",", ":"))
+
+    def test_build_economics_golden_with_zero_revenue_bucket(self):
+        from company_kernel import economics
+        task_rows = [{"id": "t1", "title": "fix", "description": "修复"},
+                     {"id": "t2", "title": "draft", "description": "x"}]
+        cost_by_task = {"t1": [{"amount": 2.5, "token_input": 0, "token_output": 0, "runtime_seconds": 0}]}
+        out = economics.build_economics(task_rows, cost_by_task, self.PRICING)
+        self.assertEqual(self.GOLDEN_BUCKETS, self._canon(out))
+
+    def test_build_economics_golden_empty(self):
+        from company_kernel import economics
+        self.assertEqual(self.GOLDEN_EMPTY, self._canon(economics.build_economics([], {}, self.PRICING)))
+
+    def test_build_economics_forwarded_same_object(self):
+        from company_kernel import companyctl, economics
+        self.assertIs(companyctl.build_economics, economics.build_economics)
+
+
 if __name__ == "__main__":
     unittest.main()

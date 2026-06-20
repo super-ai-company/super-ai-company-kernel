@@ -54,7 +54,7 @@ from .progress import (  # noqa: F401 (facade re-export; progress notification h
 # Pure unit-economics estimators now live in company_kernel.economics (split: economics pure cut).
 # Plain forward import (no wrapper); compute_economics/compute_cost_dashboard still call them here.
 # pricing is estimation-only — these take the pricing/rates dict in, never read config.
-from .economics import classify_task_type, estimate_task_cost, build_cost_dashboard  # noqa: F401 (facade re-export)
+from .economics import classify_task_type, estimate_task_cost, build_cost_dashboard, build_economics  # noqa: F401 (facade re-export)
 
 DEFAULT_ROOT = Path(__file__).resolve().parents[1]
 GLOBAL_CONFIG_PATH = Path("~/.gemini/antigravity/company_kernel_config.json")
@@ -5743,44 +5743,17 @@ def load_pricing_config() -> dict:
 
 def compute_economics(conn: sqlite3.Connection) -> dict:
     """Per-task-type unit economics: revenue (result price) vs cost (from budget events) ->
-    margin. This is survival-metric #1 for outcome-based pricing."""
+    margin. This is survival-metric #1 for outcome-based pricing.
+
+    Thin shell now (split: economics build-core cut B): load pricing, fetch completed tasks, aggregate
+    budget_events per task_id (rows() already yields plain dicts), then delegate the bucketing to the
+    pure economics.build_economics. Behaviour is golden-pinned identical."""
     pricing = load_pricing_config()
-    prices = pricing.get("result_prices") or {}
-    rates = pricing.get("cost_rates") or {}
-    currency = pricing.get("currency", "USD")
-    # completed tasks + their aggregated budget cost
     tasks = rows(conn, "SELECT id, title, description, target_agent FROM tasks WHERE status = 'completed'")
     cost_by_task: dict = {}
     for ev in rows(conn, "SELECT task_id, amount, token_input, token_output, runtime_seconds FROM budget_events WHERE task_id != ''"):
         cost_by_task.setdefault(ev["task_id"], []).append(ev)
-    buckets: dict = {}
-    for task in tasks:
-        ttype = classify_task_type(task.get("title", ""), task.get("description", ""), pricing)
-        revenue = float(prices.get(ttype, prices.get("default", 0)))
-        cost = sum(estimate_task_cost(ev, rates) for ev in cost_by_task.get(task["id"], []))
-        b = buckets.setdefault(ttype, {"task_type": ttype, "count": 0, "revenue": 0.0, "cost": 0.0})
-        b["count"] += 1
-        b["revenue"] += revenue
-        b["cost"] += cost
-    for b in buckets.values():
-        b["revenue"] = round(b["revenue"], 4)
-        b["cost"] = round(b["cost"], 4)
-        b["margin"] = round(b["revenue"] - b["cost"], 4)
-        b["margin_pct"] = round((b["margin"] / b["revenue"] * 100) if b["revenue"] else 0.0, 1)
-    total_rev = round(sum(b["revenue"] for b in buckets.values()), 4)
-    total_cost = round(sum(b["cost"] for b in buckets.values()), 4)
-    return {
-        "currency": currency,
-        "by_task_type": sorted(buckets.values(), key=lambda x: -x["revenue"]),
-        "totals": {
-            "completed_tasks": sum(b["count"] for b in buckets.values()),
-            "revenue": total_rev,
-            "cost": total_cost,
-            "margin": round(total_rev - total_cost, 4),
-            "margin_pct": round((total_rev - total_cost) / total_rev * 100 if total_rev else 0.0, 1),
-        },
-        "note": "revenue=按 config/pricing.json 结果价；cost=budget_events 估算（amount>token>runtime 兜底）。",
-    }
+    return build_economics(tasks, cost_by_task, pricing)
 
 
 def load_heartbeat_ages(conn: sqlite3.Connection, employee_ids) -> dict:

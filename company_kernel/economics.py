@@ -36,6 +36,48 @@ def estimate_task_cost(ev: dict, rates: dict) -> float:
     return secs / 60.0 * float(rates.get("runtime_per_minute", 0))
 
 
+def build_economics(task_rows, cost_by_task, pricing) -> dict:
+    """Pure core of the per-task-type unit economics — the bucket aggregation lifted verbatim from
+    companyctl's compute_economics, DB/config dependencies hoisted to arguments:
+      - task_rows    : completed-task rows (id, title, description, ...) — already plain dicts via rows()
+      - cost_by_task : {task_id -> [budget_event dict, ...]} pre-aggregated by the shell
+      - pricing      : load_pricing_config() result (result_prices / cost_rates / currency)
+    Behaviour byte-identical to the old inline version (golden-pinned): two-level price fallback
+    (ttype → default → 0), margin_pct denominator 0 → 0.0, round positions, by_task_type sorted by
+    -revenue. Uses the same classify_task_type / estimate_task_cost (no second implementation)."""
+    prices = pricing.get("result_prices") or {}
+    rates = pricing.get("cost_rates") or {}
+    currency = pricing.get("currency", "USD")
+    buckets: dict = {}
+    for task in task_rows:
+        ttype = classify_task_type(task.get("title", ""), task.get("description", ""), pricing)
+        revenue = float(prices.get(ttype, prices.get("default", 0)))
+        cost = sum(estimate_task_cost(ev, rates) for ev in cost_by_task.get(task["id"], []))
+        b = buckets.setdefault(ttype, {"task_type": ttype, "count": 0, "revenue": 0.0, "cost": 0.0})
+        b["count"] += 1
+        b["revenue"] += revenue
+        b["cost"] += cost
+    for b in buckets.values():
+        b["revenue"] = round(b["revenue"], 4)
+        b["cost"] = round(b["cost"], 4)
+        b["margin"] = round(b["revenue"] - b["cost"], 4)
+        b["margin_pct"] = round((b["margin"] / b["revenue"] * 100) if b["revenue"] else 0.0, 1)
+    total_rev = round(sum(b["revenue"] for b in buckets.values()), 4)
+    total_cost = round(sum(b["cost"] for b in buckets.values()), 4)
+    return {
+        "currency": currency,
+        "by_task_type": sorted(buckets.values(), key=lambda x: -x["revenue"]),
+        "totals": {
+            "completed_tasks": sum(b["count"] for b in buckets.values()),
+            "revenue": total_rev,
+            "cost": total_cost,
+            "margin": round(total_rev - total_cost, 4),
+            "margin_pct": round((total_rev - total_cost) / total_rev * 100 if total_rev else 0.0, 1),
+        },
+        "note": "revenue=按 config/pricing.json 结果价；cost=budget_events 估算（amount>token>runtime 兜底）。",
+    }
+
+
 def build_cost_dashboard(ledger_rows, employee_rows, heartbeat_ages, pricing, *, off_duty_threshold: int = 15, days: int = 14) -> dict:
     """Pure core of the on-duty cost dashboard — the aggregation lifted verbatim from companyctl's
     compute_cost_dashboard, with every DB/clock/config/constant dependency hoisted into arguments so it
