@@ -148,12 +148,26 @@ bin/companyctl audit ...                       # 审计日志
 ## 9. 备份与恢复
 
 ```
-bin/company-backup                 # SQLite 在线备份(守护进程默认每 24h、留 14 份)
+bin/company-backup                              # SQLite 在线备份(守护进程默认每 24h、留 14 份)
+bin/companyctl backup --keep 14                 # 同上的 CLI 形式(滚动快照,默认留 14 份)
+bin/companyctl restore <snapshot> --yes         # 从快照恢复(--yes 必填以确认覆盖现库)
 ```
 
 ---
 
-## 10. 常用排错入口
+## 10. 其他常用命令
+
+```
+bin/companyctl memory ...                        # 项目记忆库(共享、按项目策展)
+bin/companyctl cost --days 14                    # 运营成本面板:在岗免费 vs 执行花费(趋势)
+bin/companyctl economics                         # 经济总览
+bin/companyctl workflow ...                       # 工作流编排
+bin/companyctl --help                            # ← 完整命令清单(本页只列常用流程,全表看这里)
+```
+
+---
+
+## 11. 常用排错入口
 
 ```
 tail -n 100 logs/daemon.log | cut -c1-300        # 守护循环
