@@ -25,6 +25,10 @@ from .db_paths import ensure_db_parent
 from . import sandboxing
 from . import project_memory
 from .schema_migrations import ensure_schema_migrations
+# Time/datetime primitives now live in company_kernel.core (split phase 0.5). core has NO dependency
+# on companyctl, so this is a plain top-level import — no lazy-import workaround needed. Re-exported
+# here so every existing `companyctl.now(...)` / `companyctl.seconds_since(...)` caller is unchanged.
+from .core import now, parse_time, parse_iso_datetime, seconds_since  # noqa: F401 (facade re-export)
 
 DEFAULT_ROOT = Path(__file__).resolve().parents[1]
 GLOBAL_CONFIG_PATH = Path("~/.gemini/antigravity/company_kernel_config.json")
@@ -123,10 +127,6 @@ DEFAULT_ROUTE_APPROVAL_ACTIONS = {
     "secret_change": ["secret", "token", "password", "密钥", "密码"],
     "kernel_change": ["kernel", "schema", "approval rule", "内核", "审批规则", "通信协议"],
 }
-
-
-def now() -> str:
-    return datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
 
 
 PROGRESS_LAYER_DEFINITIONS = {
@@ -516,11 +516,6 @@ def run_supervisor_delivery_loop(conn: sqlite3.Connection, *, limit: int = 20, a
     }
     result["file"] = save_latest_supervisor_loop_result(result)
     return result
-
-
-def parse_time(value: str) -> datetime:
-    raw = value.replace("Z", "+00:00")
-    return datetime.fromisoformat(raw)
 
 
 def future_seconds(seconds: int) -> str:
@@ -1411,20 +1406,6 @@ def managed_runtime_policy(**overrides: int) -> dict:
         if value is not None:
             policy[key] = int(value)
     return policy
-
-
-def parse_iso_datetime(value: str):
-    if not value:
-        return None
-    return datetime.fromisoformat(value)
-
-
-def seconds_since(value: str, now_value: str) -> int:
-    parsed = parse_iso_datetime(value)
-    current = parse_iso_datetime(now_value)
-    if not parsed or not current:
-        return 0
-    return max(0, int((current - parsed).total_seconds()))
 
 
 def attempt_json_field(attempt: dict, field: str, default: dict | None = None) -> dict:

@@ -55,5 +55,31 @@ class FacadeReexportTest(unittest.TestCase):
         self.assertIn("reaped_count", payload)
 
 
+class CoreLayerBoundaryTest(unittest.TestCase):
+    """Phase 0.5 — company_kernel.core is the bottom of the import graph: it must NEVER import
+    companyctl or any domain module back (that would re-create the cycle the split exists to kill).
+    The time helpers must also stay re-exported from companyctl as the same objects (facade)."""
+
+    def test_core_does_not_import_companyctl(self):
+        import ast
+        import pathlib
+        core_dir = pathlib.Path(__file__).resolve().parents[1] / "company_kernel" / "core"
+        offenders = []
+        for path in core_dir.rglob("*.py"):
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Import) and any("companyctl" in a.name for a in node.names):
+                    offenders.append((str(path), node.lineno))
+                if isinstance(node, ast.ImportFrom) and node.module and "companyctl" in node.module:
+                    offenders.append((str(path), node.lineno))
+        self.assertEqual([], offenders, "core/ must not import companyctl (dependency inversion)")
+
+    def test_time_helpers_reexported_as_same_objects(self):
+        from company_kernel import companyctl, core
+        for sym in ("now", "parse_time", "parse_iso_datetime", "seconds_since"):
+            self.assertIs(getattr(companyctl, sym), getattr(core, sym),
+                          f"companyctl.{sym} must be the SAME object as core.{sym} (facade re-export)")
+
+
 if __name__ == "__main__":
     unittest.main()
