@@ -148,5 +148,46 @@ class ConfigLayerCutTest(unittest.TestCase):
         self.assertNotIn("read_text", src)
 
 
+class NotifyCutTest(unittest.TestCase):
+    """Notify-domain cut: the pure send cluster moved to company_kernel.notify and is re-exported from
+    companyctl as the SAME objects (165+ call sites unchanged). The config-entangled trio
+    (notification_settings / update_notification_settings / notification_send_result) stays on
+    companyctl, and notify.py must NOT reverse-import companyctl."""
+
+    NOTIFY_SYMBOLS = [
+        "resolve_notification_target", "applescript_quote", "send_macos_notification",
+        "send_telegram_notification", "send_slack_webhook",
+    ]
+
+    def test_notify_symbols_reexported_as_same_objects(self):
+        from company_kernel import companyctl, notify
+        for sym in self.NOTIFY_SYMBOLS:
+            self.assertTrue(hasattr(companyctl, sym), f"companyctl must re-export {sym}")
+            self.assertIs(getattr(companyctl, sym), getattr(notify, sym),
+                          f"{sym} on companyctl must be the SAME object as in notify (facade, not a copy)")
+
+    def test_dispatcher_and_config_trio_stay_on_companyctl(self):
+        # NotificationDispatcher + the config trio must NOT move: they call senders by bare name and the
+        # suite patches companyctl.send_* — a patch that only reaches lookups in companyctl's namespace.
+        from company_kernel import companyctl, notify
+        for sym in ("NotificationDispatcher", "notification_settings",
+                    "update_notification_settings", "notification_send_result"):
+            self.assertTrue(hasattr(companyctl, sym), f"companyctl must keep {sym}")
+            self.assertFalse(hasattr(notify, sym), f"{sym} stays in companyctl, must NOT be in notify")
+
+    def test_notify_does_not_reverse_import_companyctl(self):
+        import ast
+        import pathlib
+        path = pathlib.Path(__file__).resolve().parents[1] / "company_kernel" / "notify.py"
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        offenders = []
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import) and any("companyctl" in a.name for a in node.names):
+                offenders.append(node.lineno)
+            if isinstance(node, ast.ImportFrom) and node.module and "companyctl" in node.module:
+                offenders.append(node.lineno)
+        self.assertEqual([], offenders, "notify.py must not import companyctl (leaf module)")
+
+
 if __name__ == "__main__":
     unittest.main()
