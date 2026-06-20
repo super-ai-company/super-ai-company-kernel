@@ -28,7 +28,7 @@ from .schema_migrations import ensure_schema_migrations
 # Time/datetime primitives now live in company_kernel.core (split phase 0.5). core has NO dependency
 # on companyctl, so this is a plain top-level import — no lazy-import workaround needed. Re-exported
 # here so every existing `companyctl.now(...)` / `companyctl.seconds_since(...)` caller is unchanged.
-from .core import now, parse_time, parse_iso_datetime, seconds_since  # noqa: F401 (facade re-export)
+from .core import now, future_seconds, parse_time, parse_iso_datetime, seconds_since  # noqa: F401 (facade re-export)
 
 DEFAULT_ROOT = Path(__file__).resolve().parents[1]
 GLOBAL_CONFIG_PATH = Path("~/.gemini/antigravity/company_kernel_config.json")
@@ -516,10 +516,6 @@ def run_supervisor_delivery_loop(conn: sqlite3.Connection, *, limit: int = 20, a
     }
     result["file"] = save_latest_supervisor_loop_result(result)
     return result
-
-
-def future_seconds(seconds: int) -> str:
-    return (datetime.now(timezone.utc).astimezone() + timedelta(seconds=seconds)).isoformat(timespec="seconds")
 
 
 def sync_backlog_from_queue_file(conn: sqlite3.Connection) -> None:

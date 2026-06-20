@@ -11,11 +11,15 @@ audit, IO). companyctl re-exports them, so every existing `companyctl.now(...)` 
 """
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 
 def now() -> str:
     return datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
+
+
+def future_seconds(seconds: int) -> str:
+    return (datetime.now(timezone.utc).astimezone() + timedelta(seconds=seconds)).isoformat(timespec="seconds")
 
 
 def parse_time(value: str) -> datetime:

@@ -76,7 +76,7 @@ class CoreLayerBoundaryTest(unittest.TestCase):
 
     def test_time_helpers_reexported_as_same_objects(self):
         from company_kernel import companyctl, core
-        for sym in ("now", "parse_time", "parse_iso_datetime", "seconds_since"):
+        for sym in ("now", "future_seconds", "parse_time", "parse_iso_datetime", "seconds_since"):
             self.assertIs(getattr(companyctl, sym), getattr(core, sym),
                           f"companyctl.{sym} must be the SAME object as core.{sym} (facade re-export)")
 
