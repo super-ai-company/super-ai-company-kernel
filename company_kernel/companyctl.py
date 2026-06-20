@@ -31,21 +31,20 @@ from .schema_migrations import ensure_schema_migrations
 from .core import now, future_seconds, new_trace_id, parse_time, parse_iso_datetime, seconds_since  # noqa: F401 (facade re-export)
 from .core.db import rows  # noqa: F401 (facade re-export; DB query primitive)
 from .core.events import record_event, audit, emit, trace_id_for_task  # noqa: F401 (facade re-export; event/audit/output primitives)
+# Pure config-file readers now live in company_kernel.core.config (split: config-layer first cut).
+# They take a resolved path and only read+parse JSON; the path globals + resolve_kernel_paths stay HERE
+# as mock anchors. The old companyctl names below are kept as thin wrappers that assemble the path.
+from .core import config as _core_config
 
 DEFAULT_ROOT = Path(__file__).resolve().parents[1]
 GLOBAL_CONFIG_PATH = Path("~/.gemini/antigravity/company_kernel_config.json")
 
 
 def load_global_config(path: Path | None = None) -> dict:
+    # Thin wrapper: resolve the path (env override / arg / default), then delegate to the pure reader.
     raw_path = str(os.environ.get("COMPANY_KERNEL_CONFIG_PATH", "") or "").strip()
     config_path = path or (Path(raw_path).expanduser() if raw_path else GLOBAL_CONFIG_PATH.expanduser())
-    if not config_path.exists():
-        return {}
-    try:
-        payload = json.loads(config_path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError:
-        return {}
-    return payload if isinstance(payload, dict) else {}
+    return _core_config.load_global_config(config_path)
 
 
 def resolve_kernel_paths(default_root: Path) -> dict[str, Path | int | dict]:
@@ -3267,9 +3266,8 @@ def employee_paths(employee_id: str) -> dict[str, Path]:
 
 
 def load_communication_config() -> dict:
-    if not COMMUNICATIONS_PATH.exists():
-        return {"policy": {"mode": "open"}, "aliases": {}, "employees": {}, "channels": {}}
-    return json.loads(COMMUNICATIONS_PATH.read_text(encoding="utf-8"))
+    # Thin wrapper: hand the COMMUNICATIONS_PATH anchor to the pure reader.
+    return _core_config.load_communication_config(COMMUNICATIONS_PATH)
 
 
 def write_communication_config(config: dict) -> None:
@@ -5831,13 +5829,8 @@ def cmd_budget_record(args: argparse.Namespace) -> int:
 
 
 def load_pricing_config() -> dict:
-    path = ROOT / "config" / "pricing.json"
-    if not path.exists():
-        return {}
-    try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
-        return {}
+    # Thin wrapper: assemble the pricing path under ROOT, then delegate to the pure reader.
+    return _core_config.load_pricing_config(ROOT / "config" / "pricing.json")
 
 
 def classify_task_type(title: str, description: str, pricing: dict) -> str:

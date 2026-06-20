@@ -10,6 +10,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from company_kernel import companyctl, watchdog
 
@@ -106,6 +107,45 @@ class CoreLayerBoundaryTest(unittest.TestCase):
         with contextlib.redirect_stdout(buf):
             companyctl.emit({"x": 1, "中": "文"})
         self.assertEqual(json.dumps({"x": 1, "中": "文"}, ensure_ascii=False, indent=2) + "\n", buf.getvalue())
+
+
+class ConfigLayerCutTest(unittest.TestCase):
+    """Config-layer first cut: the three pure JSON loaders live in core.config and take an explicit
+    path; companyctl keeps each name as a THIN wrapper that resolves the path and delegates. Unlike the
+    same-object re-exports above, these are wrappers — so the guard is: (a) core.config exposes the pure
+    readers, (b) the wrappers still resolve through the path globals so `mock.patch.object` anchors hit,
+    (c) core.config carries no path globals / no reverse import."""
+
+    def test_core_config_exposes_pure_readers(self):
+        from company_kernel.core import config as core_config
+        for sym in ("load_global_config", "load_communication_config", "load_pricing_config"):
+            self.assertTrue(callable(getattr(core_config, sym, None)), f"core.config must expose {sym}")
+
+    def test_pure_reader_missing_path_uses_original_fallbacks(self):
+        from company_kernel.core import config as core_config
+        missing = Path(tempfile.gettempdir()) / "ck-does-not-exist-zzz.json"
+        self.assertEqual({}, core_config.load_global_config(missing))
+        self.assertEqual({}, core_config.load_pricing_config(missing))
+        # comms keeps its distinct open-policy default (NOT {}), preserved verbatim from the old body
+        self.assertEqual({"policy": {"mode": "open"}, "aliases": {}, "employees": {}, "channels": {}},
+                         core_config.load_communication_config(missing))
+
+    def test_comms_wrapper_still_honors_path_global_anchor(self):
+        # The COMMUNICATIONS_PATH mock anchor must still steer load_communication_config through the
+        # wrapper — proving the path global stayed on companyctl and the wrapper reads it live.
+        with tempfile.TemporaryDirectory() as d:
+            fake = Path(d) / "comms.json"
+            fake.write_text(json.dumps({"policy": {"mode": "locked"}, "marker": "anchor-hit"}), encoding="utf-8")
+            with mock.patch.object(companyctl, "COMMUNICATIONS_PATH", fake):
+                self.assertEqual("anchor-hit", companyctl.load_communication_config().get("marker"))
+
+    def test_config_loaders_not_in_companyctl_body_anymore(self):
+        # The JSON-parsing body moved out: companyctl's wrappers must delegate to core.config, so the
+        # raw `json.loads(... .read_text(...))` parse no longer lives in the wrapper source.
+        import inspect
+        src = inspect.getsource(companyctl.load_communication_config)
+        self.assertIn("_core_config", src)
+        self.assertNotIn("read_text", src)
 
 
 if __name__ == "__main__":
