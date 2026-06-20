@@ -189,5 +189,43 @@ class NotifyCutTest(unittest.TestCase):
         self.assertEqual([], offenders, "notify.py must not import companyctl (leaf module)")
 
 
+class ProgressCutTest(unittest.TestCase):
+    """Progress cut: the pure transition helpers + their data constant moved to company_kernel.progress
+    and are forwarded from companyctl as the SAME objects. The fingerprint is the dedup key, so its
+    byte output is pinned here — a separator/field-order drift would resurface duplicate notifications."""
+
+    PROGRESS_SYMBOLS = [
+        "PROGRESS_TRANSITION_MESSAGES", "progress_notification_message",
+        "progress_notification_decision", "progress_notification_fingerprint",
+    ]
+
+    def test_progress_symbols_forwarded_as_same_objects(self):
+        from company_kernel import companyctl, progress
+        for sym in self.PROGRESS_SYMBOLS:
+            self.assertTrue(hasattr(companyctl, sym), f"companyctl must forward {sym}")
+            self.assertIs(getattr(companyctl, sym), getattr(progress, sym),
+                          f"{sym} on companyctl must be the SAME object as in progress (forward, not a copy)")
+
+    def test_fingerprint_byte_identical_golden(self):
+        # Golden: dedup keys on this exact string. Pin it so a refactor can't silently change the shape.
+        from company_kernel import progress
+        fp = progress.progress_notification_fingerprint(
+            "codex", {"layer": "working"}, {"layer": "done"}, task_id="t1")
+        self.assertEqual("codex|t1|working|done", fp)
+
+    def test_progress_does_not_reverse_import_companyctl(self):
+        import ast
+        import pathlib
+        path = pathlib.Path(__file__).resolve().parents[1] / "company_kernel" / "progress.py"
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        offenders = []
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import) and any("companyctl" in a.name for a in node.names):
+                offenders.append(node.lineno)
+            if isinstance(node, ast.ImportFrom) and node.module and "companyctl" in node.module:
+                offenders.append(node.lineno)
+        self.assertEqual([], offenders, "progress.py must not import companyctl (leaf module)")
+
+
 if __name__ == "__main__":
     unittest.main()

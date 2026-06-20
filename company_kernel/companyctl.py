@@ -44,6 +44,13 @@ from .notify import (  # noqa: F401 (facade re-export; notification send primiti
     resolve_notification_target, applescript_quote, send_macos_notification,
     send_telegram_notification, send_slack_webhook,
 )
+# Pure progress-transition helpers now live in company_kernel.progress (split: progress cut). Plain
+# forward import (no wrapper); deliver_pending_progress_notifications still calls them through here.
+# The fingerprint must stay byte-identical — dedup keys on it (guarded by a golden test).
+from .progress import (  # noqa: F401 (facade re-export; progress notification helpers)
+    PROGRESS_TRANSITION_MESSAGES, progress_notification_message,
+    progress_notification_decision, progress_notification_fingerprint,
+)
 
 DEFAULT_ROOT = Path(__file__).resolve().parents[1]
 GLOBAL_CONFIG_PATH = Path("~/.gemini/antigravity/company_kernel_config.json")
@@ -162,14 +169,6 @@ PROGRESS_LAYER_DEFINITIONS = {
     },
 }
 
-PROGRESS_TRANSITION_MESSAGES = {
-    ("received", "working"): "已开始处理",
-    ("working", "waiting"): "需要等待",
-    ("waiting", "blocked"): "已卡住",
-    ("working", "done"): "已完成",
-}
-
-
 def normalize_progress_state(state: str, *, summary: str = "") -> dict[str, str]:
     raw_state = str(state or "").strip()
     normalized = raw_state.lower().replace("-", "_").replace(" ", "_")
@@ -287,43 +286,6 @@ def progress_bridge_metadata(conn: sqlite3.Connection, agent: str, workspace: st
     }
     return enriched
 
-
-def progress_notification_message(agent: str, from_progress: dict[str, str], to_progress: dict[str, str]) -> str:
-    action = PROGRESS_TRANSITION_MESSAGES.get((from_progress.get("layer", ""), to_progress.get("layer", "")))
-    summary = str(to_progress.get("summary", "") or "").strip()
-    if action and summary:
-        return f"{agent} {action}：{summary}"
-    if action:
-        return f"{agent} {action}"
-    if summary:
-        return f"{agent} 进度变更：{summary}"
-    return f"{agent} 进度从 {from_progress.get('layer', 'unknown')} 变为 {to_progress.get('layer', 'unknown')}"
-
-
-def progress_notification_decision(agent: str, from_progress: dict[str, str], to_progress: dict[str, str], *, source: str = "heartbeat") -> dict:
-    return {
-        "kind": "progress_transition",
-        "trigger": source,
-        "triggered_by": agent,
-        "from_layer": from_progress.get("layer", ""),
-        "from_state": from_progress.get("state", ""),
-        "to_layer": to_progress.get("layer", ""),
-        "to_state": to_progress.get("state", ""),
-        "should_notify_user": True,
-        "reason": f"progress layer changed from {from_progress.get('layer', '')} to {to_progress.get('layer', '')}",
-        "message": progress_notification_message(agent, from_progress, to_progress),
-        "summary": to_progress.get("summary", ""),
-    }
-
-
-def progress_notification_fingerprint(agent: str, from_progress: dict[str, str], to_progress: dict[str, str], *, task_id: str = "") -> str:
-    parts = [
-        str(agent or "").strip(),
-        str(task_id or "").strip(),
-        str(from_progress.get("layer", "") or "").strip(),
-        str(to_progress.get("layer", "") or "").strip(),
-    ]
-    return "|".join(parts)
 
 
 def has_progress_notification_fingerprint(conn: sqlite3.Connection, fingerprint: str) -> bool:
