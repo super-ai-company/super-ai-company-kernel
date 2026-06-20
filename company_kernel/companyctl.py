@@ -12809,9 +12809,8 @@ def cmd_runtime_register(args: argparse.Namespace) -> int:
 
 def cmd_runtime_list(args: argparse.Namespace) -> int:
     try:
-        conn = connect_readonly()
-        registered = {row["runtime"]: dict(row) for row in conn.execute("SELECT * FROM employee_runtimes ORDER BY runtime").fetchall()}
-        conn.close()
+        with _connection.read_connection() as conn:
+            registered = {row["runtime"]: dict(row) for row in conn.execute("SELECT * FROM employee_runtimes ORDER BY runtime").fetchall()}
     except sqlite3.OperationalError:
         registered = {}
     ts = now()
@@ -12846,9 +12845,8 @@ def cmd_runtime_test(args: argparse.Namespace) -> int:
         checks.append(check_command("antigravity"))
     else:
         try:
-            conn = connect_readonly()
-            row = conn.execute("SELECT * FROM employee_runtimes WHERE runtime = ?", (args.runtime,)).fetchone()
-            conn.close()
+            with _connection.read_connection() as conn:
+                row = conn.execute("SELECT * FROM employee_runtimes WHERE runtime = ?", (args.runtime,)).fetchone()
         except sqlite3.OperationalError:
             row = None
         if not row:
