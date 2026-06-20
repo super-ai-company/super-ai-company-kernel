@@ -227,5 +227,40 @@ class ProgressCutTest(unittest.TestCase):
         self.assertEqual([], offenders, "progress.py must not import companyctl (leaf module)")
 
 
+class EconomicsCutTest(unittest.TestCase):
+    """Economics pure cut: the two pure estimators moved to company_kernel.economics and are forwarded
+    from companyctl. Per the meeting, behaviour equivalence is asserted by the existing tests/
+    test_economics.py through the companyctl public entry (so a forward breakage fails loudly there);
+    here we guard the forward wiring + leaf purity. The compute_* aggregators stay this batch."""
+
+    def test_economics_estimators_forwarded_and_callable_via_companyctl(self):
+        from company_kernel import companyctl, economics
+        for sym in ("classify_task_type", "estimate_task_cost"):
+            self.assertTrue(hasattr(companyctl, sym), f"companyctl must forward {sym}")
+            self.assertIs(getattr(companyctl, sym), getattr(economics, sym))
+        # call through the companyctl public entry — what real callers and test_economics.py use
+        self.assertEqual("default", companyctl.classify_task_type("x", "y", {}))
+        self.assertEqual(2.5, companyctl.estimate_task_cost({"amount": 2.5}, {}))
+
+    def test_aggregators_stay_on_companyctl_this_batch(self):
+        from company_kernel import companyctl, economics
+        for sym in ("compute_economics", "compute_cost_dashboard"):
+            self.assertTrue(hasattr(companyctl, sym), f"companyctl must keep {sym} this batch")
+            self.assertFalse(hasattr(economics, sym), f"{sym} is conn-coupled; deferred to next batch")
+
+    def test_economics_does_not_reverse_import_companyctl(self):
+        import ast
+        import pathlib
+        path = pathlib.Path(__file__).resolve().parents[1] / "company_kernel" / "economics.py"
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        offenders = []
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import) and any("companyctl" in a.name for a in node.names):
+                offenders.append(node.lineno)
+            if isinstance(node, ast.ImportFrom) and node.module and "companyctl" in node.module:
+                offenders.append(node.lineno)
+        self.assertEqual([], offenders, "economics.py must not import companyctl (leaf module)")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -51,6 +51,10 @@ from .progress import (  # noqa: F401 (facade re-export; progress notification h
     PROGRESS_TRANSITION_MESSAGES, progress_notification_message,
     progress_notification_decision, progress_notification_fingerprint,
 )
+# Pure unit-economics estimators now live in company_kernel.economics (split: economics pure cut).
+# Plain forward import (no wrapper); compute_economics/compute_cost_dashboard still call them here.
+# pricing is estimation-only — these take the pricing/rates dict in, never read config.
+from .economics import classify_task_type, estimate_task_cost  # noqa: F401 (facade re-export)
 
 DEFAULT_ROOT = Path(__file__).resolve().parents[1]
 GLOBAL_CONFIG_PATH = Path("~/.gemini/antigravity/company_kernel_config.json")
@@ -5735,29 +5739,6 @@ def cmd_budget_record(args: argparse.Namespace) -> int:
 def load_pricing_config() -> dict:
     # Thin wrapper: assemble the pricing path under ROOT, then delegate to the pure reader.
     return _core_config.load_pricing_config(ROOT / "config" / "pricing.json")
-
-
-def classify_task_type(title: str, description: str, pricing: dict) -> str:
-    text = f"{title}\n{description}".lower()
-    for ttype, keywords in (pricing.get("task_type_keywords") or {}).items():
-        for kw in keywords:
-            if kw.lower() in text:
-                return ttype
-    return "default"
-
-
-def estimate_task_cost(ev: dict, rates: dict) -> float:
-    """Cost of a task from its budget events: prefer recorded amount; else estimate from
-    tokens; else fall back to runtime. Lets us compute margin even before token capture lands."""
-    amount = float(ev.get("amount") or 0)
-    if amount > 0:
-        return amount
-    ti = int(ev.get("token_input") or 0)
-    to = int(ev.get("token_output") or 0)
-    if ti or to:
-        return ti / 1000.0 * float(rates.get("token_input_per_1k", 0)) + to / 1000.0 * float(rates.get("token_output_per_1k", 0))
-    secs = int(ev.get("runtime_seconds") or 0)
-    return secs / 60.0 * float(rates.get("runtime_per_minute", 0))
 
 
 def compute_economics(conn: sqlite3.Connection) -> dict:
