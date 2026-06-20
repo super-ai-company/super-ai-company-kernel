@@ -135,7 +135,7 @@ doctor 实时读库,清掉 issue 后控制台 ~15 秒自动刷新转绿,**不用
 ## 8. 审批 / RFC / 锁 / 审计
 
 ```
-bin/companyctl approval list ; bin/companyctl approve --id <id> ; bin/companyctl deny --id <id>
+bin/companyctl approval list ; bin/companyctl approval approve --approval-id <id> --by <you> ; bin/companyctl approval deny --approval-id <id> --by <you>
 bin/companyctl rfc list                       # 规则变更需走 RFC
 bin/companyctl lock list ; bin/companyctl repair reset-stale-claims
 bin/companyctl audit ...                       # 审计日志
