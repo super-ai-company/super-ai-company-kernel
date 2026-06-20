@@ -80,6 +80,13 @@ class CoreLayerBoundaryTest(unittest.TestCase):
             self.assertIs(getattr(companyctl, sym), getattr(core, sym),
                           f"companyctl.{sym} must be the SAME object as core.{sym} (facade re-export)")
 
+    def test_db_primitive_rows_reexported_as_same_object(self):
+        # First DB cut (gate-shrunk to the one pure leaf): rows() lives in core.db, re-exported by
+        # companyctl so all 165 call sites are unchanged. DB_PATH / connect family deliberately stayed.
+        from company_kernel import companyctl
+        from company_kernel.core import db
+        self.assertIs(companyctl.rows, db.rows, "companyctl.rows must be the SAME object as core.db.rows")
+
 
 if __name__ == "__main__":
     unittest.main()

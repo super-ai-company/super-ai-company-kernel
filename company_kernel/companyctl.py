@@ -29,6 +29,7 @@ from .schema_migrations import ensure_schema_migrations
 # on companyctl, so this is a plain top-level import — no lazy-import workaround needed. Re-exported
 # here so every existing `companyctl.now(...)` / `companyctl.seconds_since(...)` caller is unchanged.
 from .core import now, future_seconds, parse_time, parse_iso_datetime, seconds_since  # noqa: F401 (facade re-export)
+from .core.db import rows  # noqa: F401 (facade re-export; DB query primitive)
 
 DEFAULT_ROOT = Path(__file__).resolve().parents[1]
 GLOBAL_CONFIG_PATH = Path("~/.gemini/antigravity/company_kernel_config.json")
@@ -5212,10 +5213,6 @@ def cmd_employee_create(args: argparse.Namespace) -> int:
     audit(conn, "companyctl", "employee.create", args.id, {**profile, "communication": communication})
     emit({"ok": True, "employee": profile, "files": files, "communication": communication})
     return 0
-
-
-def rows(conn: sqlite3.Connection, sql: str, params: tuple = ()) -> list[dict]:
-    return [dict(r) for r in conn.execute(sql, params).fetchall()]
 
 
 def clamp_audit_limit(limit: int | str | None) -> int:
