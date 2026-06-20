@@ -30,3 +30,22 @@ def transaction() -> Iterator[Connection]       # 写:BEGIN→yield→commit;异
 
 ## 5. 准入四闸(每小块)
 DB_PATH mock 兼容 / 事务上下文(写路径)/ 崩溃回滚 / 连接归零。缺一不进。
+
+## 6. 写路径为什么仍冻结 —— sync_backlog 副作用实测结论(claude-cli 自查 2026-06-20)
+读路径(slice#1-3,14 条只读命令)已迁完、e2e 基线 15 测全绿。**写路径(~132 条 `connect()` 调用)继续冻结**,根因经查实是 `connect()` 里挂了一个**载荷副作用**,不是疏漏:
+
+```
+connect():  executescript(SCHEMA)        # 幂等,建表
+            ensure_schema_migrations()    # 幂等,迁移
+            sync_backlog_from_queue_file() # ★ 业务副作用:把 .ops 队列文件 backlog 导进 tasks 表
+            commit()
+```
+
+- `transaction()`(新写接口)**不跑**这三步。裸迁写路径 → 该路径不再 ensure schema、且**不再同步 backlog**。
+- 关键载荷点:**持久 API 进程**每次 `connect()` 都重跑 `sync_backlog`,这正是它在两次请求之间**捡起队列文件新增任务**的机制(daemon 是 `--once` 每 tick 新进程,bootstrap 一次=现状;但 API 常驻)。若把 bootstrap 改成"每进程一次",常驻 API 就**不再感知队列文件中途变更** → 行为回归。
+
+**结论:写路径不能裸迁。** 安全迁移需二选一,且必须经评审拍板,不自行硬迁:
+- (A) `transaction()` 也做 bootstrap(每次连接跑 schema+迁移+sync_backlog)——保旧语义,但放弃"轻连接"收益;
+- (B) 先证明"无任何写路径依赖 connect() 的环境内重 sync"(尤其常驻 API 路径),再把 sync_backlog 提到进程级 bootstrap。需逐路径核查 + 常驻 API 回归测试。
+
+→ 写路径迁移的前置工作不是"开始迁",而是先做 (B) 的依赖核查。在此之前**红线不动写路径**。
