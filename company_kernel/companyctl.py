@@ -5474,41 +5474,29 @@ def audit_failure_records(conn: sqlite3.Connection, *, task_id: str = "", limit:
 
 
 def cmd_audit_evidence(args: argparse.Namespace) -> int:
-    conn = connect_readonly()
-    try:
+    with _connection.read_connection() as conn:
         evidence = audit_evidence_records(conn, task_id=args.task_id, employee_id=args.employee_id, limit=args.limit)
-    finally:
-        conn.close()
     emit({"ok": True, "source": "companyctl audit evidence", "evidence": evidence})
     return 0
 
 
 def cmd_audit_artifacts(args: argparse.Namespace) -> int:
-    conn = connect_readonly()
-    try:
+    with _connection.read_connection() as conn:
         artifacts = audit_artifact_records(conn, task_id=args.task_id, limit=args.limit)
-    finally:
-        conn.close()
     emit({"ok": True, "source": "companyctl audit artifacts", "artifacts": artifacts})
     return 0
 
 
 def cmd_audit_handoffs(args: argparse.Namespace) -> int:
-    conn = connect_readonly()
-    try:
+    with _connection.read_connection() as conn:
         handoffs = audit_handoff_records(conn, task_id=args.task_id, limit=args.limit)
-    finally:
-        conn.close()
     emit({"ok": True, "source": "companyctl audit handoffs", "handoffs": handoffs})
     return 0
 
 
 def cmd_audit_failures(args: argparse.Namespace) -> int:
-    conn = connect_readonly()
-    try:
+    with _connection.read_connection() as conn:
         failures = audit_failure_records(conn, task_id=args.task_id, limit=args.limit)
-    finally:
-        conn.close()
     emit({"ok": True, "source": "companyctl audit failures", "failures": failures})
     return 0
 
@@ -5516,12 +5504,9 @@ def cmd_audit_failures(args: argparse.Namespace) -> int:
 def cmd_trace_timeline(args: argparse.Namespace) -> int:
     from . import company_trace
 
-    conn = connect_readonly()
-    try:
+    with _connection.read_connection() as conn:
         trace_id = company_trace.resolve_trace_id(conn, args.trace_id, args.task_id)
         trace = company_trace.load_trace(conn, trace_id)
-    finally:
-        conn.close()
     emit(company_trace.safe_trace_payload(trace))
     return 0
 
@@ -5609,11 +5594,8 @@ def cmd_tool_call_finish(args: argparse.Namespace) -> int:
 
 
 def cmd_tool_call_list(args: argparse.Namespace) -> int:
-    conn = connect_readonly()
-    try:
+    with _connection.read_connection() as conn:
         tool_calls = list_tool_calls(conn, employee_id=args.employee, task_id=args.task_id, trace_id=args.trace_id, attempt_id=args.attempt_id, session_id=args.session_id, limit=args.limit)
-    finally:
-        conn.close()
     emit({"ok": True, "tool_calls": tool_calls})
     return 0
 
@@ -5695,20 +5677,14 @@ def compute_cost_dashboard(conn: sqlite3.Connection, *, days: int = 14) -> dict:
 
 
 def cmd_economics(args: argparse.Namespace) -> int:
-    conn = connect_readonly()
-    try:
+    with _connection.read_connection() as conn:
         emit({"ok": True, **compute_economics(conn)})
-    finally:
-        conn.close()
     return 0
 
 
 def cmd_cost(args: argparse.Namespace) -> int:
-    conn = connect_readonly()
-    try:
+    with _connection.read_connection() as conn:
         emit({"ok": True, **compute_cost_dashboard(conn, days=max(1, int(getattr(args, "days", 14))))})
-    finally:
-        conn.close()
     return 0
 
 
@@ -5830,11 +5806,8 @@ def cmd_verifier_record(args: argparse.Namespace) -> int:
 
 
 def cmd_verifier_accuracy(args: argparse.Namespace) -> int:
-    conn = connect_readonly()
-    try:
+    with _connection.read_connection() as conn:
         emit({"ok": True, **compute_verifier_accuracy(conn)})
-    finally:
-        conn.close()
     return 0
 
 
@@ -5927,24 +5900,18 @@ def cmd_a2a_deny(args: argparse.Namespace) -> int:
 
 
 def cmd_a2a_list(args: argparse.Namespace) -> int:
-    conn = connect_readonly()
-    try:
+    with _connection.read_connection() as conn:
         where = "WHERE status = ?" if args.status else ""
         params = (args.status, args.limit) if args.status else (args.limit,)
         items = rows(conn, f"SELECT a2a_request_id, source_agent, target_agent, action, status, decided_by, created_at FROM a2a_requests {where} ORDER BY created_at DESC LIMIT ?", params)
-    finally:
-        conn.close()
     emit({"ok": True, "a2a_requests": items})
     return 0
 
 
 def cmd_budget_summary(args: argparse.Namespace) -> int:
-    conn = connect_readonly()
-    try:
+    with _connection.read_connection() as conn:
         summary = budget_summary(conn, task_id=args.task_id, employee_id=args.employee, trace_id=args.trace_id, attempt_id=args.attempt_id)
         events = list_budget_events(conn, task_id=args.task_id, employee_id=args.employee, trace_id=args.trace_id, attempt_id=args.attempt_id, limit=args.limit)
-    finally:
-        conn.close()
     emit({"ok": True, "summary": summary, "budget_events": events})
     return 0
 
@@ -6030,11 +5997,8 @@ def cmd_workspace_prune(args: argparse.Namespace) -> int:
     if not args.dry_run:
         emit({"ok": False, "error": "workspace prune is preview-only in this phase; pass --dry-run"})
         return 2
-    conn = connect_readonly()
-    try:
+    with _connection.read_connection() as conn:
         preview = workspace_prune_preview(conn, older_than_days=args.older_than_days, limit=args.limit)
-    finally:
-        conn.close()
     emit(preview)
     return 0
 
