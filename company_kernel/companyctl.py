@@ -28,7 +28,7 @@ from .schema_migrations import ensure_schema_migrations
 # Time/datetime primitives now live in company_kernel.core (split phase 0.5). core has NO dependency
 # on companyctl, so this is a plain top-level import — no lazy-import workaround needed. Re-exported
 # here so every existing `companyctl.now(...)` / `companyctl.seconds_since(...)` caller is unchanged.
-from .core import now, future_seconds, parse_time, parse_iso_datetime, seconds_since  # noqa: F401 (facade re-export)
+from .core import now, future_seconds, new_trace_id, parse_time, parse_iso_datetime, seconds_since  # noqa: F401 (facade re-export)
 from .core.db import rows  # noqa: F401 (facade re-export; DB query primitive)
 
 DEFAULT_ROOT = Path(__file__).resolve().parents[1]
@@ -640,10 +640,6 @@ def audit(conn: sqlite3.Connection, actor: str, action: str, target: str = "", d
         (actor, action, target, json.dumps(detail or {}, ensure_ascii=False), now()),
     )
     conn.commit()
-
-
-def new_trace_id() -> str:
-    return f"trace-{datetime.now().strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:8]}"
 
 
 def trace_id_for_task(conn: sqlite3.Connection, task_id: str = "", fallback: str = "") -> str:

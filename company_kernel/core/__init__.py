@@ -11,11 +11,16 @@ audit, IO). companyctl re-exports them, so every existing `companyctl.now(...)` 
 """
 from __future__ import annotations
 
+import uuid
 from datetime import datetime, timedelta, timezone
 
 
 def now() -> str:
     return datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
+
+
+def new_trace_id() -> str:
+    return f"trace-{datetime.now().strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:8]}"
 
 
 def future_seconds(seconds: int) -> str:
