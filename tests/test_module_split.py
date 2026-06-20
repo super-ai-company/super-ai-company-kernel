@@ -439,6 +439,8 @@ class TextutilSweepTest(unittest.TestCase):
     TEXTUTIL_SYMBOLS = [
         "slug", "mermaid_node_id", "clamp_audit_limit", "normalize_task_title",
         "normalize_rfc", "normalize_project", "parse_split_item", "parse_csv",
+        "parse_participants", "parse_acceptance", "normalize_employee_lookup", "safe_path_token",
+        "communication_name_aliases", "report_progress_task_id", "owner_action_next_step", "direct_probe_body",
     ]
 
     def test_textutil_symbols_forwarded_as_same_objects(self):

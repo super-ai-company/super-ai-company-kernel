@@ -73,6 +73,8 @@ from .parsing import (  # noqa: F401 (facade re-export; pure parsing leaves)
 from .textutil import (  # noqa: F401 (facade re-export; pure text/normalize leaves)
     slug, mermaid_node_id, clamp_audit_limit, normalize_task_title,
     normalize_rfc, normalize_project, parse_split_item, parse_csv,
+    parse_participants, parse_acceptance, normalize_employee_lookup, safe_path_token,
+    communication_name_aliases, report_progress_task_id, owner_action_next_step, direct_probe_body,
 )
 
 DEFAULT_ROOT = Path(__file__).resolve().parents[1]
@@ -244,11 +246,6 @@ def active_task_for_agent(conn: sqlite3.Connection, agent: str) -> sqlite3.Row |
         """,
         (agent,),
     ).fetchone()
-
-
-def report_progress_task_id(payload: dict) -> str:
-    report = payload.get("report") if isinstance(payload.get("report"), dict) else {}
-    return str(payload.get("task_id") or report.get("task_id") or "").strip()
 
 
 def workspace_progress_files(workspace: Path) -> list[Path]:
@@ -752,11 +749,6 @@ def company_priority_queue(conn: sqlite3.Connection, *, stale_minutes: int = 30,
             add("task", t["id"], t["title"], 3, "超时", ts, ["nudge", "reassign", "read"], t["target_agent"])
 
     return sorted(by_key.values(), key=lambda x: (x["severity"], x["ts"]))[:limit]
-
-
-def safe_path_token(value: str) -> str:
-    token = "".join(ch if ch.isalnum() or ch in "._-" else "_" for ch in str(value or ""))
-    return token.strip("._-") or "task"
 
 
 def require_task(conn: sqlite3.Connection, task_id: str) -> dict:
@@ -2456,20 +2448,6 @@ def task_control_action_summary(*, approvals: list[dict], events: list[dict], at
     }
 
 
-def owner_action_next_step(action: str, *, pending: bool = False) -> str:
-    if pending:
-        return "review owner approval request before real execution"
-    if action == "probe":
-        return "wait for worker response or escalate to Hermes correction if progress remains stagnant"
-    if action == "correction":
-        return "wait for worker correction ack or fresh progress"
-    if action == "cancel":
-        return "verify process stopped and ignore late evidence"
-    if action in {"retry", "reassign", "reopen"}:
-        return "monitor new attempt heartbeat, progress, and evidence"
-    return "monitor task progress and evidence"
-
-
 def task_owner_action_timeline(*, approvals: list[dict], events: list[dict]) -> list[dict]:
     timeline: list[dict] = []
     for approval in approvals:
@@ -3424,21 +3402,6 @@ def notification_send_result(*, message: str, target: str = "", account_id: str 
     except (ValueError, urllib.error.URLError, TimeoutError) as exc:
         return {**result, "ok": False, "error": str(exc)}
     return {**result, **sent}
-
-
-def normalize_employee_lookup(value: str) -> str:
-    return " ".join(str(value or "").strip().split()).casefold()
-
-
-def communication_name_aliases(employee_id: str, name: str) -> list[str]:
-    aliases = []
-    clean_name = " ".join(str(name or "").strip().split())
-    if clean_name and clean_name != employee_id:
-        aliases.append(clean_name)
-        compact = clean_name.replace(" ", "-").lower()
-        if compact and compact not in {employee_id, clean_name}:
-            aliases.append(compact)
-    return aliases
 
 
 def resolve_employee_alias(employee_id: str, *, strict: bool = False) -> str:
@@ -6891,10 +6854,6 @@ def employee_has_verified_direct_evidence(employee_id: str) -> bool:
     return bool(payload.get("ok") and int(payload.get("rounds_completed", 0) or 0) >= 2)
 
 
-def direct_probe_body(agent_id: str, round_index: int) -> str:
-    return f"员工通信验证第{round_index}轮：请只回复 {agent_id}_VERIFY_ROUND_{round_index}_OK"
-
-
 def cmd_employee_set_unavailable(args: argparse.Namespace) -> int:
     conn = connect()
     result = mark_employee_unavailable(conn, resolve_employee_alias(args.id, strict=True), args.reason)
@@ -9369,15 +9328,6 @@ def cmd_guard_check(args: argparse.Namespace) -> int:
     blocked = [check for check in checks if not check["allowed"]]
     emit({"ok": not blocked, "requires_rfc": bool(config.get("requires_rfc", True)), "blocked": blocked, "checks": checks, "config_file": str(PROTECTED_PATHS_CONFIG)})
     return 1 if blocked else 0
-
-
-def parse_participants(raw: str) -> list[str]:
-    participants = []
-    for item in raw.split(","):
-        item = item.strip()
-        if item and item not in participants:
-            participants.append(item)
-    return participants
 
 
 def notify_conversation_participants(conversation_id: str, message: dict, participants: list[str]) -> dict[str, str]:
@@ -12312,15 +12262,6 @@ def cmd_task_reassign(args: argparse.Namespace) -> int:
     audit(conn, actor, "task.reassign", args.task_id, {"from": previous_target, "to": target, "reason": args.reason, "file": task_file, "attempt_id": attempt["attempt_id"], "previous_attempt_id": previous_attempt_id, "event_id": event["id"]})
     emit({"ok": True, "task": updated, "file": task_file, "attempt": attempt, "event_id": event["id"], "synced_plan_items": synced_plan_items})
     return 0
-
-
-def parse_acceptance(raw: str) -> list[str]:
-    items = []
-    for item in raw.split(";"):
-        item = item.strip()
-        if item:
-            items.append(item)
-    return items
 
 
 def cmd_project_create(args: argparse.Namespace) -> int:

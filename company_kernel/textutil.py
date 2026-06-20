@@ -65,3 +65,64 @@ def parse_split_item(raw: str) -> dict:
 
 def parse_csv(raw: str) -> list[str]:
     return [item.strip() for item in raw.split(",") if item.strip()]
+
+
+def parse_participants(raw: str) -> list[str]:
+    participants = []
+    for item in raw.split(","):
+        item = item.strip()
+        if item and item not in participants:
+            participants.append(item)
+    return participants
+
+
+def parse_acceptance(raw: str) -> list[str]:
+    items = []
+    for item in raw.split(";"):
+        item = item.strip()
+        if item:
+            items.append(item)
+    return items
+
+
+def normalize_employee_lookup(value: str) -> str:
+    return " ".join(str(value or "").strip().split()).casefold()
+
+
+def safe_path_token(value: str) -> str:
+    token = "".join(ch if ch.isalnum() or ch in "._-" else "_" for ch in str(value or ""))
+    return token.strip("._-") or "task"
+
+
+def communication_name_aliases(employee_id: str, name: str) -> list[str]:
+    aliases = []
+    clean_name = " ".join(str(name or "").strip().split())
+    if clean_name and clean_name != employee_id:
+        aliases.append(clean_name)
+        compact = clean_name.replace(" ", "-").lower()
+        if compact and compact not in {employee_id, clean_name}:
+            aliases.append(compact)
+    return aliases
+
+
+def report_progress_task_id(payload: dict) -> str:
+    report = payload.get("report") if isinstance(payload.get("report"), dict) else {}
+    return str(payload.get("task_id") or report.get("task_id") or "").strip()
+
+
+def owner_action_next_step(action: str, *, pending: bool = False) -> str:
+    if pending:
+        return "review owner approval request before real execution"
+    if action == "probe":
+        return "wait for worker response or escalate to Hermes correction if progress remains stagnant"
+    if action == "correction":
+        return "wait for worker correction ack or fresh progress"
+    if action == "cancel":
+        return "verify process stopped and ignore late evidence"
+    if action in {"retry", "reassign", "reopen"}:
+        return "monitor new attempt heartbeat, progress, and evidence"
+    return "monitor task progress and evidence"
+
+
+def direct_probe_body(agent_id: str, round_index: int) -> str:
+    return f"员工通信验证第{round_index}轮：请只回复 {agent_id}_VERIFY_ROUND_{round_index}_OK"
