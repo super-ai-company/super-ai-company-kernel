@@ -3751,7 +3751,7 @@ def launchd_health() -> dict:
         "current_root": current_root,
         "database_isolated": database_isolated,
         "warning": warning,
-        "recommended_interval_seconds": 180,
+        "recommended_interval_seconds": 30,
         "install_command": "bash bin/company-daemon-install-launchd",
         "uninstall_command": "bash bin/company-daemon-uninstall-launchd",
         "verify_command": "bin/companyctl doctor --summary",
