@@ -35,6 +35,7 @@ from .core.events import record_event, audit, emit, trace_id_for_task  # noqa: F
 # They take a resolved path and only read+parse JSON; the path globals + resolve_kernel_paths stay HERE
 # as mock anchors. The old companyctl names below are kept as thin wrappers that assemble the path.
 from .core import config as _core_config
+from .core import connection as _connection  # conn-decoupling: short-connection context managers
 # Notification SEND primitives now live in company_kernel.notify (split: notify-domain cut). They are
 # pure transport (no DB, no config globals) and re-exported so every caller is unchanged. Notifications
 # Dispatcher + the config-entangled trio (notification_settings/update_notification_settings/
@@ -123,6 +124,10 @@ def resolve_db_path() -> Path:
 
 
 DB_PATH = resolve_db_path()
+# conn-decoupling first slice: inject the live DB_PATH into the connection leaf so its short-connection
+# context managers resolve the path exactly like connect() — and mock.patch.object(companyctl,"DB_PATH")
+# still steers them (the lambda reads this module's DB_PATH global at call time).
+_connection.set_path_provider(lambda: DB_PATH)
 EMPLOYEES_DIR = Path(_KERNEL_PATHS["employees_dir"])
 STATE_DIR = Path(_KERNEL_PATHS["state_dir"])
 RFC_DIR = Path(_KERNEL_PATHS["rfc_dir"])
@@ -5562,11 +5567,10 @@ def cmd_runtime_session_stop(args: argparse.Namespace) -> int:
 
 
 def cmd_runtime_session_list(args: argparse.Namespace) -> int:
-    conn = connect_readonly()
-    try:
+    # conn-decoupling first slice (worker runtime-status read): short read-only connection via the
+    # connection leaf — auto-closed on exit (no leak/long-hold), same behaviour as connect_readonly().
+    with _connection.read_connection() as conn:
         sessions = list_runtime_sessions(conn, employee_id=args.employee, task_id=args.task_id, trace_id=args.trace_id, limit=args.limit)
-    finally:
-        conn.close()
     emit({"ok": True, "runtime_sessions": sessions})
     return 0
 

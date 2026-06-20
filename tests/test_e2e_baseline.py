@@ -180,5 +180,61 @@ class E2EBaselineTest(unittest.TestCase):
         self.assertGreaterEqual(live["peak"], 1, "guard must have observed at least one connection")
 
 
+class ConnectionAbstractionTest(E2EBaselineTest):
+    """conn-decoupling first slice: company_kernel.core.connection short-connection context managers +
+    the migrated worker runtime-status read. Reuses the temp-env setUp (which reloads companyctl and so
+    runs set_path_provider(lambda: DB_PATH)). Verifies the four admission gates: DB_PATH-mock compat,
+    transaction context, crash rollback, connection-zeroing."""
+
+    def test_read_connection_zeroes_and_reads(self):
+        from company_kernel.core import connection
+        self._employee("codex")
+        with connection_leak_guard() as live:
+            with connection.read_connection() as conn:
+                row = conn.execute("SELECT COUNT(*) AS n FROM employees").fetchone()
+                self.assertEqual(1, row["n"])
+        self.assertEqual(0, live["n"], "read_connection must leave no open connection")
+        self.assertGreaterEqual(live["peak"], 1)
+
+    def test_transaction_commits_and_zeroes(self):
+        from company_kernel.core import connection
+        with connection_leak_guard() as live:
+            with connection.transaction() as conn:
+                conn.execute("INSERT INTO employees(id,name,role,runtime,workspace,status,created_at,updated_at) "
+                             "VALUES('w1','w1','dev','codex','/tmp','active','t','t')")
+        self.assertEqual(0, live["n"], "transaction must close its connection")
+        got = self.conn.execute("SELECT COUNT(*) AS n FROM employees WHERE id='w1'").fetchone()["n"]
+        self.assertEqual(1, got, "committed row must persist")
+
+    def test_transaction_rollback_on_crash_no_half_write(self):
+        from company_kernel.core import connection
+        with self.assertRaises(ValueError):
+            with connection.transaction() as conn:
+                conn.execute("INSERT INTO employees(id,name,role,runtime,workspace,status,created_at,updated_at) "
+                             "VALUES('w2','w2','dev','codex','/tmp','active','t','t')")
+                raise ValueError("boom mid-transaction")
+        got = self.conn.execute("SELECT COUNT(*) AS n FROM employees WHERE id='w2'").fetchone()["n"]
+        self.assertEqual(0, got, "a crash mid-transaction must roll back — no half-write")
+
+    def test_db_path_mock_still_steers(self):
+        # The mock anchor must keep working: patching companyctl.DB_PATH redirects the connection leaf.
+        from company_kernel.core import connection
+        with mock.patch.object(self.ctl, "DB_PATH", "/some/other/db.sqlite"):
+            self.assertEqual("/some/other/db.sqlite", connection.resolve_db_path())
+
+    def test_migrated_runtime_session_list_slice(self):
+        # The migrated worker runtime-status command runs and leaks no connection.
+        from types import SimpleNamespace
+        self._employee("codex")
+        args = SimpleNamespace(employee=None, task_id=None, trace_id=None, limit=20)
+        with connection_leak_guard() as live:
+            import contextlib as _c
+            import io as _io
+            with _c.redirect_stdout(_io.StringIO()):
+                code = self.ctl.cmd_runtime_session_list(args)
+        self.assertEqual(0, code)
+        self.assertEqual(0, live["n"], "migrated slice must not leak a connection")
+
+
 if __name__ == "__main__":
     unittest.main()
