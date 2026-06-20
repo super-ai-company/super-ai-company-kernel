@@ -87,6 +87,26 @@ class CoreLayerBoundaryTest(unittest.TestCase):
         from company_kernel.core import db
         self.assertIs(companyctl.rows, db.rows, "companyctl.rows must be the SAME object as core.db.rows")
 
+    def test_event_group_reexported_as_same_objects(self):
+        # Event group cut: record_event/audit/emit/trace_id_for_task live in core.events, re-exported
+        # by companyctl (~576 call sites unchanged). trace_id_for_task stays a working mock anchor.
+        from company_kernel import companyctl
+        from company_kernel.core import events
+        for sym in ("record_event", "audit", "emit", "trace_id_for_task"):
+            self.assertIs(getattr(companyctl, sym), getattr(events, sym),
+                          f"companyctl.{sym} must be the SAME object as core.events.{sym}")
+
+    def test_emit_output_byte_identical(self):
+        # emit gained stream=None; production output (→ stdout) must be byte-for-byte the old print.
+        import contextlib
+        import io
+        import json
+        from company_kernel import companyctl
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            companyctl.emit({"x": 1, "中": "文"})
+        self.assertEqual(json.dumps({"x": 1, "中": "文"}, ensure_ascii=False, indent=2) + "\n", buf.getvalue())
+
 
 if __name__ == "__main__":
     unittest.main()

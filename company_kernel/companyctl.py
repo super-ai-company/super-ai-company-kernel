@@ -30,6 +30,7 @@ from .schema_migrations import ensure_schema_migrations
 # here so every existing `companyctl.now(...)` / `companyctl.seconds_since(...)` caller is unchanged.
 from .core import now, future_seconds, new_trace_id, parse_time, parse_iso_datetime, seconds_since  # noqa: F401 (facade re-export)
 from .core.db import rows  # noqa: F401 (facade re-export; DB query primitive)
+from .core.events import record_event, audit, emit, trace_id_for_task  # noqa: F401 (facade re-export; event/audit/output primitives)
 
 DEFAULT_ROOT = Path(__file__).resolve().parents[1]
 GLOBAL_CONFIG_PATH = Path("~/.gemini/antigravity/company_kernel_config.json")
@@ -628,57 +629,6 @@ def database_integrity(conn: sqlite3.Connection) -> dict:
     except sqlite3.Error as exc:
         return {"ok": False, "integrity": [f"error: {exc}"], "foreign_key_violations": -1}
     return {"ok": integ == ["ok"] and not fk, "integrity": integ, "foreign_key_violations": len(fk)}
-
-
-def emit(obj: dict) -> None:
-    print(json.dumps(obj, ensure_ascii=False, indent=2))
-
-
-def audit(conn: sqlite3.Connection, actor: str, action: str, target: str = "", detail: dict | None = None) -> None:
-    conn.execute(
-        "INSERT INTO audit_logs(actor, action, target, detail_json, created_at) VALUES (?, ?, ?, ?, ?)",
-        (actor, action, target, json.dumps(detail or {}, ensure_ascii=False), now()),
-    )
-    conn.commit()
-
-
-def trace_id_for_task(conn: sqlite3.Connection, task_id: str = "", fallback: str = "") -> str:
-    if not task_id:
-        return fallback or new_trace_id()
-    row = conn.execute("SELECT metadata_json FROM task_metadata WHERE task_id = ?", (task_id,)).fetchone()
-    if row:
-        try:
-            metadata = json.loads(row["metadata_json"] or "{}")
-        except json.JSONDecodeError:
-            metadata = {}
-        trace_id = str(metadata.get("trace_id", "") or "")
-        if trace_id:
-            return trace_id
-    return fallback or new_trace_id()
-
-
-def record_event(conn: sqlite3.Connection, event_type: str, source_agent: str, *, task_id: str = "", payload: dict | None = None, trace_id: str = "") -> dict:
-    event_id = f"evt-{datetime.now().strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:6]}"
-    ts = now()
-    event_trace_id = trace_id or trace_id_for_task(conn, task_id)
-    event = {
-        "id": event_id,
-        "trace_id": event_trace_id,
-        "event_type": event_type,
-        "source_agent": source_agent,
-        "task_id": task_id,
-        "payload": payload or {},
-        "created_at": ts,
-    }
-    conn.execute(
-        """
-        INSERT INTO company_events(id, trace_id, event_type, source_agent, task_id, payload_json, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
-        """,
-        (event_id, event_trace_id, event_type, source_agent, task_id, json.dumps(payload or {}, ensure_ascii=False), ts),
-    )
-    conn.commit()
-    return event
 
 
 # Curated, owner-readable activity feed. The raw company_events ledger is mostly internal plumbing
