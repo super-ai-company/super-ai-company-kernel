@@ -54,7 +54,7 @@ from .progress import (  # noqa: F401 (facade re-export; progress notification h
 # Pure unit-economics estimators now live in company_kernel.economics (split: economics pure cut).
 # Plain forward import (no wrapper); compute_economics/compute_cost_dashboard still call them here.
 # pricing is estimation-only — these take the pricing/rates dict in, never read config.
-from .economics import classify_task_type, estimate_task_cost  # noqa: F401 (facade re-export)
+from .economics import classify_task_type, estimate_task_cost, build_cost_dashboard  # noqa: F401 (facade re-export)
 
 DEFAULT_ROOT = Path(__file__).resolve().parents[1]
 GLOBAL_CONFIG_PATH = Path("~/.gemini/antigravity/company_kernel_config.json")
@@ -5783,68 +5783,33 @@ def compute_economics(conn: sqlite3.Connection) -> dict:
     }
 
 
+def load_heartbeat_ages(conn: sqlite3.Connection, employee_ids) -> dict:
+    """Shell loader for build_cost_dashboard: pre-fetch each employee's heartbeat age (minutes), so the
+    pure core stays clock/DB-free. Values pass through verbatim — float minutes, None (never beat),
+    or float('inf') (unparseable heartbeat); the core renders inf/None as null / off-duty."""
+    return {eid: heartbeat_age_minutes(conn, eid) for eid in employee_ids}
+
+
 def compute_cost_dashboard(conn: sqlite3.Connection, *, days: int = 14) -> dict:
     """The operating-cost story behind the product's core promise: employees on duty are
     FREE (internal comms + task checks are pure SQL, 0 token) — only *claimed execution*
     spends. Aggregates the budget ledger per employee + per day so a human can SEE who is
     on duty at zero cost vs where money actually went. Cost uses the same estimate as
     unit-economics (recorded amount > token estimate > runtime fallback) so the two views
-    never disagree. See docs/ON_DUTY_COST_MODEL.md."""
-    rates = (load_pricing_config().get("cost_rates") or {})
-    currency = load_pricing_config().get("currency", "USD")
+    never disagree. See docs/ON_DUTY_COST_MODEL.md.
+
+    Thin shell now (split: dashboard pure-core cut): gather the ledger + human-owner-filtered
+    employees + pre-fetched heartbeat ages + pricing, then hand them to the pure
+    economics.build_cost_dashboard. The is_human filter stays HERE on the (id, status) rows — exactly as
+    before, so it still only catches id=='owner' (role/runtime columns aren't fetched). Behaviour is
+    golden-pinned identical."""
     ledger = rows(conn, "SELECT employee_id, amount, token_input, token_output, runtime_seconds, "
                         "substr(created_at,1,10) AS day FROM budget_events WHERE employee_id != ''")
-    spend: dict = {}
-    by_day: dict = {}
-    for ev in ledger:
-        cost = estimate_task_cost(ev, rates)
-        s = spend.setdefault(ev["employee_id"], {"executions": 0, "tokens": 0, "cost": 0.0})
-        s["executions"] += 1
-        s["tokens"] += int(ev.get("token_input") or 0) + int(ev.get("token_output") or 0)
-        s["cost"] += cost
-        day = ev.get("day") or ""
-        if day:
-            d = by_day.setdefault(day, {"day": day, "executions": 0, "cost": 0.0})
-            d["executions"] += 1
-            d["cost"] += cost
-    employees = [e for e in rows(conn, "SELECT id, status FROM employees ORDER BY id")
-                 if not is_human_owner_employee(e)]
-    by_employee = []
-    on_duty_free = 0
-    for e in employees:
-        eid = e["id"]
-        s = spend.get(eid, {"executions": 0, "tokens": 0, "cost": 0.0})
-        age = heartbeat_age_minutes(conn, eid)
-        on_duty = age is not None and age <= OFF_DUTY_HEARTBEAT_MINUTES
-        cost = round(s["cost"], 4)
-        if on_duty and cost == 0:
-            on_duty_free += 1
-        by_employee.append({
-            "employee_id": eid,
-            "status": e.get("status", ""),
-            "on_duty": on_duty,
-            "heartbeat_age_minutes": None if age is None or age == float("inf") else round(age, 1),
-            "executions": s["executions"],
-            "tokens": s["tokens"],
-            "cost": cost,
-        })
-    by_employee.sort(key=lambda x: (-x["cost"], -x["executions"], x["employee_id"]))
-    trend = sorted(by_day.values(), key=lambda d: d["day"], reverse=True)[:days]
-    for d in trend:
-        d["cost"] = round(d["cost"], 4)
-    return {
-        "currency": currency,
-        "by_employee": by_employee,
-        "by_day": list(reversed(trend)),  # oldest→newest for charting
-        "totals": {
-            "cost": round(sum(x["cost"] for x in by_employee), 4),
-            "executions": sum(x["executions"] for x in by_employee),
-            "on_duty": sum(1 for x in by_employee if x["on_duty"]),
-            "on_duty_free": on_duty_free,
-            "employees": len(by_employee),
-        },
-        "note": "在岗=心跳15分钟内仍活跃(内部通信/查任务0花费);cost=budget_events 估算(amount>token>runtime);只有接单执行才计费。",
-    }
+    employee_rows = [e for e in rows(conn, "SELECT id, status FROM employees ORDER BY id")
+                     if not is_human_owner_employee(e)]
+    heartbeat_ages = load_heartbeat_ages(conn, [e["id"] for e in employee_rows])
+    return build_cost_dashboard(ledger, employee_rows, heartbeat_ages, load_pricing_config(),
+                                off_duty_threshold=OFF_DUTY_HEARTBEAT_MINUTES, days=days)
 
 
 def cmd_economics(args: argparse.Namespace) -> int:

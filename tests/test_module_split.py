@@ -262,5 +262,62 @@ class EconomicsCutTest(unittest.TestCase):
         self.assertEqual([], offenders, "economics.py must not import companyctl (leaf module)")
 
 
+class DashboardCoreCutTest(unittest.TestCase):
+    """Dashboard pure-core cut (A): build_cost_dashboard moved to economics.py with every DB/clock/
+    config/constant dep hoisted to args. Golden-pinned, canonical-JSON, covering all three preserved
+    quirks: by_day counts the full ledger (owner event included) while totals count only the filtered
+    employees; an age of inf or None renders null + off-duty; on_duty_free counts on-duty zero-cost."""
+
+    GOLDEN = ('{"by_day":[{"cost":0.12,"day":"2026-06-18","executions":1},{"cost":2.5,"day":'
+              '"2026-06-19","executions":1},{"cost":5.018,"day":"2026-06-20","executions":2}],'
+              '"by_employee":[{"cost":2.518,"employee_id":"codex","executions":2,'
+              '"heartbeat_age_minutes":5.0,"on_duty":true,"status":"active","tokens":2000},'
+              '{"cost":0.12,"employee_id":"gemini","executions":1,"heartbeat_age_minutes":60.0,'
+              '"on_duty":false,"status":"active","tokens":0},{"cost":0.0,"employee_id":"ghost",'
+              '"executions":0,"heartbeat_age_minutes":null,"on_duty":false,"status":"active",'
+              '"tokens":0},{"cost":0.0,"employee_id":"idle","executions":0,'
+              '"heartbeat_age_minutes":2.0,"on_duty":true,"status":"active","tokens":0},'
+              '{"cost":0.0,"employee_id":"never","executions":0,"heartbeat_age_minutes":null,'
+              '"on_duty":false,"status":"active","tokens":0}],"currency":"USD","note":'
+              '"在岗=心跳15分钟内仍活跃(内部通信/查任务0花费);cost=budget_events 估算'
+              '(amount>token>runtime);只有接单执行才计费。","totals":{"cost":2.638,'
+              '"employees":5,"executions":3,"on_duty":2,"on_duty_free":1}}')
+
+    def _inputs(self):
+        ledger = [
+            {"employee_id": "codex", "amount": 2.5, "token_input": 0, "token_output": 0, "runtime_seconds": 0, "day": "2026-06-19"},
+            {"employee_id": "codex", "amount": 0, "token_input": 1000, "token_output": 1000, "runtime_seconds": 0, "day": "2026-06-20"},
+            {"employee_id": "gemini", "amount": 0, "token_input": 0, "token_output": 0, "runtime_seconds": 120, "day": "2026-06-18"},
+            {"employee_id": "owner", "amount": 5.0, "token_input": 0, "token_output": 0, "runtime_seconds": 0, "day": "2026-06-20"},
+        ]
+        employee_rows = [{"id": "codex", "status": "active"}, {"id": "gemini", "status": "active"},
+                         {"id": "idle", "status": "active"}, {"id": "ghost", "status": "active"},
+                         {"id": "never", "status": "active"}]
+        heartbeat_ages = {"codex": 5.0, "gemini": 60.0, "idle": 2.0, "ghost": float("inf"), "never": None}
+        pricing = {"cost_rates": {"token_input_per_1k": 0.003, "token_output_per_1k": 0.015,
+                                  "runtime_per_minute": 0.06}, "currency": "USD"}
+        return ledger, employee_rows, heartbeat_ages, pricing
+
+    def test_build_cost_dashboard_golden_canonical_json(self):
+        from company_kernel import economics
+        out = economics.build_cost_dashboard(*self._inputs(), off_duty_threshold=15, days=14)
+        text = json.dumps(out, ensure_ascii=False, sort_keys=True, allow_nan=False, separators=(",", ":"))
+        self.assertEqual(self.GOLDEN, text)
+
+    def test_build_cost_dashboard_forwarded_and_pure(self):
+        import ast
+        import pathlib
+        from company_kernel import companyctl, economics
+        self.assertIs(companyctl.build_cost_dashboard, economics.build_cost_dashboard)
+        # the shell that used to hold the logic now keeps only the loaders + a delegating call
+        self.assertTrue(hasattr(companyctl, "load_heartbeat_ages"))
+        path = pathlib.Path(__file__).resolve().parents[1] / "company_kernel" / "economics.py"
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        offenders = [n.lineno for n in ast.walk(tree)
+                     if (isinstance(n, ast.Import) and any("companyctl" in a.name for a in n.names))
+                     or (isinstance(n, ast.ImportFrom) and n.module and "companyctl" in n.module)]
+        self.assertEqual([], offenders, "economics.py must stay a leaf (no companyctl import)")
+
+
 if __name__ == "__main__":
     unittest.main()
