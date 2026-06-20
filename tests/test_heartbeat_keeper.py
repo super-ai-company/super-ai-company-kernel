@@ -93,7 +93,10 @@ class HeartbeatKeeperThreadTest(unittest.TestCase):
         # drive exactly one loop iteration: wait() returns False (fire) then True (stop)
         fire = iter([False, True])
         keeper._stop.wait = lambda t: next(fire)  # type: ignore
-        keeper._loop()  # must not raise — failure is counted, not swallowed silently
+        import contextlib
+        import io
+        with contextlib.redirect_stderr(io.StringIO()):  # the keeper warns on stderr by design; keep test output clean
+            keeper._loop()  # must not raise — failure is counted, not swallowed silently
         self.assertEqual(1, keeper.consecutive_failures)
 
     def test_keeper_failure_counter_resets_on_success(self):

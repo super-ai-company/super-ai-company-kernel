@@ -25,21 +25,68 @@ from .db_paths import ensure_db_parent
 from . import sandboxing
 from . import project_memory
 from .schema_migrations import ensure_schema_migrations
+# Time/datetime primitives now live in company_kernel.core (split phase 0.5). core has NO dependency
+# on companyctl, so this is a plain top-level import — no lazy-import workaround needed. Re-exported
+# here so every existing `companyctl.now(...)` / `companyctl.seconds_since(...)` caller is unchanged.
+from .core import now, future_seconds, new_trace_id, parse_time, parse_iso_datetime, seconds_since  # noqa: F401 (facade re-export)
+from .core.db import rows  # noqa: F401 (facade re-export; DB query primitive)
+from .core.events import record_event, audit, emit, trace_id_for_task  # noqa: F401 (facade re-export; event/audit/output primitives)
+# Pure config-file readers now live in company_kernel.core.config (split: config-layer first cut).
+# They take a resolved path and only read+parse JSON; the path globals + resolve_kernel_paths stay HERE
+# as mock anchors. The old companyctl names below are kept as thin wrappers that assemble the path.
+from .core import config as _core_config
+from .core import connection as _connection  # conn-decoupling: short-connection context managers
+# Notification SEND primitives now live in company_kernel.notify (split: notify-domain cut). They are
+# pure transport (no DB, no config globals) and re-exported so every caller is unchanged. Notifications
+# Dispatcher + the config-entangled trio (notification_settings/update_notification_settings/
+# notification_send_result) stay here: they call the senders by bare name, and the suite patches
+# `companyctl.send_*` to intercept — which only reaches lookups resolved in companyctl's namespace.
+from .notify import (  # noqa: F401 (facade re-export; notification send primitives)
+    resolve_notification_target, applescript_quote, send_macos_notification,
+    send_telegram_notification, send_slack_webhook,
+)
+# Pure progress-transition helpers now live in company_kernel.progress (split: progress cut). Plain
+# forward import (no wrapper); deliver_pending_progress_notifications still calls them through here.
+# The fingerprint must stay byte-identical — dedup keys on it (guarded by a golden test).
+from .progress import (  # noqa: F401 (facade re-export; progress notification helpers)
+    PROGRESS_TRANSITION_MESSAGES, progress_notification_message,
+    progress_notification_decision, progress_notification_fingerprint,
+)
+# Pure unit-economics estimators now live in company_kernel.economics (split: economics pure cut).
+# Plain forward import (no wrapper); compute_economics/compute_cost_dashboard still call them here.
+# pricing is estimation-only — these take the pricing/rates dict in, never read config.
+from .economics import classify_task_type, estimate_task_cost, build_cost_dashboard, build_economics  # noqa: F401 (facade re-export)
+# Pure approval-classification helpers now live in company_kernel.approval (split: approval pure cut).
+# Plain forward — feeds both external qualified callers (company_dashboard.approval_control_summary)
+# and companyctl's bare-name calls (normalize_approval→approval_detail, CLI→approval_control_summary).
+from .approval import (  # noqa: F401 (facade re-export; approval pure cluster)
+    HIGH_RISK_APPROVAL_ACTIONS, approval_detail, approval_is_high_risk, approval_control_summary,
+)
+# Pure parsing / field-extraction leaves now live in company_kernel.parsing (pure-leaf sweep batch 1).
+# Plain forward; bare-name callers in companyctl resolve through it. parse_json_output joined because
+# parse_openclaw_agent_reply depends on it (keeps parsing.py a clean leaf, no reverse import).
+from .parsing import (  # noqa: F401 (facade re-export; pure parsing leaves)
+    parse_json_arg, parse_json_output, parse_openclaw_agent_reply,
+    _openclaw_native_result_task_id, _openclaw_native_result_agent,
+    _openclaw_native_result_summary, _openclaw_native_result_evidence,
+)
+# Pure text / slug / row-normalization leaves now live in company_kernel.textutil (long-tail sweep).
+from .textutil import (  # noqa: F401 (facade re-export; pure text/normalize leaves)
+    slug, mermaid_node_id, clamp_audit_limit, normalize_task_title,
+    normalize_rfc, normalize_project, parse_split_item, parse_csv,
+    parse_participants, parse_acceptance, normalize_employee_lookup, safe_path_token,
+    communication_name_aliases, report_progress_task_id, owner_action_next_step, direct_probe_body,
+)
 
 DEFAULT_ROOT = Path(__file__).resolve().parents[1]
 GLOBAL_CONFIG_PATH = Path("~/.gemini/antigravity/company_kernel_config.json")
 
 
 def load_global_config(path: Path | None = None) -> dict:
+    # Thin wrapper: resolve the path (env override / arg / default), then delegate to the pure reader.
     raw_path = str(os.environ.get("COMPANY_KERNEL_CONFIG_PATH", "") or "").strip()
     config_path = path or (Path(raw_path).expanduser() if raw_path else GLOBAL_CONFIG_PATH.expanduser())
-    if not config_path.exists():
-        return {}
-    try:
-        payload = json.loads(config_path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError:
-        return {}
-    return payload if isinstance(payload, dict) else {}
+    return _core_config.load_global_config(config_path)
 
 
 def resolve_kernel_paths(default_root: Path) -> dict[str, Path | int | dict]:
@@ -77,6 +124,10 @@ def resolve_db_path() -> Path:
 
 
 DB_PATH = resolve_db_path()
+# conn-decoupling first slice: inject the live DB_PATH into the connection leaf so its short-connection
+# context managers resolve the path exactly like connect() — and mock.patch.object(companyctl,"DB_PATH")
+# still steers them (the lambda reads this module's DB_PATH global at call time).
+_connection.set_path_provider(lambda: DB_PATH)
 EMPLOYEES_DIR = Path(_KERNEL_PATHS["employees_dir"])
 STATE_DIR = Path(_KERNEL_PATHS["state_dir"])
 RFC_DIR = Path(_KERNEL_PATHS["rfc_dir"])
@@ -125,10 +176,6 @@ DEFAULT_ROUTE_APPROVAL_ACTIONS = {
 }
 
 
-def now() -> str:
-    return datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
-
-
 PROGRESS_LAYER_DEFINITIONS = {
     "received": {
         "states": {"received", "acknowledged", "ack", "claimed"},
@@ -151,14 +198,6 @@ PROGRESS_LAYER_DEFINITIONS = {
         "label": "verified_complete",
     },
 }
-
-PROGRESS_TRANSITION_MESSAGES = {
-    ("received", "working"): "已开始处理",
-    ("working", "waiting"): "需要等待",
-    ("waiting", "blocked"): "已卡住",
-    ("working", "done"): "已完成",
-}
-
 
 def normalize_progress_state(state: str, *, summary: str = "") -> dict[str, str]:
     raw_state = str(state or "").strip()
@@ -212,11 +251,6 @@ def active_task_for_agent(conn: sqlite3.Connection, agent: str) -> sqlite3.Row |
         """,
         (agent,),
     ).fetchone()
-
-
-def report_progress_task_id(payload: dict) -> str:
-    report = payload.get("report") if isinstance(payload.get("report"), dict) else {}
-    return str(payload.get("task_id") or report.get("task_id") or "").strip()
 
 
 def workspace_progress_files(workspace: Path) -> list[Path]:
@@ -277,43 +311,6 @@ def progress_bridge_metadata(conn: sqlite3.Connection, agent: str, workspace: st
     }
     return enriched
 
-
-def progress_notification_message(agent: str, from_progress: dict[str, str], to_progress: dict[str, str]) -> str:
-    action = PROGRESS_TRANSITION_MESSAGES.get((from_progress.get("layer", ""), to_progress.get("layer", "")))
-    summary = str(to_progress.get("summary", "") or "").strip()
-    if action and summary:
-        return f"{agent} {action}：{summary}"
-    if action:
-        return f"{agent} {action}"
-    if summary:
-        return f"{agent} 进度变更：{summary}"
-    return f"{agent} 进度从 {from_progress.get('layer', 'unknown')} 变为 {to_progress.get('layer', 'unknown')}"
-
-
-def progress_notification_decision(agent: str, from_progress: dict[str, str], to_progress: dict[str, str], *, source: str = "heartbeat") -> dict:
-    return {
-        "kind": "progress_transition",
-        "trigger": source,
-        "triggered_by": agent,
-        "from_layer": from_progress.get("layer", ""),
-        "from_state": from_progress.get("state", ""),
-        "to_layer": to_progress.get("layer", ""),
-        "to_state": to_progress.get("state", ""),
-        "should_notify_user": True,
-        "reason": f"progress layer changed from {from_progress.get('layer', '')} to {to_progress.get('layer', '')}",
-        "message": progress_notification_message(agent, from_progress, to_progress),
-        "summary": to_progress.get("summary", ""),
-    }
-
-
-def progress_notification_fingerprint(agent: str, from_progress: dict[str, str], to_progress: dict[str, str], *, task_id: str = "") -> str:
-    parts = [
-        str(agent or "").strip(),
-        str(task_id or "").strip(),
-        str(from_progress.get("layer", "") or "").strip(),
-        str(to_progress.get("layer", "") or "").strip(),
-    ]
-    return "|".join(parts)
 
 
 def has_progress_notification_fingerprint(conn: sqlite3.Connection, fingerprint: str) -> bool:
@@ -518,15 +515,6 @@ def run_supervisor_delivery_loop(conn: sqlite3.Connection, *, limit: int = 20, a
     return result
 
 
-def parse_time(value: str) -> datetime:
-    raw = value.replace("Z", "+00:00")
-    return datetime.fromisoformat(raw)
-
-
-def future_seconds(seconds: int) -> str:
-    return (datetime.now(timezone.utc).astimezone() + timedelta(seconds=seconds)).isoformat(timespec="seconds")
-
-
 def sync_backlog_from_queue_file(conn: sqlite3.Connection) -> None:
     queue_path = ROOT / ".ops" / "super-ai-company-kernel-queue.json"
     if not queue_path.exists():
@@ -636,61 +624,6 @@ def database_integrity(conn: sqlite3.Connection) -> dict:
     except sqlite3.Error as exc:
         return {"ok": False, "integrity": [f"error: {exc}"], "foreign_key_violations": -1}
     return {"ok": integ == ["ok"] and not fk, "integrity": integ, "foreign_key_violations": len(fk)}
-
-
-def emit(obj: dict) -> None:
-    print(json.dumps(obj, ensure_ascii=False, indent=2))
-
-
-def audit(conn: sqlite3.Connection, actor: str, action: str, target: str = "", detail: dict | None = None) -> None:
-    conn.execute(
-        "INSERT INTO audit_logs(actor, action, target, detail_json, created_at) VALUES (?, ?, ?, ?, ?)",
-        (actor, action, target, json.dumps(detail or {}, ensure_ascii=False), now()),
-    )
-    conn.commit()
-
-
-def new_trace_id() -> str:
-    return f"trace-{datetime.now().strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:8]}"
-
-
-def trace_id_for_task(conn: sqlite3.Connection, task_id: str = "", fallback: str = "") -> str:
-    if not task_id:
-        return fallback or new_trace_id()
-    row = conn.execute("SELECT metadata_json FROM task_metadata WHERE task_id = ?", (task_id,)).fetchone()
-    if row:
-        try:
-            metadata = json.loads(row["metadata_json"] or "{}")
-        except json.JSONDecodeError:
-            metadata = {}
-        trace_id = str(metadata.get("trace_id", "") or "")
-        if trace_id:
-            return trace_id
-    return fallback or new_trace_id()
-
-
-def record_event(conn: sqlite3.Connection, event_type: str, source_agent: str, *, task_id: str = "", payload: dict | None = None, trace_id: str = "") -> dict:
-    event_id = f"evt-{datetime.now().strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:6]}"
-    ts = now()
-    event_trace_id = trace_id or trace_id_for_task(conn, task_id)
-    event = {
-        "id": event_id,
-        "trace_id": event_trace_id,
-        "event_type": event_type,
-        "source_agent": source_agent,
-        "task_id": task_id,
-        "payload": payload or {},
-        "created_at": ts,
-    }
-    conn.execute(
-        """
-        INSERT INTO company_events(id, trace_id, event_type, source_agent, task_id, payload_json, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
-        """,
-        (event_id, event_trace_id, event_type, source_agent, task_id, json.dumps(payload or {}, ensure_ascii=False), ts),
-    )
-    conn.commit()
-    return event
 
 
 # Curated, owner-readable activity feed. The raw company_events ledger is mostly internal plumbing
@@ -821,11 +754,6 @@ def company_priority_queue(conn: sqlite3.Connection, *, stale_minutes: int = 30,
             add("task", t["id"], t["title"], 3, "超时", ts, ["nudge", "reassign", "read"], t["target_agent"])
 
     return sorted(by_key.values(), key=lambda x: (x["severity"], x["ts"]))[:limit]
-
-
-def safe_path_token(value: str) -> str:
-    token = "".join(ch if ch.isalnum() or ch in "._-" else "_" for ch in str(value or ""))
-    return token.strip("._-") or "task"
 
 
 def require_task(conn: sqlite3.Connection, task_id: str) -> dict:
@@ -1061,15 +989,6 @@ def row_by_id(conn: sqlite3.Connection, table: str, id_column: str, item_id: str
     if not row:
         raise SystemExit(f"{table.rstrip('s')} not found: {item_id}")
     return dict(row)
-
-
-def parse_json_arg(raw: str, default: object) -> object:
-    if not raw:
-        return default
-    try:
-        return json.loads(raw)
-    except json.JSONDecodeError as exc:
-        raise SystemExit(f"invalid json: {exc}") from exc
 
 
 def register_artifact_internal(
@@ -1411,20 +1330,6 @@ def managed_runtime_policy(**overrides: int) -> dict:
         if value is not None:
             policy[key] = int(value)
     return policy
-
-
-def parse_iso_datetime(value: str):
-    if not value:
-        return None
-    return datetime.fromisoformat(value)
-
-
-def seconds_since(value: str, now_value: str) -> int:
-    parsed = parse_iso_datetime(value)
-    current = parse_iso_datetime(now_value)
-    if not parsed or not current:
-        return 0
-    return max(0, int((current - parsed).total_seconds()))
 
 
 def attempt_json_field(attempt: dict, field: str, default: dict | None = None) -> dict:
@@ -2548,20 +2453,6 @@ def task_control_action_summary(*, approvals: list[dict], events: list[dict], at
     }
 
 
-def owner_action_next_step(action: str, *, pending: bool = False) -> str:
-    if pending:
-        return "review owner approval request before real execution"
-    if action == "probe":
-        return "wait for worker response or escalate to Hermes correction if progress remains stagnant"
-    if action == "correction":
-        return "wait for worker correction ack or fresh progress"
-    if action == "cancel":
-        return "verify process stopped and ignore late evidence"
-    if action in {"retry", "reassign", "reopen"}:
-        return "monitor new attempt heartbeat, progress, and evidence"
-    return "monitor task progress and evidence"
-
-
 def task_owner_action_timeline(*, approvals: list[dict], events: list[dict]) -> list[dict]:
     timeline: list[dict] = []
     for approval in approvals:
@@ -3343,9 +3234,8 @@ def employee_paths(employee_id: str) -> dict[str, Path]:
 
 
 def load_communication_config() -> dict:
-    if not COMMUNICATIONS_PATH.exists():
-        return {"policy": {"mode": "open"}, "aliases": {}, "employees": {}, "channels": {}}
-    return json.loads(COMMUNICATIONS_PATH.read_text(encoding="utf-8"))
+    # Thin wrapper: hand the COMMUNICATIONS_PATH anchor to the pure reader.
+    return _core_config.load_communication_config(COMMUNICATIONS_PATH)
 
 
 def write_communication_config(config: dict) -> None:
@@ -3431,76 +3321,9 @@ def update_notification_settings(payload: dict) -> dict:
     return notification_settings()
 
 
-def resolve_notification_target(target: str) -> tuple[str, str]:
-    raw = str(target or "").strip()
-    if raw in {"macos", "macos:", "local", "local:"}:
-        return "macos", "default"
-    if raw.startswith("macos:"):
-        return "macos", raw.split(":", 1)[1].strip() or "default"
-    if raw.startswith("telegram:"):
-        chat_id = raw.split(":", 1)[1].strip()
-        if not chat_id:
-            raise ValueError("telegram target chat id is required")
-        return "telegram", chat_id
-    if raw.startswith("slack:"):
-        webhook_id = raw.split(":", 1)[1].strip()
-        if not webhook_id:
-            raise ValueError("slack webhook id is required")
-        return "slack", webhook_id
-    if raw:
-        return "telegram", raw
-    raise ValueError("notification target is required")
-
-
-def applescript_quote(value: str) -> str:
-    return '"' + str(value or "").replace("\\", "\\\\").replace('"', '\\"') + '"'
-
-
-def send_macos_notification(*, text: str, title: str = "Company Kernel", subtitle: str = "") -> dict:
-    command = ["osascript", "-e"]
-    script = f"display notification {applescript_quote(text)} with title {applescript_quote(title)}"
-    if subtitle:
-        script += f" subtitle {applescript_quote(subtitle)}"
-    subprocess.run(command + [script], check=True, capture_output=True, text=True, timeout=10)
-    return {"ok": True, "platform": "macos", "message_id": "osascript"}
-
-
-def send_telegram_notification(*, token: str, chat_id: str, text: str, timeout: int = 20, reply_markup: dict | None = None) -> dict:
-    if not token:
-        raise ValueError("telegram bot token is not configured")
-    if not chat_id:
-        raise ValueError("telegram chat id is required")
-    fields = {"chat_id": chat_id, "text": text}
-    if reply_markup:
-        fields["reply_markup"] = json.dumps(reply_markup, ensure_ascii=False)
-    payload = urllib.parse.urlencode(fields).encode("utf-8")
-    request = urllib.request.Request(f"https://api.telegram.org/bot{token}/sendMessage", data=payload, method="POST")
-    request.add_header("Content-Type", "application/x-www-form-urlencoded")
-    with urllib.request.urlopen(request, timeout=timeout) as response:
-        data = json.loads(response.read().decode("utf-8"))
-    if not data.get("ok"):
-        raise ValueError(str(data.get("description") or "telegram send failed"))
-    result = data.get("result", {}) if isinstance(data.get("result"), dict) else {}
-    return {
-        "ok": True,
-        "platform": "telegram",
-        "chat_id": str(result.get("chat", {}).get("id", chat_id) if isinstance(result.get("chat"), dict) else chat_id),
-        "message_id": result.get("message_id", ""),
-    }
-
-
-def send_slack_webhook(webhook_url: str, payload: dict, timeout: int = 20) -> dict:
-    if not webhook_url:
-        raise ValueError("slack webhook url is not configured")
-    data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-    request = urllib.request.Request(webhook_url, data=data, method="POST")
-    request.add_header("Content-Type", "application/json")
-    with urllib.request.urlopen(request, timeout=timeout) as response:
-        body = response.read().decode("utf-8", errors="replace")
-    return {"ok": True, "platform": "slack", "message_id": body or "ok"}
-
-
 class NotificationDispatcher:
+    # Stays in companyctl (not notify.py): its methods call the senders by bare name, and the suite
+    # patches companyctl.send_* to intercept — a patch that only reaches lookups in this namespace.
     def __init__(self, settings: dict):
         self.settings = settings or {}
 
@@ -3584,21 +3407,6 @@ def notification_send_result(*, message: str, target: str = "", account_id: str 
     except (ValueError, urllib.error.URLError, TimeoutError) as exc:
         return {**result, "ok": False, "error": str(exc)}
     return {**result, **sent}
-
-
-def normalize_employee_lookup(value: str) -> str:
-    return " ".join(str(value or "").strip().split()).casefold()
-
-
-def communication_name_aliases(employee_id: str, name: str) -> list[str]:
-    aliases = []
-    clean_name = " ".join(str(name or "").strip().split())
-    if clean_name and clean_name != employee_id:
-        aliases.append(clean_name)
-        compact = clean_name.replace(" ", "-").lower()
-        if compact and compact not in {employee_id, clean_name}:
-            aliases.append(compact)
-    return aliases
 
 
 def resolve_employee_alias(employee_id: str, *, strict: bool = False) -> str:
@@ -4392,46 +4200,6 @@ def openclaw_native_dispatch_execute(
     }
 
 
-def _openclaw_native_result_task_id(payload: dict) -> str:
-    nested = payload.get("payload", {}) if isinstance(payload.get("payload", {}), dict) else {}
-    for key in ("kernel_task_id", "task_id"):
-        value = str(nested.get(key) or payload.get(key) or "").strip()
-        if value:
-            return value
-    return ""
-
-
-def _openclaw_native_result_agent(payload: dict, fallback: str = "") -> str:
-    for key in ("source_agent", "employee_id", "agent"):
-        value = str(payload.get(key) or "").strip()
-        if value:
-            return value
-    nested = payload.get("payload", {}) if isinstance(payload.get("payload", {}), dict) else {}
-    for key in ("source_agent", "employee_id", "agent"):
-        value = str(nested.get(key) or "").strip()
-        if value:
-            return value
-    return fallback
-
-
-def _openclaw_native_result_summary(payload: dict, state: str) -> str:
-    nested = payload.get("payload", {}) if isinstance(payload.get("payload", {}), dict) else {}
-    for key in ("summary", "message", "result", "receipt"):
-        value = str(nested.get(key) or payload.get(key) or "").strip()
-        if value:
-            return value
-    return f"OpenClaw native {state} result imported"
-
-
-def _openclaw_native_result_evidence(payload: dict, source_file: Path) -> str:
-    nested = payload.get("payload", {}) if isinstance(payload.get("payload", {}), dict) else {}
-    for key in ("evidence_path", "evidence", "report_path", "path"):
-        value = str(nested.get(key) or payload.get(key) or "").strip()
-        if value:
-            return value
-    return str(source_file)
-
-
 def _openclaw_native_result_blocker(payload: dict) -> str:
     nested = payload.get("payload", {}) if isinstance(payload.get("payload", {}), dict) else {}
     for key in ("blocker", "error", "reason", "message"):
@@ -4701,22 +4469,6 @@ def attendance_agent_runtime_id(employee_id: str, runtime: str) -> str:
     if employee_id == "hermes" and runtime == "hermes":
         return "default"
     return employee_id
-
-
-def parse_openclaw_agent_reply(stdout: str) -> str:
-    payload = parse_json_output(stdout)
-    result = payload.get("result") if isinstance(payload, dict) else {}
-    payloads = result.get("payloads") if isinstance(result, dict) else []
-    if isinstance(payloads, list):
-        for item in payloads:
-            if isinstance(item, dict) and str(item.get("text") or "").strip():
-                return str(item["text"]).strip()
-    meta = result.get("meta") if isinstance(result, dict) else {}
-    if isinstance(meta, dict):
-        for key in ("finalAssistantVisibleText", "finalAssistantRawText"):
-            if str(meta.get(key) or "").strip():
-                return str(meta[key]).strip()
-    return ""
 
 
 def attendance_reply_probe(employee_id: str, runtime: str, timeout: int) -> dict:
@@ -5237,18 +4989,6 @@ def cmd_employee_create(args: argparse.Namespace) -> int:
     return 0
 
 
-def rows(conn: sqlite3.Connection, sql: str, params: tuple = ()) -> list[dict]:
-    return [dict(r) for r in conn.execute(sql, params).fetchall()]
-
-
-def clamp_audit_limit(limit: int | str | None) -> int:
-    try:
-        value = int(limit or 50)
-    except (TypeError, ValueError):
-        value = 50
-    return max(1, min(value, 200))
-
-
 def audit_evidence_records(conn: sqlite3.Connection, *, task_id: str = "", employee_id: str = "", limit: int | str | None = 50) -> list[dict]:
     sql = """
         SELECT evidence_id, trace_id, task_id, attempt_id, employee_id, artifact_id,
@@ -5485,10 +5225,6 @@ def audit_handoff_records(conn: sqlite3.Connection, *, task_id: str = "", limit:
     for item in handoffs:
         item["artifacts"] = parse_json_arg(item.pop("artifacts_json", "") or "[]", [])
     return handoffs
-
-
-def mermaid_node_id(raw: str) -> str:
-    return re.sub(r"[^A-Za-z0-9_]", "_", raw)
 
 
 def trace_file_flow_graph(conn: sqlite3.Connection, trace_id: str) -> dict:
@@ -5738,41 +5474,29 @@ def audit_failure_records(conn: sqlite3.Connection, *, task_id: str = "", limit:
 
 
 def cmd_audit_evidence(args: argparse.Namespace) -> int:
-    conn = connect_readonly()
-    try:
+    with _connection.read_connection() as conn:
         evidence = audit_evidence_records(conn, task_id=args.task_id, employee_id=args.employee_id, limit=args.limit)
-    finally:
-        conn.close()
     emit({"ok": True, "source": "companyctl audit evidence", "evidence": evidence})
     return 0
 
 
 def cmd_audit_artifacts(args: argparse.Namespace) -> int:
-    conn = connect_readonly()
-    try:
+    with _connection.read_connection() as conn:
         artifacts = audit_artifact_records(conn, task_id=args.task_id, limit=args.limit)
-    finally:
-        conn.close()
     emit({"ok": True, "source": "companyctl audit artifacts", "artifacts": artifacts})
     return 0
 
 
 def cmd_audit_handoffs(args: argparse.Namespace) -> int:
-    conn = connect_readonly()
-    try:
+    with _connection.read_connection() as conn:
         handoffs = audit_handoff_records(conn, task_id=args.task_id, limit=args.limit)
-    finally:
-        conn.close()
     emit({"ok": True, "source": "companyctl audit handoffs", "handoffs": handoffs})
     return 0
 
 
 def cmd_audit_failures(args: argparse.Namespace) -> int:
-    conn = connect_readonly()
-    try:
+    with _connection.read_connection() as conn:
         failures = audit_failure_records(conn, task_id=args.task_id, limit=args.limit)
-    finally:
-        conn.close()
     emit({"ok": True, "source": "companyctl audit failures", "failures": failures})
     return 0
 
@@ -5780,12 +5504,9 @@ def cmd_audit_failures(args: argparse.Namespace) -> int:
 def cmd_trace_timeline(args: argparse.Namespace) -> int:
     from . import company_trace
 
-    conn = connect_readonly()
-    try:
+    with _connection.read_connection() as conn:
         trace_id = company_trace.resolve_trace_id(conn, args.trace_id, args.task_id)
         trace = company_trace.load_trace(conn, trace_id)
-    finally:
-        conn.close()
     emit(company_trace.safe_trace_payload(trace))
     return 0
 
@@ -5831,11 +5552,10 @@ def cmd_runtime_session_stop(args: argparse.Namespace) -> int:
 
 
 def cmd_runtime_session_list(args: argparse.Namespace) -> int:
-    conn = connect_readonly()
-    try:
+    # conn-decoupling first slice (worker runtime-status read): short read-only connection via the
+    # connection leaf — auto-closed on exit (no leak/long-hold), same behaviour as connect_readonly().
+    with _connection.read_connection() as conn:
         sessions = list_runtime_sessions(conn, employee_id=args.employee, task_id=args.task_id, trace_id=args.trace_id, limit=args.limit)
-    finally:
-        conn.close()
     emit({"ok": True, "runtime_sessions": sessions})
     return 0
 
@@ -5874,11 +5594,8 @@ def cmd_tool_call_finish(args: argparse.Namespace) -> int:
 
 
 def cmd_tool_call_list(args: argparse.Namespace) -> int:
-    conn = connect_readonly()
-    try:
+    with _connection.read_connection() as conn:
         tool_calls = list_tool_calls(conn, employee_id=args.employee, task_id=args.task_id, trace_id=args.trace_id, attempt_id=args.attempt_id, session_id=args.session_id, limit=args.limit)
-    finally:
-        conn.close()
     emit({"ok": True, "tool_calls": tool_calls})
     return 0
 
@@ -5911,78 +5628,30 @@ def cmd_budget_record(args: argparse.Namespace) -> int:
 
 
 def load_pricing_config() -> dict:
-    path = ROOT / "config" / "pricing.json"
-    if not path.exists():
-        return {}
-    try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
-        return {}
-
-
-def classify_task_type(title: str, description: str, pricing: dict) -> str:
-    text = f"{title}\n{description}".lower()
-    for ttype, keywords in (pricing.get("task_type_keywords") or {}).items():
-        for kw in keywords:
-            if kw.lower() in text:
-                return ttype
-    return "default"
-
-
-def estimate_task_cost(ev: dict, rates: dict) -> float:
-    """Cost of a task from its budget events: prefer recorded amount; else estimate from
-    tokens; else fall back to runtime. Lets us compute margin even before token capture lands."""
-    amount = float(ev.get("amount") or 0)
-    if amount > 0:
-        return amount
-    ti = int(ev.get("token_input") or 0)
-    to = int(ev.get("token_output") or 0)
-    if ti or to:
-        return ti / 1000.0 * float(rates.get("token_input_per_1k", 0)) + to / 1000.0 * float(rates.get("token_output_per_1k", 0))
-    secs = int(ev.get("runtime_seconds") or 0)
-    return secs / 60.0 * float(rates.get("runtime_per_minute", 0))
+    # Thin wrapper: assemble the pricing path under ROOT, then delegate to the pure reader.
+    return _core_config.load_pricing_config(ROOT / "config" / "pricing.json")
 
 
 def compute_economics(conn: sqlite3.Connection) -> dict:
     """Per-task-type unit economics: revenue (result price) vs cost (from budget events) ->
-    margin. This is survival-metric #1 for outcome-based pricing."""
+    margin. This is survival-metric #1 for outcome-based pricing.
+
+    Thin shell now (split: economics build-core cut B): load pricing, fetch completed tasks, aggregate
+    budget_events per task_id (rows() already yields plain dicts), then delegate the bucketing to the
+    pure economics.build_economics. Behaviour is golden-pinned identical."""
     pricing = load_pricing_config()
-    prices = pricing.get("result_prices") or {}
-    rates = pricing.get("cost_rates") or {}
-    currency = pricing.get("currency", "USD")
-    # completed tasks + their aggregated budget cost
     tasks = rows(conn, "SELECT id, title, description, target_agent FROM tasks WHERE status = 'completed'")
     cost_by_task: dict = {}
     for ev in rows(conn, "SELECT task_id, amount, token_input, token_output, runtime_seconds FROM budget_events WHERE task_id != ''"):
         cost_by_task.setdefault(ev["task_id"], []).append(ev)
-    buckets: dict = {}
-    for task in tasks:
-        ttype = classify_task_type(task.get("title", ""), task.get("description", ""), pricing)
-        revenue = float(prices.get(ttype, prices.get("default", 0)))
-        cost = sum(estimate_task_cost(ev, rates) for ev in cost_by_task.get(task["id"], []))
-        b = buckets.setdefault(ttype, {"task_type": ttype, "count": 0, "revenue": 0.0, "cost": 0.0})
-        b["count"] += 1
-        b["revenue"] += revenue
-        b["cost"] += cost
-    for b in buckets.values():
-        b["revenue"] = round(b["revenue"], 4)
-        b["cost"] = round(b["cost"], 4)
-        b["margin"] = round(b["revenue"] - b["cost"], 4)
-        b["margin_pct"] = round((b["margin"] / b["revenue"] * 100) if b["revenue"] else 0.0, 1)
-    total_rev = round(sum(b["revenue"] for b in buckets.values()), 4)
-    total_cost = round(sum(b["cost"] for b in buckets.values()), 4)
-    return {
-        "currency": currency,
-        "by_task_type": sorted(buckets.values(), key=lambda x: -x["revenue"]),
-        "totals": {
-            "completed_tasks": sum(b["count"] for b in buckets.values()),
-            "revenue": total_rev,
-            "cost": total_cost,
-            "margin": round(total_rev - total_cost, 4),
-            "margin_pct": round((total_rev - total_cost) / total_rev * 100 if total_rev else 0.0, 1),
-        },
-        "note": "revenue=按 config/pricing.json 结果价；cost=budget_events 估算（amount>token>runtime 兜底）。",
-    }
+    return build_economics(tasks, cost_by_task, pricing)
+
+
+def load_heartbeat_ages(conn: sqlite3.Connection, employee_ids) -> dict:
+    """Shell loader for build_cost_dashboard: pre-fetch each employee's heartbeat age (minutes), so the
+    pure core stays clock/DB-free. Values pass through verbatim — float minutes, None (never beat),
+    or float('inf') (unparseable heartbeat); the core renders inf/None as null / off-duty."""
+    return {eid: heartbeat_age_minutes(conn, eid) for eid in employee_ids}
 
 
 def compute_cost_dashboard(conn: sqlite3.Connection, *, days: int = 14) -> dict:
@@ -5991,79 +5660,31 @@ def compute_cost_dashboard(conn: sqlite3.Connection, *, days: int = 14) -> dict:
     spends. Aggregates the budget ledger per employee + per day so a human can SEE who is
     on duty at zero cost vs where money actually went. Cost uses the same estimate as
     unit-economics (recorded amount > token estimate > runtime fallback) so the two views
-    never disagree. See docs/ON_DUTY_COST_MODEL.md."""
-    rates = (load_pricing_config().get("cost_rates") or {})
-    currency = load_pricing_config().get("currency", "USD")
+    never disagree. See docs/ON_DUTY_COST_MODEL.md.
+
+    Thin shell now (split: dashboard pure-core cut): gather the ledger + human-owner-filtered
+    employees + pre-fetched heartbeat ages + pricing, then hand them to the pure
+    economics.build_cost_dashboard. The is_human filter stays HERE on the (id, status) rows — exactly as
+    before, so it still only catches id=='owner' (role/runtime columns aren't fetched). Behaviour is
+    golden-pinned identical."""
     ledger = rows(conn, "SELECT employee_id, amount, token_input, token_output, runtime_seconds, "
                         "substr(created_at,1,10) AS day FROM budget_events WHERE employee_id != ''")
-    spend: dict = {}
-    by_day: dict = {}
-    for ev in ledger:
-        cost = estimate_task_cost(ev, rates)
-        s = spend.setdefault(ev["employee_id"], {"executions": 0, "tokens": 0, "cost": 0.0})
-        s["executions"] += 1
-        s["tokens"] += int(ev.get("token_input") or 0) + int(ev.get("token_output") or 0)
-        s["cost"] += cost
-        day = ev.get("day") or ""
-        if day:
-            d = by_day.setdefault(day, {"day": day, "executions": 0, "cost": 0.0})
-            d["executions"] += 1
-            d["cost"] += cost
-    employees = [e for e in rows(conn, "SELECT id, status FROM employees ORDER BY id")
-                 if not is_human_owner_employee(e)]
-    by_employee = []
-    on_duty_free = 0
-    for e in employees:
-        eid = e["id"]
-        s = spend.get(eid, {"executions": 0, "tokens": 0, "cost": 0.0})
-        age = heartbeat_age_minutes(conn, eid)
-        on_duty = age is not None and age <= OFF_DUTY_HEARTBEAT_MINUTES
-        cost = round(s["cost"], 4)
-        if on_duty and cost == 0:
-            on_duty_free += 1
-        by_employee.append({
-            "employee_id": eid,
-            "status": e.get("status", ""),
-            "on_duty": on_duty,
-            "heartbeat_age_minutes": None if age is None or age == float("inf") else round(age, 1),
-            "executions": s["executions"],
-            "tokens": s["tokens"],
-            "cost": cost,
-        })
-    by_employee.sort(key=lambda x: (-x["cost"], -x["executions"], x["employee_id"]))
-    trend = sorted(by_day.values(), key=lambda d: d["day"], reverse=True)[:days]
-    for d in trend:
-        d["cost"] = round(d["cost"], 4)
-    return {
-        "currency": currency,
-        "by_employee": by_employee,
-        "by_day": list(reversed(trend)),  # oldest→newest for charting
-        "totals": {
-            "cost": round(sum(x["cost"] for x in by_employee), 4),
-            "executions": sum(x["executions"] for x in by_employee),
-            "on_duty": sum(1 for x in by_employee if x["on_duty"]),
-            "on_duty_free": on_duty_free,
-            "employees": len(by_employee),
-        },
-        "note": "在岗=心跳15分钟内仍活跃(内部通信/查任务0花费);cost=budget_events 估算(amount>token>runtime);只有接单执行才计费。",
-    }
+    employee_rows = [e for e in rows(conn, "SELECT id, status FROM employees ORDER BY id")
+                     if not is_human_owner_employee(e)]
+    heartbeat_ages = load_heartbeat_ages(conn, [e["id"] for e in employee_rows])
+    return build_cost_dashboard(ledger, employee_rows, heartbeat_ages, load_pricing_config(),
+                                off_duty_threshold=OFF_DUTY_HEARTBEAT_MINUTES, days=days)
 
 
 def cmd_economics(args: argparse.Namespace) -> int:
-    conn = connect_readonly()
-    try:
+    with _connection.read_connection() as conn:
         emit({"ok": True, **compute_economics(conn)})
-    finally:
-        conn.close()
     return 0
 
 
 def cmd_cost(args: argparse.Namespace) -> int:
-    conn = connect_readonly()
-    try:
+    with _connection.read_connection() as conn:
         emit({"ok": True, **compute_cost_dashboard(conn, days=max(1, int(getattr(args, "days", 14))))})
-    finally:
-        conn.close()
     return 0
 
 
@@ -6185,11 +5806,8 @@ def cmd_verifier_record(args: argparse.Namespace) -> int:
 
 
 def cmd_verifier_accuracy(args: argparse.Namespace) -> int:
-    conn = connect_readonly()
-    try:
+    with _connection.read_connection() as conn:
         emit({"ok": True, **compute_verifier_accuracy(conn)})
-    finally:
-        conn.close()
     return 0
 
 
@@ -6282,24 +5900,18 @@ def cmd_a2a_deny(args: argparse.Namespace) -> int:
 
 
 def cmd_a2a_list(args: argparse.Namespace) -> int:
-    conn = connect_readonly()
-    try:
+    with _connection.read_connection() as conn:
         where = "WHERE status = ?" if args.status else ""
         params = (args.status, args.limit) if args.status else (args.limit,)
         items = rows(conn, f"SELECT a2a_request_id, source_agent, target_agent, action, status, decided_by, created_at FROM a2a_requests {where} ORDER BY created_at DESC LIMIT ?", params)
-    finally:
-        conn.close()
     emit({"ok": True, "a2a_requests": items})
     return 0
 
 
 def cmd_budget_summary(args: argparse.Namespace) -> int:
-    conn = connect_readonly()
-    try:
+    with _connection.read_connection() as conn:
         summary = budget_summary(conn, task_id=args.task_id, employee_id=args.employee, trace_id=args.trace_id, attempt_id=args.attempt_id)
         events = list_budget_events(conn, task_id=args.task_id, employee_id=args.employee, trace_id=args.trace_id, attempt_id=args.attempt_id, limit=args.limit)
-    finally:
-        conn.close()
     emit({"ok": True, "summary": summary, "budget_events": events})
     return 0
 
@@ -6385,11 +5997,8 @@ def cmd_workspace_prune(args: argparse.Namespace) -> int:
     if not args.dry_run:
         emit({"ok": False, "error": "workspace prune is preview-only in this phase; pass --dry-run"})
         return 2
-    conn = connect_readonly()
-    try:
+    with _connection.read_connection() as conn:
         preview = workspace_prune_preview(conn, older_than_days=args.older_than_days, limit=args.limit)
-    finally:
-        conn.close()
     emit(preview)
     return 0
 
@@ -7015,10 +6624,6 @@ def cmd_employee_show(args: argparse.Namespace) -> int:
     return 0
 
 
-def parse_csv(raw: str) -> list[str]:
-    return [item.strip() for item in raw.split(",") if item.strip()]
-
-
 def cmd_employee_capabilities(args: argparse.Namespace) -> int:
     conn = connect()
     bundle = employee_file_bundle(conn, args.id)
@@ -7215,10 +6820,6 @@ def employee_has_verified_direct_evidence(employee_id: str) -> bool:
     except (OSError, json.JSONDecodeError):
         return False
     return bool(payload.get("ok") and int(payload.get("rounds_completed", 0) or 0) >= 2)
-
-
-def direct_probe_body(agent_id: str, round_index: int) -> str:
-    return f"员工通信验证第{round_index}轮：请只回复 {agent_id}_VERIFY_ROUND_{round_index}_OK"
 
 
 def cmd_employee_set_unavailable(args: argparse.Namespace) -> int:
@@ -8121,10 +7722,6 @@ def submit_guards_on() -> bool:
     """Submit guardrails are ON in production; tests set COMPANY_KERNEL_SUBMIT_GUARDS=0 to opt out
     of the codex-workspace / duplicate / recently-discarded checks for fixtures."""
     return os.environ.get("COMPANY_KERNEL_SUBMIT_GUARDS", "1") != "0"
-
-
-def normalize_task_title(title: str) -> str:
-    return re.sub(r"\s+", "", str(title or "")).lower()
 
 
 def codex_target_workspace_ok(conn: sqlite3.Connection, target: str, description: str) -> tuple[bool, str]:
@@ -9701,15 +9298,6 @@ def cmd_guard_check(args: argparse.Namespace) -> int:
     return 1 if blocked else 0
 
 
-def parse_participants(raw: str) -> list[str]:
-    participants = []
-    for item in raw.split(","):
-        item = item.strip()
-        if item and item not in participants:
-            participants.append(item)
-    return participants
-
-
 def notify_conversation_participants(conversation_id: str, message: dict, participants: list[str]) -> dict[str, str]:
     files = {}
     for participant in participants:
@@ -10813,10 +10401,6 @@ def send_message_internal(conn: sqlite3.Connection, *, source: str, target: str,
     return {"message": message, "file": str(message_file), "event_id": event["id"]}
 
 
-def slug(value: str) -> str:
-    return "".join(ch if ch.isalnum() or ch in "-_." else "-" for ch in value).strip("-") or "item"
-
-
 def approved_gate(conn: sqlite3.Connection, approval_id: str, approval_action: str, source: str, target: str) -> dict:
     if not approval_id:
         return {"allowed": False, "reason": "missing approval_id"}
@@ -10990,14 +10574,6 @@ def cmd_scheduler_skip_event(args: argparse.Namespace) -> int:
     return 0
 
 
-def approval_detail(raw: str) -> dict:
-    try:
-        parsed = json.loads(raw or "{}")
-        return parsed if isinstance(parsed, dict) else {"reason": raw}
-    except json.JSONDecodeError:
-        return {"reason": raw}
-
-
 def normalize_approval(row: sqlite3.Row | dict) -> dict:
     obj = dict(row)
     obj["detail"] = approval_detail(obj.pop("reason", ""))
@@ -11017,93 +10593,6 @@ def normalize_approval(row: sqlite3.Row | dict) -> dict:
     return obj
 
 
-HIGH_RISK_APPROVAL_ACTIONS = {
-    "external_send",
-    "telegram_send",
-    "openclaw_send",
-    "rule_change",
-    "delete_file",
-    "sensitive_file",
-    "publish",
-    "payment",
-    "compensation",
-    "salary",
-    "penalty",
-    "budget_overrun",
-    "budget.overrun",
-}
-
-
-def approval_is_high_risk(approval: dict) -> bool:
-    action = str(approval.get("action") or "")
-    detail = approval.get("detail", {}) if isinstance(approval.get("detail", {}), dict) else {}
-    risk = str(detail.get("risk") or "").upper()
-    return action in HIGH_RISK_APPROVAL_ACTIONS or risk in {"P0", "P1"}
-
-
-def approval_control_summary(approvals: list[dict]) -> dict:
-    by_status: dict[str, int] = {}
-    by_action: dict[str, int] = {}
-    high_risk_actions: set[str] = set()
-    pending_high_risk_actions: set[str] = set()
-    real_execution_blockers: dict[str, int] = {}
-    dry_run_resolved = 0
-    external_send_executed = 0
-    for approval in approvals:
-        status = str(approval.get("status") or "")
-        action = str(approval.get("action") or "")
-        safety = approval.get("safety", {}) if isinstance(approval.get("safety", {}), dict) else {}
-        by_status[status] = by_status.get(status, 0) + 1
-        by_action[action] = by_action.get(action, 0) + 1
-        if approval_is_high_risk(approval):
-            high_risk_actions.add(action)
-            if status == "pending":
-                pending_high_risk_actions.add(action)
-        if safety.get("dry_run"):
-            dry_run_resolved += 1
-        if safety.get("external_send_executed"):
-            external_send_executed += 1
-        if (
-            status in {"pending", "requested", "waiting_approval"}
-            and action in {"external_send", "telegram_send", "openclaw_send"}
-            and not safety.get("external_send_executed")
-        ):
-            real_execution_blockers["external_send"] = real_execution_blockers.get("external_send", 0) + 1
-        if action in {"budget_overrun", "budget.overrun"} and status == "pending":
-            real_execution_blockers["budget_overrun"] = real_execution_blockers.get("budget_overrun", 0) + 1
-    pending_owner_action_count = sum(
-        count for status, count in by_status.items() if status in {"pending", "requested", "waiting_approval"}
-    )
-    blocked_real_execution_count = sum(real_execution_blockers.values())
-    queue_health = "owner_action_required" if pending_owner_action_count or blocked_real_execution_count else "clear"
-    if queue_health == "owner_action_required":
-        blocker_rows = ", ".join(f"{kind}={count}" for kind, count in sorted(real_execution_blockers.items())) or "no real execution blockers"
-        pending_rows = ", ".join(sorted(pending_high_risk_actions)) or "no pending high-risk actions"
-        owner_next_action = f"review pending high-risk approvals ({pending_rows}); blocked real execution: {blocker_rows}"
-    else:
-        owner_next_action = "no pending owner approval actions; monitor queue"
-    return {
-        "total": len(approvals),
-        "by_status": by_status,
-        "by_action": by_action,
-        "high_risk_actions": sorted(high_risk_actions),
-        "pending_high_risk_actions": sorted(pending_high_risk_actions),
-        "pending_owner_action_count": pending_owner_action_count,
-        "blocked_real_execution_count": blocked_real_execution_count,
-        "queue_health": queue_health,
-        "owner_next_action": owner_next_action,
-        "default_policy": "dry_run_until_owner_approval",
-        "dry_run_resolved": dry_run_resolved,
-        "external_send_executed": external_send_executed,
-        "real_external_send_requires_owner_approval": True,
-        "real_execution_blockers": real_execution_blockers,
-        "summary": (
-            "Pending high-risk approvals block real execution; "
-            "historical dry-run/mock-resolved approvals are audit history."
-        ),
-    }
-
-
 def write_approval_state(approval: dict) -> str:
     status = approval["status"]
     for existing_status in APPROVAL_STATUSES:
@@ -11119,15 +10608,6 @@ def write_approval_state(approval: dict) -> str:
 
 def rfc_state_path(status: str, rfc_id: str) -> Path:
     return STATE_DIR / "rfcs" / status / f"{rfc_id}.json"
-
-
-def normalize_rfc(row: sqlite3.Row | dict) -> dict:
-    obj = dict(row)
-    try:
-        obj["target_paths"] = json.loads(obj.pop("target_paths_json", "[]") or "[]")
-    except json.JSONDecodeError:
-        obj["target_paths"] = []
-    return obj
 
 
 def write_rfc_state(rfc: dict) -> str:
@@ -12125,18 +11605,6 @@ def cmd_openclaw_import_results(args: argparse.Namespace) -> int:
     return 0 if result.get("ok") else 1
 
 
-def parse_split_item(raw: str) -> dict:
-    parts = raw.split("|", 3)
-    if len(parts) < 2:
-        raise SystemExit("split item must be target|title or target|title|description|priority")
-    return {
-        "target": parts[0].strip(),
-        "title": parts[1].strip(),
-        "description": parts[2].strip() if len(parts) >= 3 else "",
-        "priority": parts[3].strip() if len(parts) >= 4 and parts[3].strip() else "P2",
-    }
-
-
 def split_items_from_plan(path: Path) -> list[dict]:
     payload = json.loads(path.read_text(encoding="utf-8"))
     raw_items = payload.get("items", payload if isinstance(payload, list) else [])
@@ -12764,15 +12232,6 @@ def cmd_task_reassign(args: argparse.Namespace) -> int:
     return 0
 
 
-def parse_acceptance(raw: str) -> list[str]:
-    items = []
-    for item in raw.split(";"):
-        item = item.strip()
-        if item:
-            items.append(item)
-    return items
-
-
 def cmd_project_create(args: argparse.Namespace) -> int:
     conn = connect()
     owner = resolve_employee_alias(args.owner)
@@ -12800,15 +12259,6 @@ def cmd_project_create(args: argparse.Namespace) -> int:
     audit(conn, owner, "project.create", project_id, project)
     emit({"ok": True, "project": project})
     return 0
-
-
-def normalize_project(row: sqlite3.Row | dict) -> dict:
-    obj = dict(row)
-    try:
-        obj["acceptance"] = json.loads(obj.pop("acceptance_json", "[]") or "[]")
-    except json.JSONDecodeError:
-        obj["acceptance"] = []
-    return obj
 
 
 def cmd_project_list(args: argparse.Namespace) -> int:
@@ -13359,9 +12809,8 @@ def cmd_runtime_register(args: argparse.Namespace) -> int:
 
 def cmd_runtime_list(args: argparse.Namespace) -> int:
     try:
-        conn = connect_readonly()
-        registered = {row["runtime"]: dict(row) for row in conn.execute("SELECT * FROM employee_runtimes ORDER BY runtime").fetchall()}
-        conn.close()
+        with _connection.read_connection() as conn:
+            registered = {row["runtime"]: dict(row) for row in conn.execute("SELECT * FROM employee_runtimes ORDER BY runtime").fetchall()}
     except sqlite3.OperationalError:
         registered = {}
     ts = now()
@@ -13396,9 +12845,8 @@ def cmd_runtime_test(args: argparse.Namespace) -> int:
         checks.append(check_command("antigravity"))
     else:
         try:
-            conn = connect_readonly()
-            row = conn.execute("SELECT * FROM employee_runtimes WHERE runtime = ?", (args.runtime,)).fetchone()
-            conn.close()
+            with _connection.read_connection() as conn:
+                row = conn.execute("SELECT * FROM employee_runtimes WHERE runtime = ?", (args.runtime,)).fetchone()
         except sqlite3.OperationalError:
             row = None
         if not row:
@@ -13434,14 +12882,6 @@ def adapter_verify_agents(conn: sqlite3.Connection, requested: list[str]) -> lis
         params.extend(resolved)
     sql = f"SELECT * FROM employees WHERE {' AND '.join(clauses)} ORDER BY runtime, id"
     return rows(conn, sql, tuple(params))
-
-
-def parse_json_output(raw: str) -> dict:
-    try:
-        parsed = json.loads(raw or "{}")
-        return parsed if isinstance(parsed, dict) else {"raw": raw}
-    except json.JSONDecodeError:
-        return {"raw": raw}
 
 
 def load_json_file(path: Path) -> dict:

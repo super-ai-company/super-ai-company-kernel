@@ -69,6 +69,15 @@ class CompanyKernelCoreTest(unittest.TestCase):
         source_pkg = Path(__file__).resolve().parents[1] / "company_kernel"
         for source_file in source_pkg.glob("*.py"):
             (root / "company_kernel" / source_file.name).write_text(source_file.read_text(encoding="utf-8"), encoding="utf-8")
+        # Also mirror sub-packages (e.g. company_kernel/core/ from the phased split) so split-out
+        # modules resolve when the adapter subprocesses run `python -m company_kernel.companyctl`
+        # against this temp clone. Generic: every future domain sub-package is covered automatically.
+        for subpkg in source_pkg.iterdir():
+            if subpkg.is_dir() and (subpkg / "__init__.py").exists():
+                for src in subpkg.rglob("*.py"):
+                    dst = root / "company_kernel" / src.relative_to(source_pkg)
+                    dst.parent.mkdir(parents=True, exist_ok=True)
+                    dst.write_text(src.read_text(encoding="utf-8"), encoding="utf-8")
         (root / "company_kernel" / "schema.sql").write_text(companyctl.SCHEMA.read_text(encoding="utf-8"), encoding="utf-8")
         (root / "dashboard_templates").mkdir()
         source_templates = Path(__file__).resolve().parents[1] / "dashboard_templates"
