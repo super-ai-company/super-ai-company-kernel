@@ -61,6 +61,14 @@ from .economics import classify_task_type, estimate_task_cost, build_cost_dashbo
 from .approval import (  # noqa: F401 (facade re-export; approval pure cluster)
     HIGH_RISK_APPROVAL_ACTIONS, approval_detail, approval_is_high_risk, approval_control_summary,
 )
+# Pure parsing / field-extraction leaves now live in company_kernel.parsing (pure-leaf sweep batch 1).
+# Plain forward; bare-name callers in companyctl resolve through it. parse_json_output joined because
+# parse_openclaw_agent_reply depends on it (keeps parsing.py a clean leaf, no reverse import).
+from .parsing import (  # noqa: F401 (facade re-export; pure parsing leaves)
+    parse_json_arg, parse_json_output, parse_openclaw_agent_reply,
+    _openclaw_native_result_task_id, _openclaw_native_result_agent,
+    _openclaw_native_result_summary, _openclaw_native_result_evidence,
+)
 
 DEFAULT_ROOT = Path(__file__).resolve().parents[1]
 GLOBAL_CONFIG_PATH = Path("~/.gemini/antigravity/company_kernel_config.json")
@@ -979,15 +987,6 @@ def row_by_id(conn: sqlite3.Connection, table: str, id_column: str, item_id: str
     if not row:
         raise SystemExit(f"{table.rstrip('s')} not found: {item_id}")
     return dict(row)
-
-
-def parse_json_arg(raw: str, default: object) -> object:
-    if not raw:
-        return default
-    try:
-        return json.loads(raw)
-    except json.JSONDecodeError as exc:
-        raise SystemExit(f"invalid json: {exc}") from exc
 
 
 def register_artifact_internal(
@@ -4228,46 +4227,6 @@ def openclaw_native_dispatch_execute(
     }
 
 
-def _openclaw_native_result_task_id(payload: dict) -> str:
-    nested = payload.get("payload", {}) if isinstance(payload.get("payload", {}), dict) else {}
-    for key in ("kernel_task_id", "task_id"):
-        value = str(nested.get(key) or payload.get(key) or "").strip()
-        if value:
-            return value
-    return ""
-
-
-def _openclaw_native_result_agent(payload: dict, fallback: str = "") -> str:
-    for key in ("source_agent", "employee_id", "agent"):
-        value = str(payload.get(key) or "").strip()
-        if value:
-            return value
-    nested = payload.get("payload", {}) if isinstance(payload.get("payload", {}), dict) else {}
-    for key in ("source_agent", "employee_id", "agent"):
-        value = str(nested.get(key) or "").strip()
-        if value:
-            return value
-    return fallback
-
-
-def _openclaw_native_result_summary(payload: dict, state: str) -> str:
-    nested = payload.get("payload", {}) if isinstance(payload.get("payload", {}), dict) else {}
-    for key in ("summary", "message", "result", "receipt"):
-        value = str(nested.get(key) or payload.get(key) or "").strip()
-        if value:
-            return value
-    return f"OpenClaw native {state} result imported"
-
-
-def _openclaw_native_result_evidence(payload: dict, source_file: Path) -> str:
-    nested = payload.get("payload", {}) if isinstance(payload.get("payload", {}), dict) else {}
-    for key in ("evidence_path", "evidence", "report_path", "path"):
-        value = str(nested.get(key) or payload.get(key) or "").strip()
-        if value:
-            return value
-    return str(source_file)
-
-
 def _openclaw_native_result_blocker(payload: dict) -> str:
     nested = payload.get("payload", {}) if isinstance(payload.get("payload", {}), dict) else {}
     for key in ("blocker", "error", "reason", "message"):
@@ -4537,22 +4496,6 @@ def attendance_agent_runtime_id(employee_id: str, runtime: str) -> str:
     if employee_id == "hermes" and runtime == "hermes":
         return "default"
     return employee_id
-
-
-def parse_openclaw_agent_reply(stdout: str) -> str:
-    payload = parse_json_output(stdout)
-    result = payload.get("result") if isinstance(payload, dict) else {}
-    payloads = result.get("payloads") if isinstance(result, dict) else []
-    if isinstance(payloads, list):
-        for item in payloads:
-            if isinstance(item, dict) and str(item.get("text") or "").strip():
-                return str(item["text"]).strip()
-    meta = result.get("meta") if isinstance(result, dict) else {}
-    if isinstance(meta, dict):
-        for key in ("finalAssistantVisibleText", "finalAssistantRawText"):
-            if str(meta.get(key) or "").strip():
-                return str(meta[key]).strip()
-    return ""
 
 
 def attendance_reply_probe(employee_id: str, runtime: str, timeout: int) -> dict:
@@ -13081,14 +13024,6 @@ def adapter_verify_agents(conn: sqlite3.Connection, requested: list[str]) -> lis
         params.extend(resolved)
     sql = f"SELECT * FROM employees WHERE {' AND '.join(clauses)} ORDER BY runtime, id"
     return rows(conn, sql, tuple(params))
-
-
-def parse_json_output(raw: str) -> dict:
-    try:
-        parsed = json.loads(raw or "{}")
-        return parsed if isinstance(parsed, dict) else {"raw": raw}
-    except json.JSONDecodeError:
-        return {"raw": raw}
 
 
 def load_json_file(path: Path) -> dict:

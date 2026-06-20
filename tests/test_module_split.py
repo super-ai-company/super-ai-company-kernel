@@ -396,5 +396,41 @@ class ApprovalCutTest(unittest.TestCase):
         self.assertEqual([], offenders, "approval.py must not import companyctl (leaf module)")
 
 
+class ParsingSweepBatch1Test(unittest.TestCase):
+    """Pure-leaf sweep batch 1: the parse_* / OpenClaw native-result extractors moved to
+    company_kernel.parsing and are forwarded from companyctl as the SAME objects. parse_json_output
+    rode along as parse_openclaw_agent_reply's dependency so parsing.py stays a clean leaf."""
+
+    PARSING_SYMBOLS = [
+        "parse_json_arg", "parse_json_output", "parse_openclaw_agent_reply",
+        "_openclaw_native_result_task_id", "_openclaw_native_result_agent",
+        "_openclaw_native_result_summary", "_openclaw_native_result_evidence",
+    ]
+
+    def test_parsing_symbols_forwarded_as_same_objects(self):
+        from company_kernel import companyctl, parsing
+        for sym in self.PARSING_SYMBOLS:
+            self.assertTrue(hasattr(companyctl, sym), f"companyctl must forward {sym}")
+            self.assertIs(getattr(companyctl, sym), getattr(parsing, sym),
+                          f"{sym} on companyctl must be the SAME object as in parsing")
+
+    def test_parsing_behaviour_preserved(self):
+        from company_kernel import companyctl
+        self.assertEqual({"a": 1}, companyctl.parse_json_arg('{"a": 1}', None))
+        self.assertEqual("def", companyctl.parse_json_arg("", "def"))
+        self.assertEqual({"raw": "x"}, companyctl.parse_json_output("x"))  # bad JSON → {"raw": ...}
+        self.assertEqual("t1", companyctl._openclaw_native_result_task_id({"task_id": "t1"}))
+
+    def test_parsing_is_leaf(self):
+        import ast
+        import pathlib
+        path = pathlib.Path(__file__).resolve().parents[1] / "company_kernel" / "parsing.py"
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        offenders = [n.lineno for n in ast.walk(tree)
+                     if (isinstance(n, ast.Import) and any("companyctl" in a.name for a in n.names))
+                     or (isinstance(n, ast.ImportFrom) and n.module and "companyctl" in n.module)]
+        self.assertEqual([], offenders, "parsing.py must not import companyctl (leaf module)")
+
+
 if __name__ == "__main__":
     unittest.main()
