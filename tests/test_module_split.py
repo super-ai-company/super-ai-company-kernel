@@ -359,5 +359,42 @@ class BuildEconomicsCutTest(unittest.TestCase):
         self.assertIs(companyctl.build_economics, economics.build_economics)
 
 
+class ApprovalCutTest(unittest.TestCase):
+    """Approval pure cut: the classification helpers + their constant moved to company_kernel.approval
+    and are forwarded from companyctl as the SAME objects. No test patches these, so a plain forward is
+    safe; policy_guard.py keeps its own independent approval_detail (out of scope, must NOT be touched)."""
+
+    APPROVAL_SYMBOLS = [
+        "HIGH_RISK_APPROVAL_ACTIONS", "approval_detail", "approval_is_high_risk", "approval_control_summary",
+    ]
+
+    def test_approval_symbols_forwarded_as_same_objects(self):
+        from company_kernel import approval, companyctl
+        for sym in self.APPROVAL_SYMBOLS:
+            self.assertTrue(hasattr(companyctl, sym), f"companyctl must forward {sym}")
+            self.assertIs(getattr(companyctl, sym), getattr(approval, sym),
+                          f"{sym} on companyctl must be the SAME object as in approval (forward, not a copy)")
+
+    def test_approval_classification_behaviour(self):
+        from company_kernel import companyctl
+        self.assertTrue(companyctl.approval_is_high_risk({"action": "payment"}))
+        self.assertTrue(companyctl.approval_is_high_risk({"action": "x", "detail": {"risk": "p0"}}))
+        self.assertFalse(companyctl.approval_is_high_risk({"action": "note"}))
+        self.assertEqual({"reason": "oops"}, companyctl.approval_detail("oops"))  # non-JSON → reason
+        summary = companyctl.approval_control_summary([{"status": "pending", "action": "payment"}])
+        self.assertEqual("owner_action_required", summary["queue_health"])
+        self.assertEqual(["payment"], summary["pending_high_risk_actions"])
+
+    def test_approval_does_not_reverse_import_companyctl(self):
+        import ast
+        import pathlib
+        path = pathlib.Path(__file__).resolve().parents[1] / "company_kernel" / "approval.py"
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        offenders = [n.lineno for n in ast.walk(tree)
+                     if (isinstance(n, ast.Import) and any("companyctl" in a.name for a in n.names))
+                     or (isinstance(n, ast.ImportFrom) and n.module and "companyctl" in n.module)]
+        self.assertEqual([], offenders, "approval.py must not import companyctl (leaf module)")
+
+
 if __name__ == "__main__":
     unittest.main()
