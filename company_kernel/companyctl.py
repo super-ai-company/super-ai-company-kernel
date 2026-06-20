@@ -69,6 +69,11 @@ from .parsing import (  # noqa: F401 (facade re-export; pure parsing leaves)
     _openclaw_native_result_task_id, _openclaw_native_result_agent,
     _openclaw_native_result_summary, _openclaw_native_result_evidence,
 )
+# Pure text / slug / row-normalization leaves now live in company_kernel.textutil (long-tail sweep).
+from .textutil import (  # noqa: F401 (facade re-export; pure text/normalize leaves)
+    slug, mermaid_node_id, clamp_audit_limit, normalize_task_title,
+    normalize_rfc, normalize_project, parse_split_item, parse_csv,
+)
 
 DEFAULT_ROOT = Path(__file__).resolve().parents[1]
 GLOBAL_CONFIG_PATH = Path("~/.gemini/antigravity/company_kernel_config.json")
@@ -5016,14 +5021,6 @@ def cmd_employee_create(args: argparse.Namespace) -> int:
     return 0
 
 
-def clamp_audit_limit(limit: int | str | None) -> int:
-    try:
-        value = int(limit or 50)
-    except (TypeError, ValueError):
-        value = 50
-    return max(1, min(value, 200))
-
-
 def audit_evidence_records(conn: sqlite3.Connection, *, task_id: str = "", employee_id: str = "", limit: int | str | None = 50) -> list[dict]:
     sql = """
         SELECT evidence_id, trace_id, task_id, attempt_id, employee_id, artifact_id,
@@ -5260,10 +5257,6 @@ def audit_handoff_records(conn: sqlite3.Connection, *, task_id: str = "", limit:
     for item in handoffs:
         item["artifacts"] = parse_json_arg(item.pop("artifacts_json", "") or "[]", [])
     return handoffs
-
-
-def mermaid_node_id(raw: str) -> str:
-    return re.sub(r"[^A-Za-z0-9_]", "_", raw)
 
 
 def trace_file_flow_graph(conn: sqlite3.Connection, trace_id: str) -> dict:
@@ -6700,10 +6693,6 @@ def cmd_employee_show(args: argparse.Namespace) -> int:
     return 0
 
 
-def parse_csv(raw: str) -> list[str]:
-    return [item.strip() for item in raw.split(",") if item.strip()]
-
-
 def cmd_employee_capabilities(args: argparse.Namespace) -> int:
     conn = connect()
     bundle = employee_file_bundle(conn, args.id)
@@ -7806,10 +7795,6 @@ def submit_guards_on() -> bool:
     """Submit guardrails are ON in production; tests set COMPANY_KERNEL_SUBMIT_GUARDS=0 to opt out
     of the codex-workspace / duplicate / recently-discarded checks for fixtures."""
     return os.environ.get("COMPANY_KERNEL_SUBMIT_GUARDS", "1") != "0"
-
-
-def normalize_task_title(title: str) -> str:
-    return re.sub(r"\s+", "", str(title or "")).lower()
 
 
 def codex_target_workspace_ok(conn: sqlite3.Connection, target: str, description: str) -> tuple[bool, str]:
@@ -10498,10 +10483,6 @@ def send_message_internal(conn: sqlite3.Connection, *, source: str, target: str,
     return {"message": message, "file": str(message_file), "event_id": event["id"]}
 
 
-def slug(value: str) -> str:
-    return "".join(ch if ch.isalnum() or ch in "-_." else "-" for ch in value).strip("-") or "item"
-
-
 def approved_gate(conn: sqlite3.Connection, approval_id: str, approval_action: str, source: str, target: str) -> dict:
     if not approval_id:
         return {"allowed": False, "reason": "missing approval_id"}
@@ -10709,15 +10690,6 @@ def write_approval_state(approval: dict) -> str:
 
 def rfc_state_path(status: str, rfc_id: str) -> Path:
     return STATE_DIR / "rfcs" / status / f"{rfc_id}.json"
-
-
-def normalize_rfc(row: sqlite3.Row | dict) -> dict:
-    obj = dict(row)
-    try:
-        obj["target_paths"] = json.loads(obj.pop("target_paths_json", "[]") or "[]")
-    except json.JSONDecodeError:
-        obj["target_paths"] = []
-    return obj
 
 
 def write_rfc_state(rfc: dict) -> str:
@@ -11715,18 +11687,6 @@ def cmd_openclaw_import_results(args: argparse.Namespace) -> int:
     return 0 if result.get("ok") else 1
 
 
-def parse_split_item(raw: str) -> dict:
-    parts = raw.split("|", 3)
-    if len(parts) < 2:
-        raise SystemExit("split item must be target|title or target|title|description|priority")
-    return {
-        "target": parts[0].strip(),
-        "title": parts[1].strip(),
-        "description": parts[2].strip() if len(parts) >= 3 else "",
-        "priority": parts[3].strip() if len(parts) >= 4 and parts[3].strip() else "P2",
-    }
-
-
 def split_items_from_plan(path: Path) -> list[dict]:
     payload = json.loads(path.read_text(encoding="utf-8"))
     raw_items = payload.get("items", payload if isinstance(payload, list) else [])
@@ -12390,15 +12350,6 @@ def cmd_project_create(args: argparse.Namespace) -> int:
     audit(conn, owner, "project.create", project_id, project)
     emit({"ok": True, "project": project})
     return 0
-
-
-def normalize_project(row: sqlite3.Row | dict) -> dict:
-    obj = dict(row)
-    try:
-        obj["acceptance"] = json.loads(obj.pop("acceptance_json", "[]") or "[]")
-    except json.JSONDecodeError:
-        obj["acceptance"] = []
-    return obj
 
 
 def cmd_project_list(args: argparse.Namespace) -> int:

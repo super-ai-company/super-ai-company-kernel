@@ -432,5 +432,42 @@ class ParsingSweepBatch1Test(unittest.TestCase):
         self.assertEqual([], offenders, "parsing.py must not import companyctl (leaf module)")
 
 
+class TextutilSweepTest(unittest.TestCase):
+    """Long-tail pure-leaf batch: small text/slug/row-normalization helpers moved to
+    company_kernel.textutil and forwarded from companyctl as the SAME objects."""
+
+    TEXTUTIL_SYMBOLS = [
+        "slug", "mermaid_node_id", "clamp_audit_limit", "normalize_task_title",
+        "normalize_rfc", "normalize_project", "parse_split_item", "parse_csv",
+    ]
+
+    def test_textutil_symbols_forwarded_as_same_objects(self):
+        from company_kernel import companyctl, textutil
+        for sym in self.TEXTUTIL_SYMBOLS:
+            self.assertTrue(hasattr(companyctl, sym), f"companyctl must forward {sym}")
+            self.assertIs(getattr(companyctl, sym), getattr(textutil, sym))
+
+    def test_textutil_behaviour_preserved(self):
+        from company_kernel import companyctl
+        self.assertEqual("a-b", companyctl.slug("a b"))
+        self.assertEqual("item", companyctl.slug("!!!"))
+        self.assertEqual("a_b", companyctl.mermaid_node_id("a.b"))
+        self.assertEqual(200, companyctl.clamp_audit_limit(9999))
+        self.assertEqual(50, companyctl.clamp_audit_limit("bad"))
+        self.assertEqual("ab", companyctl.normalize_task_title(" a b "))
+        self.assertEqual(["a", "b"], companyctl.parse_csv("a, b, "))
+        self.assertEqual({"target_paths": ["x"]}, companyctl.normalize_rfc({"target_paths_json": '["x"]'}))
+
+    def test_textutil_is_leaf(self):
+        import ast
+        import pathlib
+        path = pathlib.Path(__file__).resolve().parents[1] / "company_kernel" / "textutil.py"
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        offenders = [n.lineno for n in ast.walk(tree)
+                     if (isinstance(n, ast.Import) and any("companyctl" in a.name for a in n.names))
+                     or (isinstance(n, ast.ImportFrom) and n.module and "companyctl" in n.module)]
+        self.assertEqual([], offenders, "textutil.py must not import companyctl (leaf module)")
+
+
 if __name__ == "__main__":
     unittest.main()
