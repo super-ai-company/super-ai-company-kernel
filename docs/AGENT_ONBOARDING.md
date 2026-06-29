@@ -14,7 +14,7 @@
 ```bash
 git clone https://github.com/super-ai-company/super-ai-company-kernel.git
 cd super-ai-company-kernel
-python3 --version   # 需要 Python 3.10+
+python3 --version   # 需要 Python 3.9+（内核全模块经守卫确保 3.9 兼容，daemon 即跑系统 3.9）
 ```
 
 设置内核根目录与数据库（所有命令都读这两个环境变量；不设则默认仓库目录）：

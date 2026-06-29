@@ -13,7 +13,7 @@ paths — everything is expressed via environment variables.
 ```bash
 git clone https://github.com/super-ai-company/super-ai-company-kernel.git
 cd super-ai-company-kernel
-python3 --version   # needs Python 3.10+
+python3 --version   # needs Python 3.9+ (every kernel module is guard-tested for 3.9; the daemon runs on system 3.9)
 ```
 
 Set the kernel root (all commands read this; defaults to the repo dir):
