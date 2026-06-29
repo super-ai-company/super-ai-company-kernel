@@ -56,7 +56,7 @@ One command per employee. Supported runtimes: `codex`, `claude`, `hermes`, `open
 ### Tests
 
 ```bash
-python3 -B -m unittest discover -s tests      # baseline: 539 passing
+python3 -B -m unittest discover -s tests      # baseline: 1700+ tests
 ```
 
 ### Documentation index
@@ -121,7 +121,7 @@ bin/company-api-gateway --port 8765              # 浏览器开 http://127.0.0.1
 ### 测试
 
 ```bash
-python3 -B -m unittest discover -s tests      # 基线：539 通过
+python3 -B -m unittest discover -s tests      # 基线：1700+ 测试
 ```
 
 ### 文档索引
