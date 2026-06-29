@@ -140,4 +140,12 @@ python3 -B -m unittest discover -s tests      # 基线：1700+ 测试
 
 ## License / 许可
 
-See repository owner. 详见仓库所有者说明。
+**[AGPL-3.0](LICENSE)** (GNU Affero General Public License v3.0). Copyright (C) 2026 Super AI Company.
+
+- You may use, modify, and redistribute, **but you must keep the copyright/attribution and release your changes under AGPL-3.0 too** — including when you run a modified version as a **network service** (AGPL §13 closes the SaaS loophole).
+- A separate **commercial license** is available from the copyright holder for use without AGPL obligations (open-core / dual-licensing).
+
+**[AGPL-3.0](LICENSE)**(GNU Affero 通用公共许可证 v3.0)。版权所有 (C) 2026 Super AI Company。
+
+- 可自由使用 / 修改 / 再分发,**但必须保留版权署名,且你的修改也必须以 AGPL-3.0 开源** —— 包括把修改版**作为网络服务运行**时(AGPL §13 堵住 SaaS 漏洞,改了就得开源)。
+- 如需**不受 AGPL 约束的商业授权**(开源核 / 双授权),请联系版权持有人。
